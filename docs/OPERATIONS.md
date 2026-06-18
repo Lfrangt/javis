@@ -105,7 +105,8 @@ Use option `13. Show next work item` to preview the current `/api/work/next` act
 
 Use option `14. Run next work item` to preview and then execute the current workbench action after
 typing `RUN`. This is the manual path for recovering blocked jobs, processing the top Inbox item,
-checking progress, or delivering a completed workflow result without memorizing HTTP calls.
+checking progress, or delivering a completed workflow result without memorizing HTTP calls. Internal
+smoke/verification workflows are not offered as deliverable results.
 
 Use option `15. Show autopilot status` to see the resident overnight loop, last tick, last result,
 and the next workbench action without opening a separate UI.

@@ -8759,6 +8759,24 @@ function retryableBlockedWorkflowPlan(workflow) {
   };
 }
 
+function isInternalWorkflow(workflow) {
+  if (!workflow) return false;
+  const source = String(workflow.source || '').toLowerCase();
+  if (/(test|smoke|verification|diagnostic|internal)/.test(source)) return true;
+  const text = [
+    workflow.title,
+    workflow.request,
+    workflow.result,
+    workflow.target?.purpose,
+  ].filter(Boolean).join('\n').toLowerCase();
+  return /\b(smoke test|verification|diagnostic|internal test|approval continuation smoke)\b/.test(text)
+    || /\.approval-continuation-/.test(text);
+}
+
+function isDeliverableWorkflow(workflow) {
+  return Boolean(workflow?.result && workflow.status === 'done' && !isInternalWorkflow(workflow));
+}
+
 function workflowBriefing(options = {}) {
   const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 6)));
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
@@ -8774,6 +8792,7 @@ function workflowBriefing(options = {}) {
   const recoveryActions = recoveryActionCandidates(recentJobs);
   const blockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
   const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
+  const latestDeliverableWorkflow = recentWorkflows.find(isDeliverableWorkflow) || null;
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
   const learning = learningStateSnapshot();
   const nextActions = [];
@@ -8864,14 +8883,14 @@ function workflowBriefing(options = {}) {
     });
   }
 
-  if (latestDoneWorkflow?.result && !nextActions.some((action) => action.id === `copy:${latestDoneWorkflow.id}`)) {
+  if (latestDeliverableWorkflow?.result && !nextActions.some((action) => action.id === `copy:${latestDeliverableWorkflow.id}`)) {
     nextActions.push({
-      id: `copy:${latestDoneWorkflow.id}`,
+      id: `copy:${latestDeliverableWorkflow.id}`,
       priority: 3,
       label: 'Deliver latest result',
-      summary: `Latest completed workflow can be copied or continued: ${latestDoneWorkflow.title}.`,
+      summary: `Latest completed workflow can be copied or continued: ${latestDeliverableWorkflow.title}.`,
       source: 'workflows',
-      workflowId: latestDoneWorkflow.id,
+      workflowId: latestDeliverableWorkflow.id,
     });
   }
 
@@ -8949,6 +8968,7 @@ function workflowBriefing(options = {}) {
     },
     latestDone: {
       workflow: latestDoneWorkflow,
+      deliverableWorkflow: latestDeliverableWorkflow,
       job: latestDoneJob,
     },
   };
