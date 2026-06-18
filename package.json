@@ -27,6 +27,7 @@
     "doctor": "node scripts/doctor.mjs",
     "eval": "node scripts/eval/run.mjs",
     "eval:json": "node scripts/eval/run.mjs --json",
+    "eval:routing": "node scripts/eval-routing.mjs",
     "verify:ax": "node scripts/verify-ax-targeting.mjs",
     "config": "node scripts/config-cui.cjs",
     "config:cui": "node scripts/config-cui.cjs",
