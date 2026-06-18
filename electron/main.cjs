@@ -8391,6 +8391,37 @@ function finalizeRouteResult(result, context = {}) {
   };
 }
 
+function recoveryActionPriority(job, action) {
+  const riskLevel = Number(action?.riskLevel || 0);
+  if (action?.autoEligible && riskLevel <= 1) return 0;
+  if (job.failureKind === 'approval_required') return 1;
+  if (riskLevel <= 1) return 2;
+  return 3;
+}
+
+function recoveryActionCandidates(recentJobs, limit = 4) {
+  return recentJobs
+    .filter((job) => job.status === 'failed' && job.recoveryPlan?.nextActions?.length)
+    .flatMap((job) => job.recoveryPlan.nextActions.slice(0, 2).map((action, index) => ({
+      id: `recovery:${job.id}:${action.type || index}`,
+      priority: recoveryActionPriority(job, action),
+      label: action.label || 'Recover failed job',
+      summary: [
+        `${job.mode}/${job.failureKind || job.recoveryPlan.failureKind || 'failed'}: ${compactRecordText(job.title, 110)}`,
+        action.reason || job.recoveryPlan.summary || '',
+      ].filter(Boolean).join(' · '),
+      source: 'recovery',
+      jobId: job.id,
+      failureKind: job.failureKind || job.recoveryPlan.failureKind || '',
+      recoveryType: action.type || 'manual',
+      autoEligible: Boolean(action.autoEligible),
+      riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+      command: action.command || '',
+    })))
+    .sort((a, b) => a.priority - b.priority)
+    .slice(0, limit);
+}
+
 function workflowBriefing(options = {}) {
   const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 6)));
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
@@ -8403,6 +8434,7 @@ function workflowBriefing(options = {}) {
   const recentRoutes = routingSnapshot(6);
   const activeRoutes = recentRoutes.filter((record) => ['queued', 'running', 'approval_required', 'blocked'].includes(record.status));
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
+  const recoveryActions = recoveryActionCandidates(recentJobs);
   const blockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
   const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
@@ -8474,6 +8506,10 @@ function workflowBriefing(options = {}) {
     });
   }
 
+  for (const action of recoveryActions) {
+    nextActions.push(action);
+  }
+
   if (blockedWorkflows.length) {
     const first = blockedWorkflows[0];
     nextActions.push({
@@ -8540,6 +8576,7 @@ function workflowBriefing(options = {}) {
       routing: routingCounts(),
       activeJobs: activeJobs.length,
       activeRoutes: activeRoutes.length,
+      recoveryActions: recoveryActions.length,
       blockedWorkflows: blockedWorkflows.length,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
@@ -8746,6 +8783,28 @@ async function workNextAction(options = {}) {
   } else if (action.source === 'sessions') {
     result = sessionCheckIn({ source: options.source || 'work_next' });
     output = result.output;
+  } else if (action.source === 'recovery') {
+    const job = action.jobId ? jobs.get(action.jobId) || null : null;
+    const diagnostics = job?.recoveryPlan?.diagnostics || recoveryDiagnosticsSnapshot();
+    const recoverySummary = job?.recoveryPlan?.summary || action.summary || '';
+    const safeToExecute = Boolean(action.autoEligible && action.riskLevel <= 1 && ['diagnose', 'policy', 'approval'].includes(action.recoveryType));
+    if (execute && safeToExecute && job) {
+      appendJobLog(job.id, `Recovery action reviewed via work_next: ${action.recoveryType}.`);
+      executed = true;
+    }
+    result = { job, recovery: action, diagnostics };
+    output = job
+      ? [
+        `恢复任务: ${job.mode}/${job.failureKind || job.recoveryPlan?.failureKind || 'failed'} · ${compactRecordText(job.title, 120)}`,
+        recoverySummary ? `原因: ${compactRecordText(recoverySummary, 220)}` : '',
+        diagnostics?.summary ? `诊断: ${compactRecordText(diagnostics.summary, 220)}` : '',
+        diagnostics?.runtime ? `权限: localExec=${diagnostics.runtime.localExecutionEnabled ? 'on' : 'off'}, trusted=${diagnostics.runtime.trustedLocalMode ? 'on' : 'off'}, autoLevel=${diagnostics.runtime.maxAutoRiskLevel}, approvalAt=${diagnostics.runtime.requireApprovalAtRiskLevel}` : '',
+        diagnostics?.workers ? `Worker: Codex ${diagnostics.workers.codex?.available ? 'ready' : 'missing'}, Claude ${diagnostics.workers.claude?.available ? 'ready' : 'missing'}` : '',
+        safeToExecute
+          ? '已完成低风险恢复检查；下一步可以按诊断继续修复。'
+          : `这一步不是低风险自动动作，已保留为计划: ${action.label}.`,
+      ].filter(Boolean).join('\n')
+      : '没有找到对应的失败任务，可能已经被清理。';
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
       source: options.source || 'work_next',
