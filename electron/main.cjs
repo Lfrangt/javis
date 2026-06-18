@@ -67,6 +67,7 @@ const AMBIENT_INTERVAL_MS = Math.max(2500, Math.min(60000, Number(process.env.JA
 const AMBIENT_LEARNING_ENABLED = process.env.JAVIS_AMBIENT_LEARNING === 'true';
 const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(process.env.JAVIS_AMBIENT_LEARNING_INTERVAL_MS || 60000)));
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
+const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
 const MAX_PERSISTED_APPROVALS = Number(process.env.JAVIS_MAX_PERSISTED_APPROVALS || 200);
@@ -211,6 +212,20 @@ let wakeState = {
   engineLastLine: '',
   engineLastError: '',
   engineStartedAt: 0,
+};
+let conversationState = {
+  status: 'idle',
+  sessionId: '',
+  micMode: 'open',
+  screenLive: false,
+  source: '',
+  error: '',
+  startedAt: 0,
+  liveAt: 0,
+  endedAt: 0,
+  updatedAt: 0,
+  lastHeartbeatAt: 0,
+  transitionCount: 0,
 };
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
@@ -6927,9 +6942,12 @@ function presenceRecentObservation(event = null) {
   };
 }
 
-function presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake }) {
-  if (pendingApprovals.length) return 'needs_attention';
+function presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation }) {
   if (readiness?.overall === 'blocked') return 'setup_blocked';
+  if (conversation?.status === 'connecting') return 'connecting';
+  if (conversation?.status === 'live') return 'listening';
+  if (conversation?.status === 'error' && Number(conversation.ageMs || 0) < 60000) return 'voice_error';
+  if (pendingApprovals.length) return 'needs_attention';
   if (wake?.pending) return 'waking';
   if (activeJobs.length) return 'working';
   if (AMBIENT_OBSERVE_ENABLED) return 'watching';
@@ -6942,12 +6960,13 @@ function presenceStateSnapshot(options = {}) {
   const wake = wakeStatusSnapshot();
   const ambient = ambientStateSnapshot(limit);
   const learning = learningStateSnapshot();
+  const conversation = conversationStateSnapshot();
   const pendingApprovals = pendingApprovalSnapshot(10);
   const activeJobs = jobSnapshot().filter((job) => job.status === 'queued' || job.status === 'running');
   const activeSession = activeSessionSnapshot();
   const latestAmbient = ambient.recent[0] || null;
   const latestScreen = latestScreenSnapshot();
-  const mode = presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake });
+  const mode = presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation });
   const observing = presenceRecentObservation(latestAmbient);
   const screenAge = latestScreenAgeMs();
   const screen = latestScreen
@@ -6969,19 +6988,28 @@ function presenceStateSnapshot(options = {}) {
         ageMs: null,
         updatedAt: 0,
       };
-  const nextIntervention =
-    pendingApprovals[0]
-      ? `Waiting for approval: ${compactRecordText(pendingApprovals[0].summary, 120)}`
-      : readiness.primaryIssue
-        ? readiness.primaryIssue.next || readiness.primaryIssue.summary
-        : activeJobs[0]
-          ? `Background work running: ${compactRecordText(activeJobs[0].title, 120)}`
-          : wake.pending
-            ? 'Wake trigger is pending; voice may start from the resident pet.'
-            : 'No intervention queued. Standing by until the user speaks or asks for help.';
+  let nextIntervention = 'No intervention queued. Standing by until the user speaks or asks for help.';
+  if (conversation.status === 'live') {
+    nextIntervention = 'Voice conversation is live. Listening for the current user request.';
+  } else if (conversation.status === 'connecting') {
+    nextIntervention = 'Voice conversation is connecting.';
+  } else if (conversation.status === 'error') {
+    nextIntervention = `Last voice session error: ${conversation.error || 'unknown error'}`;
+  } else if (pendingApprovals[0]) {
+    nextIntervention = `Waiting for approval: ${compactRecordText(pendingApprovals[0].summary, 120)}`;
+  } else if (readiness.primaryIssue) {
+    nextIntervention = readiness.primaryIssue.next || readiness.primaryIssue.summary;
+  } else if (activeJobs[0]) {
+    nextIntervention = `Background work running: ${compactRecordText(activeJobs[0].title, 120)}`;
+  } else if (wake.pending) {
+    nextIntervention = 'Wake trigger is pending; voice may start from the resident pet.';
+  }
   const summaryParts = [
     mode === 'watching' ? 'Standing by and passively observing local context.' : '',
     mode === 'standby' ? 'Standing by; passive ambient observation is off.' : '',
+    mode === 'connecting' ? 'Voice conversation is connecting.' : '',
+    mode === 'listening' ? `Voice conversation is live in ${conversation.micMode} mic mode.` : '',
+    mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
     mode === 'waking' ? 'Wake trigger received.' : '',
     mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
     mode === 'needs_attention' ? `${pendingApprovals.length} approval(s) need attention.` : '',
@@ -7000,6 +7028,9 @@ function presenceStateSnapshot(options = {}) {
       standby: 'Standby',
       watching: 'Watching',
       waking: 'Wake pending',
+      connecting: 'Connecting',
+      listening: 'Listening',
+      voice_error: 'Voice error',
       working: 'Working',
       needs_attention: 'Needs attention',
       setup_blocked: 'Setup blocked',
@@ -7014,6 +7045,7 @@ function presenceStateSnapshot(options = {}) {
       requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
       next: nextIntervention,
     },
+    conversation,
     wake,
     observing: {
       ambient: {
@@ -7141,6 +7173,95 @@ function triggerWake(options = {}) {
     triggerCount: wakeState.triggerCount,
   });
   return wakeStatusSnapshot();
+}
+
+function normalizeConversationStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  return ['idle', 'connecting', 'live', 'error'].includes(status) ? status : '';
+}
+
+function normalizeConversationMicMode(value) {
+  return String(value || '').trim().toLowerCase() === 'push' ? 'push' : 'open';
+}
+
+function conversationStateSnapshot() {
+  const now = Date.now();
+  const activeStatus = conversationState.status === 'connecting' || conversationState.status === 'live';
+  const stale = activeStatus && conversationState.updatedAt && now - conversationState.updatedAt > CONVERSATION_STALE_MS;
+  const status = stale ? 'idle' : conversationState.status;
+  const active = status === 'connecting' || status === 'live';
+  return {
+    ...conversationState,
+    status,
+    active,
+    stale: Boolean(stale),
+    staleAfterMs: CONVERSATION_STALE_MS,
+    ageMs: conversationState.updatedAt ? now - conversationState.updatedAt : null,
+    activeForMs: active && conversationState.startedAt ? now - conversationState.startedAt : null,
+  };
+}
+
+function updateConversationState(options = {}) {
+  const now = Date.now();
+  const requestedStatus = normalizeConversationStatus(options.status);
+  const next = { ...conversationState };
+  let transitioned = false;
+
+  if (requestedStatus && requestedStatus !== next.status) {
+    transitioned = true;
+    next.status = requestedStatus;
+    next.transitionCount = Number(next.transitionCount || 0) + 1;
+  }
+
+  if (Object.prototype.hasOwnProperty.call(options, 'micMode')) {
+    next.micMode = normalizeConversationMicMode(options.micMode);
+  }
+  if (Object.prototype.hasOwnProperty.call(options, 'screenLive')) {
+    next.screenLive = Boolean(options.screenLive);
+  }
+  if (Object.prototype.hasOwnProperty.call(options, 'source')) {
+    next.source = String(options.source || '').slice(0, 80);
+  }
+
+  if (requestedStatus === 'connecting') {
+    next.sessionId = String(options.sessionId || next.sessionId || crypto.randomUUID()).slice(0, 120);
+    next.startedAt = next.startedAt || now;
+    next.liveAt = 0;
+    next.endedAt = 0;
+    next.error = '';
+  }
+  if (requestedStatus === 'live') {
+    next.sessionId = String(options.sessionId || next.sessionId || crypto.randomUUID()).slice(0, 120);
+    next.startedAt = next.startedAt || now;
+    next.liveAt = next.liveAt || now;
+    next.endedAt = 0;
+    next.error = '';
+    next.lastHeartbeatAt = now;
+  }
+  if (requestedStatus === 'idle') {
+    next.endedAt = now;
+    next.error = '';
+  }
+  if (requestedStatus === 'error') {
+    next.error = String(options.error || options.message || next.error || 'voice_session_error').slice(0, 500);
+    next.endedAt = now;
+  }
+  if (options.heartbeat === true) {
+    next.lastHeartbeatAt = now;
+  }
+
+  next.updatedAt = now;
+  conversationState = next;
+  appendAudit('conversation.state', {
+    status: conversationState.status,
+    sessionId: conversationState.sessionId,
+    micMode: conversationState.micMode,
+    screenLive: conversationState.screenLive,
+    source: conversationState.source,
+    transitioned,
+    error: conversationState.error ? compactRecordText(conversationState.error, 120) : '',
+  });
+  return conversationStateSnapshot();
 }
 
 function lineMatchesWake(line) {
@@ -12004,6 +12125,7 @@ function startApiServer() {
   api.get('/api/status', (_req, res) => {
     const readiness = readinessSnapshot();
     const presence = presenceStateSnapshot({ readiness, limit: 5 });
+    const conversation = presence.conversation || conversationStateSnapshot();
     res.json({
       api: {
         baseUrl: API_BASE,
@@ -12023,6 +12145,7 @@ function startApiServer() {
       },
       screenPrivacy: screenPrivacySnapshot(),
       presence,
+      conversation,
       ambient: ambientStateSnapshot(5),
       learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),
@@ -12062,6 +12185,14 @@ function startApiServer() {
 
   api.get('/api/presence', (req, res) => {
     res.json({ presence: presenceStateSnapshot({ limit: req.query.limit }) });
+  });
+
+  api.get('/api/conversation/state', (_req, res) => {
+    res.json({ conversation: conversationStateSnapshot() });
+  });
+
+  api.post('/api/conversation/state', express.json({ limit: '64kb' }), (req, res) => {
+    res.json({ ok: true, conversation: updateConversationState(req.body || {}), presence: presenceStateSnapshot({ limit: 5 }) });
   });
 
   api.get('/api/mac/context', async (req, res) => {

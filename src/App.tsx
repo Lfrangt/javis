@@ -91,6 +91,26 @@ type NotificationsState = {
   }
 }
 
+type ConversationState = {
+  status: VoiceStatus
+  active: boolean
+  stale: boolean
+  sessionId: string
+  micMode: MicMode
+  screenLive: boolean
+  source: string
+  error: string
+  startedAt: number
+  liveAt: number
+  endedAt: number
+  updatedAt: number
+  lastHeartbeatAt: number
+  transitionCount: number
+  ageMs: number | null
+  activeForMs: number | null
+  staleAfterMs: number
+}
+
 type ScreenPrivacy = {
   version: number
   mode: 'private' | 'clear'
@@ -278,6 +298,7 @@ type Status = {
     imageDataUrl?: string
   }
   screenPrivacy?: ScreenPrivacy
+  conversation?: ConversationState
   ambient?: {
     enabled: boolean
     captureScreen: boolean
@@ -1013,7 +1034,22 @@ function App() {
     }
   }, [])
 
-  const stopVoice = useCallback(() => {
+  const updateResidentConversation = useCallback((patch: Partial<ConversationState> & Record<string, unknown>) => {
+    return apiJson<{ conversation: ConversationState }>('/api/conversation/state', {
+      method: 'POST',
+      body: JSON.stringify({ source: 'renderer', ...patch }),
+    })
+      .then((result) => {
+        setStatus((current) => (current ? { ...current, conversation: result.conversation } : current))
+        return result.conversation
+      })
+      .catch((error) => {
+        setLastError(error instanceof Error ? error.message : String(error))
+        return null
+      })
+  }, [])
+
+  const stopVoice = useCallback((options: { report?: boolean } = {}) => {
     dataChannelRef.current?.close()
     peerRef.current?.close()
     micStreamRef.current?.getTracks().forEach((track) => track.stop())
@@ -1025,7 +1061,8 @@ function App() {
     responseActiveRef.current = false
     setIsPushingToTalk(false)
     setVoiceStatus('idle')
-  }, [])
+    if (options.report !== false) void updateResidentConversation({ status: 'idle', screenLive: false })
+  }, [updateResidentConversation])
 
   const runRealtimeTool = useCallback(
     async (event: Record<string, unknown>) => {
@@ -1120,6 +1157,7 @@ function App() {
   const startVoice = useCallback(async () => {
     setLastError('')
     setVoiceStatus('connecting')
+    void updateResidentConversation({ status: 'connecting', micMode, screenLive })
     try {
       const peer = new RTCPeerConnection()
       peerRef.current = peer
@@ -1141,6 +1179,7 @@ function App() {
       dataChannelRef.current = dataChannel
       dataChannel.addEventListener('open', () => {
         setVoiceStatus('live')
+        void updateResidentConversation({ status: 'live', micMode, screenLive })
         addMessage('system', 'Voice link live.')
         if (screenPreviewRef.current) {
           const frame = screenFrameRef.current
@@ -1152,6 +1191,7 @@ function App() {
       dataChannel.addEventListener('message', handleRealtimeEvent)
       dataChannel.addEventListener('close', () => {
         setVoiceStatus((current) => (current === 'live' ? 'idle' : current))
+        void updateResidentConversation({ status: 'idle', micMode, screenLive: false })
       })
 
       const offer = await peer.createOffer()
@@ -1165,13 +1205,22 @@ function App() {
       if (!response.ok) throw new Error(answerSdp || response.statusText)
       await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp })
     } catch (error) {
-      stopVoice()
+      stopVoice({ report: false })
       setVoiceStatus('error')
       const message = error instanceof Error ? error.message : String(error)
+      void updateResidentConversation({ status: 'error', micMode, screenLive, error: message })
       setLastError(message)
       addMessage('system', message)
     }
-  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, status?.screen?.height, status?.screen?.width, stopVoice])
+  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
+
+  useEffect(() => {
+    if (voiceStatus !== 'live') return undefined
+    const id = window.setInterval(() => {
+      void updateResidentConversation({ status: 'live', micMode, screenLive, heartbeat: true })
+    }, 15000)
+    return () => window.clearInterval(id)
+  }, [micMode, screenLive, updateResidentConversation, voiceStatus])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return
@@ -1261,27 +1310,30 @@ function App() {
     setLastError('')
     try {
       setScreenLive(true)
+      void updateResidentConversation({ screenLive: true, micMode })
       await captureFrame(true)
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setScreenLive(false)
+      void updateResidentConversation({ screenLive: false, micMode })
       setLastError(message)
       addMessage('system', message)
       return false
     }
-  }, [addMessage, captureFrame])
+  }, [addMessage, captureFrame, micMode, updateResidentConversation])
 
   const stopScreen = useCallback(() => {
     setScreenLive(false)
     setScreenPreview('')
     screenPreviewRef.current = ''
     screenFrameRef.current = null
+    void updateResidentConversation({ screenLive: false, micMode })
     void apiJson('/api/screen/frame', {
       method: 'DELETE',
       body: JSON.stringify({ source: 'renderer' }),
     }).catch((error) => setLastError(error instanceof Error ? error.message : String(error)))
-  }, [])
+  }, [micMode, updateResidentConversation])
 
   const beginAssistantSession = useCallback(async () => {
     if (voiceStatus === 'connecting' || voiceStatus === 'live') return
@@ -1869,7 +1921,13 @@ function App() {
     return 'ready'
   }, [activeJobCount, approvals.length, screenLive, status?.api.hasOpenAiKey, voiceStatus])
 
-  const voiceAction = voiceStatus === 'idle' || voiceStatus === 'error' ? startVoice : stopVoice
+  const voiceAction = useCallback(() => {
+    if (voiceStatus === 'idle' || voiceStatus === 'error') {
+      void startVoice()
+      return
+    }
+    stopVoice()
+  }, [startVoice, stopVoice, voiceStatus])
   const screenAction = screenLive ? stopScreen : startScreen
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
   const petAction = status?.api.hasOpenAiKey ? startAssistantSession : openConfigCui

@@ -146,6 +146,10 @@ async function printStatus() {
     if (status.wake) {
       console.log(`Wake: ${status.wake.engine?.configured ? (status.wake.engine.running ? 'engine running' : 'engine stopped') : 'soft'} · words ${status.wake.words?.join(', ') || '-'}`);
     }
+    if (status.conversation) {
+      const conversation = status.conversation;
+      console.log(`Voice: ${conversation.status || 'idle'} · mic ${conversation.micMode || 'open'} · screen ${conversation.screenLive ? 'on' : 'off'}${conversation.stale ? ' · stale' : ''}${conversation.error ? ` · ${conversation.error}` : ''}`);
+    }
     if (status.ambient) {
       console.log(`Ambient: ${status.ambient.enabled ? 'on' : 'off'} · screen ${status.ambient.captureScreen ? 'on' : 'off'} · ${status.ambient.count || 0} sample(s)`);
     }

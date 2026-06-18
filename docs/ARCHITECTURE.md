@@ -45,6 +45,7 @@ Renderer
 
 - Realtime lane: fast speech-to-speech interaction, short replies, tool calls, started or stopped from the minimal pet when configured.
 - Pet session lane: one click starts voice and requests screen sharing, then pushes the first permitted screen frame into Realtime context.
+- Conversation state lane: renderer-reported connecting/live/idle/error voice lifecycle with heartbeats so the resident can expose whether it is truly listening.
 - Push-to-talk lane: keeps resident voice from becoming an always-open microphone.
 - Global hotkey lane: brings the desktop pet back without requiring app focus.
 - Capture hotkey lane: saves current clipboard text into local Inbox without opening desktop UI.
