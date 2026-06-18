@@ -5,10 +5,12 @@ Local Mac-first realtime desktop buddy.
 ## What works in this first build
 
 - Realtime voice loop through OpenAI Realtime WebRTC.
-- Screen sharing from macOS into the local app, with periodic frame capture.
+- Resident full-screen capture from macOS with no per-session window picker.
 - Live screen-context injection into the active Realtime voice session.
+- Soft wake-word behavior inside live voice sessions through `JAVIS_WAKE_WORDS`.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
+- Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, and visible page text from supported active tabs.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
@@ -37,7 +39,7 @@ Local Mac-first realtime desktop buddy.
 - Small reversible Mac actions: open URL and open app by default.
 - Guarded file actions: write files, create folders, copy files, and move/rename files through policy, approval, and local-execution gates.
 - Clipboard actions: read, write, and clear clipboard text through policy/audit.
-- Transparent always-on-top desktop buddy window.
+- Tiny draggable always-on-top desktop buddy window.
 - Compact pet mode by default; configuration lives in the terminal CUI instead of the desktop pet.
 - Pet click starts or stops the realtime voice + screen-context session when the API key is configured.
 - Non-intrusive window parking with configurable corner/display placement from the terminal CUI.
@@ -126,6 +128,8 @@ Local Express service on 127.0.0.1:3417
   /api/actions/execute  -> execute guarded local actions
   /api/observe          -> combined fast observation for voice: Mac context, screen, Accessibility, jobs, approvals
   /api/mac/context      -> frontmost app, clipboard summary, queue, approvals
+  /api/ambient          -> recent passive local observation metadata
+  /api/ambient/sample   -> take one passive local observation sample
   /api/accessibility/tree -> read-only frontmost app UI tree
   /api/accessibility/plan -> dry-run UI control plan from the accessibility tree
   /api/accessibility/control -> plan and execute one guarded current-app UI action
@@ -152,7 +156,7 @@ Local Express service on 127.0.0.1:3417
   /api/window/mode       -> pet sizing compatibility endpoint
 ```
 
-The realtime model stays focused on short interaction. `observe_now` combines the usual first-look context into one tool call: frontmost app/window, browser context, clipboard summary, latest or freshly captured screen metadata, optional vision summary, Accessibility outline, jobs, and approvals. When screen sharing and live context are enabled, the renderer silently adds the latest screen frame to the realtime conversation so follow-up voice commands can refer to what is visible. The resident can also refresh the latest screen frame on demand through `capture_screen` or `/api/screen/capture-now`, so vision does not depend only on an active renderer stream. Screen privacy defaults to `private`, which downscales and blurs/pixelates frames before they are posted to the local API or Realtime session; API/CUI controls can switch to `clear` when precision matters. The model can also ask for current Mac, browser, file, local memory, local Inbox, local work sessions, local work briefing, work progress, session check-ins, or Accessibility UI-tree context, start/resume/log/end a work session, capture follow-up items into Inbox, triage Inbox priority/lane suggestions, explicitly process the next Inbox item, route Inbox items into task lanes, inspect recent workflow history, continue a prior workflow, copy a workflow result back to the clipboard, run a structured current-page or local-file workflow, control one current-app UI target, plan a workflow from current Mac state, execute a short local app workflow, or use the local router to decide whether a task should be answered quickly or queued to a deeper lane. The router first checks safe no-model local commands, so status, work progress, session resume/check-ins, Inbox capture/listing/triage/next processing, app/URL opens, and web search still work when model lanes are unavailable. The router and manual task queue include relevant explicit memories by default and can disable that with `useMemory:false`. Guarded Accessibility execution is available through Level 3 `ax_press` and `ax_set_value` actions plus the higher-level `control_current_app`, `plan_app_workflow`, and `run_app_workflow` voice tools, and guarded file execution is available through Level 3 write/create/copy/move actions; both require policy checks, approval when configured, and local execution enablement. File organization has a two-step flow: preview the plan first, then request apply with explicit confirmation. Harder work is put into the queue so spoken conversation stays responsive, and running workers can be inspected or cancelled from the CUI/API.
+The realtime model stays focused on short interaction. `observe_now` combines the usual first-look context into one tool call: frontmost app/window, browser context, clipboard summary, latest or freshly captured screen metadata, optional vision summary, Accessibility outline, jobs, and approvals. When live context is enabled, the resident captures the full primary screen directly and adds that latest frame to the realtime conversation so follow-up voice commands can refer to what is visible without showing a window picker. Screen privacy defaults to `private`, which downscales and blurs/pixelates frames before they are posted to the local API or Realtime session; API/CUI controls can switch to `clear` when precision matters. The passive ambient observer can keep local metadata about what app/browser page is active, but it does not speak or act by itself. The model can also ask for current Mac, browser, file, local memory, local Inbox, local work sessions, local work briefing, work progress, session check-ins, or Accessibility UI-tree context, start/resume/log/end a work session, capture follow-up items into Inbox, triage Inbox priority/lane suggestions, explicitly process the next Inbox item, route Inbox items into task lanes, inspect recent workflow history, continue a prior workflow, copy a workflow result back to the clipboard, run a structured current-page or local-file workflow, control one current-app UI target, plan a workflow from current Mac state, execute a short local app workflow, or use the local router to decide whether a task should be answered quickly or queued to a deeper lane. The router first checks safe no-model local commands, so status, work progress, session resume/check-ins, Inbox capture/listing/triage/next processing, app/URL opens, and web search still work when model lanes are unavailable. The router and manual task queue include relevant explicit memories by default and can disable that with `useMemory:false`. Guarded Accessibility execution is available through Level 3 `ax_press` and `ax_set_value` actions plus the higher-level `control_current_app`, `plan_app_workflow`, and `run_app_workflow` voice tools, and guarded file execution is available through Level 3 write/create/copy/move actions; both require policy checks, approval when configured, and local execution enablement. File organization has a two-step flow: preview the plan first, then request apply with explicit confirmation. Harder work is put into the queue so spoken conversation stays responsive, and running workers can be inspected or cancelled from the CUI/API.
 
 ## Long-Term Direction
 

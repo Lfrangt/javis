@@ -29,6 +29,10 @@ const execFileAsync = promisify(execFile);
 const API_PORT = Number(process.env.JAVIS_API_PORT || 3417);
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const WAKE_WORDS = (process.env.JAVIS_WAKE_WORDS || 'JAVIS,Jarvis,贾维斯,小贾')
+  .split(',')
+  .map((item) => item.trim())
+  .filter(Boolean);
 const LOCAL_EXEC_ENABLED = process.env.JAVIS_ENABLE_LOCAL_EXEC === 'true';
 const TRUSTED_LOCAL_MODE = process.env.JAVIS_TRUSTED_LOCAL_MODE === 'true';
 const APP_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
@@ -42,6 +46,7 @@ const MEMORIES_FILE = path.join(DATA_DIR, 'memories.json');
 const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
+const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const LAUNCH_AGENT_FILE = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 const RESIDENT_OUT_LOG = path.join(process.cwd(), 'logs', 'resident.out.log');
@@ -52,12 +57,16 @@ const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER 
 const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
 const WINDOW_PARK_MARGIN = Math.max(0, Math.min(160, Number(process.env.JAVIS_WINDOW_PARK_MARGIN || 24)));
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
+const AMBIENT_OBSERVE_ENABLED = process.env.JAVIS_AMBIENT_OBSERVE === 'true';
+const AMBIENT_CAPTURE_SCREEN = process.env.JAVIS_AMBIENT_CAPTURE_SCREEN === 'true';
+const AMBIENT_INTERVAL_MS = Math.max(2500, Math.min(60000, Number(process.env.JAVIS_AMBIENT_INTERVAL_MS || 8000)));
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
 const MAX_PERSISTED_APPROVALS = Number(process.env.JAVIS_MAX_PERSISTED_APPROVALS || 200);
 const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES || 500);
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
+const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const startedAt = Date.now();
 const packageInfo = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
 const DEFAULT_FILE_ROOTS = [
@@ -159,10 +168,11 @@ const approvals = new Map();
 const memories = new Map();
 const inboxItems = new Map();
 const workSessions = new Map();
+const ambientEvents = [];
 const activeJobRuns = new Map();
 const windowModes = {
-  pet: { width: 246, height: 82 },
-  panel: { width: 246, height: 82 },
+  pet: { width: 166, height: 54 },
+  panel: { width: 166, height: 54 },
 };
 let latestScreen = null;
 let latestAccessibilityTree = null;
@@ -177,6 +187,8 @@ let captureHotkeyRegistered = false;
 let lastInboxCapture = null;
 let menuBarTray = null;
 let menuBarUpdatedAt = 0;
+let ambientTimer = null;
+let ambientSampling = false;
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
   sent: 0,
@@ -193,6 +205,7 @@ loadPersistedApprovals();
 loadPersistedMemories();
 loadPersistedInbox();
 loadPersistedSessions();
+loadPersistedAmbient();
 appendAudit('process.start', {
   pid: process.pid,
   version: packageInfo.version,
@@ -876,9 +889,9 @@ function clearLatestScreen(source = 'api') {
   return null;
 }
 
-function latestScreenSnapshot() {
+function latestScreenSnapshot(options = {}) {
   if (!latestScreen) return null;
-  return {
+  const snapshot = {
     width: latestScreen.width,
     height: latestScreen.height,
     updatedAt: latestScreen.updatedAt,
@@ -887,6 +900,8 @@ function latestScreenSnapshot() {
     displayId: latestScreen.displayId || '',
     displayName: latestScreen.displayName || '',
   };
+  if (options.includeImage) snapshot.imageDataUrl = latestScreen.imageDataUrl || '';
+  return snapshot;
 }
 
 function latestScreenAgeMs() {
@@ -961,7 +976,7 @@ async function captureResidentScreen(options = {}) {
     displayId: latestScreen.displayId,
     displayName: latestScreen.displayName,
   });
-  return latestScreenSnapshot();
+  return latestScreenSnapshot({ includeImage: Boolean(options.includeImage) });
 }
 
 function appendAudit(type, data = {}) {
@@ -1180,6 +1195,39 @@ function normalizePersistedSession(session) {
   };
 }
 
+function normalizeAmbientEvent(event) {
+  if (!event || typeof event !== 'object') return null;
+  const frontmost = event.frontmost && typeof event.frontmost === 'object' ? event.frontmost : {};
+  const browser = event.browser && typeof event.browser === 'object' ? event.browser : {};
+  const screenFrame = event.screen && typeof event.screen === 'object' ? event.screen : {};
+  return {
+    id: String(event.id || crypto.randomUUID()),
+    source: String(event.source || 'ambient').slice(0, 80),
+    frontmost: {
+      app: String(frontmost.app || '').slice(0, 120),
+      windowTitle: String(frontmost.windowTitle || '').slice(0, 300),
+      available: Boolean(frontmost.available),
+    },
+    browser: {
+      available: Boolean(browser.available),
+      app: String(browser.app || '').slice(0, 120),
+      title: String(browser.title || '').slice(0, 300),
+      url: redactUrlForStorage(browser.url || '').slice(0, 2000),
+      source: String(browser.source || '').slice(0, 80),
+    },
+    screen: {
+      width: Number(screenFrame.width || 0),
+      height: Number(screenFrame.height || 0),
+      source: String(screenFrame.source || '').slice(0, 80),
+      displayId: String(screenFrame.displayId || '').slice(0, 120),
+      displayName: String(screenFrame.displayName || '').slice(0, 200),
+      updatedAt: Number(screenFrame.updatedAt || 0),
+      privacyMode: String(screenFrame.privacy?.mode || screenFrame.privacyMode || '').slice(0, 40),
+    },
+    createdAt: Number(event.createdAt || Date.now()),
+  };
+}
+
 function loadPersistedJobs() {
   if (!fs.existsSync(JOBS_FILE)) return;
   try {
@@ -1276,6 +1324,23 @@ function loadPersistedSessions() {
   }
 }
 
+function loadPersistedAmbient() {
+  if (!fs.existsSync(AMBIENT_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(AMBIENT_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.events) ? parsed.events : [];
+    ambientEvents.splice(0, ambientEvents.length);
+    for (const rawEvent of list) {
+      const event = normalizeAmbientEvent(rawEvent);
+      if (event) ambientEvents.push(event);
+    }
+    persistAmbient();
+    appendAudit('ambient.loaded', { count: ambientEvents.length });
+  } catch (error) {
+    appendAudit('ambient.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function persistJobs() {
   const jobsForStorage = Array.from(jobs.values())
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -1340,6 +1405,25 @@ function persistSessions() {
     updatedAt: new Date().toISOString(),
     sessions: sessionsForStorage,
   });
+}
+
+function persistAmbient() {
+  const eventsForStorage = ambientEvents
+    .slice()
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, MAX_PERSISTED_AMBIENT);
+  writeJsonAtomic(AMBIENT_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    events: eventsForStorage,
+  });
+}
+
+function ambientSnapshot(limit = 20) {
+  return ambientEvents
+    .slice()
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
 }
 
 function approvalSnapshot(limit = 20) {
@@ -5660,6 +5744,92 @@ async function macContextSnapshot(options = {}) {
   };
 }
 
+function ambientEventKey(event) {
+  return [
+    event.frontmost?.app || '',
+    event.frontmost?.windowTitle || '',
+    event.browser?.app || '',
+    event.browser?.title || '',
+    event.browser?.url || '',
+  ].join('\n');
+}
+
+function recordAmbientEvent(rawEvent) {
+  const event = normalizeAmbientEvent(rawEvent);
+  if (!event) return null;
+  const previous = ambientEvents[0] || null;
+  const unchanged = previous && ambientEventKey(previous) === ambientEventKey(event);
+  const stale = !previous || Date.now() - Number(previous.createdAt || 0) > 60000;
+  if (unchanged && !stale) return previous;
+  ambientEvents.unshift(event);
+  ambientEvents.splice(MAX_PERSISTED_AMBIENT);
+  persistAmbient();
+  appendAudit('ambient.sample', {
+    app: event.frontmost.app,
+    windowTitle: compactRecordText(event.frontmost.windowTitle, 120),
+    browserApp: event.browser.app,
+    browserTitle: compactRecordText(event.browser.title, 120),
+    hasScreen: Boolean(event.screen.width && event.screen.height),
+  });
+  return event;
+}
+
+async function sampleAmbientContext(source = 'ambient') {
+  if (ambientSampling) return null;
+  ambientSampling = true;
+  try {
+    let screenFrame = latestScreenSnapshot();
+    if (AMBIENT_CAPTURE_SCREEN) {
+      screenFrame = await captureResidentScreen({ source }).catch((error) => {
+        appendAudit('ambient.screen_failed', { message: error instanceof Error ? error.message : String(error) });
+        return latestScreenSnapshot();
+      });
+    }
+    const context = await macContextSnapshot({ includeClipboardText: false });
+    return recordAmbientEvent({
+      source,
+      frontmost: context.frontmost,
+      browser: context.browser,
+      screen: screenFrame,
+      createdAt: Date.now(),
+    });
+  } catch (error) {
+    appendAudit('ambient.sample_failed', { message: error instanceof Error ? error.message : String(error) });
+    return null;
+  } finally {
+    ambientSampling = false;
+  }
+}
+
+function ambientStateSnapshot(limit = 8) {
+  return {
+    enabled: AMBIENT_OBSERVE_ENABLED,
+    captureScreen: AMBIENT_CAPTURE_SCREEN,
+    intervalMs: AMBIENT_INTERVAL_MS,
+    count: ambientEvents.length,
+    recent: ambientSnapshot(limit),
+  };
+}
+
+function startAmbientMonitor() {
+  if (!AMBIENT_OBSERVE_ENABLED || ambientTimer) return;
+  void sampleAmbientContext('ambient_startup');
+  ambientTimer = setInterval(() => {
+    void sampleAmbientContext('ambient_interval');
+  }, AMBIENT_INTERVAL_MS);
+  appendAudit('ambient.started', {
+    intervalMs: AMBIENT_INTERVAL_MS,
+    captureScreen: AMBIENT_CAPTURE_SCREEN,
+  });
+}
+
+function stopAmbientMonitor() {
+  if (!ambientTimer) return;
+  clearInterval(ambientTimer);
+  ambientTimer = null;
+  appendAudit('ambient.stopped');
+}
+
 function compactObserveTree(tree) {
   if (!tree) return null;
   return {
@@ -7155,6 +7325,7 @@ function configCheckSnapshot() {
       inboxFile: INBOX_FILE,
       sessionsFile: SESSIONS_FILE,
       screenPrivacyFile: SCREEN_PRIVACY_FILE,
+      ambientFile: AMBIENT_FILE,
       jobsFile: JOBS_FILE,
       workflowsFile: WORKFLOWS_FILE,
       auditFile: AUDIT_FILE,
@@ -7172,6 +7343,7 @@ function configCheckSnapshot() {
       menuBar: menuBarSnapshot(),
       notifications: notificationSnapshot(),
       screenPrivacy: screenPrivacySnapshot(),
+      ambient: ambientStateSnapshot(5),
     },
     models,
     workers: {
@@ -7216,17 +7388,20 @@ function healthSnapshot() {
       inboxFile: INBOX_FILE,
       sessionsFile: SESSIONS_FILE,
       screenPrivacyFile: SCREEN_PRIVACY_FILE,
+      ambientFile: AMBIENT_FILE,
       persistedJobs: jobs.size,
       persistedWorkflows: workflows.size,
       persistedApprovals: approvals.size,
       persistedMemories: memories.size,
       persistedInboxItems: inboxItems.size,
       persistedSessions: workSessions.size,
+      persistedAmbientEvents: ambientEvents.length,
       maxPersistedJobs: MAX_PERSISTED_JOBS,
       maxPersistedWorkflows: MAX_PERSISTED_WORKFLOWS,
       maxPersistedMemories: MAX_PERSISTED_MEMORIES,
       maxPersistedInboxItems: MAX_PERSISTED_INBOX,
       maxPersistedSessions: MAX_PERSISTED_SESSIONS,
+      maxPersistedAmbientEvents: MAX_PERSISTED_AMBIENT,
     },
     actionPolicy: {
       dryRun: actionPolicy.dryRun,
@@ -7238,6 +7413,7 @@ function healthSnapshot() {
     menuBar: menuBarSnapshot(),
     notifications: notificationSnapshot(),
     screenPrivacy: screenPrivacySnapshot(),
+    ambient: ambientStateSnapshot(5),
     approvals: {
       pending: pendingApprovalSnapshot(20),
       total: approvals.size,
@@ -9024,6 +9200,9 @@ function createRealtimeSessionConfig(options = {}) {
     instructions: [
       'You are JAVIS, a fast Mac copilot.',
       'Keep spoken replies short and natural.',
+      `Wake words: ${WAKE_WORDS.join(', ')}.`,
+      'Default to standby behavior: when the user has not addressed you with a wake word and has not given an explicit follow-up command, stay silent and do not call tools.',
+      'After a wake word, answer normally for that turn and carry short follow-up context while the user is clearly continuing the same task.',
       'Use observe_now first when you need a fast combined snapshot of screen, current app, accessibility tree, clipboard summary, jobs, and approvals.',
       'Use describe_screen before claiming what the user is seeing.',
       'Use capture_screen when the user asks what is currently on the Mac screen and no recent screen frame is available.',
@@ -10285,6 +10464,7 @@ function startApiServer() {
         requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
       },
       screenPrivacy: screenPrivacySnapshot(),
+      ambient: ambientStateSnapshot(5),
       window: windowStateSnapshot(),
       menuBar: menuBarSnapshot(),
       notifications: notificationSnapshot(),
@@ -10326,6 +10506,19 @@ function startApiServer() {
       res.json({ context });
     } catch (error) {
       jsonError(res, 500, 'Mac context failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/ambient', (req, res) => {
+    res.json({ ambient: ambientStateSnapshot(req.query.limit || 20), ambientFile: AMBIENT_FILE });
+  });
+
+  api.post('/api/ambient/sample', express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      const event = await sampleAmbientContext(req.body?.source || 'api');
+      res.json({ ok: true, event, ambient: ambientStateSnapshot(20), ambientFile: AMBIENT_FILE });
+    } catch (error) {
+      jsonError(res, 500, 'Ambient sample failed', error instanceof Error ? error.message : String(error));
     }
   });
 
@@ -10703,7 +10896,11 @@ function startApiServer() {
 
   api.post('/api/screen/capture-now', async (req, res) => {
     try {
-      const screenFrame = await captureResidentScreen({ ...(req.body || {}), source: req.body?.source || 'api' });
+      const screenFrame = await captureResidentScreen({
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+        includeImage: req.body?.includeImage === true,
+      });
       res.json({ ok: true, screen: screenFrame });
     } catch (error) {
       jsonError(res, 500, 'Screen capture failed', error instanceof Error ? error.message : String(error));
@@ -10914,11 +11111,11 @@ app.whenReady().then(async () => {
 
   session.defaultSession.setDisplayMediaRequestHandler(
     (_request, callback) => {
-      desktopCapturer.getSources({ types: ['screen', 'window'] }).then((sources) => {
+      desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
         callback({ video: sources[0], audio: 'loopback' });
       });
     },
-    { useSystemPicker: true },
+    { useSystemPicker: false },
   );
 
   try {
@@ -10926,6 +11123,7 @@ app.whenReady().then(async () => {
     createWindow();
     registerGlobalHotkeys();
     createMenuBarTray();
+    startAmbientMonitor();
   } catch (error) {
     handleStartupError(error);
   }
@@ -10942,6 +11140,7 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   appendAudit('process.before_quit', { pid: process.pid, queue: queueCounts() });
   globalShortcut.unregisterAll();
+  stopAmbientMonitor();
   if (menuBarAvailable()) {
     menuBarTray.destroy();
     menuBarTray = null;

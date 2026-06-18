@@ -6,8 +6,9 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 
 - Screen capture requires explicit macOS permission.
 - API keys and other secrets should be entered through the terminal CUI or edited in `.env` locally; they should not be pasted into chat. The CUI hides API key input and never prints the saved value.
-- Live screen context is only sent after screen sharing is enabled and can be toggled off through API/CUI controls.
-- Screen privacy defaults to `private`: frames are downscaled and blurred in the renderer before being posted to the local API or injected into Realtime. API/CUI controls can switch to `clear` when the user wants sharper screen context.
+- Live screen context is only sent after the user starts voice/screen context or enables passive ambient capture locally, and it can be toggled off through API/CUI controls.
+- Screen privacy defaults to `private`: resident-captured frames are downscaled and blurred before being posted to the local API or injected into Realtime. API/CUI controls can switch to `clear` when the user wants sharper screen context.
+- Passive ambient observe is read-only. It records local app/window/browser metadata, and can refresh a private latest screen frame, but it does not speak, click, type, submit, or call model lanes by itself.
 - Clipboard read/write goes through the action policy and audit log. Realtime should request full clipboard text only when the user asks or when it is clearly required.
 - Clipboard-to-Inbox capture reads the current clipboard only when the user presses the capture hotkey, uses the menu bar item, or calls the capture endpoint. It stores the text locally as an Inbox item and does not execute the captured content.
 - No-model local commands are convenience routing only. Inbox/status commands stay local, and app/URL/search/narrow app workflow actions still use the same action policy and audit path as model-triggered actions.

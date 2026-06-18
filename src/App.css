@@ -5,7 +5,7 @@
   overflow: hidden;
   color: #f3f7f5;
   -webkit-app-region: drag;
-  pointer-events: none;
+  pointer-events: auto;
 }
 
 .pet-shell.compact,
@@ -26,6 +26,7 @@ select {
   inset: 0;
   border-radius: 999px;
   opacity: 0;
+  pointer-events: none;
 }
 
 .pet-stage {
@@ -46,21 +47,21 @@ select {
 }
 
 .voice-capsule {
-  width: 226px;
-  height: 58px;
+  width: 150px;
+  height: 38px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 7px;
   border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: 999px;
-  padding: 7px 8px;
+  padding: 5px 6px;
   color: #ffffff;
   background:
     linear-gradient(180deg, rgba(23, 24, 24, 0.98), rgba(2, 2, 3, 0.98)),
     #050505;
   box-shadow:
-    0 18px 38px rgba(0, 0, 0, 0.36),
+    0 10px 24px rgba(0, 0, 0, 0.32),
     0 0 0 1px rgba(0, 0, 0, 0.78),
     inset 0 1px 0 rgba(255, 255, 255, 0.12);
   transition:
@@ -72,10 +73,9 @@ select {
 .voice-capsule:hover {
   border-color: rgba(255, 255, 255, 0.34);
   box-shadow:
-    0 20px 42px rgba(0, 0, 0, 0.42),
+    0 12px 26px rgba(0, 0, 0, 0.38),
     0 0 0 1px rgba(0, 0, 0, 0.8),
     inset 0 1px 0 rgba(255, 255, 255, 0.14);
-  transform: translateY(-1px);
 }
 
 .voice-capsule:disabled {
@@ -83,9 +83,9 @@ select {
 }
 
 .capsule-orb {
-  width: 43px;
-  height: 43px;
-  flex: 0 0 43px;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
   display: grid;
   place-items: center;
   border-radius: 50%;
@@ -102,18 +102,18 @@ select {
 }
 
 .capsule-wave {
-  height: 34px;
+  height: 24px;
   min-width: 0;
   flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 2px;
 }
 
 .capsule-wave span {
-  width: 4px;
-  height: 8px;
+  width: 2px;
+  height: 6px;
   border-radius: 999px;
   background: rgba(255, 255, 255, 0.96);
   transform-origin: center;
@@ -121,47 +121,47 @@ select {
 
 .capsule-wave span:nth-child(1),
 .capsule-wave span:nth-child(17) {
-  height: 4px;
+  height: 3px;
   opacity: 0.76;
 }
 
 .capsule-wave span:nth-child(2),
 .capsule-wave span:nth-child(16) {
-  height: 9px;
+  height: 6px;
 }
 
 .capsule-wave span:nth-child(3),
 .capsule-wave span:nth-child(15) {
-  height: 16px;
+  height: 10px;
 }
 
 .capsule-wave span:nth-child(4),
 .capsule-wave span:nth-child(14) {
-  height: 22px;
+  height: 14px;
 }
 
 .capsule-wave span:nth-child(5),
 .capsule-wave span:nth-child(13) {
-  height: 28px;
+  height: 18px;
 }
 
 .capsule-wave span:nth-child(6),
 .capsule-wave span:nth-child(12) {
-  height: 31px;
+  height: 20px;
 }
 
 .capsule-wave span:nth-child(7),
 .capsule-wave span:nth-child(11) {
-  height: 25px;
+  height: 16px;
 }
 
 .capsule-wave span:nth-child(8),
 .capsule-wave span:nth-child(10) {
-  height: 18px;
+  height: 12px;
 }
 
 .capsule-wave span:nth-child(9) {
-  height: 32px;
+  height: 21px;
 }
 
 .mood-listening .capsule-wave span,

@@ -87,7 +87,7 @@ Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVI
 
 The desktop pet is intentionally minimal. It is a small voice capsule on the edge of the screen and avoids showing setup state, diagnostic chips, or configuration controls.
 
-Click the pet to start or stop realtime voice with screen context once `OPENAI_API_KEY` is configured. If the key is missing, the pet opens the terminal CUI instead. Screen sharing is best-effort: if you skip the screen picker, voice can still start.
+Click the pet to start or stop realtime voice with full-screen context once `OPENAI_API_KEY` is configured. If the key is missing, the pet opens the terminal CUI instead. Screen context is captured by the resident process, so it does not ask which window to share. Inside a live voice session, `JAVIS_WAKE_WORDS` defines soft wake words such as `JAVIS`, `Jarvis`, `贾维斯`, and `小贾`.
 
 Right-click the capsule to open the terminal CUI. Keep setup, policy, and diagnostic changes there instead of adding visible desktop controls.
 
@@ -143,6 +143,10 @@ curl -X PUT http://127.0.0.1:3417/api/screen/privacy \
   -d '{"mode":"private"}'
 curl -X POST http://127.0.0.1:3417/api/screen/capture-now \
   -H 'Content-Type: application/json' \
+  -d '{"includeImage":false}'
+curl http://127.0.0.1:3417/api/ambient
+curl -X POST http://127.0.0.1:3417/api/ambient/sample \
+  -H 'Content-Type: application/json' \
   -d '{}'
 curl -X POST http://127.0.0.1:3417/api/screen/describe \
   -H 'Content-Type: application/json' \
@@ -150,7 +154,7 @@ curl -X POST http://127.0.0.1:3417/api/screen/describe \
 curl -X DELETE http://127.0.0.1:3417/api/screen/frame
 ```
 
-`private` mode is the default. It downscales and blurs/pixelates frames before they are sent to the local API or Realtime. `/api/screen/capture-now` refreshes the latest screen frame from the resident process without starting a renderer screen-share stream. Use `{"mode":"clear"}` only when sharper screen context is worth the privacy tradeoff. Stopping screen share from the buddy panel clears the latest stored frame; the DELETE endpoint is the manual equivalent.
+`private` mode is the default. It downscales and blurs/pixelates frames before they are sent to the local API or Realtime. `/api/screen/capture-now` refreshes the latest full-screen frame from the resident process without a window picker. Use `{"mode":"clear"}` only when sharper screen context is worth the privacy tradeoff. Ambient observe stores local metadata and can keep the latest private screen frame fresh when `JAVIS_AMBIENT_CAPTURE_SCREEN=true`. Stopping screen context from the buddy clears the latest stored frame; the DELETE endpoint is the manual equivalent.
 
 For local work sessions:
 

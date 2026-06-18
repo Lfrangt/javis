@@ -26,12 +26,12 @@ import {
   XCircle,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent } from 'react'
+import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import './App.css'
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 type WorkflowStatus = JobStatus | 'blocked'
-type JobMode = 'background' | 'codex' | 'claude'
+type JobMode = 'background' | 'codex' | 'claude' | 'cli'
 type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask'
 type BrowserWorkflowMode = 'quick' | JobMode
 type VoiceStatus = 'idle' | 'connecting' | 'live' | 'error'
@@ -59,6 +59,15 @@ type WindowState = {
     source: string
     createdAt: number
   }
+  position?: {
+    x: number
+    y: number
+    width: number
+    height: number
+  }
+  parkCorner?: string
+  parkDisplay?: string
+  parkMargin?: number
   width: number
   height: number
 }
@@ -266,8 +275,16 @@ type Status = {
     height: number
     updatedAt: number
     privacy?: ScreenPrivacy
+    imageDataUrl?: string
   }
   screenPrivacy?: ScreenPrivacy
+  ambient?: {
+    enabled: boolean
+    captureScreen: boolean
+    intervalMs: number
+    count: number
+    recent: unknown[]
+  }
   readiness?: {
     overall: 'ready' | 'degraded' | 'blocked'
     label: string
@@ -695,14 +712,25 @@ function App() {
   const [accessibilitySummary, setAccessibilitySummary] = useState('')
   const [accessibilityTarget, setAccessibilityTarget] = useState<{ nodeId: string; role: string; label: string } | null>(null)
 
-  const videoRef = useRef<HTMLVideoElement | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const screenStreamRef = useRef<MediaStream | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
   const peerRef = useRef<RTCPeerConnection | null>(null)
   const dataChannelRef = useRef<RTCDataChannel | null>(null)
   const handledToolCallsRef = useRef<Set<string>>(new Set())
   const lastRealtimeScreenSyncRef = useRef(0)
+  const screenPreviewRef = useRef('')
+  const screenFrameRef = useRef<{ width: number; height: number } | null>(null)
+  const dragStateRef = useRef<{
+    pointerId: number
+    startScreenX: number
+    startScreenY: number
+    startWindowX: number
+    startWindowY: number
+    moved: boolean
+  } | null>(null)
+  const dragPendingRef = useRef<{ x: number; y: number } | null>(null)
+  const dragFrameRef = useRef<number | null>(null)
+  const dragSuppressClickRef = useRef(false)
   const previousPushStateRef = useRef(false)
   const responseActiveRef = useRef(false)
 
@@ -832,6 +860,77 @@ function App() {
     return result.window
   }, [])
 
+  const flushWindowMove = useCallback(() => {
+    dragFrameRef.current = null
+    const next = dragPendingRef.current
+    dragPendingRef.current = null
+    if (!next) return
+    apiJson<{ window: WindowState }>('/api/window/move', {
+      method: 'POST',
+      body: JSON.stringify(next),
+    })
+      .then((result) => {
+        setStatus((current) => (current ? { ...current, window: result.window } : current))
+      })
+      .catch((error) => setLastError(error instanceof Error ? error.message : String(error)))
+  }, [])
+
+  const queueWindowMove = useCallback(
+    (x: number, y: number) => {
+      dragPendingRef.current = { x, y }
+      if (dragFrameRef.current !== null) return
+      dragFrameRef.current = window.requestAnimationFrame(flushWindowMove)
+    },
+    [flushWindowMove],
+  )
+
+  const startPetDrag = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (event.button !== 0) return
+      const position = status?.window?.position
+      if (!position) return
+      dragStateRef.current = {
+        pointerId: event.pointerId,
+        startScreenX: event.screenX,
+        startScreenY: event.screenY,
+        startWindowX: position.x,
+        startWindowY: position.y,
+        moved: false,
+      }
+      event.currentTarget.setPointerCapture(event.pointerId)
+    },
+    [status?.window?.position],
+  )
+
+  const movePetDrag = useCallback(
+    (event: ReactPointerEvent<HTMLButtonElement>) => {
+      const drag = dragStateRef.current
+      if (!drag || drag.pointerId !== event.pointerId) return
+      const dx = event.screenX - drag.startScreenX
+      const dy = event.screenY - drag.startScreenY
+      if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true
+      if (!drag.moved) return
+      event.preventDefault()
+      queueWindowMove(drag.startWindowX + dx, drag.startWindowY + dy)
+    },
+    [queueWindowMove],
+  )
+
+  const endPetDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    const drag = dragStateRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    dragSuppressClickRef.current = drag.moved
+    dragStateRef.current = null
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    } catch {
+      // Pointer capture may already be released by the browser.
+    }
+    window.setTimeout(() => {
+      dragSuppressClickRef.current = false
+    }, 0)
+  }, [])
+
   useEffect(() => {
     let disposed = false
     const load = async () => {
@@ -874,6 +973,13 @@ function App() {
       setLastError(error instanceof Error ? error.message : String(error))
     }
   }, [expanded, setWindowMode])
+
+  useEffect(() => () => {
+    if (dragFrameRef.current !== null) {
+      window.cancelAnimationFrame(dragFrameRef.current)
+      dragFrameRef.current = null
+    }
+  }, [])
 
   const openConfigCui = useCallback(async () => {
     try {
@@ -1015,9 +1121,10 @@ function App() {
       dataChannel.addEventListener('open', () => {
         setVoiceStatus('live')
         addMessage('system', 'Voice link live.')
-        if (screenPreview) {
+        if (screenPreviewRef.current) {
+          const frame = screenFrameRef.current
           window.setTimeout(() => {
-            pushRealtimeScreenContext(screenPreview, status?.screen?.width || 0, status?.screen?.height || 0, true)
+            pushRealtimeScreenContext(screenPreviewRef.current, frame?.width || status?.screen?.width || 0, frame?.height || status?.screen?.height || 0, true)
           }, 250)
         }
       })
@@ -1043,7 +1150,7 @@ function App() {
       setLastError(message)
       addMessage('system', message)
     }
-  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, screenPreview, status?.screen?.height, status?.screen?.width, stopVoice])
+  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, status?.screen?.height, status?.screen?.width, stopVoice])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return
@@ -1102,74 +1209,42 @@ function App() {
 
   const captureFrame = useCallback(
     async (describe = false) => {
-      const video = videoRef.current
-      if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return
-
-      const canvas = document.createElement('canvas')
-      const privacy = screenPrivacy
-      const maxWidth = Math.max(320, Math.min(1280, privacy.maxWidth || 640))
-      const scale = Math.min(1, maxWidth / video.videoWidth)
-      canvas.width = Math.round(video.videoWidth * scale)
-      canvas.height = Math.round(video.videoHeight * scale)
-      const context = canvas.getContext('2d')
-      if (!context) return
-      context.imageSmoothingEnabled = true
-      context.imageSmoothingQuality = privacy.mode === 'private' ? 'low' : 'high'
-      if (privacy.blurPx > 0) context.filter = `blur(${privacy.blurPx}px)`
-      context.drawImage(video, 0, 0, canvas.width, canvas.height)
-      context.filter = 'none'
-      const imageDataUrl = canvas.toDataURL('image/jpeg', privacy.jpegQuality || 0.46)
-      setScreenPreview(imageDataUrl)
-
-      await apiJson('/api/screen/frame', {
+      const result = await apiJson<{ ok: boolean; screen: NonNullable<Status['screen']> }>('/api/screen/capture-now', {
         method: 'POST',
-        body: JSON.stringify({
-          imageDataUrl,
-          width: canvas.width,
-          height: canvas.height,
-          privacy,
-        }),
+        body: JSON.stringify({ includeImage: true, source: 'renderer' }),
       })
-      if (privacy.realtimeAllowed) pushRealtimeScreenContext(imageDataUrl, canvas.width, canvas.height, describe)
+      const frame = result.screen
+      const imageDataUrl = frame.imageDataUrl || ''
+      if (!imageDataUrl) return
+      setScreenPreview(imageDataUrl)
+      screenPreviewRef.current = imageDataUrl
+      screenFrameRef.current = { width: frame.width, height: frame.height }
+
+      if (frame.privacy?.realtimeAllowed !== false) {
+        pushRealtimeScreenContext(imageDataUrl, frame.width, frame.height, describe)
+      }
 
       if (describe) {
         const result = await apiJson<{ output: string }>('/api/screen/describe', {
           method: 'POST',
-          body: JSON.stringify({ prompt: 'Describe the current screen and the next useful action.' }),
+          body: JSON.stringify({ capture: false, prompt: 'Describe the current screen and the next useful action.' }),
         })
         addMessage('assistant', result.output)
       }
       refreshStatus()
     },
-    [addMessage, pushRealtimeScreenContext, refreshStatus, screenPrivacy],
+    [addMessage, pushRealtimeScreenContext, refreshStatus],
   )
 
   const startScreen = useCallback(async () => {
     setLastError('')
     try {
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: { frameRate: 1 },
-        audio: false,
-      })
-      screenStreamRef.current = stream
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream
-        await videoRef.current.play()
-      }
       setScreenLive(true)
-      stream.getVideoTracks()[0]?.addEventListener('ended', () => {
-        setScreenLive(false)
-        setScreenPreview('')
-        screenStreamRef.current = null
-        void apiJson('/api/screen/frame', {
-          method: 'DELETE',
-          body: JSON.stringify({ source: 'renderer' }),
-        }).catch((error) => setLastError(error instanceof Error ? error.message : String(error)))
-      })
-      window.setTimeout(() => captureFrame(true), 900)
+      await captureFrame(true)
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
+      setScreenLive(false)
       setLastError(message)
       addMessage('system', message)
       return false
@@ -1177,10 +1252,10 @@ function App() {
   }, [addMessage, captureFrame])
 
   const stopScreen = useCallback(() => {
-    screenStreamRef.current?.getTracks().forEach((track) => track.stop())
-    screenStreamRef.current = null
     setScreenLive(false)
     setScreenPreview('')
+    screenPreviewRef.current = ''
+    screenFrameRef.current = null
     void apiJson('/api/screen/frame', {
       method: 'DELETE',
       body: JSON.stringify({ source: 'renderer' }),
@@ -1774,7 +1849,6 @@ function App() {
   return (
     <main className={`pet-shell ${expanded ? 'expanded' : 'compact'} mood-${mood}`}>
       <audio ref={audioRef} autoPlay />
-      <video ref={videoRef} className="screen-video" muted playsInline />
 
       <div className="drag-handle" />
 
@@ -1782,7 +1856,14 @@ function App() {
         <button
           type="button"
           className="pet-body voice-capsule no-drag"
-          onClick={petAction}
+          onPointerDown={startPetDrag}
+          onPointerMove={movePetDrag}
+          onPointerUp={endPetDrag}
+          onPointerCancel={endPetDrag}
+          onClick={() => {
+            if (dragSuppressClickRef.current) return
+            petAction()
+          }}
           onContextMenu={(event) => {
             event.preventDefault()
             void openConfigCui()
@@ -1792,7 +1873,7 @@ function App() {
           title="Click to talk. Right-click for config."
         >
           <span className="capsule-orb capsule-orb-left" aria-hidden="true">
-            <X size={24} strokeWidth={2.35} />
+            <X size={17} strokeWidth={2.35} />
           </span>
           <span className="capsule-wave" aria-hidden="true">
             {Array.from({ length: 17 }, (_, index) => (
@@ -1800,7 +1881,7 @@ function App() {
             ))}
           </span>
           <span className="capsule-orb capsule-orb-right" aria-hidden="true">
-            <Check size={25} strokeWidth={2.55} />
+            <Check size={18} strokeWidth={2.55} />
           </span>
         </button>
 
