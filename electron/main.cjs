@@ -3289,11 +3289,63 @@ const CHROMIUM_BROWSER_APPS = new Set([
   'Vivaldi',
 ]);
 
-async function browserContextSnapshot(options = {}) {
-  const frontmost = options.frontmost || await frontmostAppSnapshot();
-  const requestedApp = String(options.app || '').trim();
-  const appName = requestedApp || frontmost.app || '';
-  const isSafari = appName === 'Safari' || appName === 'Safari Technology Preview';
+const SAFARI_BROWSER_APPS = new Set(['Safari', 'Safari Technology Preview']);
+const BROWSER_APP_ORDER = [
+  'Google Chrome',
+  'Arc',
+  'Comet',
+  'Brave Browser',
+  'Safari',
+  'Microsoft Edge',
+  'Dia',
+  'Chromium',
+  'Google Chrome Canary',
+  'Safari Technology Preview',
+  'Opera',
+  'Vivaldi',
+];
+
+function isSupportedBrowserApp(appName) {
+  return SAFARI_BROWSER_APPS.has(appName) || CHROMIUM_BROWSER_APPS.has(appName);
+}
+
+async function runningApplicationNames() {
+  if (process.platform !== 'darwin') return [];
+  const script = [
+    'tell application "System Events"',
+    '  set appNames to name of application processes',
+    'end tell',
+    'set AppleScript\'s text item delimiters to linefeed',
+    'return appNames as text',
+  ].join('\n');
+  try {
+    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 2000 });
+    return String(stdout || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+function browserAppCandidates(runningNames = [], preferredApp = '') {
+  const running = new Set(runningNames);
+  const candidates = [];
+  const add = (appName) => {
+    const name = String(appName || '').trim();
+    if (!name || !isSupportedBrowserApp(name) || candidates.includes(name)) return;
+    if (preferredApp && name === preferredApp) {
+      candidates.push(name);
+      return;
+    }
+    if (running.has(name)) candidates.push(name);
+  };
+  add(preferredApp);
+  for (const appName of BROWSER_APP_ORDER) add(appName);
+  for (const appName of runningNames) add(appName);
+  return candidates;
+}
+
+async function readBrowserContextForApp(appName, source = 'requested') {
+  const isSafari = SAFARI_BROWSER_APPS.has(appName);
   const isChromium = CHROMIUM_BROWSER_APPS.has(appName);
 
   if (!appName || (!isSafari && !isChromium)) {
@@ -3303,7 +3355,7 @@ async function browserContextSnapshot(options = {}) {
       app: appName,
       title: '',
       url: '',
-      source: requestedApp ? 'requested' : 'frontmost',
+      source,
       error: appName ? 'frontmost_app_is_not_supported_browser' : 'no_frontmost_app',
     };
   }
@@ -3337,7 +3389,7 @@ async function browserContextSnapshot(options = {}) {
       app: appName,
       title,
       url,
-      source: requestedApp ? 'requested' : 'frontmost',
+      source,
       error: '',
     };
   } catch (error) {
@@ -3347,10 +3399,47 @@ async function browserContextSnapshot(options = {}) {
       app: appName,
       title: '',
       url: '',
-      source: requestedApp ? 'requested' : 'frontmost',
+      source,
       error: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+async function browserContextSnapshot(options = {}) {
+  const frontmost = options.frontmost || await frontmostAppSnapshot();
+  const requestedApp = String(options.app || '').trim();
+  if (requestedApp) return readBrowserContextForApp(requestedApp, 'requested');
+
+  let frontmostResult = null;
+  if (frontmost.app && isSupportedBrowserApp(frontmost.app)) {
+    frontmostResult = await readBrowserContextForApp(frontmost.app, 'frontmost');
+    if (frontmostResult.available) return frontmostResult;
+  }
+
+  const runningNames = await runningApplicationNames();
+  for (const appName of browserAppCandidates(runningNames, frontmost.app)) {
+    if (appName === frontmost.app && frontmostResult) continue;
+    const result = await readBrowserContextForApp(appName, 'auto');
+    if (result.available) {
+      appendAudit('browser_context.auto_selected', {
+        app: result.app,
+        title: result.title,
+        url: result.url,
+        frontmost: frontmost.app || '',
+      });
+      return result;
+    }
+  }
+
+  return frontmostResult || {
+    available: false,
+    supported: false,
+    app: frontmost.app || '',
+    title: '',
+    url: '',
+    source: 'auto',
+    error: frontmost.app ? 'frontmost_app_is_not_supported_browser' : 'no_supported_browser_page',
+  };
 }
 
 function normalizeAccessibilityTreeOptions(options = {}) {
