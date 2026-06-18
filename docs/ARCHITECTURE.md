@@ -55,6 +55,7 @@ Renderer
 - Screen privacy lane: stores the resident screen privacy mode and makes the renderer downscale/blur frames before posting them to the API or Realtime.
 - Live screen-context lane: sends periodic screen image messages into the active Realtime conversation without triggering standalone replies.
 - Observe lane: combined low-latency voice snapshot over Mac context, optional resident screen capture, optional vision summary, Accessibility outline, jobs, and approvals.
+- Presence lane: read-only standby/watch/work/attention state that packages ambient context, wake status, local learning, active work, and intervention guardrails for CUI/API/voice use.
 - Fast text lane: lightweight Q&A.
 - No-model local command lane: deterministic status, Inbox, open-app/open-URL, and web-search commands that run before model routing.
 - Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories attached to task context when model lanes are used.

@@ -6875,6 +6875,193 @@ function ambientStateSnapshot(limit = 8) {
   };
 }
 
+function presenceAgeMs(timestamp) {
+  const value = Number(timestamp || 0);
+  return value ? Math.max(0, Date.now() - value) : null;
+}
+
+function presenceRecentObservation(event = null) {
+  if (!event) {
+    return {
+      available: false,
+      ageMs: null,
+      app: '',
+      windowTitle: '',
+      browser: {
+        available: false,
+        app: '',
+        title: '',
+        url: '',
+        host: '',
+      },
+      screen: {
+        available: false,
+        width: 0,
+        height: 0,
+        privacyMode: '',
+        source: '',
+        ageMs: null,
+      },
+    };
+  }
+  return {
+    available: true,
+    ageMs: presenceAgeMs(event.createdAt),
+    app: event.frontmost?.app || '',
+    windowTitle: event.frontmost?.windowTitle || '',
+    browser: {
+      available: Boolean(event.browser?.available),
+      app: event.browser?.app || '',
+      title: event.browser?.title || '',
+      url: event.browser?.url || '',
+      host: browserHostFromAmbientEvent(event),
+    },
+    screen: {
+      available: Boolean(event.screen?.width && event.screen?.height),
+      width: Number(event.screen?.width || 0),
+      height: Number(event.screen?.height || 0),
+      privacyMode: event.screen?.privacyMode || '',
+      source: event.screen?.source || '',
+      ageMs: presenceAgeMs(event.screen?.updatedAt),
+    },
+  };
+}
+
+function presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake }) {
+  if (pendingApprovals.length) return 'needs_attention';
+  if (readiness?.overall === 'blocked') return 'setup_blocked';
+  if (wake?.pending) return 'waking';
+  if (activeJobs.length) return 'working';
+  if (AMBIENT_OBSERVE_ENABLED) return 'watching';
+  return 'standby';
+}
+
+function presenceStateSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(20, Number(options.limit || 5)));
+  const readiness = options.readiness || readinessSnapshot();
+  const wake = wakeStatusSnapshot();
+  const ambient = ambientStateSnapshot(limit);
+  const learning = learningStateSnapshot();
+  const pendingApprovals = pendingApprovalSnapshot(10);
+  const activeJobs = jobSnapshot().filter((job) => job.status === 'queued' || job.status === 'running');
+  const activeSession = activeSessionSnapshot();
+  const latestAmbient = ambient.recent[0] || null;
+  const latestScreen = latestScreenSnapshot();
+  const mode = presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake });
+  const observing = presenceRecentObservation(latestAmbient);
+  const screenAge = latestScreenAgeMs();
+  const screen = latestScreen
+    ? {
+        available: true,
+        width: latestScreen.width,
+        height: latestScreen.height,
+        source: latestScreen.source || '',
+        privacyMode: latestScreen.privacy?.mode || '',
+        ageMs: Number.isFinite(screenAge) ? screenAge : null,
+        updatedAt: latestScreen.updatedAt,
+      }
+    : {
+        available: false,
+        width: 0,
+        height: 0,
+        source: '',
+        privacyMode: screenPrivacySnapshot().mode,
+        ageMs: null,
+        updatedAt: 0,
+      };
+  const nextIntervention =
+    pendingApprovals[0]
+      ? `Waiting for approval: ${compactRecordText(pendingApprovals[0].summary, 120)}`
+      : readiness.primaryIssue
+        ? readiness.primaryIssue.next || readiness.primaryIssue.summary
+        : activeJobs[0]
+          ? `Background work running: ${compactRecordText(activeJobs[0].title, 120)}`
+          : wake.pending
+            ? 'Wake trigger is pending; voice may start from the resident pet.'
+            : 'No intervention queued. Standing by until the user speaks or asks for help.';
+  const summaryParts = [
+    mode === 'watching' ? 'Standing by and passively observing local context.' : '',
+    mode === 'standby' ? 'Standing by; passive ambient observation is off.' : '',
+    mode === 'waking' ? 'Wake trigger received.' : '',
+    mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
+    mode === 'needs_attention' ? `${pendingApprovals.length} approval(s) need attention.` : '',
+    mode === 'setup_blocked' ? `Setup blocked: ${readiness.summary}` : '',
+    observing.available
+      ? `Latest context: ${[observing.app, observing.browser.host || observing.browser.title || observing.windowTitle].filter(Boolean).join(' · ')}.`
+      : '',
+    learning.enabled && learning.profile.sourceEventCount ? learning.profile.summary : '',
+  ].filter(Boolean);
+
+  return {
+    ok: readiness.overall !== 'blocked',
+    generatedAt: new Date().toISOString(),
+    mode,
+    label: {
+      standby: 'Standby',
+      watching: 'Watching',
+      waking: 'Wake pending',
+      working: 'Working',
+      needs_attention: 'Needs attention',
+      setup_blocked: 'Setup blocked',
+    }[mode] || mode,
+    summary: summaryParts.join(' '),
+    intervention: {
+      passiveByDefault: true,
+      requiresUserIntent: true,
+      canActWhenInvited: LOCAL_EXEC_ENABLED,
+      trustedLocalMode: TRUSTED_LOCAL_MODE,
+      maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
+      requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+      next: nextIntervention,
+    },
+    wake,
+    observing: {
+      ambient: {
+        enabled: ambient.enabled,
+        captureScreen: ambient.captureScreen,
+        intervalMs: ambient.intervalMs,
+        count: ambient.count,
+      },
+      latest: observing,
+      recent: ambient.recent.slice(0, limit).map((event) => presenceRecentObservation(event)),
+      screen,
+    },
+    learning: {
+      enabled: learning.enabled,
+      includeInPrompts: learning.includeInPrompts,
+      sourceEventCount: learning.profile.sourceEventCount,
+      summary: learning.profile.summary,
+      signals: learning.profile.signals,
+      recentContexts: learning.profile.recentContexts,
+    },
+    work: {
+      activeJobs: activeJobs.map((job) => ({
+        id: job.id,
+        mode: job.mode,
+        status: job.status,
+        title: job.title,
+        updatedAt: job.updatedAt,
+      })).slice(0, 6),
+      pendingApprovals: pendingApprovals.map((approval) => ({
+        id: approval.id,
+        action: approval.action,
+        riskLevel: approval.riskLevel,
+        summary: approval.summary,
+        createdAt: approval.createdAt,
+      })),
+      activeSession,
+      queue: queueCounts(),
+      workflows: workflowCounts(),
+    },
+    readiness: {
+      overall: readiness.overall,
+      label: readiness.label,
+      counts: readiness.counts,
+      primaryIssue: readiness.primaryIssue,
+    },
+  };
+}
+
 function startAmbientMonitor() {
   if (!AMBIENT_OBSERVE_ENABLED || ambientTimer) return;
   void sampleAmbientContext('ambient_startup');
@@ -10274,6 +10461,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(learningStateSnapshot()) };
   }
 
+  if (name === 'get_presence_state') {
+    return { ok: true, output: JSON.stringify(presenceStateSnapshot({ limit: args?.limit || 5 })) };
+  }
+
   if (name === 'distill_learning_profile') {
     return { ok: true, output: JSON.stringify(distillAmbientLearning({ source: 'voice', force: true })) };
   }
@@ -11000,6 +11191,18 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_presence_state',
+        description: 'Get the resident standby/watch/work state: what JAVIS is passively observing, whether it is waiting for wake, what local learning has inferred, and whether any approvals or background work need attention. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+          },
           additionalProperties: false,
         },
       },
@@ -11800,6 +12003,7 @@ function startApiServer() {
 
   api.get('/api/status', (_req, res) => {
     const readiness = readinessSnapshot();
+    const presence = presenceStateSnapshot({ readiness, limit: 5 });
     res.json({
       api: {
         baseUrl: API_BASE,
@@ -11818,6 +12022,7 @@ function startApiServer() {
         requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
       },
       screenPrivacy: screenPrivacySnapshot(),
+      presence,
       ambient: ambientStateSnapshot(5),
       learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),
@@ -11853,6 +12058,10 @@ function startApiServer() {
       screen: latestScreenSnapshot(),
       queue: jobSnapshot(),
     });
+  });
+
+  api.get('/api/presence', (req, res) => {
+    res.json({ presence: presenceStateSnapshot({ limit: req.query.limit }) });
   });
 
   api.get('/api/mac/context', async (req, res) => {

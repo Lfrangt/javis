@@ -144,6 +144,7 @@ curl -X PUT http://127.0.0.1:3417/api/screen/privacy \
 curl -X POST http://127.0.0.1:3417/api/screen/capture-now \
   -H 'Content-Type: application/json' \
   -d '{"includeImage":false}'
+curl http://127.0.0.1:3417/api/presence
 curl http://127.0.0.1:3417/api/ambient
 curl -X POST http://127.0.0.1:3417/api/ambient/sample \
   -H 'Content-Type: application/json' \
@@ -162,7 +163,7 @@ curl -X POST http://127.0.0.1:3417/api/screen/describe \
 curl -X DELETE http://127.0.0.1:3417/api/screen/frame
 ```
 
-`private` mode is the default. It downscales and blurs/pixelates frames before they are sent to the local API or Realtime. `/api/screen/capture-now` refreshes the latest full-screen frame from the resident process without a window picker. Use `{"mode":"clear"}` only when sharper screen context is worth the privacy tradeoff. Ambient observe stores local metadata and can keep the latest private screen frame fresh when `JAVIS_AMBIENT_CAPTURE_SCREEN=true`. Stopping screen context from the buddy clears the latest stored frame; the DELETE endpoint is the manual equivalent.
+`private` mode is the default. It downscales and blurs/pixelates frames before they are sent to the local API or Realtime. `/api/screen/capture-now` refreshes the latest full-screen frame from the resident process without a window picker. Use `{"mode":"clear"}` only when sharper screen context is worth the privacy tradeoff. `/api/presence` is a read-only standby/watch/work summary over wake state, ambient metadata, local learning, active jobs, approvals, and guardrails. Ambient observe stores local metadata and can keep the latest private screen frame fresh when `JAVIS_AMBIENT_CAPTURE_SCREEN=true`. Stopping screen context from the buddy clears the latest stored frame; the DELETE endpoint is the manual equivalent.
 
 For local work sessions:
 

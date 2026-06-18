@@ -153,6 +153,11 @@ async function printStatus() {
       const profile = status.learning.profile || {};
       console.log(`Learning: ${status.learning.enabled ? 'on' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${profile.summary || 'no profile yet'}`);
     }
+    if (status.presence) {
+      const observing = status.presence.observing?.latest || {};
+      const where = [observing.app, observing.browser?.host || observing.browser?.title || observing.windowTitle].filter(Boolean).join(' · ');
+      console.log(`Presence: ${status.presence.label || status.presence.mode || 'Standby'}${where ? ` · ${where}` : ''}`);
+    }
     if (browserJs.javascript?.supported && browserJs.javascript?.available) {
       const bridge = browserJs.javascript.bridge || '';
       const cdpError = browserJs.javascript.cdpError || browserJs.javascript.cdp?.error || '';
