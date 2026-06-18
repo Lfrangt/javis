@@ -4,8 +4,8 @@
   position: relative;
   overflow: hidden;
   color: #f3f7f5;
-  -webkit-app-region: drag;
-  pointer-events: auto;
+  -webkit-app-region: no-drag;
+  pointer-events: none;
 }
 
 .pet-shell.compact,

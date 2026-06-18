@@ -285,6 +285,26 @@ type Status = {
     count: number
     recent: unknown[]
   }
+  wake?: {
+    words: string[]
+    softWakeOnly: boolean
+    triggerTtlMs: number
+    pending: boolean
+    ageMs: number | null
+    lastTriggerAt: number
+    lastSource: string
+    lastPhrase: string
+    triggerCount: number
+    engine: {
+      configured: boolean
+      command: string
+      running: boolean
+      pid: number | null
+      startedAt: number
+      lastLine: string
+      lastError: string
+    }
+  }
   readiness?: {
     overall: 'ready' | 'degraded' | 'blocked'
     label: string
@@ -718,6 +738,7 @@ function App() {
   const dataChannelRef = useRef<RTCDataChannel | null>(null)
   const handledToolCallsRef = useRef<Set<string>>(new Set())
   const lastRealtimeScreenSyncRef = useRef(0)
+  const lastWakeHandledAtRef = useRef(0)
   const screenPreviewRef = useRef('')
   const screenFrameRef = useRef<{ width: number; height: number } | null>(null)
   const dragStateRef = useRef<{
@@ -1262,6 +1283,15 @@ function App() {
     }).catch((error) => setLastError(error instanceof Error ? error.message : String(error)))
   }, [])
 
+  const beginAssistantSession = useCallback(async () => {
+    if (voiceStatus === 'connecting' || voiceStatus === 'live') return
+    if (!screenLive) {
+      const started = await startScreen()
+      if (!started) return
+    }
+    await startVoice()
+  }, [screenLive, startScreen, startVoice, voiceStatus])
+
   const startAssistantSession = useCallback(async () => {
     if (voiceStatus === 'connecting') return
     if (voiceStatus === 'live' || screenLive) {
@@ -1270,11 +1300,16 @@ function App() {
       return
     }
 
-    if (!screenLive) {
-      await startScreen()
-    }
-    await startVoice()
-  }, [screenLive, startScreen, startVoice, stopScreen, stopVoice, voiceStatus])
+    await beginAssistantSession()
+  }, [beginAssistantSession, screenLive, stopScreen, stopVoice, voiceStatus])
+
+  useEffect(() => {
+    const wake = status?.wake
+    if (!wake?.pending || !wake.lastTriggerAt || wake.lastTriggerAt <= lastWakeHandledAtRef.current) return
+    lastWakeHandledAtRef.current = wake.lastTriggerAt
+    addMessage('system', `Wake: ${wake.lastPhrase || wake.lastSource || 'triggered'}`)
+    void beginAssistantSession()
+  }, [addMessage, beginAssistantSession, status?.wake])
 
   useEffect(() => {
     if (!screenLive) return undefined
@@ -1922,6 +1957,11 @@ function App() {
               <Mic size={13} />
               {micMode === 'push' ? 'PTT' : 'Open'}
             </span>
+            {status?.wake ? (
+              <span className={status.wake.engine.configured ? (status.wake.engine.running ? 'status-chip ok' : 'status-chip warn') : 'status-chip'} title={status.wake.words.join(', ')}>
+                Wake
+              </span>
+            ) : null}
             <span className={screenLive && realtimeScreenContext ? 'status-chip ok' : 'status-chip'}>
               <Eye size={13} />
               {screenLive ? `Ctx ${screenSyncCount}` : 'View'}

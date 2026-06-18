@@ -142,6 +142,12 @@ async function printStatus() {
     }
     console.log(`Pet: ${window.mode || 'pet'} ${window.position ? `@ ${window.position.x},${window.position.y}` : ''}`);
     console.log(`Hotkeys: pet ${window.hotkeyRegistered ? 'ready' : 'off'} (${window.hotkey || '-'}) · capture ${window.captureHotkeyRegistered ? 'ready' : 'off'} (${window.captureHotkey || '-'})`);
+    if (status.wake) {
+      console.log(`Wake: ${status.wake.engine?.configured ? (status.wake.engine.running ? 'engine running' : 'engine stopped') : 'soft'} · words ${status.wake.words?.join(', ') || '-'}`);
+    }
+    if (status.ambient) {
+      console.log(`Ambient: ${status.ambient.enabled ? 'on' : 'off'} · screen ${status.ambient.captureScreen ? 'on' : 'off'} · ${status.ambient.count || 0} sample(s)`);
+    }
     console.log(`Doctor: ${doctor.doctor?.counts?.ready || 0}/${doctor.doctor?.counts?.total || 0} ready · ${doctor.doctor?.overall || 'unknown'}`);
     const issues = issueLines(doctor.doctor);
     if (issues.length) {
@@ -164,7 +170,8 @@ async function printStatus() {
   console.log('9. Toggle Level 3 auto-run');
   console.log('10. Toggle trusted local mode');
   console.log('11. Run doctor');
-  console.log('12. Quit');
+  console.log('12. Test wake trigger');
+  console.log('13. Quit');
 }
 
 async function setupAction(action) {
@@ -335,7 +342,13 @@ async function main() {
         const doctor = await request('/api/doctor/report');
         console.log(`\n${doctor.doctor?.label || doctor.doctor?.overall || 'Doctor complete'}`);
         console.log(issueLines(doctor.doctor).join('\n') || 'All checks ready.');
-      } else if (answer === '12' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '12') {
+        const result = await request('/api/wake/trigger', {
+          method: 'POST',
+          body: { source: 'cui', phrase: 'manual test' },
+        });
+        console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
+      } else if (answer === '13' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

@@ -7,6 +7,7 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 - Screen capture requires explicit macOS permission.
 - API keys and other secrets should be entered through the terminal CUI or edited in `.env` locally; they should not be pasted into chat. The CUI hides API key input and never prints the saved value.
 - Live screen context is only sent after the user starts voice/screen context or enables passive ambient capture locally, and it can be toggled off through API/CUI controls.
+- Local wake-word integration is trigger-only. `JAVIS_WAKE_ENGINE_CMD` may start a local command that reports a wake event, but the wake path only starts the voice session; it does not execute computer actions by itself.
 - Screen privacy defaults to `private`: resident-captured frames are downscaled and blurred before being posted to the local API or injected into Realtime. API/CUI controls can switch to `clear` when the user wants sharper screen context.
 - Passive ambient observe is read-only. It records local app/window/browser metadata, and can refresh a private latest screen frame, but it does not speak, click, type, submit, or call model lanes by itself.
 - Clipboard read/write goes through the action policy and audit log. Realtime should request full clipboard text only when the user asks or when it is clearly required.

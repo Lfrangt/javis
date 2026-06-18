@@ -33,6 +33,8 @@ const WAKE_WORDS = (process.env.JAVIS_WAKE_WORDS || 'JAVIS,Jarvis,贾维斯,小�
   .split(',')
   .map((item) => item.trim())
   .filter(Boolean);
+const WAKE_TRIGGER_TTL_MS = Math.max(1000, Math.min(60000, Number(process.env.JAVIS_WAKE_TRIGGER_TTL_MS || 10000)));
+const WAKE_ENGINE_CMD = String(process.env.JAVIS_WAKE_ENGINE_CMD || '').trim();
 const LOCAL_EXEC_ENABLED = process.env.JAVIS_ENABLE_LOCAL_EXEC === 'true';
 const TRUSTED_LOCAL_MODE = process.env.JAVIS_TRUSTED_LOCAL_MODE === 'true';
 const APP_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
@@ -189,6 +191,18 @@ let menuBarTray = null;
 let menuBarUpdatedAt = 0;
 let ambientTimer = null;
 let ambientSampling = false;
+let wakeEngineProcess = null;
+let wakeState = {
+  lastTriggerAt: 0,
+  lastSource: '',
+  lastPhrase: '',
+  triggerCount: 0,
+  engineRunning: false,
+  enginePid: null,
+  engineLastLine: '',
+  engineLastError: '',
+  engineStartedAt: 0,
+};
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
   sent: 0,
@@ -236,6 +250,10 @@ function windowBoundsSnapshot() {
   };
 }
 
+function windowTargetForMode(mode = currentWindowMode) {
+  return windowModes[mode] || windowModes.pet;
+}
+
 function displayWorkAreaForWindow(displayMode = WINDOW_PARK_DISPLAY) {
   try {
     if (displayMode === 'primary') {
@@ -250,8 +268,39 @@ function displayWorkAreaForWindow(displayMode = WINDOW_PARK_DISPLAY) {
   }
 }
 
+function enforceWindowSize(mode = currentWindowMode) {
+  if (!mainWindow || mainWindow.isDestroyed()) return null;
+  const target = windowTargetForMode(mode);
+  try {
+    const bounds = mainWindow.getBounds();
+    mainWindow.setResizable(true);
+    mainWindow.setMinimumSize(1, 1);
+    mainWindow.setMaximumSize(10000, 10000);
+    mainWindow.setBounds(
+      {
+        ...bounds,
+        width: target.width,
+        height: target.height,
+      },
+      false,
+    );
+    mainWindow.setSize(target.width, target.height, false);
+    mainWindow.setMinimumSize(target.width, target.height);
+    mainWindow.setMaximumSize(target.width, target.height);
+    mainWindow.setResizable(false);
+  } catch (error) {
+    appendAudit('window.size_enforce_failed', {
+      mode,
+      width: target.width,
+      height: target.height,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return windowBoundsSnapshot();
+}
+
 function parkedPosition(mode = currentWindowMode, corner = currentParkCorner, displayMode = WINDOW_PARK_DISPLAY) {
-  const target = windowModes[mode] || windowModes.pet;
+  const target = windowTargetForMode(mode);
   const workArea = displayWorkAreaForWindow(displayMode);
   const safeCorner = parseParkCorner(corner);
   const x = safeCorner.endsWith('right')
@@ -273,7 +322,10 @@ function parkWindow(source = 'api', options = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return windowStateSnapshot();
   if (options.corner) currentParkCorner = parseParkCorner(options.corner);
   const displayMode = options.display === 'current' ? 'current' : options.display === 'primary' ? 'primary' : WINDOW_PARK_DISPLAY;
+  enforceWindowSize(currentWindowMode);
   const position = parkedPosition(currentWindowMode, currentParkCorner, displayMode);
+  const target = windowTargetForMode(currentWindowMode);
+  mainWindow.setBounds({ x: position.x, y: position.y, width: target.width, height: target.height }, false);
   mainWindow.setPosition(position.x, position.y, false);
   appendAudit('window.park', {
     source,
@@ -290,10 +342,12 @@ function parkWindow(source = 'api', options = {}) {
 
 function moveWindow(source = 'api', options = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return windowStateSnapshot();
+  enforceWindowSize(currentWindowMode);
   const current = mainWindow.getBounds();
   const x = Number.isFinite(Number(options.x)) ? Math.round(Number(options.x)) : current.x;
   const y = Number.isFinite(Number(options.y)) ? Math.round(Number(options.y)) : current.y;
-  mainWindow.setPosition(x, y, false);
+  const target = windowTargetForMode(currentWindowMode);
+  mainWindow.setBounds({ x, y, width: target.width, height: target.height }, false);
   appendAudit('window.move', {
     source,
     mode: currentWindowMode,
@@ -394,14 +448,9 @@ function notifyResident(title, body, data = {}) {
 
 function applyWindowMode(mode, options = {}) {
   const nextMode = 'pet';
-  const target = windowModes[nextMode];
   currentWindowMode = nextMode;
   if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.setResizable(true);
-    mainWindow.setSize(target.width, target.height, true);
-    mainWindow.setMinimumSize(target.width, target.height);
-    mainWindow.setMaximumSize(target.width, target.height);
-    mainWindow.setResizable(false);
+    enforceWindowSize(nextMode);
     mainWindow.setAlwaysOnTop(true, 'floating');
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     if (options.park !== false) {
@@ -5830,6 +5879,140 @@ function stopAmbientMonitor() {
   appendAudit('ambient.stopped');
 }
 
+function wakeStatusSnapshot(options = {}) {
+  const since = Number(options.since || 0);
+  const ageMs = wakeState.lastTriggerAt ? Date.now() - wakeState.lastTriggerAt : Infinity;
+  return {
+    words: WAKE_WORDS,
+    softWakeOnly: !WAKE_ENGINE_CMD,
+    triggerTtlMs: WAKE_TRIGGER_TTL_MS,
+    pending: Boolean(wakeState.lastTriggerAt && wakeState.lastTriggerAt > since && ageMs <= WAKE_TRIGGER_TTL_MS),
+    ageMs: Number.isFinite(ageMs) ? ageMs : null,
+    lastTriggerAt: wakeState.lastTriggerAt,
+    lastSource: wakeState.lastSource,
+    lastPhrase: wakeState.lastPhrase,
+    triggerCount: wakeState.triggerCount,
+    engine: {
+      configured: Boolean(WAKE_ENGINE_CMD),
+      command: WAKE_ENGINE_CMD ? redactCommandForLog(WAKE_ENGINE_CMD) : '',
+      running: wakeState.engineRunning,
+      pid: wakeState.enginePid,
+      startedAt: wakeState.engineStartedAt,
+      lastLine: wakeState.engineLastLine,
+      lastError: wakeState.engineLastError,
+    },
+  };
+}
+
+function triggerWake(options = {}) {
+  const phrase = String(options.phrase || options.word || '').trim().slice(0, 120);
+  const source = String(options.source || 'api').trim().slice(0, 80) || 'api';
+  wakeState = {
+    ...wakeState,
+    lastTriggerAt: Date.now(),
+    lastSource: source,
+    lastPhrase: phrase,
+    triggerCount: wakeState.triggerCount + 1,
+  };
+  appendAudit('wake.triggered', {
+    source,
+    phrase,
+    triggerCount: wakeState.triggerCount,
+  });
+  return wakeStatusSnapshot();
+}
+
+function lineMatchesWake(line) {
+  const text = String(line || '').trim();
+  if (!text) return false;
+  if (/\bwake\b|\btrigger\b/i.test(text)) return true;
+  const lower = text.toLowerCase();
+  return WAKE_WORDS.some((word) => word && lower.includes(word.toLowerCase()));
+}
+
+function consumeWakeEngineOutput(chunk) {
+  const text = chunk.toString();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    wakeState = {
+      ...wakeState,
+      engineLastLine: line.slice(0, 300),
+    };
+    if (lineMatchesWake(line)) {
+      triggerWake({ source: 'wake_engine', phrase: line });
+    }
+  }
+}
+
+function startWakeEngine() {
+  if (!WAKE_ENGINE_CMD || wakeEngineProcess) return wakeStatusSnapshot();
+  wakeEngineProcess = spawn('/bin/zsh', ['-lc', WAKE_ENGINE_CMD], {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  wakeState = {
+    ...wakeState,
+    engineRunning: true,
+    enginePid: wakeEngineProcess.pid || null,
+    engineStartedAt: Date.now(),
+    engineLastError: '',
+  };
+  appendAudit('wake_engine.started', {
+    pid: wakeEngineProcess.pid || null,
+    command: redactCommandForLog(WAKE_ENGINE_CMD),
+  });
+  wakeEngineProcess.stdout.on('data', consumeWakeEngineOutput);
+  wakeEngineProcess.stderr.on('data', (chunk) => {
+    const line = chunk.toString().trim().split(/\r?\n/).filter(Boolean).slice(-1)[0] || '';
+    if (line) {
+      wakeState = {
+        ...wakeState,
+        engineLastError: line.slice(0, 300),
+      };
+    }
+  });
+  wakeEngineProcess.on('error', (error) => {
+    wakeState = {
+      ...wakeState,
+      engineRunning: false,
+      enginePid: null,
+      engineLastError: error instanceof Error ? error.message : String(error),
+    };
+    appendAudit('wake_engine.error', { message: wakeState.engineLastError });
+    wakeEngineProcess = null;
+  });
+  wakeEngineProcess.on('close', (code, signal) => {
+    wakeState = {
+      ...wakeState,
+      engineRunning: false,
+      enginePid: null,
+      engineLastError: code === 0 ? '' : `Wake engine exited${code === null ? '' : ` with ${code}`}${signal ? ` (${signal})` : ''}`,
+    };
+    appendAudit('wake_engine.closed', { code, signal });
+    wakeEngineProcess = null;
+  });
+  return wakeStatusSnapshot();
+}
+
+function stopWakeEngine() {
+  if (!wakeEngineProcess) return wakeStatusSnapshot();
+  try {
+    wakeEngineProcess.kill('SIGTERM');
+  } catch {
+    // Process may already be gone.
+  }
+  wakeEngineProcess = null;
+  wakeState = {
+    ...wakeState,
+    engineRunning: false,
+    enginePid: null,
+  };
+  appendAudit('wake_engine.stopped');
+  return wakeStatusSnapshot();
+}
+
 function compactObserveTree(tree) {
   if (!tree) return null;
   return {
@@ -7344,6 +7527,7 @@ function configCheckSnapshot() {
       notifications: notificationSnapshot(),
       screenPrivacy: screenPrivacySnapshot(),
       ambient: ambientStateSnapshot(5),
+      wake: wakeStatusSnapshot(),
     },
     models,
     workers: {
@@ -7414,6 +7598,7 @@ function healthSnapshot() {
     notifications: notificationSnapshot(),
     screenPrivacy: screenPrivacySnapshot(),
     ambient: ambientStateSnapshot(5),
+    wake: wakeStatusSnapshot(),
     approvals: {
       pending: pendingApprovalSnapshot(20),
       total: approvals.size,
@@ -7832,6 +8017,12 @@ async function doctorReportSnapshot() {
 
 function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function redactCommandForLog(command) {
+  return String(command || '')
+    .replace(/(api[-_ ]?key|token|secret|password)=("[^"]*"|'[^']*'|[^\s]+)/gi, '$1=[redacted]')
+    .slice(0, 500);
 }
 
 function shellCommandName(command) {
@@ -10465,6 +10656,7 @@ function startApiServer() {
       },
       screenPrivacy: screenPrivacySnapshot(),
       ambient: ambientStateSnapshot(5),
+      wake: wakeStatusSnapshot(),
       window: windowStateSnapshot(),
       menuBar: menuBarSnapshot(),
       notifications: notificationSnapshot(),
@@ -10520,6 +10712,19 @@ function startApiServer() {
     } catch (error) {
       jsonError(res, 500, 'Ambient sample failed', error instanceof Error ? error.message : String(error));
     }
+  });
+
+  api.get('/api/wake/status', (req, res) => {
+    res.json({ wake: wakeStatusSnapshot({ since: req.query.since }) });
+  });
+
+  api.post('/api/wake/trigger', express.json({ limit: '64kb' }), (req, res) => {
+    res.json({ ok: true, wake: triggerWake({ ...(req.body || {}), source: req.body?.source || 'api' }) });
+  });
+
+  api.post('/api/wake/engine/restart', express.json({ limit: '64kb' }), (_req, res) => {
+    stopWakeEngine();
+    res.json({ ok: true, wake: startWakeEngine() });
   });
 
   api.post('/api/observe', express.json({ limit: '1mb' }), async (req, res) => {
@@ -11124,6 +11329,7 @@ app.whenReady().then(async () => {
     registerGlobalHotkeys();
     createMenuBarTray();
     startAmbientMonitor();
+    startWakeEngine();
   } catch (error) {
     handleStartupError(error);
   }
@@ -11141,6 +11347,7 @@ app.on('before-quit', () => {
   appendAudit('process.before_quit', { pid: process.pid, queue: queueCounts() });
   globalShortcut.unregisterAll();
   stopAmbientMonitor();
+  stopWakeEngine();
   if (menuBarAvailable()) {
     menuBarTray.destroy();
     menuBarTray = null;

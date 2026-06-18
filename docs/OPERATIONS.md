@@ -87,7 +87,7 @@ Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVI
 
 The desktop pet is intentionally minimal. It is a small voice capsule on the edge of the screen and avoids showing setup state, diagnostic chips, or configuration controls.
 
-Click the pet to start or stop realtime voice with full-screen context once `OPENAI_API_KEY` is configured. If the key is missing, the pet opens the terminal CUI instead. Screen context is captured by the resident process, so it does not ask which window to share. Inside a live voice session, `JAVIS_WAKE_WORDS` defines soft wake words such as `JAVIS`, `Jarvis`, `贾维斯`, and `小贾`.
+Click the pet to start or stop realtime voice with full-screen context once `OPENAI_API_KEY` is configured. If the key is missing, the pet opens the terminal CUI instead. Screen context is captured by the resident process, so it does not ask which window to share. Inside a live voice session, `JAVIS_WAKE_WORDS` defines soft wake words such as `JAVIS`, `Jarvis`, `贾维斯`, and `小贾`. For true local wake, set `JAVIS_WAKE_ENGINE_CMD` to a command that prints `wake` or one configured wake word; JAVIS will then expose that through `/api/wake/status` and the renderer will start voice automatically.
 
 Right-click the capsule to open the terminal CUI. Keep setup, policy, and diagnostic changes there instead of adding visible desktop controls.
 
@@ -148,6 +148,10 @@ curl http://127.0.0.1:3417/api/ambient
 curl -X POST http://127.0.0.1:3417/api/ambient/sample \
   -H 'Content-Type: application/json' \
   -d '{}'
+curl http://127.0.0.1:3417/api/wake/status
+curl -X POST http://127.0.0.1:3417/api/wake/trigger \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"manual","phrase":"贾维斯"}'
 curl -X POST http://127.0.0.1:3417/api/screen/describe \
   -H 'Content-Type: application/json' \
   -d '{"capture":true,"prompt":"Describe the current screen."}'
