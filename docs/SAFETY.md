@@ -118,7 +118,8 @@ Default file policy:
 - Codex and Claude Code delegation is Level 3, requires `JAVIS_ENABLE_LOCAL_EXEC=true`, and is governed by `allow.code_agent`.
 - Failed jobs keep `attempts`, `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot so JAVIS can diagnose and continue instead of returning a bare failure.
 - Read/list/search default roots are the current project, Desktop, Documents, and Downloads.
-- Write/create/copy/move default roots are the current project only.
+- Write/create/copy/move default roots are the current project only in guarded mode.
+- In trusted local mode, project-only write roots are upgraded to the current project, Desktop, Documents, and Downloads unless `JAVIS_ALLOWED_WRITE_ROOTS` or a custom action policy says otherwise.
 
 Current high-autonomy local setup:
 
@@ -126,7 +127,7 @@ Current high-autonomy local setup:
 - `JAVIS_TRUSTED_LOCAL_MODE=true`
 - `maxAutoRiskLevel=3`
 - `requireApprovalAtRiskLevel=4`
-- file roots are scoped to `/Users/Haoge`
+- file write roots cover the project, Desktop, Documents, and Downloads by default
 - Level 4 actions remain outside automatic execution
 
 ## Approval Queue

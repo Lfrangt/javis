@@ -87,6 +87,11 @@ const DEFAULT_FILE_ROOTS = [
   path.join(os.homedir(), 'Documents'),
   path.join(os.homedir(), 'Downloads'),
 ];
+const DEFAULT_WRITE_ROOTS = process.env.JAVIS_ALLOWED_WRITE_ROOTS
+  ? process.env.JAVIS_ALLOWED_WRITE_ROOTS.split(',').map((item) => item.trim()).filter(Boolean)
+  : TRUSTED_LOCAL_MODE
+    ? DEFAULT_FILE_ROOTS
+    : [process.cwd()];
 const DEFAULT_CLI_COMMANDS = process.env.JAVIS_ALLOWED_CLI_COMMANDS
   ? process.env.JAVIS_ALLOWED_CLI_COMMANDS.split(',').map((item) => item.trim()).filter(Boolean)
   : TRUSTED_LOCAL_MODE
@@ -149,10 +154,10 @@ const DEFAULT_ACTION_POLICY = {
     list_directory: { enabled: true, allowedRoots: DEFAULT_FILE_ROOTS },
     read_file: { enabled: true, allowedRoots: DEFAULT_FILE_ROOTS, maxBytes: 400000 },
     search_files: { enabled: true, allowedRoots: DEFAULT_FILE_ROOTS, maxResults: 80 },
-    write_file: { enabled: true, allowedRoots: [process.cwd()], maxBytes: 400000 },
-    create_directory: { enabled: true, allowedRoots: [process.cwd()] },
-    copy_file: { enabled: true, allowedRoots: [process.cwd()], maxBytes: 400000 },
-    move_file: { enabled: true, allowedRoots: [process.cwd()] },
+    write_file: { enabled: true, allowedRoots: DEFAULT_WRITE_ROOTS, maxBytes: 400000 },
+    create_directory: { enabled: true, allowedRoots: DEFAULT_WRITE_ROOTS },
+    copy_file: { enabled: true, allowedRoots: DEFAULT_WRITE_ROOTS, maxBytes: 400000 },
+    move_file: { enabled: true, allowedRoots: DEFAULT_WRITE_ROOTS },
   },
 };
 
@@ -811,6 +816,23 @@ function browserAllowedActionsList(value) {
   return Array.from(new Set([...current, ...DEFAULT_ACTION_POLICY.allow.browser_control.allowedActions]));
 }
 
+function isProjectOnlyRootList(roots) {
+  if (!Array.isArray(roots) || roots.length !== 1) return false;
+  try {
+    return path.resolve(resolvePath(roots[0])) === path.resolve(process.cwd());
+  } catch {
+    return false;
+  }
+}
+
+function mutationAllowedRoots(value, fallback) {
+  const roots = uniqueStringList(value, fallback);
+  if (TRUSTED_LOCAL_MODE && isProjectOnlyRootList(roots)) {
+    return DEFAULT_WRITE_ROOTS;
+  }
+  return roots;
+}
+
 function normalizeActionPolicy(value) {
   const raw = value && typeof value === 'object' ? value : {};
   return {
@@ -912,21 +934,21 @@ function normalizeActionPolicy(value) {
       },
       write_file: {
         enabled: raw.allow?.write_file?.enabled !== false,
-        allowedRoots: uniqueStringList(raw.allow?.write_file?.allowedRoots, DEFAULT_ACTION_POLICY.allow.write_file.allowedRoots),
+        allowedRoots: mutationAllowedRoots(raw.allow?.write_file?.allowedRoots, DEFAULT_ACTION_POLICY.allow.write_file.allowedRoots),
         maxBytes: Math.max(1, Number(raw.allow?.write_file?.maxBytes || DEFAULT_ACTION_POLICY.allow.write_file.maxBytes)),
       },
       create_directory: {
         enabled: raw.allow?.create_directory?.enabled !== false,
-        allowedRoots: uniqueStringList(raw.allow?.create_directory?.allowedRoots, DEFAULT_ACTION_POLICY.allow.create_directory.allowedRoots),
+        allowedRoots: mutationAllowedRoots(raw.allow?.create_directory?.allowedRoots, DEFAULT_ACTION_POLICY.allow.create_directory.allowedRoots),
       },
       copy_file: {
         enabled: raw.allow?.copy_file?.enabled !== false,
-        allowedRoots: uniqueStringList(raw.allow?.copy_file?.allowedRoots, DEFAULT_ACTION_POLICY.allow.copy_file.allowedRoots),
+        allowedRoots: mutationAllowedRoots(raw.allow?.copy_file?.allowedRoots, DEFAULT_ACTION_POLICY.allow.copy_file.allowedRoots),
         maxBytes: Math.max(1, Number(raw.allow?.copy_file?.maxBytes || DEFAULT_ACTION_POLICY.allow.copy_file.maxBytes)),
       },
       move_file: {
         enabled: raw.allow?.move_file?.enabled !== false,
-        allowedRoots: uniqueStringList(raw.allow?.move_file?.allowedRoots, DEFAULT_ACTION_POLICY.allow.move_file.allowedRoots),
+        allowedRoots: mutationAllowedRoots(raw.allow?.move_file?.allowedRoots, DEFAULT_ACTION_POLICY.allow.move_file.allowedRoots),
       },
     },
   };

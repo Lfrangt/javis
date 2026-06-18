@@ -83,6 +83,10 @@ Use option `9. Toggle Level 3 auto-run` to switch Level 3 actions between approv
 
 Use option `10. Toggle trusted local mode` when this Mac is intentionally being used as a high-autonomy local workstation. Enabling it writes `JAVIS_TRUSTED_LOCAL_MODE=true`, aligns Level 3 auto-run, and keeps Level 4 actions confirmation-gated. Doctor reports this as an acknowledged mode instead of a setup warning.
 
+In trusted local mode, file write/create/copy/move roots default to the project, Desktop, Documents,
+and Downloads. Set `JAVIS_ALLOWED_WRITE_ROOTS` or edit `action-policy.json` in the CUI if you want a
+different local scope.
+
 Codex and Claude Code delegation uses the `allow.code_agent` policy block. Failed jobs keep `attempts`,
 `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot in `/api/jobs/<job-id>` and linked routing records, so JAVIS can
 diagnose missing commands, disabled local execution, policy blocks, approvals, timeouts, and retry paths
