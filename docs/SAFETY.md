@@ -117,6 +117,7 @@ Default file policy:
 - `ax_press` and `ax_set_value` are Level 3, require approval, and require `JAVIS_ENABLE_LOCAL_EXEC=true`.
 - Codex and Claude Code delegation is Level 3, requires `JAVIS_ENABLE_LOCAL_EXEC=true`, and is governed by `allow.code_agent`.
 - Failed jobs keep `attempts`, `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot so JAVIS can diagnose and continue instead of returning a bare failure.
+- Autopilot ticks are limited to low-risk recovery diagnostics and safe-planner app workflow retries; they skip during live voice sessions or active background jobs.
 - Read/list/search default roots are the current project, Desktop, Documents, and Downloads.
 - Write/create/copy/move default roots are the current project only in guarded mode.
 - In trusted local mode, project-only write roots are upgraded to the current project, Desktop, Documents, and Downloads unless `JAVIS_ALLOWED_WRITE_ROOTS` or a custom action policy says otherwise.

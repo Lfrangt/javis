@@ -68,6 +68,9 @@ const AMBIENT_INTERVAL_MS = Math.max(2500, Math.min(60000, Number(process.env.JA
 const AMBIENT_LEARNING_ENABLED = process.env.JAVIS_AMBIENT_LEARNING === 'true';
 const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(process.env.JAVIS_AMBIENT_LEARNING_INTERVAL_MS || 60000)));
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
+const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true'
+  || (process.env.JAVIS_AUTOPILOT_ENABLED !== 'false' && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
+const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
@@ -225,6 +228,21 @@ let ambientTimer = null;
 let ambientSampling = false;
 let learningTimer = null;
 let learningBusy = false;
+let autopilotTimer = null;
+let autopilotBusy = false;
+let autopilotState = {
+  enabled: AUTOPILOT_ENABLED,
+  intervalMs: AUTOPILOT_INTERVAL_MS,
+  running: false,
+  tickCount: 0,
+  executedCount: 0,
+  skippedCount: 0,
+  lastTickAt: 0,
+  lastExecutedAt: 0,
+  lastAction: null,
+  lastResult: '',
+  lastError: '',
+};
 let wakeEngineProcess = null;
 let wakeState = {
   lastTriggerAt: 0,
@@ -7415,6 +7433,7 @@ function presenceStateSnapshot(options = {}) {
       activeSession,
       queue: queueCounts(),
       workflows: workflowCounts(),
+      autopilot: autopilotStateSnapshot(),
     },
     readiness: {
       overall: readiness.overall,
@@ -7464,6 +7483,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
         learningSummary ? `Local inferred profile: ${compactRecordText(learningSummary, 360)}` : '',
         activeJobs.length ? `Background work: ${activeJobs.map((job) => `${job.mode}/${job.status} ${compactRecordText(job.title, 80)}`).join('; ')}` : 'Background work: none active.',
         pendingApprovals.length ? `Approvals waiting: ${pendingApprovals.map((approval) => compactRecordText(approval.summary, 120)).join('; ')}` : 'Approvals waiting: none.',
+        presence.work?.autopilot?.enabled ? `Autopilot: ${presence.work.autopilot.running ? 'running' : 'idle'}, executed ${presence.work.autopilot.executedCount || 0}, last ${compactRecordText(presence.work.autopilot.lastResult || 'none', 180)}.` : 'Autopilot: disabled.',
         nextActions.length ? `Likely next actions:\n${nextActions.map(formatRealtimeContextAction).join('\n')}` : '',
         `Guardrails: passive by default; act only after user intent. Local execution ${LOCAL_EXEC_ENABLED ? 'enabled' : 'disabled'}; auto risk level ${actionPolicy.maxAutoRiskLevel}; approval required at level ${actionPolicy.requireApprovalAtRiskLevel}.`,
       ].filter(Boolean)
@@ -7534,6 +7554,118 @@ function stopLearningMonitor() {
   clearInterval(learningTimer);
   learningTimer = null;
   appendAudit('learning.stopped');
+}
+
+function autopilotStateSnapshot() {
+  return {
+    ...autopilotState,
+    enabled: AUTOPILOT_ENABLED,
+    intervalMs: AUTOPILOT_INTERVAL_MS,
+    busy: autopilotBusy,
+  };
+}
+
+function isAutopilotExecutableAction(action) {
+  if (!action || typeof action !== 'object') return false;
+  if (action.source === 'recovery') {
+    return Boolean(action.autoEligible && Number(action.riskLevel || 0) <= 1);
+  }
+  if (action.source === 'workflows' && action.workflowAction === 'retry_app_workflow') {
+    return Boolean(action.executable && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
+  }
+  return false;
+}
+
+async function autopilotTick(options = {}) {
+  const source = String(options.source || 'api').slice(0, 80);
+  const execute = options.execute !== false;
+  if (autopilotBusy) {
+    return { ok: true, executed: false, skipped: true, reason: 'autopilot_busy', autopilot: autopilotStateSnapshot() };
+  }
+  autopilotBusy = true;
+  autopilotState = {
+    ...autopilotState,
+    running: true,
+    tickCount: Number(autopilotState.tickCount || 0) + 1,
+    lastTickAt: Date.now(),
+    lastError: '',
+  };
+  try {
+    const briefing = workflowBriefing({ workflowLimit: options.workflowLimit || 6, jobLimit: options.jobLimit || 6 });
+    const action = (briefing.nextActions || [])[0] || null;
+    const conversation = conversationStateSnapshot();
+    let reason = '';
+    if (!AUTOPILOT_ENABLED) reason = 'autopilot_disabled';
+    else if (!execute) reason = 'preview_only';
+    else if (conversation.active) reason = 'conversation_active';
+    else if (activeJobRuns.size) reason = 'active_job_running';
+    else if (!isAutopilotExecutableAction(action)) reason = action ? 'action_not_auto_executable' : 'no_action';
+
+    if (reason) {
+      autopilotState = {
+        ...autopilotState,
+        skippedCount: Number(autopilotState.skippedCount || 0) + 1,
+        lastAction: action,
+        lastResult: reason,
+      };
+      appendAudit('autopilot.skipped', { source, reason, action: action?.id || '', actionSource: action?.source || '' });
+      return { ok: true, executed: false, skipped: true, reason, action, briefing, autopilot: autopilotStateSnapshot() };
+    }
+
+    const result = await workNextAction({
+      execute: true,
+      source: `autopilot:${source}`,
+      workflowLimit: options.workflowLimit || 6,
+      jobLimit: options.jobLimit || 6,
+    });
+    autopilotState = {
+      ...autopilotState,
+      executedCount: Number(autopilotState.executedCount || 0) + 1,
+      lastExecutedAt: Date.now(),
+      lastAction: action,
+      lastResult: compactRecordText(result.output || '', 1000),
+    };
+    appendAudit('autopilot.executed', {
+      source,
+      action: action.id,
+      actionSource: action.source,
+      outputLength: result.output ? String(result.output).length : 0,
+    });
+    return { ok: true, executed: true, skipped: false, action, result, briefing, autopilot: autopilotStateSnapshot() };
+  } catch (error) {
+    autopilotState = {
+      ...autopilotState,
+      lastError: error instanceof Error ? error.message : String(error),
+    };
+    appendAudit('autopilot.failed', { source, error: autopilotState.lastError });
+    return { ok: false, executed: false, skipped: false, error: autopilotState.lastError, autopilot: autopilotStateSnapshot() };
+  } finally {
+    autopilotBusy = false;
+    autopilotState = {
+      ...autopilotState,
+      running: false,
+    };
+  }
+}
+
+function startAutopilotMonitor() {
+  if (!AUTOPILOT_ENABLED || autopilotTimer) return;
+  autopilotTimer = setInterval(() => {
+    void autopilotTick({ source: 'interval' });
+  }, AUTOPILOT_INTERVAL_MS);
+  appendAudit('autopilot.started', {
+    intervalMs: AUTOPILOT_INTERVAL_MS,
+    localExecutionEnabled: LOCAL_EXEC_ENABLED,
+    trustedLocalMode: TRUSTED_LOCAL_MODE,
+  });
+  void autopilotTick({ source: 'startup' });
+}
+
+function stopAutopilotMonitor() {
+  if (!autopilotTimer) return;
+  clearInterval(autopilotTimer);
+  autopilotTimer = null;
+  appendAudit('autopilot.stopped');
 }
 
 function wakeStatusSnapshot(options = {}) {
@@ -9695,6 +9827,7 @@ function configCheckSnapshot() {
       screenPrivacy: screenPrivacySnapshot(),
       ambient: ambientStateSnapshot(5),
       learning: learningStateSnapshot(),
+      autopilot: autopilotStateSnapshot(),
       wake: wakeStatusSnapshot(),
     },
     models,
@@ -13360,6 +13493,23 @@ function startApiServer() {
     }
   });
 
+  api.get('/api/autopilot', (_req, res) => {
+    res.json({ autopilot: autopilotStateSnapshot() });
+  });
+
+  api.post('/api/autopilot/tick', express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      const result = await autopilotTick({
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+        execute: req.body?.execute !== false,
+      });
+      res.json({ tick: result, autopilot: autopilotStateSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Autopilot tick failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.get('/api/learning', (_req, res) => {
     res.json({ learning: learningStateSnapshot() });
   });
@@ -14070,6 +14220,7 @@ app.whenReady().then(async () => {
     createMenuBarTray();
     startAmbientMonitor();
     startLearningMonitor();
+    startAutopilotMonitor();
     startWakeEngine();
   } catch (error) {
     handleStartupError(error);
@@ -14089,6 +14240,7 @@ app.on('before-quit', () => {
   globalShortcut.unregisterAll();
   stopAmbientMonitor();
   stopLearningMonitor();
+  stopAutopilotMonitor();
   stopWakeEngine();
   if (menuBarAvailable()) {
     menuBarTray.destroy();

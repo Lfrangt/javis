@@ -94,6 +94,12 @@ without turning the first failure into a dead end.
 Recovery actions are also surfaced through `/api/briefing` and `/api/work/next`; low-risk diagnostic
 actions can be reviewed there without opening a separate UI.
 
+The resident autopilot loop is visible through `/api/autopilot` and can be manually advanced with
+`POST /api/autopilot/tick`. It starts automatically only when local execution and trusted local mode
+are both enabled, unless `JAVIS_AUTOPILOT_ENABLED=false`. Autopilot executes only low-risk recovery
+diagnostics and blocked app workflows that the local safe planner can re-plan; it skips while voice is
+active or another background job is running.
+
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
 The desktop pet is intentionally minimal. It is a small voice capsule on the edge of the screen and avoids showing setup state, diagnostic chips, or configuration controls.
