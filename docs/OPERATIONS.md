@@ -177,6 +177,12 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
 curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -H 'Content-Type: application/json' \
   -d '{"intent":"compare","queries":["OpenAI Realtime API docs","WebRTC voice agent examples"],"mode":"background"}'
+curl -X POST http://127.0.0.1:3417/api/browser/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"intent":"review_result","query":"OpenAI Realtime API docs","resultIndex":1,"mode":"quick"}'
+curl -X POST http://127.0.0.1:3417/api/browser/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"intent":"research","query":"OpenAI Realtime API voice agent WebRTC docs","maxPages":2,"mode":"quick"}'
 ```
 
 The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, and workflows, including active work, recent completions, blockers, and next actions.
@@ -185,7 +191,7 @@ The briefing combines readiness, routing records, jobs, workflows, approvals, me
 
 `/api/tasks/parallel` accepts up to `JAVIS_MAX_PARALLEL_TASKS` independent task items and assigns them to one `parallelGroup`. Each item can specify its own `mode`, `owner`, and `scope`; explicit `command` items queue through the guarded local CLI lane. This is the API surface for splitting work across background, Codex, Claude, and local workers while keeping progress check-ins coherent.
 
-`/api/browser/workflow` supports `search` and `compare` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages, capture those result pages, and route the captured context through quick/background/Codex/Claude. They do not click search results or submit forms.
+`/api/browser/workflow` supports `search`, `compare`, `review_result`, and `research` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages and capture those result pages. `review_result` opens one explicit URL or selected result link through the guarded `open_url` path, then reads the target page. `research` opens several explicit URLs or selected result links in sequence and synthesizes their read-only page snapshots. Browser workflows do not click page controls, type into arbitrary fields, submit forms, or make account changes by themselves.
 
 `/api/work/next` turns the top briefing action into one safe step. GET previews the selected action; POST runs exactly one step, such as opening the next setup target, showing approvals, checking session/progress state, or processing the next Inbox item. It does not approve actions or batch-run tasks.
 

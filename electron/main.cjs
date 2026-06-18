@@ -13091,6 +13091,36 @@ function previewDoctorAction(args) {
   }
 }
 
+function realtimeBrowserWorkflowToolSnapshot() {
+  try {
+    const config = createRealtimeSessionConfig();
+    const tool = (config.tools || []).find((item) => item.name === 'run_browser_workflow') || null;
+    const properties = tool?.parameters?.properties || {};
+    const intents = Array.isArray(properties.intent?.enum) ? properties.intent.enum : [];
+    const requiredIntents = ['review_result', 'research'];
+    const requiredParams = ['url', 'urls', 'maxPages', 'resultIndex', 'openWaitMs'];
+    const missingIntents = requiredIntents.filter((intent) => !intents.includes(intent));
+    const missingParams = requiredParams.filter((param) => !Object.prototype.hasOwnProperty.call(properties, param));
+    return {
+      ok: Boolean(tool) && missingIntents.length === 0 && missingParams.length === 0,
+      exists: Boolean(tool),
+      intents,
+      missingIntents,
+      missingParams,
+      description: tool?.description || '',
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      exists: false,
+      intents: [],
+      missingIntents: ['review_result', 'research'],
+      missingParams: ['url', 'urls', 'maxPages', 'resultIndex', 'openWaitMs'],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function doctorReportSnapshot() {
   const health = healthSnapshot();
   const readiness = readinessSnapshot();
@@ -13115,6 +13145,7 @@ async function doctorReportSnapshot() {
     ],
   });
   const browserJavaScriptPreview = await browserJavaScriptStatusSnapshot();
+  const realtimeBrowserToolPreview = realtimeBrowserWorkflowToolSnapshot();
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
   const setupGuidePreview = setupGuideSnapshot();
@@ -13180,6 +13211,20 @@ async function doctorReportSnapshot() {
     browserJavaScriptPreview.available && browserJavaScriptPreview.supported && !browserJavaScriptPreview.enabled
       ? 'Enable Chrome 显示 > 开发者 > 允许 Apple 事件中的 JavaScript, or restart Chrome with local remote debugging on JAVIS_CHROME_DEBUG_PORT.'
       : '',
+  ));
+
+  checks.push(doctorCheck(
+    'realtime_browser_workflow_tool',
+    'Realtime browser workflow tool',
+    realtimeBrowserToolPreview.ok ? 'ready' : 'warning',
+    realtimeBrowserToolPreview.ok
+      ? `Realtime tool exposes browser intents: ${realtimeBrowserToolPreview.intents.join(', ')}.`
+      : `Realtime browser workflow tool is missing ${[
+        ...realtimeBrowserToolPreview.missingIntents.map((item) => `intent:${item}`),
+        ...realtimeBrowserToolPreview.missingParams.map((item) => `param:${item}`),
+      ].join(', ') || 'tool definition'}.`,
+    realtimeBrowserToolPreview,
+    realtimeBrowserToolPreview.ok ? '' : 'Update createRealtimeSessionConfig().tools for run_browser_workflow.',
   ));
 
   checks.push(doctorCheck(
@@ -15497,10 +15542,10 @@ function createRealtimeSessionConfig(options = {}) {
       'Use route_inbox_item when the user explicitly asks to do, process, run, or send an Inbox item into the task lanes.',
       'Use continue_workflow when the user says to continue, resume, or do the next step from a previous workflow.',
       'Use copy_workflow_result when the user asks to copy a prior workflow result, draft, summary, or next step to the clipboard.',
-      'Use read_browser_page when the user asks to summarize or use the content of the current webpage.',
+      'Use read_browser_page when the user asks to summarize or use the content, headings, or links of the current webpage.',
       'Use read_browser_dom when the user asks what controls are visible on the current webpage or when a browser DOM target is needed.',
       'Use control_browser_dom for guarded webpage element click/fill/select actions after the target is clear.',
-      'Use run_browser_workflow for webpage summarization, action extraction, drafting, or page-specific questions; use background mode for longer work.',
+      'Use run_browser_workflow for webpage summarization, action extraction, drafting, page-specific questions, web search, search-result review, or multi-page research. Use intent:research when the user asks you to look something up, inspect multiple sources, or synthesize web evidence; use background/Codex/Claude mode for longer work.',
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, or safe folder organization planning.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use apply_file_plan only after the user explicitly confirms a specific file organization plan; it still goes through policy, approval, and local-execution gates.',
@@ -16116,7 +16161,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'read_browser_page',
-        description: 'Read title, URL, selected text, headings, and visible body text from the current supported browser tab.',
+        description: 'Read title, URL, selected text, headings, visible body text, visible links, and candidate search-result links from the current supported browser tab.',
         parameters: {
           type: 'object',
           properties: {
@@ -16129,22 +16174,38 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_browser_workflow',
-        description: 'Run a practical workflow over the current browser page, or search/compare web result pages before summarizing. Search and compare navigate the browser to Google result pages but do not click results or submit forms.',
+        description: 'Run a practical workflow over the current browser page, search/compare result pages, open and review one selected result, or synthesize multiple result pages. Browser research uses guarded search/open_url plus read-only page snapshots; it does not click page controls or submit forms.',
         parameters: {
           type: 'object',
           properties: {
             app: { type: 'string' },
-            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare'] },
+            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare', 'review_result', 'research'] },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             query: { type: 'string' },
             queries: {
               type: 'array',
               items: { type: 'string' },
             },
+            url: { type: 'string' },
+            urls: {
+              type: 'array',
+              items: { type: 'string' },
+            },
             instruction: { type: 'string' },
             maxChars: { type: 'number' },
             maxSteps: { type: 'number' },
+            maxPages: { type: 'number' },
+            limit: { type: 'number' },
+            resultCount: { type: 'number' },
+            resultIndex: { type: 'number' },
+            index: { type: 'number' },
+            host: { type: 'string' },
+            domain: { type: 'string' },
+            urlContains: { type: 'string' },
+            hrefContains: { type: 'string' },
             waitMs: { type: 'number' },
+            openWaitMs: { type: 'number' },
+            waitMsAfterOpen: { type: 'number' },
             execute: { type: 'boolean' },
             scope: { type: 'string' },
             parallelGroup: { type: 'string' },
