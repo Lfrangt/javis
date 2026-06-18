@@ -62,6 +62,7 @@ const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER 
 const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
 const WINDOW_PARK_MARGIN = Math.max(0, Math.min(160, Number(process.env.JAVIS_WINDOW_PARK_MARGIN || 24)));
 const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_CHROME_DEBUG_PORT || 9222)));
+const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR || path.join(DATA_DIR, 'chrome-cdp-profile');
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
 const AMBIENT_OBSERVE_ENABLED = process.env.JAVIS_AMBIENT_OBSERVE === 'true';
 const AMBIENT_CAPTURE_SCREEN = process.env.JAVIS_AMBIENT_CAPTURE_SCREEN === 'true';
@@ -5139,6 +5140,61 @@ async function cdpStatusSnapshot(browser = {}) {
   }
 }
 
+function chromeExecutableForApp(appName = '') {
+  const name = String(appName || '').trim();
+  const candidates = name === 'Google Chrome Canary'
+    ? ['/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary']
+    : ['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'];
+  return candidates.find((candidate) => fs.existsSync(candidate)) || '';
+}
+
+async function waitForCdpReady(browser = {}, timeoutMs = 5000) {
+  const deadline = Date.now() + Math.max(1000, Math.min(15000, Number(timeoutMs || 5000)));
+  let last = null;
+  while (Date.now() < deadline) {
+    last = await cdpStatusSnapshot(browser);
+    if (last.enabled) return last;
+    await waitMs(350);
+  }
+  return last || await cdpStatusSnapshot(browser);
+}
+
+async function launchChromeCdpFallback(browser = {}) {
+  const appName = browser.app || 'Google Chrome';
+  if (!CHROME_DEBUG_PORT || !['Google Chrome', 'Google Chrome Canary'].includes(appName)) {
+    return { ok: false, launched: false, error: 'chrome_cdp_fallback_unsupported_app' };
+  }
+  const executable = chromeExecutableForApp(appName);
+  if (!executable) return { ok: false, launched: false, error: 'chrome_executable_not_found' };
+  fs.mkdirSync(CHROME_CDP_PROFILE_DIR, { recursive: true });
+  const url = /^https?:|^file:/i.test(String(browser.url || '')) ? browser.url : 'about:blank';
+  const child = spawn(executable, [
+    `--remote-debugging-port=${CHROME_DEBUG_PORT}`,
+    `--user-data-dir=${CHROME_CDP_PROFILE_DIR}`,
+    '--no-first-run',
+    '--no-default-browser-check',
+    url,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  appendAudit('browser_cdp.launch_requested', {
+    app: appName,
+    port: CHROME_DEBUG_PORT,
+    profileDir: CHROME_CDP_PROFILE_DIR,
+    url,
+    pid: child.pid || null,
+  });
+  const status = await waitForCdpReady({ ...browser, url }, 7000);
+  return {
+    ok: Boolean(status.enabled),
+    launched: true,
+    status,
+    error: status.enabled ? '' : status.error || 'browser_cdp_unavailable_after_launch',
+  };
+}
+
 function cdpEvaluateExpression(webSocketUrl, expression, options = {}) {
   return new Promise((resolve, reject) => {
     const timeoutMs = Math.max(1000, Math.min(10000, Number(options.timeoutMs || 5000)));
@@ -5218,9 +5274,21 @@ async function executeBrowserJavaScriptBridge(browser, js, options = {}) {
         appleError: appleMessage,
       };
     } catch (cdpError) {
+      const cdpMessage = compactBrowserJavaScriptError(cdpError);
+      if (appleMessage === 'browser_javascript_from_apple_events_disabled' && ['browser_cdp_unavailable', 'browser_cdp_target_not_found'].includes(cdpMessage)) {
+        const launched = await launchChromeCdpFallback(browser);
+        if (launched.ok) {
+          return {
+            output: await executeBrowserJavaScriptViaCdp(browser, js, options),
+            bridge: 'cdp',
+            appleError: appleMessage,
+            cdpLaunched: true,
+          };
+        }
+      }
       const error = new Error(appleMessage || compactBrowserJavaScriptError(cdpError));
       error.appleError = appleMessage;
-      error.cdpError = compactBrowserJavaScriptError(cdpError);
+      error.cdpError = cdpMessage;
       throw error;
     }
   }
@@ -5887,7 +5955,7 @@ async function executeBrowserControl(args = {}, options = {}) {
 
 function normalizeBrowserWorkflowIntent(value) {
   const intent = String(value || '').trim();
-  if (['summarize', 'extract_actions', 'draft', 'ask'].includes(intent)) return intent;
+  if (['summarize', 'extract_actions', 'draft', 'ask', 'act'].includes(intent)) return intent;
   return 'summarize';
 }
 
@@ -5920,6 +5988,7 @@ function browserWorkflowPrompt(page, intent, instruction) {
     extract_actions: '从当前网页提取行动项、截止日期、待办、风险和需要用户确认的事项。',
     draft: '基于当前网页起草一段可直接使用的中文内容；如果用户给了具体要求，严格按要求写。',
     ask: '回答用户关于当前网页的问题；如果网页内容不足，说明缺口。',
+    act: '规划并执行当前网页上的安全浏览器操作。',
   };
   const pageText = page.selectedText || page.text || '';
   return [
@@ -5940,8 +6009,630 @@ function browserWorkflowPrompt(page, intent, instruction) {
     .join('\n');
 }
 
+function parseJsonFromModelText(text) {
+  const raw = String(text || '').trim();
+  if (!raw) throw new Error('empty_model_json');
+  try {
+    return JSON.parse(raw);
+  } catch {}
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced?.[1]) {
+    try {
+      return JSON.parse(fenced[1].trim());
+    } catch {}
+  }
+  const firstObject = raw.indexOf('{');
+  const lastObject = raw.lastIndexOf('}');
+  if (firstObject >= 0 && lastObject > firstObject) {
+    try {
+      return JSON.parse(raw.slice(firstObject, lastObject + 1));
+    } catch {}
+  }
+  const firstArray = raw.indexOf('[');
+  const lastArray = raw.lastIndexOf(']');
+  if (firstArray >= 0 && lastArray > firstArray) {
+    return JSON.parse(raw.slice(firstArray, lastArray + 1));
+  }
+  throw new Error('model_output_was_not_json');
+}
+
+function normalizeBrowserTaskAction(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases = {
+    press: 'click',
+    tap: 'click',
+    type: 'fill',
+    input: 'fill',
+    set: 'fill',
+    choose: 'select',
+    navigate: 'open_url',
+    open: 'open_url',
+    google: 'search',
+    refresh: 'reload',
+    pause: 'wait',
+    sleep: 'wait',
+  };
+  return aliases[raw] || raw;
+}
+
+function normalizeBrowserTaskPlan(value = {}, maxSteps = 5) {
+  const rawSteps = Array.isArray(value) ? value : Array.isArray(value.steps) ? value.steps : [];
+  const steps = rawSteps
+    .map((step, index) => {
+      const action = normalizeBrowserTaskAction(step?.action || step?.type || step?.domAction || step?.browserAction);
+      if (!['click', 'fill', 'select', 'wait', 'open_url', 'search', 'reload', 'back', 'forward'].includes(action)) return null;
+      return {
+        index,
+        action,
+        selector: String(step.selector || '').slice(0, 500),
+        query: String(step.query || step.label || step.text || '').slice(0, 300),
+        value: String(step.value ?? step.content ?? step.url ?? '').slice(0, 4000),
+        url: String(step.url || '').slice(0, 2000),
+        ms: Math.max(100, Math.min(5000, Number(step.ms || step.durationMs || step.waitMs || 600))),
+        reason: compactRecordText(step.reason || step.summary || '', 220),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, Math.max(1, Math.min(8, Number(maxSteps || 5))));
+  return {
+    summary: compactRecordText(value.summary || value.goal || 'Browser task plan', 500),
+    successCheck: compactRecordText(value.successCheck || value.success || '', 500),
+    steps,
+  };
+}
+
+function browserTaskPrompt(page, dom, instruction, maxSteps) {
+  const elements = (dom.elements || []).slice(0, 80).map((element) => ({
+    id: element.id,
+    selector: element.selector,
+    tag: element.tag,
+    type: element.type,
+    role: element.role,
+    label: element.label,
+    text: element.text,
+    placeholder: element.placeholder,
+    name: element.name,
+    valuePreview: element.valuePreview,
+    disabled: element.disabled,
+  }));
+  return [
+    'Return only compact JSON. No markdown.',
+    `User browser task: ${instruction}`,
+    `Max steps: ${maxSteps}`,
+    '',
+    'Allowed actions:',
+    '- open_url: requires url',
+    '- search: requires query',
+    '- click: requires selector or query',
+    '- fill: requires selector or query and value',
+    '- select: requires selector or query and value',
+    '- wait: requires ms',
+    '- reload/back/forward: no target required',
+    '',
+    'Rules:',
+    '- Do not submit forms, send messages, purchase, pay, delete, log in, sign up, publish, trade, or make account changes.',
+    '- Prefer selector from DOM elements when available.',
+    '- Use click/fill/select only for visible non-disabled controls listed in DOM.',
+    '- If the page does not contain enough information to act safely, return steps: [] and explain in summary.',
+    '',
+    'Schema:',
+    '{"summary":"what will be done","successCheck":"how to verify","steps":[{"action":"fill","selector":"...","query":"...","value":"...","reason":"..."}]}',
+    '',
+    'Current page:',
+    JSON.stringify({
+      app: page.app,
+      title: page.title,
+      url: page.url,
+      headings: page.headings?.slice(0, 12) || [],
+      textPreview: compactRecordText(page.selectedText || page.text || '', 4000),
+      dom: {
+        title: dom.title,
+        url: dom.url,
+        count: dom.count,
+        elements,
+      },
+    }),
+  ].join('\n');
+}
+
+function cleanBrowserTaskQuery(value) {
+  return String(value || '')
+    .replace(/[.,;:!?]+$/g, '')
+    .replace(/\b(field|input|textbox|text box|textarea|area|button|link|tab)\b/gi, '')
+    .replace(/\b(the|a|an)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function browserTaskElementText(element = {}) {
+  return [
+    element.label,
+    element.text,
+    element.placeholder,
+    element.name,
+    element.type,
+    element.role,
+    element.selector,
+  ].map((item) => String(item || '')).join(' ').toLowerCase();
+}
+
+function browserTaskElementKind(element = {}, kind = '') {
+  const tag = String(element.tag || '').toLowerCase();
+  const type = String(element.type || '').toLowerCase();
+  const role = String(element.role || '').toLowerCase();
+  if (element.disabled) return false;
+  if (kind === 'fill') {
+    if (type === 'password') return false;
+    if (['button', 'submit', 'reset', 'checkbox', 'radio', 'file'].includes(type)) return false;
+    return ['input', 'textarea'].includes(tag) || element.contentEditable === true;
+  }
+  if (kind === 'select') return tag === 'select';
+  if (kind === 'click') {
+    return tag === 'button'
+      || tag === 'a'
+      || ['button', 'link', 'menuitem', 'checkbox', 'radio', 'tab'].includes(role)
+      || ['button', 'submit', 'reset'].includes(type);
+  }
+  return false;
+}
+
+function scoreBrowserTaskElement(element = {}, query = '', kind = '') {
+  if (!browserTaskElementKind(element, kind)) return -1;
+  const cleanedQuery = cleanBrowserTaskQuery(query).toLowerCase();
+  if (!cleanedQuery) return 1;
+  const haystack = browserTaskElementText(element);
+  const label = String(element.label || '').toLowerCase();
+  const placeholder = String(element.placeholder || '').toLowerCase();
+  const name = String(element.name || '').toLowerCase();
+  let score = 0;
+  if (label === cleanedQuery) score += 100;
+  if (placeholder === cleanedQuery) score += 80;
+  if (name === cleanedQuery) score += 70;
+  if (haystack.includes(cleanedQuery)) score += 50;
+  const words = cleanedQuery.split(/\s+/).filter(Boolean);
+  if (words.length && words.every((word) => haystack.includes(word))) score += 20 + words.length;
+  if (kind === 'fill' && ['input', 'textarea'].includes(String(element.tag || '').toLowerCase())) score += 4;
+  if (kind === 'click' && String(element.tag || '').toLowerCase() === 'button') score += 4;
+  return score;
+}
+
+function findBrowserTaskElement(dom = {}, query = '', kind = '') {
+  const elements = Array.isArray(dom.elements) ? dom.elements : [];
+  let best = null;
+  let bestScore = -1;
+  for (const element of elements) {
+    const score = scoreBrowserTaskElement(element, query, kind);
+    if (score > bestScore) {
+      best = element;
+      bestScore = score;
+    }
+  }
+  if (!best || bestScore < (query ? 20 : 1)) return null;
+  return best;
+}
+
+function cleanBrowserTaskValue(value) {
+  return String(value || '')
+    .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
+    .replace(/[.,;，。；]+$/g, '')
+    .trim();
+}
+
+function parseBrowserTaskFill(segment = '', fullInstruction = '') {
+  const text = String(segment || '').trim();
+  const patterns = [
+    /\b(?:fill|enter|type|input)\s+(?:the\s+)?(.+?)\s+(?:with|as|to)\s+["'`“”‘’]?(.+?)["'`“”‘’]?$/i,
+    /\b(?:type|enter|input)\s+["'`“”‘’]?(.+?)["'`“”‘’]?\s+(?:in|into|to)\s+(?:the\s+)?(.+?)$/i,
+  ];
+  for (const [index, pattern] of patterns.entries()) {
+    const match = text.match(pattern);
+    if (!match) continue;
+    return index === 0
+      ? { query: cleanBrowserTaskQuery(match[1]), value: cleanBrowserTaskValue(match[2]) }
+      : { query: cleanBrowserTaskQuery(match[2]), value: cleanBrowserTaskValue(match[1]) };
+  }
+  const chinese = text.match(/(?:把|在)?(.+?)(?:字段|输入框|框|栏)?(?:填|输入|写入)(?:成|为|:|：)?(.+)$/i);
+  if (chinese) return { query: cleanBrowserTaskQuery(chinese[1]), value: cleanBrowserTaskValue(chinese[2]) };
+  const quoted = String(fullInstruction || text).match(/["'`“”‘’]([^"'`“”‘’]+)["'`“”‘’]/);
+  const withValue = text.match(/\bwith\s+([^,.;]+)$/i);
+  const value = cleanBrowserTaskValue(quoted?.[1] || withValue?.[1] || '');
+  if (/\b(fill|enter|type|input)\b/i.test(text) && value) {
+    return { query: cleanBrowserTaskQuery(text.replace(/\b(fill|enter|type|input|with)\b/gi, '').replace(value, '')), value };
+  }
+  return null;
+}
+
+function parseBrowserTaskClick(segment = '') {
+  const text = String(segment || '').trim();
+  const english = text.match(/\b(?:click|press|tap)\s+(?:the\s+)?(.+?)$/i);
+  if (english) return { query: cleanBrowserTaskQuery(english[1]) };
+  const chinese = text.match(/(?:点击|按下|点一下)(.+?)(?:按钮|链接|标签)?$/i);
+  if (chinese) return { query: cleanBrowserTaskQuery(chinese[1]) };
+  return null;
+}
+
+function fallbackBrowserTaskPlan(instruction = '', dom = {}, maxSteps = 5, plannerError = '') {
+  const text = String(instruction || '').trim();
+  const lower = text.toLowerCase();
+  const steps = [];
+  const segments = text
+    .split(/\bthen\b|\band then\b|\band\b|,|;|，|；|然后|再|并且|并/i)
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+
+  if (!text) {
+    return { summary: 'No browser task instruction was provided.', successCheck: '', steps };
+  }
+  if (BROWSER_DOM_DANGEROUS_RE.test(text)) {
+    return {
+      summary: 'Local fallback refused to plan a risky browser action.',
+      successCheck: '',
+      steps,
+    };
+  }
+
+  for (const segment of segments) {
+    if (steps.length >= maxSteps) break;
+    const fill = parseBrowserTaskFill(segment, text);
+    if (fill?.value) {
+      const target = findBrowserTaskElement(dom, fill.query, 'fill');
+      if (target?.selector) {
+        steps.push({
+          action: 'fill',
+          selector: target.selector,
+          query: fill.query,
+          value: fill.value,
+          reason: 'Local fallback matched a fillable DOM element.',
+        });
+        continue;
+      }
+    }
+
+    const click = parseBrowserTaskClick(segment);
+    if (click) {
+      const target = findBrowserTaskElement(dom, click.query, 'click');
+      if (target?.selector) {
+        steps.push({
+          action: 'click',
+          selector: target.selector,
+          query: click.query,
+          value: '',
+          reason: 'Local fallback matched a clickable DOM element.',
+        });
+      }
+    }
+  }
+
+  if (!steps.length && /\b(fill|enter|type|input)\b/i.test(text)) {
+    const fill = parseBrowserTaskFill(text, text);
+    const target = findBrowserTaskElement(dom, fill?.query || '', 'fill');
+    if (fill?.value && target?.selector) {
+      steps.push({
+        action: 'fill',
+        selector: target.selector,
+        query: fill.query,
+        value: fill.value,
+        reason: 'Local fallback used the best fillable DOM element.',
+      });
+    }
+  }
+
+  if (steps.length < maxSteps && /\b(click|press|tap)\b/i.test(lower)) {
+    const click = parseBrowserTaskClick(text);
+    const alreadyClicked = steps.some((step) => step.action === 'click');
+    const target = !alreadyClicked ? findBrowserTaskElement(dom, click?.query || '', 'click') : null;
+    if (target?.selector) {
+      steps.push({
+        action: 'click',
+        selector: target.selector,
+        query: click?.query || '',
+        value: '',
+        reason: 'Local fallback used the best clickable DOM element.',
+      });
+    }
+  }
+
+  return normalizeBrowserTaskPlan({
+    summary: steps.length
+      ? `Local fallback planned ${steps.length} browser step${steps.length === 1 ? '' : 's'}.${plannerError ? ` Model planner failed: ${compactRecordText(plannerError, 180)}` : ''}`
+      : `No safe local browser steps could be inferred.${plannerError ? ` Model planner failed: ${compactRecordText(plannerError, 180)}` : ''}`,
+    successCheck: 'Read the page after execution and confirm the requested visible state changed.',
+    steps,
+  }, maxSteps);
+}
+
+async function planBrowserTaskSteps(page, dom, instruction, maxSteps) {
+  if (!OPENAI_API_KEY) {
+    return {
+      ...fallbackBrowserTaskPlan(instruction, dom, maxSteps, 'OpenAI API key is not configured.'),
+      source: 'local_fallback',
+      plannerError: 'OpenAI API key is not configured.',
+    };
+  }
+
+  let planText = '';
+  try {
+    planText = await callOpenAIResponses({
+      model: models.fast,
+      instructions: 'You are the browser task planner inside JAVIS. Return JSON only. Plan safe browser steps using the current page DOM. Never plan irreversible or account-changing actions.',
+      input: browserTaskPrompt(page, dom, instruction, maxSteps),
+      maxOutputTokens: 900,
+    });
+    return {
+      ...normalizeBrowserTaskPlan(parseJsonFromModelText(planText), maxSteps),
+      source: 'model',
+      plannerOutput: compactRecordText(planText, 1200),
+      plannerError: '',
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    const fallback = fallbackBrowserTaskPlan(instruction, dom, maxSteps, message);
+    appendAudit('browser_task.plan_failed', {
+      error: compactRecordText(message, 500),
+      fallbackSteps: fallback.steps.length,
+      model: models.fast,
+      output: compactRecordText(planText, 1000),
+    });
+    return {
+      ...fallback,
+      source: fallback.steps.length ? 'local_fallback' : 'blocked',
+      plannerOutput: compactRecordText(planText, 1200),
+      plannerError: message,
+    };
+  }
+}
+
+function browserTaskStepLabel(step) {
+  if (step.action === 'wait') return `Wait ${step.ms}ms`;
+  if (step.action === 'open_url') return `Open ${step.url || step.value}`;
+  if (step.action === 'search') return `Search ${step.query || step.value}`;
+  if (['reload', 'back', 'forward'].includes(step.action)) return `Browser ${step.action}`;
+  return `${step.action} ${step.selector || step.query}`;
+}
+
+async function runBrowserTaskStep(step, execute, options = {}) {
+  if (step.action === 'wait') {
+    if (execute) await waitMs(step.ms);
+    return {
+      status: execute ? 'executed' : 'previewed',
+      action: step.action,
+      label: browserTaskStepLabel(step),
+      output: execute ? `Waited ${step.ms}ms.` : `Would wait ${step.ms}ms.`,
+    };
+  }
+
+  if (['click', 'fill', 'select'].includes(step.action)) {
+    let result;
+    try {
+      result = await executeBrowserDomAction({
+        action: step.action,
+        app: options.app,
+        selector: step.selector,
+        query: step.query,
+        value: step.value,
+        execute,
+        source: 'browser_task',
+      }, { preview: !execute, approvalContext: options.approvalContext });
+    } catch (error) {
+      if (error instanceof ActionApprovalRequired) {
+        return {
+          status: 'approval_required',
+          action: step.action,
+          label: browserTaskStepLabel(step),
+          output: `Approval required before I can ${error.approval.summary}.`,
+          approval: error.approval,
+        };
+      }
+      throw error;
+    }
+    return {
+      status: result.ok ? (result.executed ? 'executed' : 'previewed') : result.approval ? 'approval_required' : 'blocked',
+      action: step.action,
+      label: browserTaskStepLabel(step),
+      output: result.output,
+      approval: result.approval,
+      plan: result.plan,
+      evaluation: result.evaluation,
+    };
+  }
+
+  const browserAction = step.action;
+  const controlArgs = {
+    action: 'browser_control',
+    browserAction,
+    app: options.app,
+    url: step.url || step.value,
+    query: step.query || step.value,
+  };
+  if (!execute) {
+    const plan = buildBrowserControlPlan(controlArgs);
+    const evaluation = evaluateMacActionPlan(plan, { preview: true });
+    return {
+      status: evaluation.blocked ? 'blocked' : 'previewed',
+      action: step.action,
+      label: browserTaskStepLabel(step),
+      output: `Prepared ${plan.summary}${evaluation.needsApproval ? ` (${evaluation.reason})` : ''}.`,
+      plan,
+      evaluation,
+    };
+  }
+  let result;
+  try {
+    result = await executeBrowserControl(controlArgs, { approvalContext: options.approvalContext });
+  } catch (error) {
+    if (error instanceof ActionApprovalRequired) {
+      return {
+        status: 'approval_required',
+        action: step.action,
+        label: browserTaskStepLabel(step),
+        output: `Approval required before I can ${error.approval.summary}.`,
+        approval: error.approval,
+      };
+    }
+    throw error;
+  }
+  return {
+    status: result.ok ? (result.executed ? 'executed' : 'previewed') : result.approval ? 'approval_required' : 'blocked',
+    action: step.action,
+    label: browserTaskStepLabel(step),
+    output: result.output,
+    approval: result.approval,
+  };
+}
+
+function formatBrowserTaskResults(results) {
+  return results
+    .map((result, index) => `${index + 1}. ${result.status}: ${result.label} · ${compactRecordText(result.output, 220)}`)
+    .join('\n');
+}
+
+async function runBrowserTaskWorkflow(options = {}) {
+  const instruction = String(options.instruction || '').trim();
+  if (!instruction) throw new Error('Browser act workflow requires an instruction.');
+  const execute = options.execute !== false;
+  const maxSteps = Math.max(1, Math.min(5, Number(options.maxSteps || 5)));
+  const maxChars = normalizeBrowserMaxChars(options.maxChars || 12000);
+  const page = await browserPageSnapshot({ app: options.app, maxChars });
+  const pageSummary = browserWorkflowPageSummary(page);
+  const workflowTitle = `act · ${page.title || page.url || instruction}`.slice(0, 180);
+
+  if (!page.available) {
+    const workflow = createWorkflowRecord({
+      kind: 'browser',
+      source: 'browser_task',
+      status: 'failed',
+      title: workflowTitle,
+      intent: 'act',
+      mode: 'quick',
+      request: instruction,
+      target: pageSummary,
+      result: page.error || 'No supported browser page is available.',
+    });
+    return {
+      ok: false,
+      mode: 'quick',
+      intent: 'act',
+      queued: false,
+      workflow,
+      page: pageSummary,
+      output: page.error || 'No supported browser page is available.',
+    };
+  }
+
+  const dom = await browserDomSnapshot({ app: options.app, limit: options.domLimit || 80 });
+  const workflow = createWorkflowRecord({
+    kind: 'browser',
+    source: 'browser_task',
+    status: 'running',
+    title: workflowTitle,
+    intent: 'act',
+    mode: 'quick',
+    request: instruction,
+    target: {
+      ...pageSummary,
+      resultCount: dom.elements?.length || 0,
+    },
+  });
+
+  appendAudit('browser_task.requested', {
+    app: page.app,
+    title: page.title,
+    url: page.url,
+    execute,
+    domCount: dom.elements?.length || 0,
+    maxSteps,
+  });
+
+  const plan = await planBrowserTaskSteps(page, dom, instruction, maxSteps);
+  const results = [];
+  for (const step of plan.steps) {
+    try {
+      const result = await runBrowserTaskStep(step, execute, {
+        app: options.app,
+        approvalContext: {
+          type: 'browser_task',
+          workflowId: workflow.id,
+          title: workflowTitle,
+          instruction,
+          stepIndex: step.index,
+        },
+      });
+      results.push({ index: step.index, ...result, reason: step.reason });
+      if (['blocked', 'approval_required'].includes(result.status)) break;
+      if (execute && result.status === 'executed' && step.action !== 'wait') await waitMs(450);
+    } catch (error) {
+      results.push({
+        index: step.index,
+        status: 'blocked',
+        action: step.action,
+        label: browserTaskStepLabel(step),
+        output: error instanceof Error ? error.message : String(error),
+        reason: step.reason,
+      });
+      break;
+    }
+  }
+
+  const afterPage = await browserPageSnapshot({ app: options.app, maxChars: Math.min(6000, maxChars) }).catch((error) => ({
+    available: false,
+    error: error instanceof Error ? error.message : String(error),
+  }));
+  const afterDom = await browserDomSnapshot({ app: options.app, limit: 40 }).catch((error) => ({
+    available: false,
+    error: error instanceof Error ? error.message : String(error),
+    elements: [],
+  }));
+  const noSafeSteps = plan.steps.length === 0;
+  const blocked = noSafeSteps || results.some((result) => ['blocked', 'approval_required'].includes(result.status));
+  const output = [
+    `Browser task: ${instruction}`,
+    `Plan: ${plan.summary}`,
+    `Planner: ${plan.source}`,
+    plan.plannerError ? `Planner note: ${compactRecordText(plan.plannerError, 260)}` : '',
+    plan.successCheck ? `Check: ${plan.successCheck}` : '',
+    results.length ? formatBrowserTaskResults(results) : 'No safe executable browser steps were planned.',
+    afterPage?.available ? `After: ${afterPage.title || ''} ${afterPage.url || ''}` : `After: ${afterPage?.error || 'unavailable'}`,
+  ].filter(Boolean).join('\n');
+  const finalWorkflow = setWorkflow(workflow.id, {
+    status: blocked ? 'blocked' : execute ? 'done' : 'done',
+    result: output,
+    completedAt: Date.now(),
+    target: {
+      ...pageSummary,
+      returnedLength: afterPage?.text?.length || pageSummary.returnedLength,
+      resultCount: afterDom?.elements?.length || 0,
+    },
+  });
+  appendAudit('browser_task.completed', {
+    workflowId: workflow.id,
+    status: finalWorkflow?.status,
+    steps: plan.steps.length,
+    results: results.length,
+    execute,
+    blocked,
+    noSafeSteps,
+    planner: plan.source,
+  });
+
+  return {
+    ok: !blocked,
+    mode: 'quick',
+    intent: 'act',
+    queued: false,
+    workflow: finalWorkflow,
+    page: browserWorkflowPageSummary(afterPage?.available ? afterPage : page),
+    beforePage: pageSummary,
+    dom,
+    afterDom,
+    plan,
+    results,
+    output,
+  };
+}
+
 async function runBrowserWorkflow(options = {}) {
   const intent = normalizeBrowserWorkflowIntent(options.intent);
+  if (intent === 'act') return runBrowserTaskWorkflow(options);
   const mode = normalizeBrowserWorkflowMode(options.mode);
   const instruction = String(options.instruction || '').trim();
   const maxChars = normalizeBrowserMaxChars(options.maxChars || (mode === 'quick' ? 12000 : 30000));
@@ -13378,15 +14069,17 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_browser_workflow',
-        description: 'Run a practical workflow over the current browser page: summarize, extract actions, draft, or answer a page-specific question.',
+        description: 'Run a practical workflow over the current browser page: summarize, extract actions, draft, answer a page-specific question, or safely act on the page with a short observe-plan-execute-review loop.',
         parameters: {
           type: 'object',
           properties: {
             app: { type: 'string' },
-            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask'] },
+            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask', 'act'] },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             instruction: { type: 'string' },
             maxChars: { type: 'number' },
+            maxSteps: { type: 'number' },
+            execute: { type: 'boolean' },
           },
           additionalProperties: false,
         },

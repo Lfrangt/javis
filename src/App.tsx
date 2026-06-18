@@ -32,7 +32,7 @@ import './App.css'
 type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 type WorkflowStatus = JobStatus | 'blocked'
 type JobMode = 'background' | 'codex' | 'claude' | 'cli'
-type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask'
+type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask' | 'act'
 type BrowserWorkflowMode = 'quick' | JobMode
 type VoiceStatus = 'idle' | 'connecting' | 'live' | 'error'
 type MicMode = 'open' | 'push'
@@ -1888,6 +1888,8 @@ function App() {
             mode: browserMode,
             instruction: browserInstruction.trim(),
             maxChars: browserMode === 'quick' ? 12000 : 30000,
+            execute: browserIntent === 'act',
+            maxSteps: 5,
           }),
         })
         if (result.queued && result.job) {
@@ -2413,6 +2415,7 @@ function App() {
                 <option value="extract_actions">Actions</option>
                 <option value="draft">Draft</option>
                 <option value="ask">Ask</option>
+                <option value="act">Act</option>
               </select>
               <select value={browserMode} onChange={(event) => setBrowserMode(event.target.value as BrowserWorkflowMode)}>
                 <option value="quick">Quick</option>
@@ -2424,7 +2427,7 @@ function App() {
             <div className="browser-workflow-entry">
               <input value={browserInstruction} onChange={(event) => setBrowserInstruction(event.target.value)} placeholder="Current page" />
               <button type="submit" disabled={browserBusy}>
-                {browserBusy ? <Loader2 className="spin" size={15} /> : browserIntent === 'extract_actions' ? <ListChecks size={15} /> : <Send size={15} />}
+                {browserBusy ? <Loader2 className="spin" size={15} /> : browserIntent === 'extract_actions' ? <ListChecks size={15} /> : browserIntent === 'act' ? <MousePointerClick size={15} /> : <Send size={15} />}
               </button>
             </div>
           </form>
