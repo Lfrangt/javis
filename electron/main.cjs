@@ -11073,7 +11073,10 @@ function buildRecoveryPlanForJob(job, error, options = {}) {
       reason: 'A Level 3/4 action is ready but policy requires confirmation.',
     });
   }
-  if (failureKind === 'worker_command_missing') {
+  if (
+    ['worker_command_missing', 'worker_failed', 'timeout', 'interrupted'].includes(failureKind)
+    && (job.mode === 'codex' || job.mode === 'claude')
+  ) {
     const alternativeMode = codeAgentAlternativeMode(job.mode);
     const alternativeCommand = codeAgentCommandForMode(alternativeMode);
     nextActions.push({
@@ -11082,7 +11085,7 @@ function buildRecoveryPlanForJob(job, error, options = {}) {
       riskLevel: 3,
       autoEligible: false,
       command: alternativeCommand,
-      reason: `${job.mode} command was unavailable; another code agent may be installed.`,
+      reason: `${job.mode} hit ${failureKind}; try ${alternativeMode} with the same narrowed recovery context before asking the user.`,
     });
   }
   if (failureKind === 'policy_blocked') {
