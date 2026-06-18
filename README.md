@@ -62,6 +62,7 @@ Local Mac-first realtime desktop buddy.
 - Resident system notifications for approvals and background task completion.
 - Voice mode defaults to open mic from the pet, with push-to-talk plumbing still available internally.
 - Setup/config diagnostics for `.env`, permissions, resident mode, policy, and local workers.
+- Local evaluation harness for product-lane regression checks across health, briefing, memory, Inbox, routing, collaboration, browser, file, and learning surfaces.
 - Shared AX targeting verifier for Chromium/Gemini side-pane input regressions.
 - Setup guide and one-step fix action for opening the current most important blocker.
 - Local setup actions for preparing `.env` and opening macOS permission/runtime locations.
@@ -84,6 +85,8 @@ It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowl
 The CUI also exposes next-work execution, overnight autopilot status, one-tick manual advance, learning refresh, inferred-memory save, learning skill draft preview/export, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
 
 Use `npm run verify:ax` as a read-only Accessibility targeting smoke test. For the strict Chrome/Gemini side-pane case, focus Chrome and run `npm run verify:ax -- --require-chromium`.
+
+Use `npm run eval` against a running resident for a broader local product-lane scorecard. It uses read-only or preview checks by default and can be scoped with `npm run eval -- --only=health,routing`.
 
 Local file policy lives in `~/Library/Application Support/JAVIS/Runtime/action-policy.json`; broad Home-directory access can be enabled there while protected macOS folders may still need Full Disk Access approval.
 

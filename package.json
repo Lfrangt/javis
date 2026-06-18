@@ -25,6 +25,8 @@
     "resident:uninstall": "node scripts/uninstall-launch-agent.cjs",
     "resident:restart": "npm run resident:uninstall && npm run resident:install",
     "doctor": "node scripts/doctor.mjs",
+    "eval": "node scripts/eval/run.mjs",
+    "eval:json": "node scripts/eval/run.mjs --json",
     "verify:ax": "node scripts/verify-ax-targeting.mjs",
     "config": "node scripts/config-cui.cjs",
     "config:cui": "node scripts/config-cui.cjs",

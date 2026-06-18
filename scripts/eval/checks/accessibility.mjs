@@ -1,0 +1,36 @@
+import { ok, warn, fail } from '../_client.mjs';
+
+// Light AX smoke check. For the deep Gemini-composer acceptance test use the
+// dedicated harness: `npm run verify:ax -- --require-chromium`.
+export default {
+  lane: 'accessibility',
+  async run(ctx) {
+    const out = [];
+
+    const tree = await ctx.api('/api/accessibility/tree?maxNodes=240&maxDepth=9', { timeoutMs: 15000 });
+    const t = tree.data?.tree;
+    if (!tree.ok || !t) {
+      out.push(fail('ax.tree', 'AX tree read', `GET /api/accessibility/tree ${tree.status} ${tree.error || ''}`));
+      return out;
+    }
+    if (t.error === 'accessibility_permission_not_granted') {
+      out.push(warn('ax.tree', 'AX tree read', 'Accessibility permission not granted — grant it in System Settings to use app control.'));
+      return out;
+    }
+    out.push(
+      t.available
+        ? ok('ax.tree', 'AX tree read', `app="${t.app}" nodes=${t.nodeCount} truncated=${t.truncated}`)
+        : warn('ax.tree', 'AX tree read', `no nodes (app="${t.app || '?'}" error=${t.error || ''})`),
+    );
+
+    const plan = await ctx.api('/api/accessibility/plan', { method: 'POST', body: { instruction: 'focus the main input', maxNodes: 240, maxDepth: 9 }, timeoutMs: 15000 });
+    const rec = plan.data?.recommended;
+    out.push(
+      plan.ok && rec
+        ? ok('ax.plan', 'AX target plan', `${rec.type}${rec.role ? ` (${rec.role})` : ''} from ${plan.data.candidates?.length || 0} candidate(s)`)
+        : warn('ax.plan', 'AX target plan', `POST /api/accessibility/plan ${plan.status} ${plan.error || ''}`),
+    );
+
+    return out;
+  },
+};

@@ -74,6 +74,17 @@ npm --silent run doctor -- --json --allow-blocked
 curl http://127.0.0.1:3417/api/doctor/report
 ```
 
+The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
+
+```bash
+npm run eval
+npm run eval -- --list
+npm run eval -- --only=health,routing,collaboration
+npm run eval:json
+```
+
+Current eval lanes cover resident health, work briefing, explicit memory, Inbox, routing/parallel ownership, collaboration claims, browser snapshots, file read/search/plan previews, and local learning/skill-draft preview.
+
 Routine maintenance lives in the terminal CUI instead of the desktop pet:
 
 ```bash
