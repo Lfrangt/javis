@@ -7384,7 +7384,21 @@ function updateConversationState(options = {}) {
   const now = Date.now();
   const requestedStatus = normalizeConversationStatus(options.status);
   const next = { ...conversationState };
+  const incomingSessionId = String(options.sessionId || '').slice(0, 120);
   let transitioned = false;
+  const activeStatus = next.status === 'connecting' || next.status === 'live';
+  const lifecycleUpdate = requestedStatus || options.heartbeat === true;
+  if (activeStatus && lifecycleUpdate && requestedStatus !== 'connecting' && incomingSessionId && next.sessionId && incomingSessionId !== next.sessionId) {
+    appendAudit('conversation.stale_update_ignored', {
+      currentSessionId: next.sessionId,
+      incomingSessionId,
+      currentStatus: next.status,
+      requestedStatus,
+      heartbeat: options.heartbeat === true,
+      source: String(options.source || '').slice(0, 80),
+    });
+    return conversationStateSnapshot();
+  }
 
   if (requestedStatus && requestedStatus !== next.status) {
     transitioned = true;
@@ -7403,10 +7417,11 @@ function updateConversationState(options = {}) {
   }
 
   if (requestedStatus === 'connecting') {
-    next.sessionId = String(options.sessionId || next.sessionId || crypto.randomUUID()).slice(0, 120);
-    next.startedAt = next.startedAt || now;
+    next.sessionId = String(options.sessionId || crypto.randomUUID()).slice(0, 120);
+    next.startedAt = now;
     next.liveAt = 0;
     next.endedAt = 0;
+    next.lastHeartbeatAt = 0;
     next.error = '';
   }
   if (requestedStatus === 'live') {

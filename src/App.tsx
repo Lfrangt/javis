@@ -791,6 +791,7 @@ function App() {
   const handledToolCallsRef = useRef<Set<string>>(new Set())
   const lastRealtimeScreenSyncRef = useRef(0)
   const lastWakeHandledAtRef = useRef(0)
+  const voiceSessionIdRef = useRef('')
   const screenPreviewRef = useRef('')
   const screenFrameRef = useRef<{ width: number; height: number } | null>(null)
   const realtimeScreenContextRef = useRef(realtimeScreenContext)
@@ -1110,6 +1111,7 @@ function App() {
   }, [])
 
   const stopVoice = useCallback((options: { report?: boolean } = {}) => {
+    const voiceSessionId = voiceSessionIdRef.current
     if (initialScreenContextTimeoutRef.current !== null) {
       window.clearTimeout(initialScreenContextTimeoutRef.current)
       initialScreenContextTimeoutRef.current = null
@@ -1123,9 +1125,10 @@ function App() {
     handledToolCallsRef.current.clear()
     previousPushStateRef.current = false
     responseActiveRef.current = false
+    voiceSessionIdRef.current = ''
     setIsPushingToTalk(false)
     setVoiceStatus('idle')
-    if (options.report !== false) void updateResidentConversation({ status: 'idle', screenLive: false })
+    if (options.report !== false) void updateResidentConversation({ status: 'idle', sessionId: voiceSessionId, screenLive: false })
   }, [updateResidentConversation])
 
   const runRealtimeTool = useCallback(
@@ -1220,9 +1223,11 @@ function App() {
 
   const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
     const intendedScreenLive = options.screenLive ?? screenLive
+    const voiceSessionId = crypto.randomUUID()
+    voiceSessionIdRef.current = voiceSessionId
     setLastError('')
     setVoiceStatus('connecting')
-    void updateResidentConversation({ status: 'connecting', micMode, screenLive: intendedScreenLive })
+    void updateResidentConversation({ status: 'connecting', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
     try {
       const peer = new RTCPeerConnection()
       peerRef.current = peer
@@ -1243,9 +1248,9 @@ function App() {
       const dataChannel = peer.createDataChannel('oai-events')
       dataChannelRef.current = dataChannel
       dataChannel.addEventListener('open', () => {
-        if (dataChannelRef.current !== dataChannel) return
+        if (dataChannelRef.current !== dataChannel || voiceSessionIdRef.current !== voiceSessionId) return
         setVoiceStatus('live')
-        void updateResidentConversation({ status: 'live', micMode, screenLive: intendedScreenLive })
+        void updateResidentConversation({ status: 'live', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
         addMessage('system', 'Voice link live.')
         apiJson<{ context: RealtimePreflightContext }>('/api/realtime/context?source=renderer')
           .then((result) => {
@@ -1276,9 +1281,10 @@ function App() {
       })
       dataChannel.addEventListener('message', handleRealtimeEvent)
       dataChannel.addEventListener('close', () => {
-        if (dataChannelRef.current !== dataChannel) return
+        if (dataChannelRef.current !== dataChannel || voiceSessionIdRef.current !== voiceSessionId) return
         setVoiceStatus((current) => (current === 'live' ? 'idle' : current))
-        void updateResidentConversation({ status: 'idle', micMode, screenLive: false })
+        voiceSessionIdRef.current = ''
+        void updateResidentConversation({ status: 'idle', sessionId: voiceSessionId, micMode, screenLive: false })
       })
 
       const offer = await peer.createOffer()
@@ -1295,7 +1301,7 @@ function App() {
       stopVoice({ report: false })
       setVoiceStatus('error')
       const message = error instanceof Error ? error.message : String(error)
-      void updateResidentConversation({ status: 'error', micMode, screenLive: intendedScreenLive, error: message })
+      void updateResidentConversation({ status: 'error', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive, error: message })
       setLastError(message)
       addMessage('system', message)
     }
@@ -1304,7 +1310,7 @@ function App() {
   useEffect(() => {
     if (voiceStatus !== 'live') return undefined
     const id = window.setInterval(() => {
-      void updateResidentConversation({ status: 'live', micMode, screenLive, heartbeat: true })
+      void updateResidentConversation({ status: 'live', sessionId: voiceSessionIdRef.current, micMode, screenLive, heartbeat: true })
     }, 15000)
     return () => window.clearInterval(id)
   }, [micMode, screenLive, updateResidentConversation, voiceStatus])
