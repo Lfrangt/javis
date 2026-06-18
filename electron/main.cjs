@@ -1487,6 +1487,27 @@ function ownerForRoutingLane(lane) {
   return 'realtime';
 }
 
+function normalizeRoutingOwnership(value) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const access = ['read', 'write'].includes(String(raw.access || '').trim()) ? String(raw.access).trim() : 'read';
+  const conflicts = Array.isArray(raw.conflicts)
+    ? raw.conflicts.slice(0, 8).map((conflict) => ({
+        index: Math.max(0, Number(conflict?.index || 0)),
+        owner: String(conflict?.owner || '').slice(0, 80),
+        key: compactRecordText(conflict?.key || '', 220),
+        task: compactRecordText(conflict?.task || '', 180),
+      }))
+    : [];
+  return {
+    access,
+    key: compactRecordText(raw.key || '', 220),
+    parallelSafe: raw.parallelSafe !== false,
+    serialized: Boolean(raw.serialized),
+    reason: compactRecordText(raw.reason || '', 240),
+    conflicts,
+  };
+}
+
 function normalizePersistedRoutingRecord(record) {
   if (!record || typeof record !== 'object' || !record.id) return null;
   const lane = normalizeRoutingLane(record.lane);
@@ -1516,6 +1537,7 @@ function normalizePersistedRoutingRecord(record) {
     attempts: normalizeJobAttempts(record.attempts),
     failureKind: String(record.failureKind || '').slice(0, 80),
     recoveryPlan: normalizeRecoveryPlan(record.recoveryPlan),
+    ownership: normalizeRoutingOwnership(record.ownership),
     memoryMatches: Math.max(0, Number(record.memoryMatches || 0)),
     createdAt: Number(record.createdAt || Date.now()),
     updatedAt: Number(record.updatedAt || Date.now()),
@@ -8843,6 +8865,7 @@ async function routeTask(options = {}) {
     owner: options.owner || '',
     parallelGroup: options.parallelGroup || options.group || '',
     scope: options.scope || '',
+    ownership: options.ownership,
   };
   const localCommand = localCommandDecision(task);
   if (localCommand) {
@@ -8995,12 +9018,120 @@ function normalizeParallelTaskItem(raw = {}, index = 0, defaults = {}) {
     mode,
     owner: String(raw.owner || defaults.owner || (mode === 'cli' ? 'local' : mode ? ownerForRoutingLane(mode) : '')).trim(),
     scope,
+    access: String(raw.access || raw.ownershipAccess || defaults.access || '').trim(),
+    ownershipKey: String(raw.ownershipKey || raw.ownerKey || defaults.ownershipKey || '').trim(),
     title: String(raw.title || task).trim(),
     includeScreen: raw.includeScreen ?? defaults.includeScreen,
     useMemory: raw.useMemory ?? defaults.useMemory,
     memoryLimit: raw.memoryLimit ?? defaults.memoryLimit,
     timeoutMs: raw.timeoutMs ?? defaults.timeoutMs,
   };
+}
+
+function commandLooksReadOnly(command) {
+  const text = String(command || '').trim();
+  if (!text) return true;
+  return /^(echo|pwd|date|whoami|id|which)\b/.test(text)
+    || /^git\s+(status|log|show|diff|branch|rev-parse|ls-files)\b/.test(text)
+    || /^(rg|grep|find|ls|sed\s+-n|cat|wc|head|tail)\b/.test(text)
+    || /^node\s+--check\b/.test(text)
+    || /^node\s+scripts\/doctor\.mjs\b/.test(text);
+}
+
+function normalizeOwnershipAccess(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['read', 'readonly', 'read-only', 'inspect'].includes(normalized)) return 'read';
+  if (['write', 'edit', 'mutation', 'mutate'].includes(normalized)) return 'write';
+  return '';
+}
+
+function inferParallelOwnershipAccess(item) {
+  const explicit = normalizeOwnershipAccess(item.access);
+  if (explicit) return explicit;
+  const text = `${item.scope}\n${item.title}\n${item.task}`.toLowerCase();
+  const readOnlySignal = /\bread[-\s]?only\b|只读|inspect|review|audit|summari[sz]e|analy[sz]e|investigat|查看|检查|审查|总结/.test(text);
+  const writeSignal = /\b(write|edit|modify|update|fix|implement|create|delete|move|rename|refactor|commit|apply|patch)\b|写入|编辑|修改|实现|修复|创建|删除|移动|重命名/.test(text);
+  if (readOnlySignal && !writeSignal) return 'read';
+  if (item.mode === 'cli' && item.command) return commandLooksReadOnly(item.command) ? 'read' : 'write';
+  if (['codex', 'claude'].includes(item.mode)) return 'write';
+  if (writeSignal) return 'write';
+  return 'read';
+}
+
+function extractOwnershipPathToken(text) {
+  const raw = String(text || '');
+  const matches = raw.match(/(?:~\/|\/|\.{1,2}\/|[A-Za-z0-9_.-]+\/)[^\s,;:'")]+|[A-Za-z0-9_.-]+\.(?:md|txt|json|jsonl|cjs|mjs|js|jsx|ts|tsx|css|html|py|sh|yml|yaml|toml|lock)/g);
+  return matches?.[0] || '';
+}
+
+function normalizeOwnershipKey(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const key = raw
+    .replace(/^["'`]+|["'`.,;:]+$/g, '')
+    .replace(/\\/g, '/')
+    .replace(/\/+$/g, '')
+    .replace(/\s+/g, ' ')
+    .toLowerCase();
+  return compactRecordText(key, 220);
+}
+
+function ownershipKeyForParallelTask(item) {
+  const explicit = normalizeOwnershipKey(item.ownershipKey);
+  if (explicit) return explicit;
+  const text = `${item.scope}\n${item.command}\n${item.title}\n${item.task}`;
+  const pathToken = extractOwnershipPathToken(text);
+  return normalizeOwnershipKey(pathToken || item.scope || item.title || item.task || item.command || 'parallel');
+}
+
+function ownershipKeysOverlap(a, b) {
+  const left = normalizeOwnershipKey(a);
+  const right = normalizeOwnershipKey(b);
+  if (!left || !right) return false;
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function applyParallelOwnership(tasks = []) {
+  const priorWriteScopes = [];
+  return tasks.map((item, index) => {
+    const access = inferParallelOwnershipAccess(item);
+    const key = ownershipKeyForParallelTask(item);
+    const conflicts = access === 'write'
+      ? priorWriteScopes.filter((scope) => ownershipKeysOverlap(key, scope.key))
+      : [];
+    const serialized = conflicts.length > 0;
+    const owner = serialized ? conflicts[0].owner || item.owner : item.owner;
+    const ownership = {
+      access,
+      key,
+      parallelSafe: !serialized,
+      serialized,
+      reason: serialized
+        ? `write scope overlaps ${conflicts[0].key}; serialized behind ${conflicts[0].owner || 'first owner'}`
+        : access === 'write'
+          ? 'unique write scope'
+          : 'read-only scope',
+      conflicts: conflicts.map((conflict) => ({
+        index: conflict.index,
+        owner: conflict.owner,
+        key: conflict.key,
+        task: conflict.task,
+      })),
+    };
+    if (access === 'write') {
+      priorWriteScopes.push({
+        index,
+        owner: owner || item.owner || ownerForRoutingLane(item.mode),
+        key,
+        task: item.title || item.task || item.command,
+      });
+    }
+    return {
+      ...item,
+      owner: owner || item.owner,
+      ownership,
+    };
+  });
 }
 
 function parallelRouteCounts(results = []) {
@@ -9042,6 +9173,7 @@ function previewParallelCliTask(item, context = {}) {
     scope: item.scope,
     parallelGroup: context.parallelGroup,
     resultSummary: `Preview CLI command: ${redactCommandForLog(item.command)}`,
+    ownership: item.ownership,
   });
   return {
     ok: true,
@@ -9083,6 +9215,7 @@ function queueParallelCliTask(item, context = {}) {
     scope: item.scope,
     parallelGroup: context.parallelGroup,
     resultSummary: result.output,
+    ownership: item.ownership,
   });
   return {
     ...result,
@@ -9101,10 +9234,10 @@ async function routeParallelTasks(options = {}) {
     : Array.isArray(options.items)
       ? options.items
       : [];
-  const tasks = rawTasks
+  const tasks = applyParallelOwnership(rawTasks
     .slice(0, MAX_PARALLEL_TASKS)
     .map((item, index) => normalizeParallelTaskItem(item, index, options))
-    .filter((item) => item.task || item.command);
+    .filter((item) => item.task || item.command));
   if (!tasks.length) throw new Error('No parallel tasks were provided.');
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const parallelGroup = String(options.parallelGroup || options.group || `parallel:${crypto.randomUUID()}`).slice(0, 120);
@@ -9114,22 +9247,63 @@ async function routeParallelTasks(options = {}) {
 
   for (const [index, item] of tasks.entries()) {
     try {
-      const result = item.command || item.mode === 'cli'
-        ? execute
-          ? queueParallelCliTask(item, { parallelGroup, source })
-          : previewParallelCliTask(item, { parallelGroup, source })
-        : await routeTask({
-          message: item.task,
-          execute,
-          includeScreen: Boolean(item.includeScreen),
-          useMemory: item.useMemory,
-          memoryLimit: item.memoryLimit,
-          mode: item.mode,
-          owner: item.owner,
+      let result;
+      if (execute && item.ownership?.serialized) {
+        const lane = item.command || item.mode === 'cli'
+          ? 'local'
+          : normalizeRoutingLane(item.mode || 'background');
+        const decision = {
+          lane,
+          mode: lane === 'local' ? 'cli' : lane,
+          label: lane === 'local' ? 'CLI' : lane === 'background' ? 'Deep' : lane === 'codex' ? 'Codex' : lane === 'claude' ? 'Claude' : 'Quick',
+          confidence: 1,
+          reason: 'parallel ownership guard serialized an overlapping write scope',
+          execute: false,
+          requiresOpenAiKey: lane === 'quick' || lane === 'background',
+          requiresLocalExecution: lane === 'codex' || lane === 'claude' || lane === 'local',
+          localCommand: lane === 'local' ? 'cli_command' : '',
+        };
+        const routing = createRoutingRecord({
+          task: item.title || item.task || redactCommandForLog(item.command),
+          decision,
+          source,
+          execute: false,
+          status: 'blocked',
+          owner: item.owner || ownerForRoutingLane(lane),
           scope: item.scope,
           parallelGroup,
-          source,
+          failureKind: 'parallel_scope_conflict',
+          resultSummary: `Not started: ${item.ownership.reason}`,
+          ownership: item.ownership,
         });
+        result = {
+          ok: false,
+          executed: false,
+          queued: false,
+          decision,
+          routing,
+          routeRecord: routing,
+          output: `Serialized by ownership guard: ${item.ownership.reason}`,
+        };
+      } else {
+        result = item.command || item.mode === 'cli'
+          ? execute
+            ? queueParallelCliTask(item, { parallelGroup, source })
+            : previewParallelCliTask(item, { parallelGroup, source })
+          : await routeTask({
+              message: item.task,
+              execute,
+              includeScreen: Boolean(item.includeScreen),
+              useMemory: item.useMemory,
+              memoryLimit: item.memoryLimit,
+              mode: item.mode,
+              owner: item.owner,
+              scope: item.scope,
+              ownership: item.ownership,
+              parallelGroup,
+              source,
+            });
+      }
       results.push({
         index,
         task: item.task,
@@ -9139,6 +9313,7 @@ async function routeParallelTasks(options = {}) {
         output: result.output || '',
         decision: result.decision,
         job: result.job,
+        ownership: item.ownership,
         routing: result.routing || result.routeRecord,
       });
     } catch (error) {
@@ -9148,15 +9323,20 @@ async function routeParallelTasks(options = {}) {
         command: item.command ? redactCommandForLog(item.command) : '',
         ok: false,
         queued: false,
+        ownership: item.ownership,
         output: error instanceof Error ? error.message : String(error),
       });
     }
   }
 
   const counts = parallelRouteCounts(results);
+  const ownershipConflicts = results.filter((item) => item.ownership?.serialized).length;
   const output = [
-    `Parallel group ${parallelGroup}: ${counts.ok}/${counts.total} routed, ${counts.queued} queued.`,
-    results.map((item) => `${item.index + 1}. ${item.routing?.lane || item.decision?.lane || 'failed'}/${item.routing?.status || ''} · ${item.routing?.owner || ''} · ${compactRecordText(item.task || item.command, 100)} · ${item.routing?.resultLink || item.output}`).join('\n'),
+    `Parallel group ${parallelGroup}: ${counts.ok}/${counts.total} routed, ${counts.queued} queued${ownershipConflicts ? `, ${ownershipConflicts} serialized by ownership guard` : ''}.`,
+    results.map((item) => {
+      const ownership = item.ownership?.key ? ` · ${item.ownership.access}:${item.ownership.key}${item.ownership.serialized ? ' serialized' : ''}` : '';
+      return `${item.index + 1}. ${item.routing?.lane || item.decision?.lane || 'failed'}/${item.routing?.status || ''} · ${item.routing?.owner || ''} · ${compactRecordText(item.task || item.command, 100)}${ownership} · ${item.routing?.resultLink || item.output}`;
+    }).join('\n'),
   ].filter(Boolean).join('\n');
 
   appendAudit('task_parallel.routed', {
@@ -9165,6 +9345,7 @@ async function routeParallelTasks(options = {}) {
     total: counts.total,
     ok: counts.ok,
     queued: counts.queued,
+    ownershipConflicts,
     source,
   });
 
@@ -9175,6 +9356,15 @@ async function routeParallelTasks(options = {}) {
     maxTasks: MAX_PARALLEL_TASKS,
     elapsedMs: Date.now() - startedAt,
     counts,
+    ownership: {
+      conflicts: ownershipConflicts,
+      serialized: results.filter((item) => item.ownership?.serialized).map((item) => ({
+        index: item.index,
+        task: item.task,
+        key: item.ownership.key,
+        conflicts: item.ownership.conflicts,
+      })),
+    },
     results,
     routingLedger: results.map((item) => item.routing && routingLedgerEntry(item.routing)).filter(Boolean),
     output,
@@ -11052,6 +11242,7 @@ function createRoutingRecord(options = {}) {
     attempts: normalizeJobAttempts(options.attempts),
     failureKind: options.failureKind || '',
     recoveryPlan: normalizeRecoveryPlan(options.recoveryPlan),
+    ownership: options.ownership || {},
     memoryMatches: options.memoryMatches || 0,
     createdAt: now,
     updatedAt: now,
@@ -11202,6 +11393,7 @@ function missingRoutingLedgerFields(record) {
 
 function routingBlockerForRecord(record) {
   if (!record) return '';
+  if (record.ownership?.serialized) return record.ownership.reason || 'parallel ownership conflict';
   if (record.status === 'approval_required') return record.approvalRequirement || 'approval required';
   if (record.status === 'failed') return record.failureKind || record.recoveryPlan?.failureKind || compactRecordText(record.resultSummary, 160) || 'failed';
   if (record.status === 'blocked') return record.failureKind || record.recoveryPlan?.summary || compactRecordText(record.resultSummary, 160) || 'blocked';
@@ -11210,6 +11402,7 @@ function routingBlockerForRecord(record) {
 
 function routingNextActionForRecord(record) {
   if (!record) return '';
+  if (record.ownership?.serialized) return `Wait for ${record.ownership.conflicts?.[0]?.owner || record.owner} to finish ${record.ownership.conflicts?.[0]?.key || record.ownership.key}, then reroute this task.`;
   if (record.status === 'queued') return `${record.owner} should start or stay queued in ${record.lane}.`;
   if (record.status === 'running') return `${record.owner} is running; check ${record.resultLink}.`;
   if (record.status === 'approval_required') return `Review approval before ${record.owner} can continue.`;
@@ -11238,6 +11431,7 @@ function routingLedgerEntry(record) {
     resultSummary: record.resultSummary,
     jobId: record.jobId,
     workflowId: record.workflowId,
+    ownership: record.ownership,
     updatedAt: record.updatedAt,
   };
 }
@@ -11260,6 +11454,7 @@ function finalizeRouteResult(result, context = {}) {
     resultSummary: result.output || '',
     parallelGroup: context.parallelGroup,
     scope: context.scope,
+    ownership: context.ownership,
     result,
   });
   return {
@@ -11302,6 +11497,7 @@ function createRoutingRecordForWorkflow(options = {}) {
     scope: options.scope || `${workflow.kind || 'workflow'}:${workflow.intent || workflow.source || source}`,
     parallelGroup: options.parallelGroup || options.group || decision.lane,
     resultSummary: options.resultSummary || workflow.result || '',
+    ownership: options.ownership,
   });
 }
 
@@ -11708,8 +11904,9 @@ function formatRoutingProgressLine(record) {
   const entry = routingLedgerEntry(record);
   const blocker = entry.blocker ? ` · blocker: ${compactRecordText(entry.blocker, 100)}` : '';
   const next = entry.nextAction ? ` · next: ${compactRecordText(entry.nextAction, 120)}` : '';
+  const ownership = entry.ownership?.key ? ` · ${entry.ownership.access}:${compactRecordText(entry.ownership.key, 80)}` : '';
   const detail = entry.resultSummary ? ` · ${compactRecordText(entry.resultSummary, 100)}` : '';
-  return `${entry.lane}/${entry.status} · owner:${entry.owner} · group:${entry.parallelGroup} · ${compactRecordText(entry.taskTitle, 90)} · ${progressAgeLabel(entry.updatedAt)} · ${entry.resultLink}${blocker}${next}${detail}`;
+  return `${entry.lane}/${entry.status} · owner:${entry.owner} · group:${entry.parallelGroup}${ownership} · ${compactRecordText(entry.taskTitle, 90)} · ${progressAgeLabel(entry.updatedAt)} · ${entry.resultLink}${blocker}${next}${detail}`;
 }
 
 function uniqueProgressRecords(list, keyForRecord) {
@@ -13163,6 +13360,15 @@ async function doctorReportSnapshot() {
       { command: 'echo doctor-parallel-preview', title: 'doctor parallel cli preview', scope: 'doctor:cli-preview', owner: 'local' },
     ],
   });
+  const parallelConflictPreview = await routeParallelTasks({
+    execute: false,
+    source: 'doctor',
+    parallelGroup: 'doctor:parallel-conflict-preview',
+    tasks: [
+      { task: 'Update docs roadmap wording.', mode: 'codex', scope: 'docs/ROADMAP.md', owner: 'codex' },
+      { task: 'Fix another docs roadmap section.', mode: 'claude', scope: 'docs/ROADMAP.md', owner: 'claude' },
+    ],
+  });
   const browserJavaScriptPreview = await browserJavaScriptStatusSnapshot();
   const realtimeBrowserToolPreview = realtimeBrowserWorkflowToolSnapshot();
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
@@ -13383,6 +13589,27 @@ async function doctorReportSnapshot() {
       routingLedger: parallelPreview.routingLedger,
     },
     parallelReady ? '' : 'Review routeParallelTasks().',
+  ));
+
+  const conflictRecord = parallelConflictPreview.results?.[1]?.routing || null;
+  const conflictReady =
+    parallelConflictPreview.ok === true &&
+    parallelConflictPreview.ownership?.conflicts === 1 &&
+    conflictRecord?.ownership?.serialized === true &&
+    conflictRecord.ownership.parallelSafe === false;
+  checks.push(doctorCheck(
+    'parallel_ownership_guard',
+    'Parallel ownership guard',
+    conflictReady ? 'ready' : 'warning',
+    conflictReady
+      ? 'Parallel router detects overlapping write scopes and marks the later task as serialized.'
+      : 'Parallel router did not flag overlapping write scopes.',
+    {
+      parallelGroup: parallelConflictPreview.parallelGroup,
+      ownership: parallelConflictPreview.ownership,
+      routingLedger: parallelConflictPreview.routingLedger,
+    },
+    conflictReady ? '' : 'Review applyParallelOwnership() and routeParallelTasks().',
   ));
 
   const localCommandReady =
@@ -16330,6 +16557,8 @@ function createRealtimeSessionConfig(options = {}) {
                   lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude', 'cli'] },
                   owner: { type: 'string' },
                   scope: { type: 'string' },
+                  access: { type: 'string', enum: ['read', 'write', 'read-only', 'readonly'] },
+                  ownershipKey: { type: 'string' },
                   timeoutMs: { type: 'number' },
                 },
                 additionalProperties: false,

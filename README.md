@@ -27,6 +27,7 @@ Local Mac-first realtime desktop buddy.
 - Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
 - Current-state app workflow planning: observe frontmost app, Accessibility tree, and screen metadata to turn a natural request into previewable local workflow steps.
 - Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context.
+- Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
 - No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
 - Fast lane for lightweight Q&A.
 - Deep lane for slower background tasks with persisted logs and cancellation.

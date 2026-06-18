@@ -60,8 +60,8 @@
 - Calendar, email, notes, and reminders through explicit connectors or local apps.
 - Obsidian/MCP bridge for notes and knowledge work.
 - Creative app bridge experiments, starting with read-only/dry-run control plans.
-- Coding workflows through Codex and Claude Code with clear ownership, write-scope boundaries, progress updates, and safe parallelization when tasks do not touch the same files or approvals. Current build supports grouped parallel routing with per-task owner, scope, status, and result links; next, add richer code-workflow ownership policies and merge conflict prevention.
-- Verifiable next task: route two read-only investigations and one scoped Codex documentation edit through `/api/tasks/parallel`, then confirm task history records distinct owners, scopes, statuses, and result links.
+- Coding workflows through Codex and Claude Code with clear owner/scope boundaries, progress updates, and parallel routing for independent work. Current build records per-task ownership metadata and serializes overlapping write scopes instead of launching competing agents against the same files; next, dogfood it on real mixed read/write code batches.
+- Verifiable next task: route two read-only investigations plus two overlapping scoped documentation edits through `/api/tasks/parallel`, then confirm independent work stays parallel while the later overlapping write is serialized and every route records owner, scope, ownership, status, and result link.
 
 ## Phase 3: Natural Collaboration
 
