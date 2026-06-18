@@ -8444,6 +8444,21 @@ function recoveryActionCandidates(recentJobs, limit = 4) {
     .slice(0, limit);
 }
 
+function retryableBlockedWorkflowPlan(workflow) {
+  if (!workflow || !['blocked', 'failed'].includes(workflow.status)) return null;
+  if (workflow.kind !== 'app' || workflow.intent !== 'run_app_workflow') return null;
+  const instruction = String(workflow.request || workflow.title || '').trim();
+  if (!instruction) return null;
+  const plan = safeLocalAppWorkflowPlan(instruction);
+  if (!plan?.ok || !Array.isArray(plan.steps) || !plan.steps.length) return null;
+  return {
+    instruction,
+    stepCount: plan.steps.length,
+    source: plan.source,
+    confidence: plan.confidence,
+  };
+}
+
 function workflowBriefing(options = {}) {
   const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 6)));
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
@@ -8534,13 +8549,18 @@ function workflowBriefing(options = {}) {
 
   if (blockedWorkflows.length) {
     const first = blockedWorkflows[0];
+    const retryPlan = retryableBlockedWorkflowPlan(first);
     nextActions.push({
       id: `workflow:${first.id}`,
-      priority: 2,
-      label: 'Resolve blocked workflow',
-      summary: `${first.title}: ${compactRecordText(first.result || first.request, 160)}`,
+      priority: retryPlan ? 0 : 2,
+      label: retryPlan ? 'Retry blocked app workflow' : 'Resolve blocked workflow',
+      summary: retryPlan
+        ? `${first.title}: retry with ${retryPlan.stepCount} safe local step(s).`
+        : `${first.title}: ${compactRecordText(first.result || first.request, 160)}`,
       source: 'workflows',
       workflowId: first.id,
+      workflowAction: retryPlan ? 'retry_app_workflow' : 'inspect',
+      executable: Boolean(retryPlan),
     });
   }
 
@@ -8827,6 +8847,59 @@ async function workNextAction(options = {}) {
           : `这一步不是低风险自动动作，已保留为计划: ${action.label}.`,
       ].filter(Boolean).join('\n')
       : '没有找到对应的失败任务，可能已经被清理。';
+  } else if (action.source === 'workflows' && action.workflowAction === 'retry_app_workflow') {
+    const workflow = action.workflowId ? workflows.get(action.workflowId) || null : null;
+    const retryPlan = retryableBlockedWorkflowPlan(workflow);
+    if (!workflow || !retryPlan) {
+      result = { workflow, retryPlan };
+      output = workflow
+        ? `这个 workflow 当前不能安全自动重试: ${workflow.title}`
+        : '没有找到对应的 blocked workflow。';
+    } else if (execute) {
+      result = await planAndMaybeRunAppWorkflow({
+        instruction: retryPlan.instruction,
+        title: `retry · ${workflow.title}`,
+        execute: true,
+        useModel: false,
+        maxNodes: options.maxNodes || 240,
+        maxDepth: options.maxDepth || 9,
+      });
+      executed = true;
+      if (result.ok && result.workflow?.id) {
+        setWorkflow(workflow.id, {
+          status: 'done',
+          result: [
+            `Recovered by retry workflow ${result.workflow.id}.`,
+            result.output || '',
+          ].filter(Boolean).join('\n'),
+          completedAt: Date.now(),
+        });
+      } else {
+        setWorkflow(workflow.id, {
+          status: 'blocked',
+          result: [
+            workflow.result || '',
+            `Retry attempted at ${new Date().toISOString()}: ${compactRecordText(result.output || 'retry did not complete', 1000)}`,
+          ].filter(Boolean).join('\n\n'),
+        });
+      }
+      output = [
+        `已重试 blocked workflow: ${workflow.title}`,
+        result.output || '',
+      ].filter(Boolean).join('\n');
+    } else {
+      result = await planAppWorkflow({
+        instruction: retryPlan.instruction,
+        title: `retry · ${workflow.title}`,
+        useModel: false,
+        maxNodes: options.maxNodes || 240,
+        maxDepth: options.maxDepth || 9,
+      });
+      output = [
+        `可重试 workflow: ${workflow.title}`,
+        result.output || '',
+      ].filter(Boolean).join('\n');
+    }
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
       source: options.source || 'work_next',
