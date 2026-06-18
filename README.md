@@ -16,7 +16,7 @@ Local Mac-first realtime desktop buddy.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, and visible page text from supported active tabs.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
-- Browser DOM control: read visible clickable/fillable page controls, then guarded click/fill/select one element.
+- Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
 - Browser workflows: summarize, extract actions, draft, or ask about the current page through quick or background lanes.
 - File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
@@ -145,7 +145,7 @@ Local Express service on 127.0.0.1:3417
   /api/browser/context  -> supported browser tab title and URL
   /api/browser/page     -> read-only current browser page text extraction
   /api/browser/control  -> guarded current-browser navigation actions
-  /api/browser/javascript -> browser Apple Events JavaScript bridge status
+  /api/browser/javascript -> browser JavaScript bridge status
   /api/browser/dom      -> read visible clickable/fillable page controls
   /api/browser/dom-action -> guarded webpage element click/fill/select
   /api/browser/workflow -> summarize, extract actions, draft, or ask about the current page

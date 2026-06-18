@@ -59,6 +59,7 @@ const CAPTURE_HOTKEY = process.env.JAVIS_CAPTURE_HOTKEY === 'false' ? '' : (proc
 const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER || 'top-right');
 const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
 const WINDOW_PARK_MARGIN = Math.max(0, Math.min(160, Number(process.env.JAVIS_WINDOW_PARK_MARGIN || 24)));
+const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_CHROME_DEBUG_PORT || 9222)));
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
 const AMBIENT_OBSERVE_ENABLED = process.env.JAVIS_AMBIENT_OBSERVE === 'true';
 const AMBIENT_CAPTURE_SCREEN = process.env.JAVIS_AMBIENT_CAPTURE_SCREEN === 'true';
@@ -4197,7 +4198,7 @@ function browserPageFromFileUrl(browser, maxChars, previousError) {
       headings: extracted.headings,
       metaDescription: extracted.metaDescription,
       fallback: 'file_url',
-      error: previousError ? 'browser_javascript_unavailable; used file_url fallback' : '',
+      error: previousError ? `${previousError}; used file_url fallback` : '',
     };
   } catch {
     return null;
@@ -4270,7 +4271,7 @@ async function browserPageFromHttpUrl(browser, maxChars, previousError) {
       headings: extracted.headings,
       metaDescription: extracted.metaDescription,
       fallback: 'url_fetch',
-      error: previousError ? 'browser_javascript_unavailable; used url_fetch fallback' : '',
+      error: previousError ? `${previousError}; used url_fetch fallback` : '',
     };
   } catch {
     return null;
@@ -4329,7 +4330,6 @@ async function browserPageSnapshot(options = {}) {
     };
   }
 
-  const isSafari = browser.app === 'Safari' || browser.app === 'Safari Technology Preview';
   const js = `
 (() => {
   const max = ${JSON.stringify(maxChars)};
@@ -4355,30 +4355,13 @@ async function browserPageSnapshot(options = {}) {
 })()
   `.trim();
 
-  const quotedApp = appleScriptString(browser.app);
-  const quotedJs = appleScriptString(js);
-  const script = isSafari
-    ? [
-        `tell application ${quotedApp}`,
-        '  if not (exists front document) then error "No front document"',
-        `  set pageJson to do JavaScript ${quotedJs} in front document`,
-        'end tell',
-        'return pageJson',
-      ].join('\n')
-    : [
-        `tell application ${quotedApp}`,
-        '  if not (exists front window) then error "No front window"',
-        `  set pageJson to execute active tab of front window javascript ${quotedJs}`,
-        'end tell',
-        'return pageJson',
-      ].join('\n');
-
   try {
-    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 5000, maxBuffer: 1024 * 1024 * 4 });
-    const parsed = JSON.parse(String(stdout || '').trim());
+    const page = await executeBrowserJavaScriptBridge(browser, js, { timeoutMs: 5000, maxBuffer: 1024 * 1024 * 4 });
+    const parsed = JSON.parse(String(page.output || '').trim());
     const result = {
       available: true,
       supported: true,
+      bridge: page.bridge,
       app: browser.app,
       title: parsed.title || browser.title,
       url: parsed.url || browser.url,
@@ -4396,6 +4379,7 @@ async function browserPageSnapshot(options = {}) {
       textLength: result.textLength,
       returnedLength: result.text.length,
       truncated: result.truncated,
+      bridge: result.bridge,
     });
     return result;
   } catch (error) {
@@ -4470,7 +4454,184 @@ function compactBrowserJavaScriptError(error) {
   if (/AppleScript.*JavaScript|Apple Events|Apple 事件|执行 JavaScript 的功能已关闭|Allow JavaScript from Apple Events/i.test(message)) {
     return 'browser_javascript_from_apple_events_disabled';
   }
+  if (/ECONNREFUSED|fetch failed|Failed to fetch/i.test(message)) {
+    return 'browser_cdp_unavailable';
+  }
+  if (/WebSocket/i.test(message)) {
+    return 'browser_cdp_websocket_error';
+  }
+  if (/cdp/i.test(message)) {
+    return compactRecordText(message.split('\n')[0], 220) || 'browser_cdp_unavailable';
+  }
   return message.split('\n')[0].slice(0, 500) || 'browser_javascript_unavailable';
+}
+
+function cdpBaseUrl() {
+  return `http://127.0.0.1:${CHROME_DEBUG_PORT}`;
+}
+
+async function cdpFetchJson(pathname, options = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(500, Math.min(5000, Number(options.timeoutMs || 1200))));
+  try {
+    const response = await fetch(`${cdpBaseUrl()}${pathname}`, { signal: controller.signal });
+    if (!response.ok) throw new Error(`cdp_http_${response.status}`);
+    return await response.json();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function cdpTargetsSnapshot() {
+  const targets = await cdpFetchJson('/json/list');
+  return Array.isArray(targets) ? targets : [];
+}
+
+function normalizeBrowserUrlForMatch(value) {
+  try {
+    const url = new URL(String(value || ''));
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return String(value || '').trim();
+  }
+}
+
+function chooseCdpTarget(targets = [], browser = {}) {
+  const pages = targets.filter((target) => target.type === 'page' && target.webSocketDebuggerUrl);
+  const browserUrl = normalizeBrowserUrlForMatch(browser.url || '');
+  if (browserUrl) {
+    const exact = pages.find((target) => normalizeBrowserUrlForMatch(target.url || '') === browserUrl);
+    if (exact) return exact;
+  }
+  const title = String(browser.title || '').trim();
+  if (title) {
+    const titleHit = pages.find((target) => String(target.title || '').trim() === title);
+    if (titleHit) return titleHit;
+  }
+  return pages.find((target) => /^https?:|^file:/i.test(String(target.url || ''))) || pages[0] || null;
+}
+
+async function cdpStatusSnapshot(browser = {}) {
+  if (!CHROME_DEBUG_PORT) {
+    return { enabled: false, port: CHROME_DEBUG_PORT, targets: 0, selectedTarget: null, error: 'chrome_debug_port_disabled' };
+  }
+  if (typeof WebSocket !== 'function') {
+    return { enabled: false, port: CHROME_DEBUG_PORT, targets: 0, selectedTarget: null, error: 'websocket_unavailable' };
+  }
+  try {
+    await cdpFetchJson('/json/version');
+    const targets = await cdpTargetsSnapshot();
+    const selected = chooseCdpTarget(targets, browser);
+    return {
+      enabled: Boolean(selected),
+      port: CHROME_DEBUG_PORT,
+      targets: targets.length,
+      selectedTarget: selected
+        ? {
+            id: selected.id || '',
+            title: selected.title || '',
+            url: selected.url || '',
+          }
+        : null,
+      error: selected ? '' : 'no_cdp_page_target',
+    };
+  } catch (error) {
+    return {
+      enabled: false,
+      port: CHROME_DEBUG_PORT,
+      targets: 0,
+      selectedTarget: null,
+      error: compactBrowserJavaScriptError(error) || 'browser_cdp_unavailable',
+    };
+  }
+}
+
+function cdpEvaluateExpression(webSocketUrl, expression, options = {}) {
+  return new Promise((resolve, reject) => {
+    const timeoutMs = Math.max(1000, Math.min(10000, Number(options.timeoutMs || 5000)));
+    const ws = new WebSocket(webSocketUrl);
+    const requestId = 1;
+    const timer = setTimeout(() => {
+      try {
+        ws.close();
+      } catch {
+        // Ignore close failures.
+      }
+      reject(new Error('browser_cdp_evaluate_timeout'));
+    }, timeoutMs);
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({
+        id: requestId,
+        method: 'Runtime.evaluate',
+        params: {
+          expression,
+          awaitPromise: true,
+          returnByValue: true,
+          userGesture: true,
+        },
+      }));
+    });
+    ws.addEventListener('message', (event) => {
+      let data = null;
+      try {
+        data = JSON.parse(String(event.data || ''));
+      } catch {
+        return;
+      }
+      if (data.id !== requestId) return;
+      clearTimeout(timer);
+      try {
+        ws.close();
+      } catch {
+        // Ignore close failures.
+      }
+      if (data.error) {
+        reject(new Error(data.error.message || 'browser_cdp_evaluate_failed'));
+        return;
+      }
+      if (data.result?.exceptionDetails) {
+        reject(new Error(data.result.exceptionDetails.text || 'browser_cdp_runtime_exception'));
+        return;
+      }
+      resolve(data.result?.result?.value ?? '');
+    });
+    ws.addEventListener('error', () => {
+      clearTimeout(timer);
+      reject(new Error('browser_cdp_websocket_error'));
+    });
+  });
+}
+
+async function executeBrowserJavaScriptViaCdp(browser, js, options = {}) {
+  const targets = await cdpTargetsSnapshot();
+  const target = chooseCdpTarget(targets, browser);
+  if (!target?.webSocketDebuggerUrl) throw new Error('browser_cdp_target_not_found');
+  const output = await cdpEvaluateExpression(target.webSocketDebuggerUrl, js, options);
+  return String(output || '');
+}
+
+async function executeBrowserJavaScriptBridge(browser, js, options = {}) {
+  try {
+    return {
+      output: await executeBrowserJavaScript(browser, js, options),
+      bridge: 'apple_events',
+    };
+  } catch (appleError) {
+    const appleMessage = compactBrowserJavaScriptError(appleError);
+    try {
+      return {
+        output: await executeBrowserJavaScriptViaCdp(browser, js, options),
+        bridge: 'cdp',
+        appleError: appleMessage,
+      };
+    } catch (cdpError) {
+      const error = new Error(appleMessage || compactBrowserJavaScriptError(cdpError));
+      error.appleError = appleMessage;
+      error.cdpError = compactBrowserJavaScriptError(cdpError);
+      throw error;
+    }
+  }
 }
 
 async function browserJavaScriptStatusSnapshot(options = {}) {
@@ -4486,16 +4647,22 @@ async function browserJavaScriptStatusSnapshot(options = {}) {
       error: browser.error || 'no_supported_browser_page',
     };
   }
+  const cdp = await cdpStatusSnapshot(browser);
   try {
-    const raw = await executeBrowserJavaScript(browser, 'JSON.stringify({ ok: true, title: document.title || "", url: location.href })', {
+    const result = await executeBrowserJavaScriptBridge(browser, 'JSON.stringify({ ok: true, title: document.title || "", url: location.href })', {
       timeoutMs: 3000,
       maxBuffer: 1024 * 256,
     });
+    const raw = result.output;
     const parsed = JSON.parse(raw || '{}');
     return {
       available: true,
       supported: true,
       enabled: parsed.ok === true,
+      bridge: result.bridge,
+      appleEventsEnabled: result.bridge === 'apple_events',
+      cdpEnabled: result.bridge === 'cdp',
+      cdp,
       app: browser.app,
       title: parsed.title || browser.title,
       url: parsed.url || browser.url,
@@ -4506,10 +4673,16 @@ async function browserJavaScriptStatusSnapshot(options = {}) {
       available: true,
       supported: true,
       enabled: false,
+      bridge: '',
+      appleEventsEnabled: false,
+      cdpEnabled: false,
+      cdp,
       app: browser.app,
       title: browser.title,
       url: browser.url,
       error: compactBrowserJavaScriptError(error),
+      appleError: error.appleError || '',
+      cdpError: error.cdpError || '',
     };
   }
 }
@@ -4668,11 +4841,12 @@ async function browserDomSnapshot(options = {}) {
   }
   const limit = Math.max(1, Math.min(120, Number(options.limit || 60)));
   try {
-    const raw = await executeBrowserJavaScript(browser, browserDomSnapshotScript(limit), { timeoutMs: 6000 });
-    const parsed = JSON.parse(raw || '{}');
+    const snapshot = await executeBrowserJavaScriptBridge(browser, browserDomSnapshotScript(limit), { timeoutMs: 6000 });
+    const parsed = JSON.parse(snapshot.output || '{}');
     const result = {
       available: true,
       supported: true,
+      bridge: snapshot.bridge,
       app: browser.app,
       title: String(parsed.title || browser.title || ''),
       url: String(parsed.url || browser.url || ''),
@@ -4685,6 +4859,7 @@ async function browserDomSnapshot(options = {}) {
       url: result.url,
       count: result.count,
       returned: result.elements.length,
+      bridge: result.bridge,
     });
     return result;
   } catch (error) {
@@ -4697,6 +4872,8 @@ async function browserDomSnapshot(options = {}) {
       count: 0,
       elements: [],
       error: compactBrowserJavaScriptError(error),
+      appleError: error.appleError || '',
+      cdpError: error.cdpError || '',
     };
   }
 }
@@ -4891,14 +5068,15 @@ async function runBrowserDomActionPlan(plan, evaluation) {
   }
   const browser = await browserContextSnapshot({ app: plan.args.app });
   if (!browser.supported || !browser.available) throw new Error(browser.error || 'frontmost_app_is_not_supported_browser');
-  const raw = await executeBrowserJavaScript(browser, browserDomActionScript(plan), { timeoutMs: 6000 });
-  const result = JSON.parse(raw || '{}');
+  const executed = await executeBrowserJavaScriptBridge(browser, browserDomActionScript(plan), { timeoutMs: 6000 });
+  const result = JSON.parse(executed.output || '{}');
   appendAudit('browser_dom.executed', {
     app: browser.app,
     action: plan.args.domAction,
     selector: result.selector,
     label: compactRecordText(result.label, 120),
     url: result.url || browser.url,
+    bridge: executed.bridge,
   });
   return `${result.action} executed on ${result.tag}${result.label ? ` "${result.label}"` : ''}.`;
 }
@@ -8615,7 +8793,7 @@ async function doctorReportSnapshot() {
       : 'No supported frontmost browser page is available; DOM bridge check skipped.',
     browserJavaScriptPreview,
     browserJavaScriptPreview.available && browserJavaScriptPreview.supported && !browserJavaScriptPreview.enabled
-      ? 'In Chrome, open 显示 > 开发者 > 允许 Apple 事件中的 JavaScript, then retry /api/browser/dom.'
+      ? 'Enable Chrome 显示 > 开发者 > 允许 Apple 事件中的 JavaScript, or restart Chrome with local remote debugging on JAVIS_CHROME_DEBUG_PORT.'
       : '',
   ));
 

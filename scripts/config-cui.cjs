@@ -154,7 +154,12 @@ async function printStatus() {
       console.log(`Learning: ${status.learning.enabled ? 'on' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${profile.summary || 'no profile yet'}`);
     }
     if (browserJs.javascript?.supported && browserJs.javascript?.available) {
-      console.log(`Browser DOM: ${browserJs.javascript.enabled ? 'ready' : 'needs Chrome setting'}${browserJs.javascript.error ? ` · ${browserJs.javascript.error}` : ''}`);
+      const bridge = browserJs.javascript.bridge || '';
+      const cdpError = browserJs.javascript.cdpError || browserJs.javascript.cdp?.error || '';
+      const browserDetail = browserJs.javascript.enabled
+        ? `ready${bridge ? ` via ${bridge}` : ''}`
+        : `needs browser bridge${browserJs.javascript.error ? ` · ${browserJs.javascript.error}` : ''}${cdpError && cdpError !== browserJs.javascript.error ? ` · cdp ${cdpError}` : ''}`;
+      console.log(`Browser DOM: ${browserDetail}`);
     }
     console.log(`Doctor: ${doctor.doctor?.counts?.ready || 0}/${doctor.doctor?.counts?.total || 0} ready · ${doctor.doctor?.overall || 'unknown'}`);
     const issues = issueLines(doctor.doctor);

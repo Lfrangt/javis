@@ -573,7 +573,13 @@ curl -X POST http://127.0.0.1:3417/api/browser/dom-action \
 
 `/api/browser/dom` is read-only and returns visible clickable/fillable controls with selectors. `/api/browser/dom-action` runs one guarded `click`, `fill`, or `select`. Use `execute:false` to preview; real execution still uses local execution, policy, approvals, and audit logs.
 
-Chrome requires `显示 > 开发者 > 允许 Apple 事件中的 JavaScript` before `/api/browser/dom` and `/api/browser/dom-action` can inspect or operate page DOM. `/api/browser/javascript` reports that bridge status.
+Browser DOM control can use Chrome/Safari Apple Events JavaScript. For Chrome, enable `显示 > 开发者 > 允许 Apple 事件中的 JavaScript`, or restart Chrome with a local DevTools port that matches `JAVIS_CHROME_DEBUG_PORT`:
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-address=127.0.0.1 --remote-debugging-port=9222
+```
+
+`/api/browser/javascript` reports the active bridge and any Apple Events/CDP error.
 
 ## Accessibility UI Tree
 

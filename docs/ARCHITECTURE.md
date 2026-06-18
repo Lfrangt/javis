@@ -67,7 +67,7 @@ Renderer
 - Doctor lane: one report that validates service health, setup, policy guards, resident mode, workers, storage, queue, workflows, and approvals.
 - Browser context lane: current supported browser tab title and URL for webpage-aware tasks.
 - Browser page lane: read-only extraction of selected text, headings, and visible page text from supported active tabs.
-- Browser DOM lane: read-only visible control extraction plus guarded one-step click/fill/select actions inside supported active tabs.
+- Browser DOM lane: read-only visible control extraction plus guarded one-step click/fill/select actions inside supported active tabs, using browser Apple Events first and Chrome DevTools on `JAVIS_CHROME_DEBUG_PORT` as a fallback.
 - Browser workflow lane: page-aware summarize, action extraction, drafting, and Q&A routed through quick or background lanes.
 - Accessibility tree lane: read-only frontmost App UI structure for operating non-browser Mac apps through the accessibility model.
 - UI planning lane: dry-run target selection and next-action plans from the current accessibility tree.
