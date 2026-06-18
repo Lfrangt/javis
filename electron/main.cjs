@@ -81,6 +81,7 @@ const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES |
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
+const MAX_RECOVERY_JOB_ATTEMPTS = Math.max(0, Math.min(5, Number(process.env.JAVIS_MAX_RECOVERY_JOB_ATTEMPTS || 2)));
 const MAX_LEARNING_SOURCE_EVENTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_LEARNING_SOURCE_EVENTS || 200)));
 const startedAt = Date.now();
 const packageInfo = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
@@ -1253,6 +1254,9 @@ function normalizePersistedJob(job) {
     pid: interrupted ? null : job.pid || null,
     source: String(job.source || ''),
     workflowId: String(job.workflowId || ''),
+    parentJobId: String(job.parentJobId || ''),
+    recoveryForJobId: String(job.recoveryForJobId || ''),
+    task: String(job.task || job.command || job.title || '').slice(0, 24000),
     command: String(job.command || '').slice(0, 4000),
     timeoutMs: Math.max(1000, Math.min(3600000, Number(job.timeoutMs || 180000))),
     cancelRequested: false,
@@ -8553,25 +8557,61 @@ function recoveryActionPriority(job, action) {
   return 3;
 }
 
+function recoveryChildJobs(jobId) {
+  const parentId = String(jobId || '');
+  if (!parentId) return [];
+  return Array.from(jobs.values())
+    .filter((job) => job.recoveryForJobId === parentId)
+    .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function activeRecoveryChildJob(jobId) {
+  return recoveryChildJobs(jobId).find((job) => job.status === 'queued' || job.status === 'running') || null;
+}
+
+function reviewedRecoveryTypes(job) {
+  const reviewed = new Set();
+  const log = String(job?.log || '');
+  for (const match of log.matchAll(/Recovery action reviewed via work_next: ([\w-]+)/g)) {
+    reviewed.add(match[1]);
+  }
+  return reviewed;
+}
+
 function recoveryActionCandidates(recentJobs, limit = 4) {
   return recentJobs
     .filter((job) => job.status === 'failed' && job.recoveryPlan?.nextActions?.length)
-    .flatMap((job) => job.recoveryPlan.nextActions.slice(0, 2).map((action, index) => ({
-      id: `recovery:${job.id}:${action.type || index}`,
-      priority: recoveryActionPriority(job, action),
-      label: action.label || 'Recover failed job',
-      summary: [
-        `${job.mode}/${job.failureKind || job.recoveryPlan.failureKind || 'failed'}: ${compactRecordText(job.title, 110)}`,
-        action.reason || job.recoveryPlan.summary || '',
-      ].filter(Boolean).join(' · '),
-      source: 'recovery',
-      jobId: job.id,
-      failureKind: job.failureKind || job.recoveryPlan.failureKind || '',
-      recoveryType: action.type || 'manual',
-      autoEligible: Boolean(action.autoEligible),
-      riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
-      command: action.command || '',
-    })))
+    .flatMap((job) => {
+      if (activeRecoveryChildJob(job.id)) return [];
+      const reviewed = reviewedRecoveryTypes(job);
+      const childCount = recoveryChildJobs(job.id).length;
+      return job.recoveryPlan.nextActions
+        .filter((action) => {
+          const type = action.type || 'manual';
+          if (['diagnose', 'policy', 'approval'].includes(type) && reviewed.has(type)) return false;
+          if (['retry', 'alternative_worker'].includes(type) && childCount >= MAX_RECOVERY_JOB_ATTEMPTS) return false;
+          return true;
+        })
+        .slice(0, 2)
+        .map((action, index) => ({
+          id: `recovery:${job.id}:${action.type || index}`,
+          priority: recoveryActionPriority(job, action),
+          label: action.label || 'Recover failed job',
+          summary: [
+            `${job.mode}/${job.failureKind || job.recoveryPlan.failureKind || 'failed'}: ${compactRecordText(job.title, 110)}`,
+            action.reason || job.recoveryPlan.summary || '',
+          ].filter(Boolean).join(' · '),
+          source: 'recovery',
+          jobId: job.id,
+          failureKind: job.failureKind || job.recoveryPlan.failureKind || '',
+          recoveryType: action.type || 'manual',
+          autoEligible: Boolean(action.autoEligible),
+          riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+          command: action.command || '',
+          recoveryAttempts: childCount,
+          maxRecoveryAttempts: MAX_RECOVERY_JOB_ATTEMPTS,
+        }));
+    })
     .sort((a, b) => a.priority - b.priority)
     .slice(0, limit);
 }
@@ -8973,18 +9013,31 @@ async function workNextAction(options = {}) {
     const diagnostics = job?.recoveryPlan?.diagnostics || recoveryDiagnosticsSnapshot();
     const recoverySummary = job?.recoveryPlan?.summary || action.summary || '';
     const safeToExecute = Boolean(action.autoEligible && action.riskLevel <= 1 && ['diagnose', 'policy', 'approval'].includes(action.recoveryType));
-    if (execute && safeToExecute && job) {
+    const canQueueRecovery = Boolean(
+      job
+      && execute
+      && ['retry', 'alternative_worker'].includes(action.recoveryType)
+      && ['worker_failed', 'command_failed', 'timeout', 'worker_command_missing'].includes(job.failureKind || job.recoveryPlan?.failureKind || action.failureKind),
+    );
+    if (canQueueRecovery) {
+      result = queueRecoveryJob(job, action, { source: options.source || 'work_next' });
+      executed = Boolean(result.queued);
+      output = result.output;
+    } else if (execute && safeToExecute && job) {
       appendJobLog(job.id, `Recovery action reviewed via work_next: ${action.recoveryType}.`);
       executed = true;
     }
-    result = { job, recovery: action, diagnostics };
-    output = job
+    if (!result) result = { job, recovery: action, diagnostics };
+    if (!output) output = job
       ? [
         `恢复任务: ${job.mode}/${job.failureKind || job.recoveryPlan?.failureKind || 'failed'} · ${compactRecordText(job.title, 120)}`,
         recoverySummary ? `原因: ${compactRecordText(recoverySummary, 220)}` : '',
         diagnostics?.summary ? `诊断: ${compactRecordText(diagnostics.summary, 220)}` : '',
         diagnostics?.runtime ? `权限: localExec=${diagnostics.runtime.localExecutionEnabled ? 'on' : 'off'}, trusted=${diagnostics.runtime.trustedLocalMode ? 'on' : 'off'}, autoLevel=${diagnostics.runtime.maxAutoRiskLevel}, approvalAt=${diagnostics.runtime.requireApprovalAtRiskLevel}` : '',
         diagnostics?.workers ? `Worker: Codex ${diagnostics.workers.codex?.available ? 'ready' : 'missing'}, Claude ${diagnostics.workers.claude?.available ? 'ready' : 'missing'}` : '',
+        ['retry', 'alternative_worker'].includes(action.recoveryType)
+          ? `可恢复: 手动执行会排一个缩小范围的 ${recoveryJobModeFor(job, action)} recovery job (${action.recoveryAttempts || 0}/${action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS}).`
+          : '',
         safeToExecute
           ? '已完成低风险恢复检查；下一步可以按诊断继续修复。'
           : `这一步不是低风险自动动作，已保留为计划: ${action.label}.`,
@@ -9350,6 +9403,100 @@ async function copyWorkflowResult(options = {}) {
   };
 }
 
+function originalTaskForJob(job) {
+  return String(job?.task || job?.command || job?.title || job?.result || '').trim();
+}
+
+function recoveryJobModeFor(job, action = {}) {
+  if (action.recoveryType === 'alternative_worker' && (job.mode === 'codex' || job.mode === 'claude')) {
+    return codeAgentAlternativeMode(job.mode);
+  }
+  if (job.mode === 'codex' || job.mode === 'claude') return job.mode;
+  return 'background';
+}
+
+function recoveryLogTail(job) {
+  const parts = [
+    job?.result ? `Result:\n${job.result}` : '',
+    job?.log ? `Log:\n${job.log}` : '',
+  ].filter(Boolean).join('\n\n');
+  return trimText(parts, 12000);
+}
+
+function buildRecoveryJobPrompt(job, action = {}, attemptNumber = 1) {
+  const attempts = normalizeJobAttempts(job.attempts)
+    .map((attempt, index) => `${index + 1}. ${attempt.tool || job.mode}: ${attempt.status}${attempt.summary ? ` - ${compactRecordText(attempt.summary, 500)}` : ''}`)
+    .join('\n') || 'No recorded attempts.';
+  const originalTask = originalTaskForJob(job) || job.title || 'Recover the failed JAVIS job.';
+  const failureKind = action.failureKind || job.failureKind || job.recoveryPlan?.failureKind || 'failed';
+  const diagnostics = job.recoveryPlan?.diagnostics?.summary || '';
+  return [
+    'You are a recovery worker inside JAVIS.',
+    'Do not stop at "this failed". Diagnose the failure, narrow the scope, try a practical fix or produce the exact next executable step.',
+    'Keep the recovery focused. Prefer small verifiable changes or commands over broad rewrites. If a permission or tool is missing, say exactly what is missing and what JAVIS already tried.',
+    '',
+    `Recovery attempt: ${attemptNumber}/${MAX_RECOVERY_JOB_ATTEMPTS}`,
+    `Original job: ${job.id}`,
+    `Original mode: ${job.mode}`,
+    `Failure kind: ${failureKind}`,
+    `Recovery action: ${action.recoveryType || 'retry'} - ${action.label || 'Retry with narrower scope'}`,
+    diagnostics ? `Diagnostics: ${compactRecordText(diagnostics, 800)}` : '',
+    '',
+    'Original task:',
+    originalTask,
+    '',
+    'Previous attempts:',
+    attempts,
+    '',
+    'Failure evidence:',
+    recoveryLogTail(job) || '[no log captured]',
+  ].filter((line) => line !== '').join('\n');
+}
+
+function queueRecoveryJob(job, action = {}, options = {}) {
+  const children = recoveryChildJobs(job.id);
+  const activeChild = children.find((child) => child.status === 'queued' || child.status === 'running');
+  if (activeChild) {
+    return {
+      ok: true,
+      queued: false,
+      job: activeChild,
+      output: `Recovery job is already active: ${activeChild.id} (${activeChild.mode}/${activeChild.status}).`,
+    };
+  }
+  if (children.length >= MAX_RECOVERY_JOB_ATTEMPTS) {
+    return {
+      ok: false,
+      queued: false,
+      job: null,
+      output: `Recovery retry limit reached for ${job.id}: ${children.length}/${MAX_RECOVERY_JOB_ATTEMPTS}.`,
+    };
+  }
+  const mode = recoveryJobModeFor(job, action);
+  const prompt = buildRecoveryJobPrompt(job, action, children.length + 1);
+  const recoveryJob = createJob(prompt, mode, options.source || 'recovery', {
+    title: `recover · ${job.title}`,
+    parentJobId: job.id,
+    recoveryForJobId: job.id,
+    task: prompt,
+    timeoutMs: Math.max(180000, Math.min(3600000, Number(job.timeoutMs || 180000))),
+  });
+  appendJobLog(job.id, `Recovery job queued via work_next: ${recoveryJob.id} (${mode}).`);
+  appendAudit('job.recovery_queued', {
+    id: job.id,
+    recoveryJobId: recoveryJob.id,
+    mode,
+    recoveryType: action.recoveryType || '',
+    attempt: children.length + 1,
+  });
+  return {
+    ok: true,
+    queued: true,
+    job: recoveryJob,
+    output: `Queued recovery job ${recoveryJob.id} in ${mode} mode for ${job.title}.`,
+  };
+}
+
 function createJob(task, mode, source, metadata = {}) {
   const id = crypto.randomUUID();
   const job = {
@@ -9364,6 +9511,9 @@ function createJob(task, mode, source, metadata = {}) {
     pid: null,
     source: source || '',
     workflowId: String(metadata.workflowId || ''),
+    parentJobId: String(metadata.parentJobId || ''),
+    recoveryForJobId: String(metadata.recoveryForJobId || ''),
+    task: String(metadata.task || task).slice(0, 24000),
     command: String(metadata.command || (mode === 'cli' ? task : '')).slice(0, 4000),
     timeoutMs: Math.max(1000, Math.min(3600000, Number(metadata.timeoutMs || 180000))),
     cancelRequested: false,

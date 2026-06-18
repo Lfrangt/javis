@@ -74,6 +74,7 @@ Use the terminal CUI to paste `OPENAI_API_KEY` locally. It hides the input, writ
 
 The same CUI can explicitly toggle `JAVIS_ENABLE_LOCAL_EXEC` for Level 3 local actions after typing `ENABLE` or `DISABLE`.
 It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowledges that automatic Level 3 local actions are intentional while Level 4 sends, purchases, deletes, form submissions, and account changes still require confirmation.
+The CUI also exposes next-work execution, overnight autopilot status, one-tick manual advance, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
 
 Local file policy lives in `~/Library/Application Support/JAVIS/Runtime/action-policy.json`; broad Home-directory access can be enabled there while protected macOS folders may still need Full Disk Access approval.
 

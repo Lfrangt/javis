@@ -11,6 +11,27 @@ const ENV_EXAMPLE_FILE = path.join(process.cwd(), '.env.example');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const PARK_CORNERS = ['bottom-right', 'bottom-left', 'top-right', 'top-left'];
 
+function formatTime(value) {
+  const number = Number(value || 0);
+  if (!number) return 'never';
+  return new Date(number).toLocaleString();
+}
+
+function formatInterval(ms) {
+  const number = Number(ms || 0);
+  if (!number) return '-';
+  const seconds = Math.round(number / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.round(minutes / 60)}h`;
+}
+
+function compact(value, max = 140) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  return text.length > max ? `${text.slice(0, Math.max(0, max - 3))}...` : text;
+}
+
 function request(path, options = {}) {
   const url = new URL(path, API_BASE);
   const body = options.body ? JSON.stringify(options.body) : '';
@@ -128,9 +149,10 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor, browserJs] = await Promise.all([
+    const [status, doctor, autopilotResult, browserJs] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
+      request('/api/autopilot').catch(() => ({ autopilot: null })),
       request('/api/browser/javascript').catch((error) => ({ javascript: { enabled: false, error: error instanceof Error ? error.message : String(error) } })),
     ]);
     const window = status.window || {};
@@ -161,6 +183,10 @@ async function printStatus() {
       const observing = status.presence.observing?.latest || {};
       const where = [observing.app, observing.browser?.host || observing.browser?.title || observing.windowTitle].filter(Boolean).join(' · ');
       console.log(`Presence: ${status.presence.label || status.presence.mode || 'Standby'}${where ? ` · ${where}` : ''}`);
+    }
+    if (autopilotResult.autopilot) {
+      const autopilot = autopilotResult.autopilot;
+      console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · every ${formatInterval(autopilot.intervalMs)} · ticks ${autopilot.tickCount || 0} · ran ${autopilot.executedCount || 0} · last ${compact(autopilot.lastResult || 'none', 80)}`);
     }
     if (browserJs.javascript?.supported && browserJs.javascript?.available) {
       const bridge = browserJs.javascript.bridge || '';
@@ -193,8 +219,13 @@ async function printStatus() {
   console.log('10. Toggle trusted local mode');
   console.log('11. Run doctor');
   console.log('12. Test wake trigger');
-  console.log('13. Refresh learning profile');
-  console.log('14. Quit');
+  console.log('13. Show next work item');
+  console.log('14. Run next work item');
+  console.log('15. Show autopilot status');
+  console.log('16. Run one autopilot tick');
+  console.log('17. Toggle overnight autopilot');
+  console.log('18. Refresh learning profile');
+  console.log('19. Quit');
 }
 
 async function setupAction(action) {
@@ -308,6 +339,129 @@ async function toggleTrustedLocalMode(rl) {
   }
 }
 
+function printAutopilotDetails(autopilot) {
+  console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'}${autopilot.busy || autopilot.running ? ' · busy' : ''}`);
+  console.log(`Interval: ${formatInterval(autopilot.intervalMs)} (${autopilot.intervalMs || 0}ms)`);
+  console.log(`Ticks: ${autopilot.tickCount || 0} · executed ${autopilot.executedCount || 0} · skipped ${autopilot.skippedCount || 0}`);
+  console.log(`Last tick: ${formatTime(autopilot.lastTickAt)}`);
+  console.log(`Last executed: ${formatTime(autopilot.lastExecutedAt)}`);
+  if (autopilot.lastResult) console.log(`Last result: ${compact(autopilot.lastResult, 260)}`);
+  if (autopilot.lastError) console.log(`Last error: ${compact(autopilot.lastError, 260)}`);
+}
+
+function printNextAction(next) {
+  const action = next?.action || next?.next?.action || next?.next?.briefing?.nextActions?.[0] || next?.briefing?.nextActions?.[0];
+  if (!action) {
+    console.log('Next action: none');
+    return;
+  }
+  const auto = action.autoEligible || action.workflowAction === 'retry_app_workflow' ? 'auto-eligible' : 'manual';
+  console.log(`Next action: ${action.label || action.id || 'unnamed'} (${action.source || 'unknown'}, ${auto})`);
+  if (action.summary) console.log(`Summary: ${compact(action.summary, 260)}`);
+}
+
+async function showWorkbenchNext() {
+  const preview = await request('/api/work/next?workflowLimit=6&jobLimit=6');
+  console.log('');
+  printNextAction(preview);
+  if (preview.next?.output) console.log(compact(preview.next.output, 700));
+}
+
+async function runWorkbenchNext(rl) {
+  console.log('\nPreviewing next work item...');
+  const preview = await request('/api/work/next?workflowLimit=6&jobLimit=6');
+  printNextAction(preview);
+  if (preview.next?.output) console.log(compact(preview.next.output, 700));
+  const answer = (await rl.question('Run this work item now? Type RUN to execute: ')).trim();
+  if (answer !== 'RUN') {
+    console.log('\nNo action executed.');
+    return;
+  }
+
+  const result = await request('/api/work/next', {
+    method: 'POST',
+    body: { source: 'cui', execute: true, workflowLimit: 6, jobLimit: 6 },
+  });
+  const next = result.next || {};
+  console.log(`\nWork item ${next.executed ? 'executed' : 'reviewed'}.`);
+  if (next.output) console.log(compact(next.output, 900));
+}
+
+async function showAutopilotStatus() {
+  const [autopilotResult, next] = await Promise.all([
+    request('/api/autopilot'),
+    request('/api/work/next').catch((error) => ({
+      error: error instanceof Error ? error.message : String(error),
+    })),
+  ]);
+  console.log('');
+  printAutopilotDetails(autopilotResult.autopilot || {});
+  if (next.error) {
+    console.log(`Next action: unavailable · ${next.error}`);
+  } else {
+    printNextAction(next);
+  }
+}
+
+async function runAutopilotTick(rl) {
+  console.log('\nPreviewing next autopilot action...');
+  const preview = await request('/api/work/next?workflowLimit=6&jobLimit=6');
+  printNextAction(preview);
+  const answer = (await rl.question('Run one autopilot tick now? Type RUN to execute: ')).trim();
+  if (answer !== 'RUN') {
+    console.log('\nNo action executed.');
+    return;
+  }
+
+  const result = await request('/api/autopilot/tick', {
+    method: 'POST',
+    body: { source: 'cui', execute: true },
+  });
+  const executed = result.tick?.executed ? 'executed' : 'skipped';
+  const reason = result.tick?.reason ? ` · ${result.tick.reason}` : '';
+  console.log(`\nAutopilot tick ${executed}${reason}.`);
+  if (result.tick?.result?.output) console.log(compact(result.tick.result.output, 600));
+  printAutopilotDetails(result.autopilot || result.tick?.autopilot || {});
+}
+
+async function toggleAutopilot(rl) {
+  const status = await request('/api/autopilot').catch(() => ({ autopilot: null }));
+  const envValue = getEnvValue('JAVIS_AUTOPILOT_ENABLED');
+  const current = status.autopilot?.enabled ?? (envValue === 'true');
+  console.log(`\nOvernight autopilot is currently ${current ? 'enabled' : 'disabled'}.`);
+  console.log('It only runs low-risk recovery diagnostics and retryable blocked app workflows; it skips during live voice or active background jobs.');
+  if (!current) {
+    const localExec = getEnvValue('JAVIS_ENABLE_LOCAL_EXEC') === 'true';
+    const trusted = getEnvValue('JAVIS_TRUSTED_LOCAL_MODE') === 'true';
+    if (!localExec || !trusted) {
+      console.log('Enabling autopilot will also set local execution, trusted local mode, and Level 3 auto-run in .env.');
+    }
+  }
+  const expected = current ? 'STOP' : 'RUN';
+  const answer = (await rl.question(`Type ${expected} to ${current ? 'disable' : 'enable'} overnight autopilot: `)).trim();
+  if (answer !== expected) {
+    console.log('\nNo change made.');
+    return;
+  }
+
+  setEnvValue('JAVIS_AUTOPILOT_ENABLED', current ? 'false' : 'true');
+  if (!current) {
+    setEnvValue('JAVIS_ENABLE_LOCAL_EXEC', 'true');
+    setEnvValue('JAVIS_TRUSTED_LOCAL_MODE', 'true');
+    setEnvValue('JAVIS_MAX_AUTO_RISK_LEVEL', '3');
+    setEnvValue('JAVIS_REQUIRE_APPROVAL_AT_RISK_LEVEL', '4');
+    await request('/api/actions/policy', {
+      method: 'PUT',
+      body: { maxAutoRiskLevel: 3, requireApprovalAtRiskLevel: 4 },
+    }).catch(() => null);
+  }
+  console.log(`\nSaved JAVIS_AUTOPILOT_ENABLED=${current ? 'false' : 'true'} to ${ENV_FILE}.`);
+  const restart = (await rl.question('Restart JAVIS now to load it? [Y/n] ')).trim().toLowerCase();
+  if (!restart || restart === 'y' || restart === 'yes') {
+    await restartJavis();
+  }
+}
+
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
   const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'top-right';
@@ -372,12 +526,22 @@ async function main() {
         });
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
       } else if (answer === '13') {
+        await showWorkbenchNext();
+      } else if (answer === '14') {
+        await runWorkbenchNext(rl);
+      } else if (answer === '15') {
+        await showAutopilotStatus();
+      } else if (answer === '16') {
+        await runAutopilotTick(rl);
+      } else if (answer === '17') {
+        await toggleAutopilot(rl);
+      } else if (answer === '18') {
         const result = await request('/api/learning/distill', {
           method: 'POST',
           body: { source: 'cui' },
         });
         console.log(`\nLearning refreshed: ${result.learning?.profile?.summary || 'no profile yet'}`);
-      } else if (answer === '14' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '19' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

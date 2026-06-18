@@ -92,13 +92,27 @@ Codex and Claude Code delegation uses the `allow.code_agent` policy block. Faile
 diagnose missing commands, disabled local execution, policy blocks, approvals, timeouts, and retry paths
 without turning the first failure into a dead end.
 Recovery actions are also surfaced through `/api/briefing` and `/api/work/next`; low-risk diagnostic
-actions can be reviewed there without opening a separate UI.
+actions can be reviewed there without opening a separate UI. Retryable failed jobs can be advanced
+from work-next into a narrower recovery job with the original task, attempts, diagnostics, and log tail
+attached. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs per failed parent job.
 
-The resident autopilot loop is visible through `/api/autopilot` and can be manually advanced with
-`POST /api/autopilot/tick`. It starts automatically only when local execution and trusted local mode
-are both enabled, unless `JAVIS_AUTOPILOT_ENABLED=false`. Autopilot executes only low-risk recovery
-diagnostics and blocked app workflows that the local safe planner can re-plan; it skips while voice is
-active or another background job is running.
+Use option `13. Show next work item` to preview the current `/api/work/next` action from the CUI.
+
+Use option `14. Run next work item` to preview and then execute the current workbench action after
+typing `RUN`. This is the manual path for recovering blocked jobs, processing the top Inbox item,
+checking progress, or delivering a completed workflow result without memorizing HTTP calls.
+
+Use option `15. Show autopilot status` to see the resident overnight loop, last tick, last result,
+and the next workbench action without opening a separate UI.
+
+Use option `16. Run one autopilot tick` to preview and then manually advance the resident loop once.
+It calls `/api/autopilot/tick` and requires typing `RUN` before executing.
+
+Use option `17. Toggle overnight autopilot` to write `JAVIS_AUTOPILOT_ENABLED` in `.env`. Enabling it
+also aligns local execution, trusted local mode, and Level 3 auto-run so the resident can keep making
+low-risk progress while unattended. The resident autopilot executes only low-risk recovery diagnostics
+and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
+another background job is running.
 
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
