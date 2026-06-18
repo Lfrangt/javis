@@ -730,6 +730,18 @@ nodes, and captures web hints such as placeholder text, DOM role, DOM id, class 
 and focus state. This makes side panes and web textboxes easier to target without bypassing the
 same Level 3 action policy used by `ax_press` and `ax_set_value`.
 
+For the Gemini/Chromium side-pane targeting regression, use the shared verifier:
+
+```bash
+npm run verify:ax
+npm run verify:ax -- --require-chromium
+npm run verify:ax -- --execute --content "hello from JAVIS"
+```
+
+The default command is a read-only smoke test and skips Gemini-specific assertions when Chromium is
+not frontmost. `--require-chromium` is the strict acceptance path for Chrome/Gemini. `--execute`
+actually writes to the target field and still goes through Level 3 local-execution policy.
+
 - `UI`: read the current frontmost app tree.
 - `Plan`: identify a likely target from the tree.
 - `Guard`: preview the guarded action through policy.
