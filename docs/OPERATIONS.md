@@ -133,7 +133,7 @@ The resident app registers a global pet park hotkey, defaulting to `Control+Shif
 
 It also registers a clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`. Copy text anywhere, press the capture hotkey, and JAVIS saves the clipboard into local Inbox. Change it with `JAVIS_CAPTURE_HOTKEY`, or set `JAVIS_CAPTURE_HOTKEY=false` to disable it.
 
-The desktop buddy parks itself away from the center of the screen by default. Use CUI option `6. Move pet corner`, or set `JAVIS_WINDOW_PARK_CORNER=bottom-right`, `JAVIS_WINDOW_PARK_DISPLAY=primary`, and `JAVIS_WINDOW_PARK_MARGIN=24` to control placement. Supported corners are `top-left`, `top-right`, `bottom-left`, and `bottom-right`.
+The desktop buddy parks itself at the Mac notch by default, using a Dynamic Island-style capsule. Use CUI option `6. Move pet position`, or set `JAVIS_WINDOW_PARK_CORNER=notch`, `JAVIS_WINDOW_PARK_DISPLAY=primary`, and `JAVIS_WINDOW_NOTCH_TOP_OFFSET=5` to control the notch placement. Supported positions are `notch`, `top-left`, `top-right`, `bottom-left`, and `bottom-right`; corner placement still uses `JAVIS_WINDOW_PARK_MARGIN`.
 
 JAVIS also creates a macOS menu bar status item. It exposes resident controls without relying on the desktop pet being visible: open the terminal config CUI, park the pet, refresh status, open `.env`, open Screen Recording or Accessibility settings, open the runtime folder, and quit the resident app.
 
@@ -147,7 +147,7 @@ curl -X POST http://127.0.0.1:3417/api/window/mode \
   -d '{"mode":"pet","focus":false}'
 curl -X POST http://127.0.0.1:3417/api/window/park \
   -H 'Content-Type: application/json' \
-  -d '{"corner":"top-right"}'
+  -d '{"corner":"notch"}'
 curl -X POST http://127.0.0.1:3417/api/notifications/test \
   -H 'Content-Type: application/json' \
   -d '{"body":"JAVIS notification check"}'
@@ -520,7 +520,7 @@ curl -X POST http://127.0.0.1:3417/api/window/mode \
   -d '{"mode":"pet"}'
 curl -X POST http://127.0.0.1:3417/api/window/park \
   -H 'Content-Type: application/json' \
-  -d '{"corner":"bottom-right","display":"primary"}'
+  -d '{"corner":"notch","display":"primary"}'
 curl -X POST http://127.0.0.1:3417/api/window/move \
   -H 'Content-Type: application/json' \
   -d '{"x":24,"y":760}'

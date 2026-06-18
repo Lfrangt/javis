@@ -13,7 +13,7 @@ const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, '
 const ENV_FILE = path.join(process.cwd(), '.env');
 const ENV_EXAMPLE_FILE = path.join(process.cwd(), '.env.example');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
-const PARK_CORNERS = ['bottom-right', 'bottom-left', 'top-right', 'top-left'];
+const PARK_CORNERS = ['notch', 'bottom-right', 'bottom-left', 'top-right', 'top-left'];
 
 function formatTime(value) {
   const number = Number(value || 0);
@@ -228,7 +228,7 @@ async function printStatus() {
   console.log('3. Open Screen Recording settings');
   console.log('4. Open Accessibility settings');
   console.log('5. Open Full Disk Access settings');
-  console.log('6. Move pet corner');
+  console.log('6. Move pet position');
   console.log('7. Restart JAVIS resident');
   console.log('8. Toggle local execution');
   console.log('9. Toggle Level 3 auto-run');
@@ -481,12 +481,12 @@ async function toggleAutopilot(rl) {
 
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
-  const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'top-right';
-  console.log(`\nPet corner is currently ${current}.`);
+  const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'notch';
+  console.log(`\nPet position is currently ${current}.`);
   PARK_CORNERS.forEach((corner, index) => {
     console.log(`${index + 1}. ${corner}`);
   });
-  const answer = (await rl.question('Choose corner [1-4]: ')).trim();
+  const answer = (await rl.question(`Choose position [1-${PARK_CORNERS.length}]: `)).trim();
   const index = Number(answer) - 1;
   const corner = PARK_CORNERS[index];
   if (!corner) {

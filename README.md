@@ -49,7 +49,7 @@ Local Mac-first realtime desktop buddy.
 - Tiny draggable always-on-top desktop buddy window.
 - Compact pet mode by default; configuration lives in the terminal CUI instead of the desktop pet.
 - Pet click starts or stops the realtime voice + screen-context session when the API key is configured.
-- Non-intrusive window parking with configurable corner/display placement from the terminal CUI.
+- Non-intrusive Dynamic Island-style parking at the Mac notch, with optional corner/display placement from the terminal CUI.
 - macOS menu bar status item for resident controls and setup shortcuts.
 - Global pet park hotkey, defaulting to `Control+Shift+Space`.
 - Global clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`.
@@ -115,7 +115,7 @@ Local Express service on 127.0.0.1:3417
   /api/setup/actions    -> low-risk local setup helpers
   /api/resident/status  -> LaunchAgent install/load status
   /api/window/state     -> pet mode, position, and global hotkey status
-  /api/window/park      -> move the buddy back to its configured corner
+  /api/window/park      -> move the buddy back to its configured notch/corner position
   /api/window/move      -> move the buddy to explicit screen coordinates
   /api/menubar/state    -> macOS menu bar status item state
   /api/notifications/state -> resident notification support and counters

@@ -58,9 +58,10 @@ const RESIDENT_OUT_LOG = path.join(process.cwd(), 'logs', 'resident.out.log');
 const RESIDENT_ERR_LOG = path.join(process.cwd(), 'logs', 'resident.err.log');
 const TOGGLE_HOTKEY = process.env.JAVIS_TOGGLE_HOTKEY || 'Control+Shift+Space';
 const CAPTURE_HOTKEY = process.env.JAVIS_CAPTURE_HOTKEY === 'false' ? '' : (process.env.JAVIS_CAPTURE_HOTKEY || 'Control+Shift+I');
-const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER || 'top-right');
+const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER || 'notch');
 const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
 const WINDOW_PARK_MARGIN = Math.max(0, Math.min(160, Number(process.env.JAVIS_WINDOW_PARK_MARGIN || 24)));
+const WINDOW_NOTCH_TOP_OFFSET = Math.max(0, Math.min(40, Number(process.env.JAVIS_WINDOW_NOTCH_TOP_OFFSET || 5)));
 const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_CHROME_DEBUG_PORT || 9222)));
 const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR || path.join(DATA_DIR, 'chrome-cdp-profile');
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
@@ -318,9 +319,9 @@ appendAudit('process.start', {
 
 function parseParkCorner(value) {
   const normalized = String(value || '').trim().toLowerCase();
-  return ['top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(normalized)
+  return ['notch', 'top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(normalized)
     ? normalized
-    : 'top-right';
+    : 'notch';
 }
 
 function windowBoundsSnapshot() {
@@ -338,18 +339,25 @@ function windowTargetForMode(mode = currentWindowMode) {
   return windowModes[mode] || windowModes.pet;
 }
 
-function displayWorkAreaForWindow(displayMode = WINDOW_PARK_DISPLAY) {
+function displayForWindow(displayMode = WINDOW_PARK_DISPLAY) {
   try {
     if (displayMode === 'primary') {
-      return screen.getPrimaryDisplay().workArea;
+      return screen.getPrimaryDisplay();
     }
     if (mainWindow && !mainWindow.isDestroyed()) {
-      return screen.getDisplayMatching(mainWindow.getBounds()).workArea;
+      return screen.getDisplayMatching(mainWindow.getBounds());
     }
-    return screen.getPrimaryDisplay().workArea;
+    return screen.getPrimaryDisplay();
   } catch {
-    return { x: 0, y: 0, width: 1440, height: 900 };
+    return {
+      bounds: { x: 0, y: 0, width: 1440, height: 900 },
+      workArea: { x: 0, y: 0, width: 1440, height: 900 },
+    };
   }
+}
+
+function displayWorkAreaForWindow(displayMode = WINDOW_PARK_DISPLAY) {
+  return displayForWindow(displayMode).workArea;
 }
 
 function enforceWindowSize(mode = currentWindowMode) {
@@ -395,8 +403,19 @@ function scheduleWindowSizeEnforcement(source = 'window') {
 
 function parkedPosition(mode = currentWindowMode, corner = currentParkCorner, displayMode = WINDOW_PARK_DISPLAY) {
   const target = windowTargetForMode(mode);
+  const display = displayForWindow(displayMode);
+  const bounds = display.bounds || display.workArea || { x: 0, y: 0, width: 1440, height: 900 };
   const workArea = displayWorkAreaForWindow(displayMode);
   const safeCorner = parseParkCorner(corner);
+  if (safeCorner === 'notch') {
+    return {
+      x: Math.round(bounds.x + ((bounds.width - target.width) / 2)),
+      y: Math.round(bounds.y + WINDOW_NOTCH_TOP_OFFSET),
+      corner: safeCorner,
+      display: displayMode === 'current' ? 'current' : 'primary',
+      margin: WINDOW_NOTCH_TOP_OFFSET,
+    };
+  }
   const x = safeCorner.endsWith('right')
     ? workArea.x + workArea.width - target.width - WINDOW_PARK_MARGIN
     : workArea.x + WINDOW_PARK_MARGIN;
@@ -700,7 +719,7 @@ function updateMenuBarMenu() {
       click: () => applyWindowMode('pet', { source: 'menubar', focus: false }),
     },
     {
-      label: `Park to ${WINDOW_PARK_CORNER}`,
+      label: `Park to ${WINDOW_PARK_CORNER === 'notch' ? 'Mac notch' : WINDOW_PARK_CORNER}`,
       click: () => parkWindow('menubar'),
     },
     {
