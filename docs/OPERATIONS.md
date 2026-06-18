@@ -369,6 +369,7 @@ curl -X POST http://127.0.0.1:3417/api/accessibility/control \
 ```
 
 The control endpoint first reads the current Accessibility tree, chooses one target, then executes through the same Level 3 local action policy as `ax_press` and `ax_set_value`. Use `execute:false` to inspect the selected target without clicking or typing.
+For direct `ax_set_value` calls, native text roles such as `AXTextField` can use `expectedRole` and `expectedLabel`; broad web roles such as `AXGroup`, `AXStaticText`, or `AXWebArea` must also include editable evidence observed from `/api/accessibility/plan` or `/api/accessibility/tree`.
 
 For a short multi-step local app workflow:
 
@@ -789,6 +790,7 @@ curl -X POST http://127.0.0.1:3417/api/actions/preview \
 ```
 
 Execution uses `POST /api/actions/execute` with the same payload, but these actions are Level 3 and require local execution enablement, approval, and Accessibility permission.
+For a Chromium contenteditable exposed as a broad web role, include an evidence string such as `"expectedEditableEvidence":"contenteditable textbox"`; execution still re-reads the live target and refuses to write if that evidence is no longer present.
 
 Supported modes:
 

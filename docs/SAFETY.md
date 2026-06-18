@@ -97,6 +97,7 @@ Policy knobs:
 - `allow.read_accessibility_tree.maxDepth`: maximum accessibility tree depth JAVIS may traverse.
 - `allow.ax_press.allowedRoles`: accessibility roles that may receive `AXPress`.
 - `allow.ax_set_value.allowedRoles`: accessibility roles that may receive a value write.
+- `allow.ax_set_value.editableEvidenceRequiredRoles`: broad web roles that may only receive `ax_set_value` after the target carries editable evidence such as `AXEditable=true`, `contenteditable`, `textbox`, `searchbox`, or composer/input metadata.
 - `allow.ax_set_value.maxBytes`: maximum text JAVIS may write through an accessibility value action.
 - `allow.browser_control.allowedActions`: browser navigation actions and guarded DOM actions JAVIS may execute in a supported active browser, including `dom_click`, `dom_fill`, and `dom_select`.
 - `allow.code_agent.allowedCommands`: code agent command names JAVIS may launch as background jobs, such as `codex` or `claude`.
@@ -118,6 +119,7 @@ Default file policy:
 - Read-only file actions are Level 1.
 - `write_file`, `create_directory`, `copy_file`, and `move_file` are Level 3, require approval, and require `JAVIS_ENABLE_LOCAL_EXEC=true`.
 - `ax_press` and `ax_set_value` are Level 3, require approval, and require `JAVIS_ENABLE_LOCAL_EXEC=true`.
+- `ax_set_value` supports web roles such as `AXGroup`, `AXStaticText`, and `AXWebArea` for Chromium contenteditables, but previews and executions require editable evidence and live execution re-checks the current target before writing.
 - Codex and Claude Code delegation is Level 3, requires `JAVIS_ENABLE_LOCAL_EXEC=true`, and is governed by `allow.code_agent`.
 - App workflow approvals store only the remaining workflow steps needed to continue after the approved action; later steps still re-enter the same policy checks.
 - Failed jobs keep `attempts`, `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot so JAVIS can diagnose and continue instead of returning a bare failure.

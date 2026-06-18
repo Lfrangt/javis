@@ -17,15 +17,38 @@ export default {
       const allow = policy.allow || {};
       out.push(ok('safety.policy', 'Action policy', `maxAutoRisk=${policy.maxAutoRiskLevel} approvalAt=${policy.requireApprovalAtRiskLevel} dryRun=${policy.dryRun} localExec=${policy.localExecutionEnabled ?? policy.localExec ?? '?'}`, { keys: Object.keys(allow) }));
 
-      // Surface the ax_set_value allowlist (ties to the Gemini AX fix review).
+      // Broad web AX roles are needed for Chromium contenteditables, but they
+      // must be gated by explicit editable evidence before preview/execution.
       const axRoles = allow.ax_set_value?.allowedRoles;
       if (Array.isArray(axRoles)) {
-        const broad = axRoles.some((r) => ['AXGroup', 'AXStaticText', 'AXWebArea'].includes(r));
-        out.push(
-          broad
-            ? warn('safety.axroles', 'ax_set_value allowlist', `includes broad web roles (${axRoles.filter((r) => ['AXGroup', 'AXStaticText', 'AXWebArea'].includes(r)).join(', ')}); ensure execution re-gates with editable signals`, { axRoles })
-            : ok('safety.axroles', 'ax_set_value allowlist', `tight: ${axRoles.join(', ')}`, { axRoles }),
-        );
+        const broadRoles = axRoles.filter((r) => ['AXGroup', 'AXStaticText', 'AXWebArea'].includes(r));
+        const evidenceRoles = Array.isArray(allow.ax_set_value?.editableEvidenceRequiredRoles)
+          ? allow.ax_set_value.editableEvidenceRequiredRoles
+          : [];
+        const missingEvidenceRoles = broadRoles.filter((r) => !evidenceRoles.includes(r));
+
+        if (!broadRoles.length) {
+          out.push(ok('safety.axroles', 'ax_set_value allowlist', `tight: ${axRoles.join(', ')}`, { axRoles }));
+        } else if (missingEvidenceRoles.length) {
+          out.push(fail('safety.axroles', 'ax_set_value editable evidence gate', `broad roles missing editable evidence gate: ${missingEvidenceRoles.join(', ')}`, { axRoles, evidenceRoles }));
+        } else {
+          const probe = await ctx.api('/api/actions/preview', {
+            method: 'POST',
+            body: {
+              action: 'ax_set_value',
+              nodeId: '1',
+              expectedRole: broadRoles[0],
+              expectedLabel: 'JAVIS eval non-editable broad-role probe',
+              content: 'JAVIS eval safety probe',
+            },
+          });
+          const blocked = probe.data?.ok === false && /editable evidence/i.test(String(probe.data?.error || ''));
+          out.push(
+            blocked
+              ? ok('safety.axroles', 'ax_set_value editable evidence gate', `broad roles require editable evidence: ${broadRoles.join(', ')}`, { axRoles, evidenceRoles, probe: probe.data })
+              : fail('safety.axroles', 'ax_set_value editable evidence gate', `broad role preview was not blocked without editable evidence (status ${probe.status})`, { axRoles, evidenceRoles, probe: probe.data }),
+          );
+        }
       }
     }
 

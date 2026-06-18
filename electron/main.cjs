@@ -225,6 +225,7 @@ const DEFAULT_ACTION_POLICY = {
     ax_set_value: {
       enabled: true,
       allowedRoles: ['AXComboBox', 'AXGroup', 'AXSearchField', 'AXStaticText', 'AXTextArea', 'AXTextField', 'AXWebArea'],
+      editableEvidenceRequiredRoles: ['AXGroup', 'AXStaticText', 'AXWebArea'],
       maxBytes: 20000,
     },
     browser_control: {
@@ -1356,6 +1357,10 @@ function normalizeActionPolicy(value) {
       ax_set_value: {
         enabled: raw.allow?.ax_set_value?.enabled !== false,
         allowedRoles: stringListWithDefaultAdditions(raw.allow?.ax_set_value?.allowedRoles, DEFAULT_ACTION_POLICY.allow.ax_set_value.allowedRoles),
+        editableEvidenceRequiredRoles: stringListWithDefaultAdditions(
+          raw.allow?.ax_set_value?.editableEvidenceRequiredRoles,
+          DEFAULT_ACTION_POLICY.allow.ax_set_value.editableEvidenceRequiredRoles,
+        ),
         maxBytes: Math.max(1, Number(raw.allow?.ax_set_value?.maxBytes || DEFAULT_ACTION_POLICY.allow.ax_set_value.maxBytes)),
       },
       browser_control: {
@@ -5049,6 +5054,7 @@ const ACTIONABLE_AX_ROLES = new Set([
 
 const SETTABLE_AX_ROLES = new Set(['AXComboBox', 'AXSearchField', 'AXTextArea', 'AXTextField']);
 const WEB_EDITABLE_AX_ROLES = new Set(['AXGroup', 'AXStaticText', 'AXWebArea']);
+const EDITABLE_AX_SIGNAL_PATTERN = /(^|[^a-z])true([^a-z]|$)|editable|contenteditable|rich.?textarea|textbox|searchbox|text area|text field|composer|compose|input/;
 
 function accessibilityNodeEditableText(node = {}) {
   return [
@@ -5064,11 +5070,118 @@ function accessibilityNodeEditableText(node = {}) {
   ].map((item) => String(item || '').toLowerCase()).join(' ');
 }
 
-function accessibilityNodeIsSettable(node = {}) {
-  if (SETTABLE_AX_ROLES.has(node.role)) return true;
+function accessibilityEditableEvidenceSignals(text) {
+  const signals = [];
+  if (/(^|[^a-z])true([^a-z]|$)/.test(text)) signals.push('editable_true');
+  if (/contenteditable/.test(text)) signals.push('contenteditable');
+  if (/rich.?textarea/.test(text)) signals.push('rich_textarea');
+  if (/textbox/.test(text)) signals.push('textbox');
+  if (/searchbox/.test(text)) signals.push('searchbox');
+  if (/text area/.test(text)) signals.push('text_area');
+  if (/text field/.test(text)) signals.push('text_field');
+  if (/composer|compose/.test(text)) signals.push('composer');
+  if (/(^|[^a-z])input([^a-z]|$)/.test(text)) signals.push('input');
+  if (/\beditable\b/.test(text)) signals.push('editable_keyword');
+  return Array.from(new Set(signals));
+}
+
+function accessibilityNodeSettableEvidence(node = {}) {
+  const role = String(node.role || '');
+  const directRole = SETTABLE_AX_ROLES.has(role);
+  const broadWebRole = WEB_EDITABLE_AX_ROLES.has(role);
   const text = accessibilityNodeEditableText(node);
-  const editable = /(^|[^a-z])true([^a-z]|$)|editable|contenteditable|rich.?textarea|textbox|searchbox|text area|text field|composer|compose|input/.test(text);
-  return WEB_EDITABLE_AX_ROLES.has(node.role) && editable;
+  const signals = directRole ? ['native_text_role'] : accessibilityEditableEvidenceSignals(text);
+  const hasEditableSignal = EDITABLE_AX_SIGNAL_PATTERN.test(text);
+  return {
+    settable: directRole || (broadWebRole && hasEditableSignal),
+    directRole,
+    broadWebRole,
+    requiresEditableEvidence: broadWebRole,
+    hasEditableSignal: directRole || hasEditableSignal,
+    signals,
+  };
+}
+
+function accessibilityNodeIsSettable(node = {}) {
+  return accessibilityNodeSettableEvidence(node).settable;
+}
+
+function normalizeAccessibilityEditableEvidence(value) {
+  if (value === true) {
+    return {
+      hasEvidence: true,
+      signals: ['caller_asserted_editable'],
+    };
+  }
+
+  if (Array.isArray(value)) {
+    const signals = value.map((item) => String(item || '').trim()).filter(Boolean);
+    return {
+      hasEvidence: signals.length > 0,
+      signals,
+    };
+  }
+
+  if (value && typeof value === 'object') {
+    const rawSignals = Array.isArray(value.signals) ? value.signals : [];
+    const signals = rawSignals.map((item) => String(item || '').trim()).filter(Boolean);
+    if (value.directRole === true) signals.push('native_text_role');
+    if (value.hasEditableSignal === true && !signals.length) signals.push('editable_signal');
+    if (value.settable === true && !signals.length) signals.push('settable_target');
+    return {
+      hasEvidence: signals.length > 0 || value.hasEditableSignal === true || value.settable === true || value.directRole === true,
+      signals: Array.from(new Set(signals)),
+    };
+  }
+
+  const text = String(value || '').trim().toLowerCase();
+  const signals = accessibilityEditableEvidenceSignals(text);
+  if (text && !signals.length) signals.push(text.slice(0, 60));
+  return {
+    hasEvidence: signals.length > 0,
+    signals,
+  };
+}
+
+function accessibilitySetValueEvidenceFromArgs(args = {}) {
+  return normalizeAccessibilityEditableEvidence(
+    args.expectedEditableEvidence
+    ?? args.editableEvidence
+    ?? args.settableEvidence
+    ?? args.editableSignals
+    ?? '',
+  );
+}
+
+function accessibilityRoleRequiresEditableEvidence(role, actionConfig = {}) {
+  const roles = Array.isArray(actionConfig.editableEvidenceRequiredRoles)
+    ? actionConfig.editableEvidenceRequiredRoles
+    : DEFAULT_ACTION_POLICY.allow.ax_set_value.editableEvidenceRequiredRoles;
+  return valueMatchesAllowlist(role, roles);
+}
+
+function validateAccessibilitySetValueEvidence(plan, actionConfig = {}) {
+  if (plan.action !== 'ax_set_value') return null;
+  const expectedRole = String(plan.metadata?.expectedRole || plan.args?.expectedRole || '').trim();
+  if (!expectedRole || !accessibilityRoleRequiresEditableEvidence(expectedRole, actionConfig)) {
+    return {
+      expectedRole,
+      requiresEditableEvidence: false,
+      hasEditableEvidence: false,
+      signals: [],
+    };
+  }
+
+  const evidence = accessibilitySetValueEvidenceFromArgs(plan.args || {});
+  if (!evidence.hasEvidence) {
+    throw new Error(`Accessibility role ${expectedRole} requires editable evidence before ax_set_value preview or execution.`);
+  }
+  return {
+    expectedRole,
+    requiresEditableEvidence: true,
+    hasEditableEvidence: true,
+    signals: evidence.signals,
+  };
 }
 
 function accessibilityNodeIsActionable(node = {}, desiredAction = '') {
@@ -5162,6 +5275,7 @@ function accessibilityActionPlan(options = {}) {
       .map((node) => {
         const matchedTokens = matchedAccessibilityTokens(node, tokens, instruction);
         const actionable = accessibilityNodeIsActionable(node, desiredAction);
+        const settableEvidence = accessibilityNodeSettableEvidence(node);
         return {
           id: node.id,
           role: node.role,
@@ -5172,6 +5286,8 @@ function accessibilityActionPlan(options = {}) {
           depth: node.depth,
           matchedTokens,
           actionable,
+          settable: settableEvidence.settable,
+          editableEvidence: settableEvidence,
           score: scoreAccessibilityNode(node, tokens, matchedTokens, desiredAction),
         };
       })
@@ -5204,6 +5320,7 @@ function accessibilityActionPlan(options = {}) {
             nodeId: best.id,
             role: best.role,
             label: best.label,
+            editableEvidence: best.editableEvidence,
             summary: `Candidate ${best.id}: ${best.role}${best.label ? ` "${best.label}"` : ''}`,
             executableNow: false,
             requiresConfirmation: true,
@@ -5244,6 +5361,7 @@ async function controlCurrentApp(options = {}) {
         nodeId: plan.recommended.nodeId,
         role: plan.recommended.role || '',
         label: plan.recommended.label || '',
+        editableEvidence: plan.recommended.editableEvidence || null,
       }
     : null;
   const execute = options.execute !== false;
@@ -5273,6 +5391,7 @@ async function controlCurrentApp(options = {}) {
     nodeId: target.nodeId,
     expectedRole: target.role,
     expectedLabel: target.label,
+    expectedEditableEvidence: target.editableEvidence,
     content,
     maxNodes,
     maxDepth,
@@ -7401,6 +7520,7 @@ if (allowedRoles.length && !allowedRoles.includes(role)) throw new Error('access
 if (expectedRole && expectedRole !== role) throw new Error('accessibility_role_changed:' + role);
 if (expectedLabel && expectedLabel !== label) throw new Error('accessibility_label_changed:' + label);
 
+var resultExtra = { method: action };
 if (action === 'ax_press') {
   const actionNames = target.actions().map((item) => readProp(item, 'name'));
   if (!actionNames.includes('AXPress')) throw new Error('accessibility_press_not_available');
@@ -7408,15 +7528,49 @@ if (action === 'ax_press') {
 } else if (action === 'ax_set_value') {
   if (!content) throw new Error('missing_accessibility_value');
   if (!targetIsSettable(target, role)) throw new Error('accessibility_target_not_settable:' + role);
+
+  // Fix E: focus the resolved target first, so the keystroke fallback below can
+  // never type into the wrong field.
+  if (readAttribute(target, 'AXFocused') !== 'true') writeAttribute(target, 'AXFocused', true);
+  var focused = readAttribute(target, 'AXFocused') === 'true';
+
+  // Primary path: direct AX setValue (works for AXTextField/AXTextArea/etc.).
+  var setError = '';
   try {
     target.value = content;
   } catch (_) {
     try {
       target.value.set(content);
     } catch (error) {
-      throw new Error('accessibility_set_value_failed:' + error.message);
+      setError = String(error && error.message ? error.message : error);
     }
   }
+  var valueAfter = readProp(target, 'value');
+  var verified = valueAfter === content;
+
+  // Fix C (write half): contenteditable / rich web editors (e.g. the Gemini
+  // composer) reject AX setValue. Recover with a keystroke fallback, but ONLY
+  // when focus is confirmed on the target — never blind-type into whatever is
+  // focused. (Note: content with newlines may submit a chat composer.)
+  if (!verified) {
+    if (!focused) {
+      throw new Error(setError ? 'accessibility_set_value_failed:' + setError : 'accessibility_set_value_unverified_no_focus:' + role);
+    }
+    var sa = Application.currentApplication();
+    sa.includeStandardAdditions = true;
+    systemEvents.keystroke('a', { using: 'command down' });
+    sa.delay(0.05);
+    systemEvents.keystroke(content);
+    sa.delay(0.05);
+    resultExtra.method = 'keystroke';
+    valueAfter = readProp(target, 'value');
+    // contenteditable often keeps AXValue empty; confirmed focus + keystroke is best-effort success.
+    verified = valueAfter === content || (valueAfter === '' && focused);
+  }
+
+  resultExtra.focused = focused;
+  resultExtra.verified = verified;
+  resultExtra.valueAfter = String(valueAfter || '').slice(0, 200);
 } else {
   throw new Error('unsupported_accessibility_action:' + action);
 }
@@ -7429,6 +7583,10 @@ JSON.stringify({
   role,
   label,
   action,
+  method: resultExtra.method,
+  focused: resultExtra.focused,
+  verified: resultExtra.verified,
+  valueAfter: resultExtra.valueAfter,
 });
 `;
 
@@ -7440,8 +7598,14 @@ JSON.stringify({
     role: result.role,
     label: result.label,
     app: result.app,
+    method: result.method,
+    verified: result.verified,
   });
-  return `${result.action} executed on ${result.role}${result.label ? ` "${result.label}"` : ''}.`;
+  const verifyNote = result.method === 'keystroke' ? ' via keystroke' : '';
+  const verifiedNote = result.verified === false
+    ? ' (unverified — re-read did not confirm)'
+    : result.verified === true ? ' (verified)' : '';
+  return `${result.action} executed on ${result.role}${result.label ? ` "${result.label}"` : ''}${verifyNote}${verifiedNote}.`;
 }
 
 function normalizeBrowserMaxChars(value) {
@@ -17614,16 +17778,31 @@ function buildMacActionPlan(args = {}) {
     if (bytes > maxBytes) throw new Error(`Accessibility value content exceeds maxBytes policy (${bytes} > ${maxBytes}).`);
     const expectedLabel = String(args.expectedLabel || '').trim();
     const expectedRole = String(args.expectedRole || '').trim();
+    const editableEvidence = accessibilitySetValueEvidenceFromArgs(args);
     return {
       action,
       riskLevel: 3,
       summary: `Set accessibility node ${nodeId}${expectedLabel ? ` (${expectedLabel})` : ''} value`,
       target: nodeId,
-      args: { action, nodeId, content, expectedLabel, expectedRole },
+      args: {
+        action,
+        nodeId,
+        content,
+        expectedLabel,
+        expectedRole,
+        expectedEditableEvidence: {
+          hasEvidence: editableEvidence.hasEvidence,
+          signals: editableEvidence.signals,
+        },
+      },
       metadata: {
         bytes,
         expectedLabel,
         expectedRole,
+        editableEvidence: {
+          hasEvidence: editableEvidence.hasEvidence,
+          signals: editableEvidence.signals,
+        },
         maxNodes: Number(args.maxNodes || actionPolicy.allow?.read_accessibility_tree?.maxNodes || 120),
         maxDepth: Number(args.maxDepth || actionPolicy.allow?.read_accessibility_tree?.maxDepth || 6),
       },
@@ -17829,6 +18008,7 @@ function evaluateMacActionPlan(plan, options = {}) {
     if (expectedRole && !valueMatchesAllowlist(expectedRole, actionConfig.allowedRoles || [])) {
       throw new Error(`Accessibility role ${expectedRole} is not allowed by policy.`);
     }
+    validateAccessibilitySetValueEvidence(plan, actionConfig);
   }
 
   if (plan.action === 'browser_control') {
@@ -19769,6 +19949,10 @@ function createRealtimeSessionConfig(options = {}) {
             nodeId: { type: 'string' },
             expectedLabel: { type: 'string' },
             expectedRole: { type: 'string' },
+            expectedEditableEvidence: {
+              type: 'string',
+              description: 'For broad web AX set_value roles such as AXGroup, AXStaticText, or AXWebArea, pass the editable signal observed from plan_ui_action/read_accessibility_tree, for example contenteditable, textbox, searchbox, or composer.',
+            },
             maxNodes: { type: 'number' },
             maxDepth: { type: 'number' },
           },
