@@ -11,6 +11,7 @@ Local Mac-first realtime desktop buddy.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, and visible page text from supported active tabs.
+- Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser workflows: summarize, extract actions, draft, or ask about the current page through quick or background lanes.
 - File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
@@ -20,6 +21,7 @@ Local Mac-first realtime desktop buddy.
 - No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
 - Fast lane for lightweight Q&A.
 - Deep lane for slower background tasks with persisted logs and cancellation.
+- Background CLI tool runner for explicit local commands such as `gh`, `git`, `npm`, Codex CLI, and Claude Code without blocking the voice lane.
 - Workflow history for recent browser, voice, and background work.
 - Local work briefing for recent progress, blockers, active work, and next actions.
 - Local work progress check-ins for background jobs and workflows.
@@ -38,7 +40,7 @@ Local Mac-first realtime desktop buddy.
 - Transparent always-on-top desktop buddy window.
 - Compact pet mode by default; configuration lives in the terminal CUI instead of the desktop pet.
 - Pet click starts or stops the realtime voice + screen-context session when the API key is configured.
-- Non-intrusive window parking, defaulting to the top-right corner.
+- Non-intrusive window parking with configurable corner/display placement from the terminal CUI.
 - macOS menu bar status item for resident controls and setup shortcuts.
 - Global pet park hotkey, defaulting to `Control+Shift+Space`.
 - Global clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`.
@@ -102,6 +104,7 @@ Local Express service on 127.0.0.1:3417
   /api/resident/status  -> LaunchAgent install/load status
   /api/window/state     -> pet mode, position, and global hotkey status
   /api/window/park      -> move the buddy back to its configured corner
+  /api/window/move      -> move the buddy to explicit screen coordinates
   /api/menubar/state    -> macOS menu bar status item state
   /api/notifications/state -> resident notification support and counters
   /api/briefing         -> local status, blockers, recent work, and next actions
@@ -130,7 +133,9 @@ Local Express service on 127.0.0.1:3417
   /api/app/workflow    -> preview or execute a short multi-step local app workflow
   /api/browser/context  -> supported browser tab title and URL
   /api/browser/page     -> read-only current browser page text extraction
+  /api/browser/control  -> guarded current-browser navigation actions
   /api/browser/workflow -> summarize, extract actions, draft, or ask about the current page
+  /api/cli/run          -> queue an explicit local CLI command as a background job
   /api/files/execute    -> local file tool execution
   /api/files/plan       -> preview a policy-aware folder organization plan
   /api/files/plan/apply -> request confirmed execution/approvals for a file plan

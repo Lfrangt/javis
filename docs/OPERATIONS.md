@@ -95,7 +95,7 @@ The resident app registers a global pet park hotkey, defaulting to `Control+Shif
 
 It also registers a clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`. Copy text anywhere, press the capture hotkey, and JAVIS saves the clipboard into local Inbox. Change it with `JAVIS_CAPTURE_HOTKEY`, or set `JAVIS_CAPTURE_HOTKEY=false` to disable it.
 
-The desktop buddy parks itself away from the center of the screen by default. Use `JAVIS_WINDOW_PARK_CORNER=top-right` and `JAVIS_WINDOW_PARK_MARGIN=24` to control the corner and spacing. Supported corners are `top-left`, `top-right`, `bottom-left`, and `bottom-right`.
+The desktop buddy parks itself away from the center of the screen by default. Use CUI option `6. Move pet corner`, or set `JAVIS_WINDOW_PARK_CORNER=bottom-right`, `JAVIS_WINDOW_PARK_DISPLAY=primary`, and `JAVIS_WINDOW_PARK_MARGIN=24` to control placement. Supported corners are `top-left`, `top-right`, `bottom-left`, and `bottom-right`.
 
 JAVIS also creates a macOS menu bar status item. It exposes resident controls without relying on the desktop pet being visible: open the terminal config CUI, park the pet, refresh status, open `.env`, open Screen Recording or Accessibility settings, open the runtime folder, and quit the resident app.
 
@@ -227,7 +227,7 @@ curl -X POST http://127.0.0.1:3417/api/tasks/route \
   -d '{"message":"google GPT Realtime 2 docs","execute":false}'
 ```
 
-Supported local command families: resident status/briefing, work session start/status/note/end, Inbox listing/triage/process-next, text or clipboard capture into Inbox, opening explicit `http/https` URLs, opening allowed apps, and opening Google searches. App/URL actions still go through the action policy.
+Supported local command families: resident status/briefing, work session start/status/note/end, Inbox listing/triage/process-next, text or clipboard capture into Inbox, opening explicit `http/https` URLs, opening allowed apps, opening Google searches, browser navigation, and explicit CLI commands prefixed with `run command:` or `运行命令:`. App/URL/browser/CLI actions still go through the action policy.
 
 For current-app UI control:
 
@@ -389,9 +389,15 @@ curl -X POST http://127.0.0.1:3417/api/actions/preview \
   -d '{"action":"ax_press","nodeId":"12","expectedRole":"AXButton","expectedLabel":"Export","maxNodes":100,"maxDepth":6}'
 curl http://127.0.0.1:3417/api/browser/context
 curl 'http://127.0.0.1:3417/api/browser/page?maxChars=12000'
+curl -X POST http://127.0.0.1:3417/api/browser/control \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"reload"}'
 curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -H 'Content-Type: application/json' \
   -d '{"intent":"summarize","mode":"quick","maxChars":12000}'
+curl -X POST http://127.0.0.1:3417/api/cli/run \
+  -H 'Content-Type: application/json' \
+  -d '{"command":"npm run lint","title":"Lint project"}'
 curl http://127.0.0.1:3417/api/approvals
 curl -X POST http://127.0.0.1:3417/api/actions/execute \
   -H 'Content-Type: application/json' \
@@ -407,6 +413,12 @@ curl -X DELETE http://127.0.0.1:3417/api/approvals/<approval-id>
 curl -X POST http://127.0.0.1:3417/api/window/mode \
   -H 'Content-Type: application/json' \
   -d '{"mode":"pet"}'
+curl -X POST http://127.0.0.1:3417/api/window/park \
+  -H 'Content-Type: application/json' \
+  -d '{"corner":"bottom-right","display":"primary"}'
+curl -X POST http://127.0.0.1:3417/api/window/move \
+  -H 'Content-Type: application/json' \
+  -d '{"x":24,"y":760}'
 ```
 
 ## Action Policy
@@ -614,4 +626,4 @@ Formats:
 
 Jobs are persisted after creation and on every status transition. If JAVIS exits while a job is queued or running, that job is marked failed on the next launch with an interruption note.
 
-Running Codex and Claude jobs write stdout/stderr into the job log while they run. Use the buddy panel or `POST /api/jobs/<job-id>/cancel` to stop queued or running work.
+Running Codex, Claude, and explicit CLI jobs write stdout/stderr into the job log while they run. Use the buddy panel or `POST /api/jobs/<job-id>/cancel` to stop queued or running work.

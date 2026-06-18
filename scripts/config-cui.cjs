@@ -9,6 +9,7 @@ const API_BASE = process.env.JAVIS_API_BASE || `http://127.0.0.1:${process.env.J
 const ENV_FILE = path.join(process.cwd(), '.env');
 const ENV_EXAMPLE_FILE = path.join(process.cwd(), '.env.example');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
+const PARK_CORNERS = ['bottom-right', 'bottom-left', 'top-right', 'top-left'];
 
 function request(path, options = {}) {
   const url = new URL(path, API_BASE);
@@ -157,7 +158,7 @@ async function printStatus() {
   console.log('3. Open Screen Recording settings');
   console.log('4. Open Accessibility settings');
   console.log('5. Open Full Disk Access settings');
-  console.log('6. Park pet to corner');
+  console.log('6. Move pet corner');
   console.log('7. Restart JAVIS resident');
   console.log('8. Toggle local execution');
   console.log('9. Toggle Level 3 auto-run');
@@ -277,6 +278,33 @@ async function toggleTrustedLocalMode(rl) {
   }
 }
 
+async function movePetCorner(rl) {
+  const status = await request('/api/window/state');
+  const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'top-right';
+  console.log(`\nPet corner is currently ${current}.`);
+  PARK_CORNERS.forEach((corner, index) => {
+    console.log(`${index + 1}. ${corner}`);
+  });
+  const answer = (await rl.question('Choose corner [1-4]: ')).trim();
+  const index = Number(answer) - 1;
+  const corner = PARK_CORNERS[index];
+  if (!corner) {
+    console.log('\nNo change made.');
+    return;
+  }
+
+  setEnvValue('JAVIS_WINDOW_PARK_CORNER', corner);
+  setEnvValue('JAVIS_WINDOW_PARK_DISPLAY', 'primary');
+  const result = await request('/api/window/park', {
+    method: 'POST',
+    body: { corner, display: 'primary' },
+  });
+  console.log(`\nMoved pet to ${corner}.`);
+  if (result.window?.position) {
+    console.log(`Position: ${result.window.position.x},${result.window.position.y}`);
+  }
+}
+
 async function main() {
   if (!process.stdin.isTTY) {
     await printStatus();
@@ -294,8 +322,7 @@ async function main() {
       else if (answer === '4') await setupAction('open_accessibility_settings');
       else if (answer === '5') await setupAction('open_full_disk_access_settings');
       else if (answer === '6') {
-        await request('/api/window/park', { method: 'POST', body: { corner: 'top-right' } });
-        console.log('\nPet parked.');
+        await movePetCorner(rl);
       } else if (answer === '7') {
         await restartJavis();
       } else if (answer === '8') {

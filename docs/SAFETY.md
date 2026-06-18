@@ -16,7 +16,9 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 - Inbox triage is read-only. It sorts open captures and suggests lanes, but does not execute, route, mark done, or mutate items.
 - Inbox process-next requires an explicit user command, CUI action, API request, or voice tool call. It processes only the highest-priority open item and reuses the normal Inbox router, queue, worker, and completion rules.
 - Browser page reading is read-only, policy-limited by character count, and should only be used when the user asks about the active page or page content is clearly needed.
+- Browser control is limited to navigation actions: back, forward, reload, new tab, close tab, focus address bar, open URL, and search. It does not click page content, submit forms, or enter credentials.
 - Browser workflows reuse the read-only page reader and route output to quick/background lanes; they do not click, type, submit, or change the page by themselves.
+- CLI tool runs are explicit background jobs. They require local execution, follow `allow.cli_command`, stream output to job logs, and can be cancelled from the jobs API/CUI.
 - Accessibility tree reading is read-only, policy-limited by node count and depth, and should be used before planning control of non-browser Mac apps.
 - UI action planning is dry-run only. It identifies candidate UI targets and next steps, but does not click, type, submit, or execute.
 - Accessibility execution actions (`ax_press`, `ax_set_value`) are Level 3. They require local execution enablement, current Accessibility permission, allowed AX roles, expected role/label checks, and approval when the action policy is in guarded mode.
@@ -85,6 +87,9 @@ Policy knobs:
 - `allow.ax_press.allowedRoles`: accessibility roles that may receive `AXPress`.
 - `allow.ax_set_value.allowedRoles`: accessibility roles that may receive a value write.
 - `allow.ax_set_value.maxBytes`: maximum text JAVIS may write through an accessibility value action.
+- `allow.browser_control.allowedActions`: browser navigation actions JAVIS may execute in a supported active browser.
+- `allow.cli_command.allowedCommands`: CLI command names JAVIS may launch as background jobs. `*` means trusted local mode.
+- `allow.cli_command.maxTimeoutMs`: maximum runtime for one CLI job before JAVIS stops it.
 - `allow.read_browser_page.maxChars`: maximum active-tab page text JAVIS may return.
 - `allow.list_directory.allowedRoots`: directories where JAVIS may list files.
 - `allow.read_file.allowedRoots`: directories where JAVIS may read files.

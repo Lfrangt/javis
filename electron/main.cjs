@@ -49,6 +49,7 @@ const RESIDENT_ERR_LOG = path.join(process.cwd(), 'logs', 'resident.err.log');
 const TOGGLE_HOTKEY = process.env.JAVIS_TOGGLE_HOTKEY || 'Control+Shift+Space';
 const CAPTURE_HOTKEY = process.env.JAVIS_CAPTURE_HOTKEY === 'false' ? '' : (process.env.JAVIS_CAPTURE_HOTKEY || 'Control+Shift+I');
 const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER || 'top-right');
+const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
 const WINDOW_PARK_MARGIN = Math.max(0, Math.min(160, Number(process.env.JAVIS_WINDOW_PARK_MARGIN || 24)));
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
@@ -65,6 +66,11 @@ const DEFAULT_FILE_ROOTS = [
   path.join(os.homedir(), 'Documents'),
   path.join(os.homedir(), 'Downloads'),
 ];
+const DEFAULT_CLI_COMMANDS = process.env.JAVIS_ALLOWED_CLI_COMMANDS
+  ? process.env.JAVIS_ALLOWED_CLI_COMMANDS.split(',').map((item) => item.trim()).filter(Boolean)
+  : TRUSTED_LOCAL_MODE
+    ? ['*']
+    : ['codex', 'claude', 'gh', 'git', 'npm', 'pnpm', 'yarn', 'bun', 'node', 'npx', 'python', 'python3', 'uv'];
 const FILE_ACTIONS = [
   'list_directory',
   'read_file',
@@ -102,6 +108,16 @@ const DEFAULT_ACTION_POLICY = {
       enabled: true,
       allowedRoles: ['AXComboBox', 'AXSearchField', 'AXTextArea', 'AXTextField'],
       maxBytes: 20000,
+    },
+    browser_control: {
+      enabled: true,
+      allowedActions: ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search'],
+    },
+    cli_command: {
+      enabled: true,
+      allowedCommands: DEFAULT_CLI_COMMANDS,
+      maxCommandLength: 4000,
+      maxTimeoutMs: 600000,
     },
     read_browser_page: { enabled: true, maxChars: 30000 },
     list_directory: { enabled: true, allowedRoots: DEFAULT_FILE_ROOTS },
@@ -155,6 +171,7 @@ let mainWindow;
 let actionPolicy;
 let screenPrivacy;
 let currentWindowMode = 'pet';
+let currentParkCorner = WINDOW_PARK_CORNER;
 let toggleHotkeyRegistered = false;
 let captureHotkeyRegistered = false;
 let lastInboxCapture = null;
@@ -206,8 +223,11 @@ function windowBoundsSnapshot() {
   };
 }
 
-function displayWorkAreaForWindow() {
+function displayWorkAreaForWindow(displayMode = WINDOW_PARK_DISPLAY) {
   try {
+    if (displayMode === 'primary') {
+      return screen.getPrimaryDisplay().workArea;
+    }
     if (mainWindow && !mainWindow.isDestroyed()) {
       return screen.getDisplayMatching(mainWindow.getBounds()).workArea;
     }
@@ -217,9 +237,9 @@ function displayWorkAreaForWindow() {
   }
 }
 
-function parkedPosition(mode = currentWindowMode, corner = WINDOW_PARK_CORNER) {
+function parkedPosition(mode = currentWindowMode, corner = currentParkCorner, displayMode = WINDOW_PARK_DISPLAY) {
   const target = windowModes[mode] || windowModes.pet;
-  const workArea = displayWorkAreaForWindow();
+  const workArea = displayWorkAreaForWindow(displayMode);
   const safeCorner = parseParkCorner(corner);
   const x = safeCorner.endsWith('right')
     ? workArea.x + workArea.width - target.width - WINDOW_PARK_MARGIN
@@ -231,23 +251,43 @@ function parkedPosition(mode = currentWindowMode, corner = WINDOW_PARK_CORNER) {
     x: Math.round(x),
     y: Math.round(y),
     corner: safeCorner,
+    display: displayMode === 'current' ? 'current' : 'primary',
     margin: WINDOW_PARK_MARGIN,
   };
 }
 
 function parkWindow(source = 'api', options = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) return windowStateSnapshot();
-  const position = parkedPosition(currentWindowMode, options.corner || WINDOW_PARK_CORNER);
+  if (options.corner) currentParkCorner = parseParkCorner(options.corner);
+  const displayMode = options.display === 'current' ? 'current' : options.display === 'primary' ? 'primary' : WINDOW_PARK_DISPLAY;
+  const position = parkedPosition(currentWindowMode, currentParkCorner, displayMode);
   mainWindow.setPosition(position.x, position.y, false);
   appendAudit('window.park', {
     source,
     mode: currentWindowMode,
     corner: position.corner,
+    display: position.display,
     margin: position.margin,
     x: position.x,
     y: position.y,
   });
   if (options.menu !== false) updateMenuBarMenu();
+  return windowStateSnapshot();
+}
+
+function moveWindow(source = 'api', options = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return windowStateSnapshot();
+  const current = mainWindow.getBounds();
+  const x = Number.isFinite(Number(options.x)) ? Math.round(Number(options.x)) : current.x;
+  const y = Number.isFinite(Number(options.y)) ? Math.round(Number(options.y)) : current.y;
+  mainWindow.setPosition(x, y, false);
+  appendAudit('window.move', {
+    source,
+    mode: currentWindowMode,
+    x,
+    y,
+  });
+  updateMenuBarMenu();
   return windowStateSnapshot();
 }
 
@@ -260,7 +300,8 @@ function windowStateSnapshot() {
     captureHotkeyRegistered,
     lastInboxCapture,
     position: windowBoundsSnapshot(),
-    parkCorner: WINDOW_PARK_CORNER,
+    parkCorner: currentParkCorner,
+    parkDisplay: WINDOW_PARK_DISPLAY,
     parkMargin: WINDOW_PARK_MARGIN,
     ...windowModes[currentWindowMode],
   };
@@ -351,7 +392,7 @@ function applyWindowMode(mode, options = {}) {
     mainWindow.setAlwaysOnTop(true, 'floating');
     mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
     if (options.park !== false) {
-      parkWindow(options.source || 'api', { corner: options.corner, menu: false });
+      parkWindow(options.source || 'api', { corner: options.corner, display: options.display, menu: false });
     }
     if (options.focus) {
       mainWindow.show();
@@ -699,6 +740,22 @@ function normalizeActionPolicy(value) {
         allowedRoles: uniqueStringList(raw.allow?.ax_set_value?.allowedRoles, DEFAULT_ACTION_POLICY.allow.ax_set_value.allowedRoles),
         maxBytes: Math.max(1, Number(raw.allow?.ax_set_value?.maxBytes || DEFAULT_ACTION_POLICY.allow.ax_set_value.maxBytes)),
       },
+      browser_control: {
+        enabled: raw.allow?.browser_control?.enabled !== false,
+        allowedActions: uniqueStringList(raw.allow?.browser_control?.allowedActions, DEFAULT_ACTION_POLICY.allow.browser_control.allowedActions),
+      },
+      cli_command: {
+        enabled: raw.allow?.cli_command?.enabled !== false,
+        allowedCommands: uniqueStringList(raw.allow?.cli_command?.allowedCommands, DEFAULT_ACTION_POLICY.allow.cli_command.allowedCommands),
+        maxCommandLength: Math.max(
+          80,
+          Math.min(20000, Number(raw.allow?.cli_command?.maxCommandLength || DEFAULT_ACTION_POLICY.allow.cli_command.maxCommandLength)),
+        ),
+        maxTimeoutMs: Math.max(
+          1000,
+          Math.min(3600000, Number(raw.allow?.cli_command?.maxTimeoutMs || DEFAULT_ACTION_POLICY.allow.cli_command.maxTimeoutMs)),
+        ),
+      },
       read_browser_page: {
         enabled: raw.allow?.read_browser_page?.enabled !== false,
         maxChars: Math.max(1000, Math.min(120000, Number(raw.allow?.read_browser_page?.maxChars || DEFAULT_ACTION_POLICY.allow.read_browser_page.maxChars))),
@@ -930,7 +987,7 @@ function normalizePersistedJob(job) {
   return {
     id: String(job.id),
     title: String(job.title || 'Untitled task').slice(0, 120),
-    mode: ['background', 'codex', 'claude'].includes(job.mode) ? job.mode : 'background',
+    mode: ['background', 'codex', 'claude', 'cli'].includes(job.mode) ? job.mode : 'background',
     status: interrupted ? 'failed' : status,
     createdAt: Number(job.createdAt || Date.now()),
     updatedAt: interrupted ? Date.now() : Number(job.updatedAt || Date.now()),
@@ -939,6 +996,8 @@ function normalizePersistedJob(job) {
     pid: interrupted ? null : job.pid || null,
     source: String(job.source || ''),
     workflowId: String(job.workflowId || ''),
+    command: String(job.command || '').slice(0, 4000),
+    timeoutMs: Math.max(1000, Math.min(3600000, Number(job.timeoutMs || 180000))),
     cancelRequested: false,
     log: interrupted ? 'Interrupted by previous JAVIS shutdown.' : String(job.log || ''),
     result: interrupted ? 'This job was not completed before the previous process exited.' : String(job.result || ''),
@@ -3915,6 +3974,181 @@ async function browserPageSnapshot(options = {}) {
   }
 }
 
+const BROWSER_CONTROL_ACTIONS = new Set([
+  'back',
+  'forward',
+  'reload',
+  'new_tab',
+  'close_tab',
+  'focus_address',
+  'open_url',
+  'search',
+]);
+
+function normalizeBrowserControlAction(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases = {
+    refresh: 'reload',
+    reload_page: 'reload',
+    newtab: 'new_tab',
+    new: 'new_tab',
+    close: 'close_tab',
+    close_current_tab: 'close_tab',
+    address: 'focus_address',
+    focus_url: 'focus_address',
+    open: 'open_url',
+    navigate: 'open_url',
+    google: 'search',
+    web_search: 'search',
+    后退: 'back',
+    返回: 'back',
+    前进: 'forward',
+    刷新: 'reload',
+    新标签: 'new_tab',
+    新建标签: 'new_tab',
+    关闭标签: 'close_tab',
+    地址栏: 'focus_address',
+    打开网址: 'open_url',
+    搜索: 'search',
+  };
+  const normalized = aliases[raw] || raw;
+  return BROWSER_CONTROL_ACTIONS.has(normalized) ? normalized : '';
+}
+
+function browserControlUrl(args = {}) {
+  const action = normalizeBrowserControlAction(args.browserAction || args.action);
+  if (action === 'search') {
+    const query = String(args.query || args.value || args.text || '').trim();
+    if (!query) throw new Error('Browser search requires query.');
+    return `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+  }
+  if (action === 'open_url') {
+    const raw = String(args.url || args.value || '').trim();
+    if (!/^https?:\/\//i.test(raw)) throw new Error('Browser open_url requires an http/https URL.');
+    return new URL(raw).href;
+  }
+  return '';
+}
+
+function buildBrowserControlPlan(args = {}) {
+  const browserAction = normalizeBrowserControlAction(args.browserAction || args.action);
+  if (!browserAction) throw new Error('Unsupported browser control action.');
+  const actionConfig = actionPolicy.allow?.browser_control || {};
+  if (!valueMatchesAllowlist(browserAction, actionConfig.allowedActions || [])) {
+    throw new Error(`Browser action ${browserAction} is not allowed by policy.`);
+  }
+  const url = browserControlUrl({ ...args, browserAction });
+  if (url && !valueMatchesAllowlist(new URL(url).hostname, actionPolicy.allow?.open_url?.allowedHosts || [])) {
+    throw new Error(`URL host ${new URL(url).hostname} is not allowed by policy.`);
+  }
+  const riskLevel = browserAction === 'close_tab' ? 3 : 2;
+  const app = String(args.app || '').trim();
+  const query = String(args.query || args.text || args.value || '').trim();
+  return {
+    action: 'browser_control',
+    riskLevel,
+    summary: browserAction === 'open_url'
+      ? `Open browser URL ${url}`
+      : browserAction === 'search'
+        ? `Search the web for ${query}`
+        : `Browser ${browserAction}`,
+    target: browserAction,
+    args: {
+      action: 'browser_control',
+      browserAction,
+      app,
+      url,
+      query,
+    },
+    metadata: { browserAction },
+  };
+}
+
+async function runBrowserControlPlan(plan, evaluation) {
+  if (evaluation.dryRun) {
+    appendAudit('browser_control.dry_run', {
+      action: plan.args.browserAction,
+      riskLevel: plan.riskLevel,
+      summary: plan.summary,
+    });
+    return `[dry-run] ${plan.summary}`;
+  }
+
+  const browser = await browserContextSnapshot({ app: plan.args.app });
+  if (!browser.supported) throw new Error(browser.error || 'frontmost_app_is_not_supported_browser');
+  const appName = browser.app || plan.args.app;
+  if (!appName) throw new Error('No supported browser is active.');
+  const quotedApp = appleScriptString(appName);
+  const browserAction = plan.args.browserAction;
+  const keyMap = {
+    back: '[',
+    forward: ']',
+    reload: 'r',
+    new_tab: 't',
+    close_tab: 'w',
+    focus_address: 'l',
+  };
+
+  if (browserAction === 'open_url' || browserAction === 'search') {
+    const url = plan.args.url;
+    const isSafari = appName === 'Safari' || appName === 'Safari Technology Preview';
+    const script = isSafari
+      ? [
+          `tell application ${quotedApp}`,
+          '  activate',
+          '  if not (exists front document) then make new document',
+          `  set URL of front document to ${appleScriptString(url)}`,
+          'end tell',
+        ].join('\n')
+      : [
+          `tell application ${quotedApp}`,
+          '  activate',
+          '  if not (exists front window) then make new window',
+          `  set URL of active tab of front window to ${appleScriptString(url)}`,
+          'end tell',
+        ].join('\n');
+    await execFileAsync('osascript', ['-e', script], { timeout: 5000 });
+    appendAudit('browser_control.executed', { app: appName, action: browserAction, url });
+    return browserAction === 'search'
+      ? `Searched in ${appName}: ${plan.args.query}`
+      : `Opened in ${appName}: ${url}`;
+  }
+
+  const key = keyMap[browserAction];
+  if (!key) throw new Error(`Unsupported browser control action: ${browserAction}`);
+  const script = [
+    `tell application ${quotedApp} to activate`,
+    `tell application "System Events" to keystroke ${appleScriptString(key)} using {command down}`,
+  ].join('\n');
+  await execFileAsync('osascript', ['-e', script], { timeout: 5000 });
+  appendAudit('browser_control.executed', { app: appName, action: browserAction });
+  return `Browser ${browserAction} executed in ${appName}.`;
+}
+
+async function executeBrowserControl(args = {}, options = {}) {
+  const plan = buildBrowserControlPlan(args);
+  appendAudit('browser_control.requested', {
+    action: plan.args.browserAction,
+    riskLevel: plan.riskLevel,
+    summary: plan.summary,
+    localExecutionEnabled: LOCAL_EXEC_ENABLED,
+    approved: Boolean(options.approved),
+  });
+  const evaluation = evaluateMacActionPlan(plan, options);
+  const output = await runBrowserControlPlan(plan, evaluation);
+  appendAudit('browser_control.completed', {
+    action: plan.args.browserAction,
+    riskLevel: plan.riskLevel,
+    dryRun: evaluation.dryRun,
+  });
+  return {
+    ok: true,
+    executed: !evaluation.dryRun,
+    action: plan.args.browserAction,
+    output,
+  };
+}
+
 function normalizeBrowserWorkflowIntent(value) {
   const intent = String(value || '').trim();
   if (['summarize', 'extract_actions', 'draft', 'ask'].includes(intent)) return intent;
@@ -4144,6 +4378,31 @@ function localCommandDecision(task) {
     };
   }
 
+  if (/^(browser back|go back|back page|previous page)$/i.test(text)
+    || /^(浏览器后退|网页后退|返回上一页|后退)$/.test(text)) {
+    return { intent: 'browser_control', label: 'Browser back', requiresLocalExecution: true, args: { browserAction: 'back' } };
+  }
+
+  if (/^(browser forward|go forward|forward page|next page)$/i.test(text)
+    || /^(浏览器前进|网页前进|前进)$/.test(text)) {
+    return { intent: 'browser_control', label: 'Browser forward', requiresLocalExecution: true, args: { browserAction: 'forward' } };
+  }
+
+  if (/^(reload|refresh page|reload page|refresh browser)$/i.test(text)
+    || /^(刷新网页|刷新页面|刷新浏览器|重新加载)$/.test(text)) {
+    return { intent: 'browser_control', label: 'Browser reload', requiresLocalExecution: true, args: { browserAction: 'reload' } };
+  }
+
+  if (/^(new tab|open new tab|browser new tab)$/i.test(text)
+    || /^(新标签|新建标签|打开新标签页)$/.test(text)) {
+    return { intent: 'browser_control', label: 'New tab', requiresLocalExecution: true, args: { browserAction: 'new_tab' } };
+  }
+
+  if (/^(close tab|close current tab)$/i.test(text)
+    || /^(关闭标签|关闭当前标签|关闭标签页)$/.test(text)) {
+    return { intent: 'browser_control', label: 'Close tab', requiresLocalExecution: true, args: { browserAction: 'close_tab' } };
+  }
+
   if (/^(setup guide|setup status|config guide|configuration status)$/i.test(text)
     || /^(设置状态|配置状态|配置检查|设置指南)$/.test(text)) {
     return { intent: 'setup_guide', label: 'Setup guide', args: {} };
@@ -4260,6 +4519,20 @@ function localCommandDecision(task) {
     };
   }
 
+  const cliMatch =
+    text.match(/^(?:run command|run cli|shell command|cli)[:：]\s*([\s\S]+)$/i)
+    || text.match(/^(?:运行命令|执行命令|跑命令|运行cli|执行cli)[:：]\s*([\s\S]+)$/i);
+  if (cliMatch?.[1]?.trim()) {
+    return {
+      intent: 'cli_command',
+      label: 'Run CLI command',
+      requiresLocalExecution: true,
+      args: {
+        command: cliMatch[1].trim(),
+      },
+    };
+  }
+
   const appAliases = {
     chrome: 'Google Chrome',
     googlechrome: 'Google Chrome',
@@ -4308,7 +4581,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'open_app', 'open_url', 'web_search']);
+  const localExecutionIntents = new Set(['app_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search']);
   return {
     lane: 'quick',
     mode: 'quick',
@@ -4454,6 +4727,16 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatObservationForLocalCommand(observation),
         data: { observation },
+      };
+    }
+
+    if (command.intent === 'browser_control') {
+      const result = await executeBrowserControl(command.args || {});
+      return {
+        ok: result.ok,
+        localCommand: command,
+        output: result.output,
+        data: { result },
       };
     }
 
@@ -4628,6 +4911,20 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: result.output,
         data: { result },
+      };
+    }
+
+    if (command.intent === 'cli_command') {
+      const result = queueCliCommand({
+        command: command.args.command,
+        source: 'local_command',
+        title: command.args.command,
+      });
+      return {
+        ok: result.ok,
+        localCommand: command,
+        output: result.output,
+        data: { job: result.job },
       };
     }
 
@@ -6393,6 +6690,8 @@ function createJob(task, mode, source, metadata = {}) {
     pid: null,
     source: source || '',
     workflowId: String(metadata.workflowId || ''),
+    command: String(metadata.command || (mode === 'cli' ? task : '')).slice(0, 4000),
+    timeoutMs: Math.max(1000, Math.min(3600000, Number(metadata.timeoutMs || 180000))),
     cancelRequested: false,
     log: `Queued${source ? ` from ${source}` : ''}.`,
     result: '',
@@ -6710,6 +7009,28 @@ function readinessSnapshot() {
         ? `Browser page reader enabled up to ${actionPolicy.allow.read_browser_page.maxChars} characters.`
         : 'Browser page reader is disabled by policy.',
       actionPolicy.allow?.read_browser_page?.enabled ? '' : 'Enable allow.read_browser_page in action-policy.json.',
+    ),
+    readinessItem(
+      'browser_control_policy',
+      'Browser control',
+      actionPolicy.allow?.browser_control?.enabled ? 'ready' : 'warning',
+      actionPolicy.allow?.browser_control?.enabled
+        ? `Browser control enabled for ${(actionPolicy.allow.browser_control.allowedActions || []).length} action(s).`
+        : 'Browser control is disabled by policy.',
+      actionPolicy.allow?.browser_control?.enabled ? '' : 'Enable allow.browser_control in action-policy.json.',
+    ),
+    readinessItem(
+      'cli_command_policy',
+      'CLI tools',
+      actionPolicy.allow?.cli_command?.enabled && LOCAL_EXEC_ENABLED ? 'ready' : 'warning',
+      actionPolicy.allow?.cli_command?.enabled
+        ? LOCAL_EXEC_ENABLED
+          ? `CLI tool runner enabled for ${(actionPolicy.allow.cli_command.allowedCommands || []).join(', ')}.`
+          : 'CLI tool runner is enabled by policy but local execution is disabled.'
+        : 'CLI tool runner is disabled by policy.',
+      actionPolicy.allow?.cli_command?.enabled
+        ? LOCAL_EXEC_ENABLED ? '' : 'Set JAVIS_ENABLE_LOCAL_EXEC=true to let JAVIS launch CLI tools.'
+        : 'Enable allow.cli_command in action-policy.json.',
     ),
     readinessItem(
       'approvals',
@@ -7037,6 +7358,8 @@ async function doctorReportSnapshot() {
     'clipboard_policy',
     'accessibility_tree_policy',
     'browser_page_policy',
+    'browser_control_policy',
+    'cli_command_policy',
   ]) {
     const item = readinessById(id);
     if (item) checks.push(doctorCheck(id, item.label, item.status, item.summary, {}, item.next));
@@ -7335,6 +7658,78 @@ function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
+function shellCommandName(command) {
+  let text = String(command || '').trim();
+  if (!text) return '';
+  text = text.replace(/^env\s+/i, '').trim();
+  while (/^[A-Za-z_][A-Za-z0-9_]*=/.test(text)) {
+    const match = text.match(/^[A-Za-z_][A-Za-z0-9_]*=(?:"[^"]*"|'[^']*'|[^\s]+)\s*/);
+    if (!match) break;
+    text = text.slice(match[0].length).trim();
+  }
+  const match = text.match(/^("([^"]+)"|'([^']+)'|[^\s;&|()<>]+)/);
+  const token = String(match?.[2] || match?.[3] || match?.[1] || '').trim();
+  return path.basename(token);
+}
+
+function cliCommandPolicySnapshot(command, timeoutMs) {
+  const config = actionPolicy.allow?.cli_command || {};
+  const rawCommand = String(command || '').trim();
+  const commandName = shellCommandName(rawCommand);
+  const maxCommandLength = Number(config.maxCommandLength || DEFAULT_ACTION_POLICY.allow.cli_command.maxCommandLength);
+  const maxTimeoutMs = Number(config.maxTimeoutMs || DEFAULT_ACTION_POLICY.allow.cli_command.maxTimeoutMs);
+  const requestedTimeoutMs = Number(timeoutMs || 180000);
+  const normalizedTimeoutMs = Math.max(1000, Math.min(maxTimeoutMs, requestedTimeoutMs));
+  return {
+    enabled: config.enabled !== false,
+    command: rawCommand,
+    commandName,
+    commandLength: rawCommand.length,
+    maxCommandLength,
+    timeoutMs: normalizedTimeoutMs,
+    maxTimeoutMs,
+    allowedCommands: Array.isArray(config.allowedCommands) ? config.allowedCommands : [],
+  };
+}
+
+function evaluateCliCommand(command, options = {}) {
+  const snapshot = cliCommandPolicySnapshot(command, options.timeoutMs);
+  if (!snapshot.enabled) throw new Error('CLI command execution is disabled by policy.');
+  if (!LOCAL_EXEC_ENABLED) {
+    throw new Error('CLI commands require JAVIS_ENABLE_LOCAL_EXEC=true.');
+  }
+  if (!snapshot.command) throw new Error('Missing CLI command.');
+  if (!snapshot.commandName) throw new Error('Could not identify the CLI command name.');
+  if (snapshot.commandLength > snapshot.maxCommandLength) {
+    throw new Error(`CLI command exceeds maxCommandLength policy (${snapshot.commandLength} > ${snapshot.maxCommandLength}).`);
+  }
+  if (!valueMatchesAllowlist(snapshot.commandName, snapshot.allowedCommands)) {
+    throw new Error(`CLI command ${snapshot.commandName} is not allowed by policy.`);
+  }
+  return snapshot;
+}
+
+function queueCliCommand(options = {}) {
+  const command = String(options.command || '').trim();
+  const evaluation = evaluateCliCommand(command, { timeoutMs: options.timeoutMs });
+  const job = createJob(command, 'cli', String(options.source || 'api'), {
+    title: String(options.title || command).slice(0, 120),
+    command,
+    timeoutMs: evaluation.timeoutMs,
+  });
+  appendAudit('cli_command.queued', {
+    id: job.id,
+    commandName: evaluation.commandName,
+    source: String(options.source || 'api').slice(0, 80),
+    timeoutMs: evaluation.timeoutMs,
+  });
+  return {
+    ok: true,
+    job,
+    output: `Queued CLI job ${job.id}: ${job.title}`,
+  };
+}
+
 function stopJobRun(run, signal = 'SIGTERM') {
   if (!run?.child?.pid) return;
   try {
@@ -7421,6 +7816,12 @@ async function runDelegatedJob(job, task) {
   return runShellJob(job, `${baseCommand} ${shellQuote(task)}`);
 }
 
+async function runCliJob(job, command) {
+  const evaluation = evaluateCliCommand(command, { timeoutMs: job.timeoutMs });
+  appendJobLog(job.id, `Starting CLI command: ${evaluation.commandName}`);
+  return runShellJob(job, command, evaluation.timeoutMs);
+}
+
 async function runModelJob(job, task, signal) {
   const screenNote = latestScreen
     ? `A recent screen frame is available from ${new Date(latestScreen.updatedAt).toLocaleTimeString()}.`
@@ -7445,7 +7846,9 @@ async function processJob(job, task) {
     const result =
       job.mode === 'codex' || job.mode === 'claude'
         ? await runDelegatedJob(job, task)
-        : await runModelJob(job, task, abortController.signal);
+        : job.mode === 'cli'
+          ? await runCliJob(job, task)
+          : await runModelJob(job, task, abortController.signal);
     activeJobRuns.delete(job.id);
     finishJob(job.id, 'done', { result, log: `${jobs.get(job.id)?.log || ''}\nFinished.` });
   } catch (error) {
@@ -7995,6 +8398,13 @@ function evaluateMacActionPlan(plan, options = {}) {
     }
   }
 
+  if (plan.action === 'browser_control') {
+    const browserAction = plan.metadata?.browserAction || plan.args?.browserAction || '';
+    if (!valueMatchesAllowlist(browserAction, actionConfig.allowedActions || [])) {
+      throw new Error(`Browser action ${browserAction} is not allowed by policy.`);
+    }
+  }
+
   if (plan.riskLevel >= 3 && !LOCAL_EXEC_ENABLED) {
     if (options.preview) {
       return {
@@ -8255,6 +8665,22 @@ async function executeTool(name, args) {
   if (name === 'get_browser_context') {
     const context = await browserContextSnapshot({ app: args?.app });
     return { ok: true, output: JSON.stringify(context) };
+  }
+
+  if (name === 'control_browser') {
+    try {
+      const result = await executeBrowserControl(args || {});
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      if (error instanceof ActionApprovalRequired) {
+        return {
+          ok: false,
+          approval: error.approval,
+          output: `Approval required before I can ${error.approval.summary}.`,
+        };
+      }
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   if (name === 'get_config_check') {
@@ -8541,6 +8967,20 @@ async function executeTool(name, args) {
     return { ok: true, output: `Queued ${mode} job ${job.id}.` };
   }
 
+  if (name === 'run_cli_tool') {
+    try {
+      const result = queueCliCommand({
+        command: args?.command,
+        title: args?.title,
+        timeoutMs: args?.timeoutMs,
+        source: 'voice',
+      });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'run_mac_action') {
     try {
       const output = await executeMacAction(args);
@@ -8589,6 +9029,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use capture_screen when the user asks what is currently on the Mac screen and no recent screen frame is available.',
       'Use get_mac_context before acting on the current app, active window, clipboard, or local runtime state.',
       'Use get_browser_context before summarizing, comparing, or acting on a webpage open in the browser.',
+      'Use control_browser when the user explicitly asks for browser navigation such as back, forward, reload, new tab, close tab, focus address bar, open a URL, or search.',
       'Use get_config_check when setup, permission, resident mode, or local worker readiness is unclear.',
       'Use get_setup_guide when the user asks what setup remains. Use run_setup_next only when the user asks to fix, open, or do the next setup step.',
       'Use read_accessibility_tree before planning control of a visible Mac app through its UI structure.',
@@ -8619,6 +9060,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use route_task when the user asks for something that might be quick or might need background/Codex/Claude work; it keeps the voice lane responsive.',
       'Only request full clipboard text when the user asks about clipboard content or it is clearly needed for the task.',
       'Use delegate_task for code, research, long planning, or multi-step work.',
+      'Use run_cli_tool only when the user explicitly asks to run a local CLI command or a named command-line tool; it queues the command in the background.',
       'Use run_file_action for local file reading, listing, searching, writing, creating folders, copying files, or moving/renaming files.',
       'Use run_mac_action for small reversible Mac actions, or guarded Accessibility actions after plan_ui_action has identified a target. Level 3 actions may require approval or local execution enablement.',
       'Silent screen context updates may arrive as user messages with images; treat the newest one as current visual context and do not answer them by themselves.',
@@ -8673,6 +9115,30 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             app: { type: 'string' },
           },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'control_browser',
+        description: 'Execute a guarded browser navigation action in the current or specified supported Mac browser: back, forward, reload, new tab, close tab, focus address bar, open URL, or search.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: {
+              type: 'string',
+              enum: ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search'],
+            },
+            browserAction: {
+              type: 'string',
+              enum: ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search'],
+            },
+            app: { type: 'string' },
+            url: { type: 'string' },
+            query: { type: 'string' },
+            value: { type: 'string' },
+          },
+          required: ['action'],
           additionalProperties: false,
         },
       },
@@ -9264,6 +9730,21 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'run_cli_tool',
+        description: 'Queue an explicit local CLI command in the background through the trusted local execution policy. Use for command-line tools like gh, git, npm, Codex CLI, Claude Code, or other installed tools.',
+        parameters: {
+          type: 'object',
+          properties: {
+            command: { type: 'string' },
+            title: { type: 'string' },
+            timeoutMs: { type: 'number' },
+          },
+          required: ['command'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'run_mac_action',
         description: 'Run a guarded Mac action. Accessibility actions require a node id from read_accessibility_tree or plan_ui_action and go through policy/approval.',
         parameters: {
@@ -9522,6 +10003,17 @@ function startApiServer() {
       return;
     }
     res.json({ job, active: activeJobRuns.has(job.id) });
+  });
+
+  api.post('/api/cli/run', express.json({ limit: '1mb' }), (req, res) => {
+    try {
+      res.json(queueCliCommand({
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+      }));
+    } catch (error) {
+      jsonError(res, 400, 'CLI command failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/workflows', (req, res) => {
@@ -9914,6 +10406,23 @@ function startApiServer() {
       res.json({ page });
     } catch (error) {
       jsonError(res, 500, 'Browser page read failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/browser/control', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await executeBrowserControl(req.body || {});
+      res.json(result);
+    } catch (error) {
+      if (error instanceof ActionApprovalRequired) {
+        res.status(202).json({
+          ok: false,
+          approval: error.approval,
+          output: `Approval required before I can ${error.approval.summary}.`,
+        });
+        return;
+      }
+      jsonError(res, 400, 'Browser control failed', error instanceof Error ? error.message : String(error));
     }
   });
 
@@ -10314,13 +10823,19 @@ function startApiServer() {
       source: 'api',
       focus: req.body?.focus === true,
       corner: req.body?.corner,
+      display: req.body?.display,
       park: req.body?.park !== false,
     });
     res.json({ ok: true, window: windowState });
   });
 
   api.post('/api/window/park', express.json({ limit: '64kb' }), (req, res) => {
-    const windowState = parkWindow('api', { corner: req.body?.corner });
+    const windowState = parkWindow('api', { corner: req.body?.corner, display: req.body?.display });
+    res.json({ ok: true, window: windowState });
+  });
+
+  api.post('/api/window/move', express.json({ limit: '64kb' }), (req, res) => {
+    const windowState = moveWindow('api', { x: req.body?.x, y: req.body?.y });
     res.json({ ok: true, window: windowState });
   });
 
