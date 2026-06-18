@@ -2181,7 +2181,8 @@ function formatMemoriesForPrompt(list = []) {
     .slice(0, 5)
     .map((memory, index) => {
       const tags = memory.tags.length ? ` tags=${memory.tags.join(',')}` : '';
-      return `${index + 1}. [${memory.kind}/${memory.scope}${tags}] ${memory.text}`;
+      const source = memory.source && memory.source !== 'user' ? ` source=${memory.source}` : '';
+      return `${index + 1}. [${memory.kind}/${memory.scope}${source}${tags}] ${memory.text}`;
     })
     .join('\n');
 }
@@ -2197,7 +2198,7 @@ function memoryContextForTask(task, options = {}) {
   const matches = uniqueMemories([...queryMatches, ...recentPreferences]).slice(0, Number(options.memoryLimit || 5));
   const learningPrompt = learningContextForPrompt();
   const memoryPrompt = matches.length
-    ? ['Relevant local memories approved by the user:', formatMemoriesForPrompt(matches)].join('\n')
+    ? ['Relevant local memories. User-sourced memories are explicit; learning-sourced memories are inferred local context:', formatMemoriesForPrompt(matches)].join('\n')
     : '';
   return {
     matches,
@@ -2231,6 +2232,66 @@ function rememberMemory(options = {}) {
     textLength: memory.text.length,
   });
   return memory;
+}
+
+function learningMemoryText(profile) {
+  const topApps = (profile.topApps || [])
+    .slice(0, 5)
+    .map((item) => `${item.name} ${Math.round(Number(item.share || 0) * 100)}%`)
+    .join(', ');
+  const hosts = (profile.topBrowserHosts || [])
+    .slice(0, 5)
+    .map((item) => item.host)
+    .filter(Boolean)
+    .join(', ');
+  const hours = (profile.activeHours || [])
+    .slice(0, 4)
+    .map((item) => `${String(item.hour).padStart(2, '0')}:00`)
+    .join(', ');
+  return [
+    `Inferred local ambient profile from ${profile.sourceEventCount || 0} observation(s).`,
+    profile.summary || '',
+    profile.signals?.length ? `Signals: ${profile.signals.join('; ')}` : '',
+    topApps ? `Frequent apps: ${topApps}.` : '',
+    hosts ? `Frequent browser hosts: ${hosts}.` : '',
+    hours ? `Common active hours: ${hours}.` : '',
+    'Treat this as lightweight inferred context, not a user-confirmed preference.',
+  ].filter(Boolean).join('\n');
+}
+
+function rememberLearningProfile(options = {}) {
+  const force = options.force !== false;
+  const learning = distillAmbientLearning({ source: options.source || 'learning_memory', force });
+  const profile = learning.profile || learningStateSnapshot().profile;
+  if (!profile.sourceEventCount) throw new Error('No learning profile is available yet.');
+  const text = learningMemoryText(profile);
+  const existing = Array.from(memories.values()).find((memory) => (
+    memory.source === 'learning' && memory.tags.includes('ambient-profile')
+  ));
+  const next = normalizePersistedMemory({
+    ...(existing || {}),
+    id: existing?.id || crypto.randomUUID(),
+    kind: 'note',
+    scope: 'ambient',
+    text,
+    tags: ['ambient-profile', 'learning', 'inferred'],
+    source: 'learning',
+    createdAt: existing?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+  });
+  if (!next) throw new Error('Learning memory is empty.');
+  memories.set(next.id, next);
+  persistMemories();
+  appendAudit('learning.memory_upserted', {
+    id: next.id,
+    sourceEventCount: profile.sourceEventCount,
+    textLength: next.text.length,
+  });
+  return {
+    ok: true,
+    memory: next,
+    learning,
+  };
 }
 
 function removeMemory(id) {
@@ -13853,6 +13914,15 @@ function startApiServer() {
 
   api.post('/api/learning/distill', express.json({ limit: '64kb' }), (req, res) => {
     res.json({ ok: true, learning: distillAmbientLearning({ source: req.body?.source || 'api', force: true }) });
+  });
+
+  api.post('/api/learning/remember', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const result = rememberLearningProfile({ source: req.body?.source || 'api', force: req.body?.force !== false });
+      res.json({ ...result, memoriesFile: MEMORIES_FILE });
+    } catch (error) {
+      jsonError(res, 400, 'Learning memory upsert failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/wake/status', (req, res) => {

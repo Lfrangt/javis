@@ -325,7 +325,9 @@ curl -X POST http://127.0.0.1:3417/api/memory \
 curl "http://127.0.0.1:3417/api/memory?query=Chinese&limit=5"
 ```
 
-Memory records are stored locally in the runtime directory and should only be created for user-approved durable notes.
+Memory records are stored locally in the runtime directory. User-created memories are explicit durable
+notes; memories with `source:"learning"` are inferred local context and should be treated as weaker
+than user-confirmed preferences.
 
 For inferred local learning:
 
@@ -334,9 +336,12 @@ curl http://127.0.0.1:3417/api/learning
 curl -X POST http://127.0.0.1:3417/api/learning/distill \
   -H 'Content-Type: application/json' \
   -d '{}'
+curl -X POST http://127.0.0.1:3417/api/learning/remember \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
-`JAVIS_AMBIENT_LEARNING=true` distills passive ambient metadata into `learned-profile.json`. It stores aggregate app/browser/context patterns only and does not call a model. `JAVIS_INCLUDE_LEARNING_IN_PROMPTS=false` keeps that profile out of task prompts while still allowing local inspection.
+`JAVIS_AMBIENT_LEARNING=true` distills passive ambient metadata into `learned-profile.json`. It stores aggregate app/browser/context patterns only and does not call a model. `POST /api/learning/remember` upserts that aggregate profile into one searchable local memory tagged `ambient-profile`; it does not create duplicate memories on every run. `JAVIS_INCLUDE_LEARNING_IN_PROMPTS=false` keeps that profile out of task prompts while still allowing local inspection.
 
 For a file-organization dry run:
 

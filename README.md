@@ -74,7 +74,7 @@ Use the terminal CUI to paste `OPENAI_API_KEY` locally. It hides the input, writ
 
 The same CUI can explicitly toggle `JAVIS_ENABLE_LOCAL_EXEC` for Level 3 local actions after typing `ENABLE` or `DISABLE`.
 It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowledges that automatic Level 3 local actions are intentional while Level 4 sends, purchases, deletes, form submissions, and account changes still require confirmation.
-The CUI also exposes next-work execution, overnight autopilot status, one-tick manual advance, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
+The CUI also exposes next-work execution, overnight autopilot status, one-tick manual advance, learning refresh, inferred-memory save, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
 
 Local file policy lives in `~/Library/Application Support/JAVIS/Runtime/action-policy.json`; broad Home-directory access can be enabled there while protected macOS folders may still need Full Disk Access approval.
 
@@ -124,7 +124,8 @@ Local Express service on 127.0.0.1:3417
   /api/workflows        -> persisted workflow history with linked jobs and results
   /api/workflows/continue -> continue the latest or specified prior workflow
   /api/workflows/copy-result -> copy the latest or specified workflow result to clipboard
-  /api/memory           -> local explicit memory list/search/create/delete
+  /api/memory           -> local memory list/search/create/delete
+  /api/learning/remember -> save the inferred learning profile into local memory
   /api/inbox            -> local persistent capture inbox
   /api/inbox/capture-clipboard -> capture current clipboard text into Inbox
   /api/inbox/triage     -> read-only Inbox priority and lane suggestions

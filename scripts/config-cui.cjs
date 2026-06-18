@@ -225,7 +225,8 @@ async function printStatus() {
   console.log('16. Run one autopilot tick');
   console.log('17. Toggle overnight autopilot');
   console.log('18. Refresh learning profile');
-  console.log('19. Quit');
+  console.log('19. Save learning as memory');
+  console.log('20. Quit');
 }
 
 async function setupAction(action) {
@@ -541,7 +542,13 @@ async function main() {
           body: { source: 'cui' },
         });
         console.log(`\nLearning refreshed: ${result.learning?.profile?.summary || 'no profile yet'}`);
-      } else if (answer === '19' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '19') {
+        const result = await request('/api/learning/remember', {
+          method: 'POST',
+          body: { source: 'cui' },
+        });
+        console.log(`\nSaved learning memory: ${result.memory?.text ? compact(result.memory.text, 500) : result.memory?.id || 'done'}`);
+      } else if (answer === '20' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');
