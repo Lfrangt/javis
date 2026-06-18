@@ -68,6 +68,7 @@ const AMBIENT_LEARNING_ENABLED = process.env.JAVIS_AMBIENT_LEARNING === 'true';
 const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(process.env.JAVIS_AMBIENT_LEARNING_INTERVAL_MS || 60000)));
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
+const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
 const MAX_PERSISTED_APPROVALS = Number(process.env.JAVIS_MAX_PERSISTED_APPROVALS || 200);
@@ -7094,6 +7095,79 @@ function presenceStateSnapshot(options = {}) {
   };
 }
 
+function formatRealtimeContextAction(action, index) {
+  return `${index + 1}. ${action.label}: ${compactRecordText(action.summary, 180)}`;
+}
+
+async function realtimePreflightContextSnapshot(options = {}) {
+  const source = String(options.source || 'api').slice(0, 80);
+  const presence = presenceStateSnapshot({ limit: 3 });
+  const briefing = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
+  const mac = await macContextSnapshot({ includeClipboardText: false }).catch((error) => ({
+    frontmost: { available: false, app: '', windowTitle: '', error: error instanceof Error ? error.message : String(error) },
+    browser: { available: false, supported: false, app: '', title: '', url: '', source: '', error: '' },
+    permissions: { accessibilityTrusted: null },
+    clipboard: { hasText: false, length: 0, preview: '', truncated: false },
+    activeJobs: [],
+    pendingApprovals: [],
+  }));
+  const screenFrame = latestScreenSnapshot();
+  const latest = presence.observing?.latest || {};
+  const nextActions = (briefing.nextActions || []).slice(0, 3);
+  const activeJobs = presence.work?.activeJobs || [];
+  const pendingApprovals = presence.work?.pendingApprovals || [];
+  const learningSummary = presence.learning?.sourceEventCount ? presence.learning.summary : '';
+  const currentApp = mac.frontmost?.available
+    ? [mac.frontmost.app, mac.frontmost.windowTitle].filter(Boolean).join(' · ')
+    : [latest.app, latest.windowTitle].filter(Boolean).join(' · ');
+  const currentBrowser = mac.browser?.available
+    ? [mac.browser.app, mac.browser.title || mac.browser.url].filter(Boolean).join(' · ')
+    : [latest.browser?.app, latest.browser?.title || latest.browser?.host].filter(Boolean).join(' · ');
+  const lines = REALTIME_PREFLIGHT_CONTEXT_ENABLED
+    ? [
+        'Silent JAVIS preflight context for this voice session. Do not answer this message by itself.',
+        `Presence: ${presence.label} (${presence.mode}). ${compactRecordText(presence.summary, 420)}`,
+        `Conversation: ${presence.conversation.status}; mic ${presence.conversation.micMode}; screen context ${presence.conversation.screenLive ? 'on' : 'off'}.`,
+        currentApp ? `Current app/window: ${compactRecordText(currentApp, 220)}` : '',
+        currentBrowser ? `Current browser: ${compactRecordText(currentBrowser, 260)}` : '',
+        screenFrame ? `Latest resident screen frame: ${screenFrame.width}x${screenFrame.height}, privacy ${screenFrame.privacy?.mode || 'unknown'}, age ${Math.round(latestScreenAgeMs() / 1000)}s.` : 'No resident screen frame is cached yet.',
+        learningSummary ? `Local inferred profile: ${compactRecordText(learningSummary, 360)}` : '',
+        activeJobs.length ? `Background work: ${activeJobs.map((job) => `${job.mode}/${job.status} ${compactRecordText(job.title, 80)}`).join('; ')}` : 'Background work: none active.',
+        pendingApprovals.length ? `Approvals waiting: ${pendingApprovals.map((approval) => compactRecordText(approval.summary, 120)).join('; ')}` : 'Approvals waiting: none.',
+        nextActions.length ? `Likely next actions:\n${nextActions.map(formatRealtimeContextAction).join('\n')}` : '',
+        `Guardrails: passive by default; act only after user intent. Local execution ${LOCAL_EXEC_ENABLED ? 'enabled' : 'disabled'}; auto risk level ${actionPolicy.maxAutoRiskLevel}; approval required at level ${actionPolicy.requireApprovalAtRiskLevel}.`,
+      ].filter(Boolean)
+    : [];
+  const prompt = lines.join('\n');
+  appendAudit('realtime.preflight_context', {
+    source,
+    enabled: REALTIME_PREFLIGHT_CONTEXT_ENABLED,
+    presenceMode: presence.mode,
+    promptLength: prompt.length,
+    hasScreen: Boolean(screenFrame),
+    nextActions: nextActions.length,
+  });
+  return {
+    enabled: REALTIME_PREFLIGHT_CONTEXT_ENABLED,
+    generatedAt: new Date().toISOString(),
+    prompt,
+    presence: {
+      mode: presence.mode,
+      label: presence.label,
+      summary: presence.summary,
+      conversation: presence.conversation,
+      intervention: presence.intervention,
+    },
+    mac,
+    screen: screenFrame,
+    briefing: {
+      summary: briefing.summary,
+      nextActions,
+      counts: briefing.counts,
+    },
+  };
+}
+
 function startAmbientMonitor() {
   if (!AMBIENT_OBSERVE_ENABLED || ambientTimer) return;
   void sampleAmbientContext('ambient_startup');
@@ -12193,6 +12267,15 @@ function startApiServer() {
 
   api.post('/api/conversation/state', express.json({ limit: '64kb' }), (req, res) => {
     res.json({ ok: true, conversation: updateConversationState(req.body || {}), presence: presenceStateSnapshot({ limit: 5 }) });
+  });
+
+  api.get('/api/realtime/context', async (req, res) => {
+    try {
+      const context = await realtimePreflightContextSnapshot({ source: req.query.source || 'api' });
+      res.json({ context });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime context failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/mac/context', async (req, res) => {

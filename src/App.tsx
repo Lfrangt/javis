@@ -111,6 +111,12 @@ type ConversationState = {
   staleAfterMs: number
 }
 
+type RealtimePreflightContext = {
+  enabled: boolean
+  generatedAt: string
+  prompt: string
+}
+
 type ScreenPrivacy = {
   version: number
   mode: 'private' | 'clear'
@@ -835,6 +841,27 @@ function App() {
     return true
   }, [])
 
+  const pushRealtimeTextContext = useCallback(
+    (text: string) => {
+      const trimmed = text.trim()
+      if (!trimmed) return false
+      return sendRealtimeEvent({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: trimmed,
+            },
+          ],
+        },
+      })
+    },
+    [sendRealtimeEvent],
+  )
+
   const pushRealtimeScreenContext = useCallback(
     (imageDataUrl: string, width: number, height: number, force = false) => {
       if (!realtimeScreenContext) return false
@@ -1181,6 +1208,15 @@ function App() {
         setVoiceStatus('live')
         void updateResidentConversation({ status: 'live', micMode, screenLive })
         addMessage('system', 'Voice link live.')
+        apiJson<{ context: RealtimePreflightContext }>('/api/realtime/context?source=renderer')
+          .then((result) => {
+            if (result.context.enabled && result.context.prompt) {
+              pushRealtimeTextContext(result.context.prompt)
+            }
+          })
+          .catch((error) => {
+            addMessage('tool', `Preflight context failed: ${error instanceof Error ? error.message : String(error)}`)
+          })
         if (screenPreviewRef.current) {
           const frame = screenFrameRef.current
           window.setTimeout(() => {
@@ -1212,7 +1248,7 @@ function App() {
       setLastError(message)
       addMessage('system', message)
     }
-  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
+  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return undefined
