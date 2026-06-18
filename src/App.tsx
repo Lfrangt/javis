@@ -491,6 +491,10 @@ type WorkProgress = {
   activeWorkflows: WorkflowRecord[]
   blockedWorkflows: WorkflowRecord[]
   recentWorkflows: WorkflowRecord[]
+  latestDone?: {
+    job: Job | null
+    workflow: WorkflowRecord | null
+  }
   nextActions: BriefingNextAction[]
 }
 
@@ -634,6 +638,10 @@ type ChatMessage = {
 
 const API_BASE = import.meta.env.VITE_JAVIS_API_BASE || 'http://127.0.0.1:3417'
 const startupTime = Date.now()
+const REALTIME_WORK_PROGRESS_SYNC_MS = Math.max(
+  15000,
+  Math.min(120000, Number(import.meta.env.VITE_JAVIS_REALTIME_WORK_PROGRESS_SYNC_MS || 30000)),
+)
 const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   version: 1,
   mode: 'private',
@@ -703,6 +711,34 @@ function compactJobText(job: Job) {
 function compactWorkflowText(workflow: WorkflowRecord) {
   const text = workflow.result || workflow.request || workflow.target?.url || ''
   return text.split('\n').filter(Boolean).slice(0, 2).join(' · ')
+}
+
+function workProgressSignature(progress: WorkProgress) {
+  return JSON.stringify({
+    counts: progress.counts,
+    activeJobs: progress.activeJobs.map((job) => [job.id, job.status, job.updatedAt, job.result.length]),
+    activeWorkflows: progress.activeWorkflows.map((workflow) => [workflow.id, workflow.status, workflow.updatedAt, workflow.result.length]),
+    blockedWorkflows: progress.blockedWorkflows.map((workflow) => [workflow.id, workflow.status, workflow.updatedAt, workflow.result.length]),
+    latestDoneJob: progress.latestDone?.job ? [progress.latestDone.job.id, progress.latestDone.job.updatedAt, progress.latestDone.job.result.length] : null,
+    latestDoneWorkflow: progress.latestDone?.workflow ? [progress.latestDone.workflow.id, progress.latestDone.workflow.updatedAt, progress.latestDone.workflow.result.length] : null,
+  })
+}
+
+function realtimeWorkProgressContext(progress: WorkProgress, since: number) {
+  const latestDoneJobIsFresh = Boolean(progress.latestDone?.job?.updatedAt && progress.latestDone.job.updatedAt >= since - 5000)
+  const latestDoneWorkflowIsFresh = Boolean(progress.latestDone?.workflow?.updatedAt && progress.latestDone.workflow.updatedAt >= since - 5000)
+  const hasActiveWork =
+    progress.counts.activeJobs > 0 ||
+    progress.counts.activeWorkflows > 0 ||
+    progress.counts.blockedWorkflows > 0 ||
+    latestDoneJobIsFresh ||
+    latestDoneWorkflowIsFresh
+  if (!hasActiveWork || !progress.output.trim()) return ''
+  return [
+    'Silent JAVIS background work progress update. Do not answer this message by itself.',
+    'Use this only if the user asks about background work, queued tasks, Codex/Claude runs, approvals, or next actions.',
+    progress.output.trim(),
+  ].join('\n')
 }
 
 function normalizedScreenPrivacy(value?: ScreenPrivacy) {
@@ -781,6 +817,8 @@ function App() {
   const dragSuppressClickRef = useRef(false)
   const previousPushStateRef = useRef(false)
   const responseActiveRef = useRef(false)
+  const lastRealtimeWorkProgressSignatureRef = useRef('')
+  const lastRealtimeWorkProgressSyncAtRef = useRef(0)
 
   const jobs = status?.queue || []
   const workflows = status?.workflows || []
@@ -1257,6 +1295,43 @@ function App() {
     }, 15000)
     return () => window.clearInterval(id)
   }, [micMode, screenLive, updateResidentConversation, voiceStatus])
+
+  useEffect(() => {
+    if (voiceStatus !== 'live') {
+      lastRealtimeWorkProgressSignatureRef.current = ''
+      lastRealtimeWorkProgressSyncAtRef.current = 0
+      return undefined
+    }
+
+    let disposed = false
+    const liveStartedAt = Date.now()
+    const syncWorkProgress = async () => {
+      try {
+        const result = await apiJson<{ progress: WorkProgress }>('/api/work/progress?jobLimit=5&workflowLimit=5')
+        if (disposed) return
+        const contextText = realtimeWorkProgressContext(result.progress, liveStartedAt)
+        if (!contextText) return
+        const signature = workProgressSignature(result.progress)
+        if (signature === lastRealtimeWorkProgressSignatureRef.current) return
+        const now = Date.now()
+        if (now - lastRealtimeWorkProgressSyncAtRef.current < 10000) return
+        if (pushRealtimeTextContext(contextText)) {
+          lastRealtimeWorkProgressSignatureRef.current = signature
+          lastRealtimeWorkProgressSyncAtRef.current = now
+        }
+      } catch {
+        // Work-progress sync is opportunistic context; voice should keep running.
+      }
+    }
+
+    const timeout = window.setTimeout(syncWorkProgress, Math.min(REALTIME_WORK_PROGRESS_SYNC_MS, 30000))
+    const interval = window.setInterval(syncWorkProgress, REALTIME_WORK_PROGRESS_SYNC_MS)
+    return () => {
+      disposed = true
+      window.clearTimeout(timeout)
+      window.clearInterval(interval)
+    }
+  }, [pushRealtimeTextContext, voiceStatus])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return
