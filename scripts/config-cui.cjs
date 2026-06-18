@@ -247,7 +247,9 @@ async function printStatus() {
   console.log('20. Pause/resume learning');
   console.log('21. Manage learning exclusions');
   console.log('22. Delete inferred learning data');
-  console.log('23. Quit');
+  console.log('23. Preview learning skill draft');
+  console.log('24. Export learning skill');
+  console.log('25. Quit');
 }
 
 async function setupAction(action) {
@@ -570,6 +572,45 @@ async function deleteLearningData(rl) {
   printLearningControls(result.learning);
 }
 
+function printSkillDraft(draft) {
+  const skill = draft?.skill || draft?.draft?.skill || {};
+  const evidence = draft?.evidence || draft?.draft?.evidence || {};
+  const profile = evidence.learning?.profile || {};
+  console.log(`Skill: ${skill.name || '-'}`);
+  console.log(`Title: ${skill.title || '-'}`);
+  console.log(`Description: ${skill.description || '-'}`);
+  console.log(`Suggested path: ${skill.suggestedUserPath || '-'}`);
+  console.log(`Source observations: ${profile.sourceEventCount || 0}`);
+  if (profile.summary) console.log(`Summary: ${compact(profile.summary, 500)}`);
+  if (skill.markdown) {
+    console.log('\n--- SKILL.md preview ---');
+    console.log(compact(skill.markdown, 1800));
+  }
+}
+
+async function previewLearningSkillDraft() {
+  const draft = await request('/api/learning/skill-draft?source=cui&force=true');
+  console.log('');
+  printSkillDraft(draft);
+}
+
+async function exportLearningSkillDraft(rl) {
+  const draft = await request('/api/learning/skill-draft?source=cui&force=true');
+  console.log('');
+  printSkillDraft(draft);
+  console.log('\nThis writes a user-level Codex skill under ~/.agents/skills, not into this GitHub project.');
+  const answer = (await rl.question('Type SAVE to export this skill: ')).trim();
+  if (answer !== 'SAVE') {
+    console.log('\nNo skill exported.');
+    return;
+  }
+  const result = await request('/api/learning/skill-draft/save', {
+    method: 'POST',
+    body: { source: 'cui', confirm: true, force: false },
+  });
+  console.log(`\n${result.output || 'Skill exported.'}`);
+}
+
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
   const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'notch';
@@ -661,7 +702,11 @@ async function main() {
         await manageLearningExclusions(rl);
       } else if (answer === '22') {
         await deleteLearningData(rl);
-      } else if (answer === '23' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '23') {
+        await previewLearningSkillDraft();
+      } else if (answer === '24') {
+        await exportLearningSkillDraft(rl);
+      } else if (answer === '25' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

@@ -41,6 +41,7 @@
 - Add safe local command routing before model calls for basic resident operations.
 - Persist explicit local memories for user-approved preferences, project facts, and notes.
 - Persist a local inferred learning profile from passive ambient metadata, separate from explicit memory.
+- Generate reviewable Codex-style skill drafts from local learning, routing, and workflow evidence, with explicit export to user-level `~/.agents/skills`.
 - Persist local Inbox captures for clipboard/manual follow-ups and include them in briefing.
 - Add read-only Inbox triage for priority sorting and lane suggestions.
 - Add explicit process-next Inbox flow for doing one highest-priority capture at a time.
@@ -70,7 +71,7 @@
 - Wake-word or push-to-talk mode.
 - Better interruption handling.
 - Ongoing screen context with privacy zones: current build supports a global private/clear screen mode; next, add selectable app/window/region redaction.
-- Task memory scoped to the local machine: current build supports explicit local memories plus a controllable local inferred learning profile with pause/resume, prompt inclusion, exclusions, deletion, promotion to memory, and routing evidence; next, richer retrieval inside workflows.
+- Task memory scoped to the local machine: current build supports explicit local memories plus a controllable local inferred learning profile with pause/resume, prompt inclusion, exclusions, deletion, promotion to memory, routing evidence, and reviewable skill draft generation; next, richer retrieval inside workflows and true record/replay capture of demonstrated UI sequences.
 - Capture queue scoped to the local machine: current build supports persistent Inbox items, read-only triage, explicit process-next, and routing them into work lanes; next, add spoken confirmation policies and richer triage grouping.
 - Work sessions scoped to the local machine: current build supports start/resume/status/note/check-in/end plus automatic evidence from Inbox, jobs, workflows, and approvals; next, improve spoken handoff quality.
 - Long-running work status scoped to the local machine: current build supports deterministic progress check-ins over jobs and workflows; next, stream richer live updates into active voice sessions.

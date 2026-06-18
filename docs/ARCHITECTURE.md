@@ -99,7 +99,7 @@ Renderer
 - Workflow continuation lane: creates follow-up workflows from prior records, preserving parent workflow ids and target context.
 - Workflow delivery lane: copies completed workflow results back to the system clipboard in result-only or Markdown format.
 - Memory lane: user-approved local memories for durable preferences, project facts, and notes, with keyword search, task-context injection, and delete.
-- Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, and routing evidence that records whether learned signals were attached to a task.
+- Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, routing evidence, and Record & Replay-inspired `SKILL.md` draft generation for repeatable local workflows.
 - Clipboard lane: local clipboard read/write, guarded by policy and audit logs.
 - File lane: local file list/read/search/write/create/copy/move, guarded by allowed roots, risk levels, approvals, local-execution enablement, and audit logs.
 
@@ -132,7 +132,7 @@ By default, local runtime state lives in:
 
 `memories.json` preserves explicit local memories only when the user asks JAVIS to remember something. Memory records store text, kind, scope, tags, source, and timestamps, and can be searched or deleted through the local API.
 
-`learned-profile.json` preserves the optional inferred local profile from ambient metadata. It stores aggregate app/browser/context patterns and a short local summary, not screenshots, clipboard text, or user-approved memory claims.
+`learned-profile.json` preserves the optional inferred local profile from ambient metadata. It stores aggregate app/browser/context patterns and a short local summary, not screenshots, clipboard text, or user-approved memory claims. Skill drafts are generated on demand from this profile plus recent routing/workflow records; saving a draft writes to the user-level `~/.agents/skills` directory only after explicit confirmation.
 
 `inbox.json` preserves local Inbox captures for pending follow-up items. Records store title, body, status, priority, source, tags, route metadata, and timestamps. Open items feed the resident status, menu bar, buddy panel, briefing next-action list, read-only triage output, and explicit next-action processing; routed items retain the selected lane, queued job id when present, and a short output summary.
 
