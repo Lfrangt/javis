@@ -8696,7 +8696,7 @@ function workflowBriefing(options = {}) {
     });
   }
 
-  if (!nextActions.length && latestDoneWorkflow?.result) {
+  if (latestDoneWorkflow?.result && !nextActions.some((action) => action.id === `copy:${latestDoneWorkflow.id}`)) {
     nextActions.push({
       id: `copy:${latestDoneWorkflow.id}`,
       priority: 3,
@@ -8919,7 +8919,18 @@ async function workNextAction(options = {}) {
     workflowLimit: options.workflowLimit || 6,
     jobLimit: options.jobLimit || 6,
   });
-  const action = (briefing.nextActions || [])[0] || null;
+  const requestedActionId = String(options.actionId || options.id || '').trim();
+  const actions = briefing.nextActions || [];
+  const action = requestedActionId ? actions.find((item) => item.id === requestedActionId) || null : actions[0] || null;
+  if (requestedActionId && !action) {
+    return {
+      ok: false,
+      executed: false,
+      action: null,
+      output: `没有找到指定的下一步: ${requestedActionId}`,
+      briefing,
+    };
+  }
   if (!action) {
     return {
       ok: true,
@@ -9031,6 +9042,34 @@ async function workNextAction(options = {}) {
         `可重试 workflow: ${workflow.title}`,
         result.output || '',
       ].filter(Boolean).join('\n');
+    }
+  } else if (action.source === 'workflows' && String(action.id || '').startsWith('copy:')) {
+    const workflow = action.workflowId ? workflows.get(action.workflowId) || null : null;
+    const format = options.format || 'markdown';
+    if (!workflow) {
+      result = { workflow: null };
+      output = '没有找到要交付的 workflow。';
+    } else if (execute) {
+      result = await copyWorkflowResult({ workflowId: workflow.id, format });
+      executed = Boolean(result.ok);
+      output = result.ok
+        ? `已复制 workflow 结果到剪贴板: ${workflow.title}\n${result.output}`
+        : result.output;
+    } else {
+      const content = workflowClipboardText(workflow, format);
+      result = {
+        workflow,
+        format,
+        bytes: Buffer.byteLength(content, 'utf8'),
+        preview: compactRecordText(content, 700),
+      };
+      output = content.trim()
+        ? [
+          `可交付 workflow: ${workflow.title}`,
+          `格式: ${format}; ${result.bytes} bytes`,
+          `预览: ${result.preview}`,
+        ].join('\n')
+        : `这个 workflow 还没有可交付结果: ${workflow.title}`;
     }
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
