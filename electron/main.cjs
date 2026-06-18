@@ -1374,6 +1374,34 @@ function normalizePersistedRoutingRecord(record) {
   };
 }
 
+function cloneJsonObject(value, fallback = {}) {
+  try {
+    return JSON.parse(JSON.stringify(value || fallback));
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeApprovalContinuation(value) {
+  if (!value || typeof value !== 'object') return null;
+  if (value.type !== 'app_workflow') return null;
+  const remainingSteps = Array.isArray(value.remainingSteps)
+    ? value.remainingSteps.slice(0, 12).map((step, index) => ({
+        ...cloneJsonObject(step),
+        index,
+      }))
+    : [];
+  return {
+    type: 'app_workflow',
+    workflowId: String(value.workflowId || '').slice(0, 120),
+    title: String(value.title || '').slice(0, 180),
+    instruction: String(value.instruction || '').slice(0, 2000),
+    stepIndex: Math.max(0, Number(value.stepIndex || 0)),
+    source: String(value.source || 'approval').slice(0, 80),
+    remainingSteps,
+  };
+}
+
 function normalizePersistedApproval(approval) {
   if (!approval || typeof approval !== 'object' || !approval.id) return null;
   const status = ['pending', 'approved', 'rejected', 'executed', 'failed'].includes(approval.status)
@@ -1386,6 +1414,7 @@ function normalizePersistedApproval(approval) {
     reason: String(approval.reason || ''),
     summary: String(approval.summary || '').slice(0, 240),
     args: approval.args && typeof approval.args === 'object' ? approval.args : {},
+    continuation: normalizeApprovalContinuation(approval.continuation),
     status,
     createdAt: Number(approval.createdAt || Date.now()),
     updatedAt: Number(approval.updatedAt || Date.now()),
@@ -2786,7 +2815,7 @@ function setApproval(id, patch) {
   return next;
 }
 
-function createActionApproval(plan, reason) {
+function createActionApproval(plan, reason, continuation = null) {
   const id = crypto.randomUUID();
   const approval = {
     id,
@@ -2795,6 +2824,7 @@ function createActionApproval(plan, reason) {
     reason,
     summary: plan.summary,
     args: plan.args,
+    continuation: normalizeApprovalContinuation(continuation),
     status: 'pending',
     createdAt: Date.now(),
     updatedAt: Date.now(),
@@ -2808,6 +2838,7 @@ function createActionApproval(plan, reason) {
     riskLevel: approval.riskLevel,
     reason,
     summary: approval.summary,
+    hasContinuation: Boolean(approval.continuation),
   });
   recordActiveSessionEvent('approval_created', `Approval needed: ${compactRecordText(approval.summary, 120)}`, 'approval', {
     kind: 'approval',
@@ -3631,7 +3662,7 @@ async function controlCurrentApp(options = {}) {
   }
 
   try {
-    const output = await executeLocalAction(actionArgs);
+    const output = await executeLocalAction(actionArgs, { approvalContext: options.approvalContext });
     const workflow = recordWorkflow
       ? createWorkflowRecord({
           kind: 'accessibility',
@@ -3754,6 +3785,21 @@ function normalizeAppWorkflowSteps(value) {
     .map((step, index) => normalizeAppWorkflowStep(step, index));
 }
 
+function appWorkflowApprovalContext(context = {}, step = {}) {
+  if (!context.workflowId || !Array.isArray(context.steps)) return null;
+  const stepIndex = Number(step.index || 0);
+  const remainingSteps = context.steps.filter((item) => Number(item.index || 0) > stepIndex);
+  return {
+    type: 'app_workflow',
+    workflowId: context.workflowId,
+    title: context.title || '',
+    instruction: context.instruction || '',
+    stepIndex,
+    source: context.source || 'app_workflow',
+    remainingSteps,
+  };
+}
+
 function appWorkflowActionArgs(step) {
   if (step.type === 'open_app') {
     const value = String(step.app || step.value || step.name || '').trim();
@@ -3816,7 +3862,8 @@ function previewLocalWorkflowAction(args) {
   };
 }
 
-async function runAppWorkflowStep(step, execute) {
+async function runAppWorkflowStep(step, execute, context = {}) {
+  const approvalContext = appWorkflowApprovalContext(context, step);
   if (step.type === 'wait') {
     const ms = Math.max(0, Math.min(10000, Number(step.ms || step.durationMs || step.value || 500)));
     if (execute) await waitMs(ms);
@@ -3848,6 +3895,7 @@ async function runAppWorkflowStep(step, execute) {
       maxNodes: step.maxNodes,
       maxDepth: step.maxDepth,
       recordWorkflow: false,
+      approvalContext,
     });
     return {
       status: result.ok ? (result.executed ? 'executed' : 'previewed') : result.approval ? 'approval_required' : 'blocked',
@@ -3878,7 +3926,7 @@ async function runAppWorkflowStep(step, execute) {
       value: step.value ?? step.content,
       execute,
       source: 'app_workflow',
-    }, { preview: !execute });
+    }, { preview: !execute, approvalContext });
     return {
       status: result.ok ? (result.executed ? 'executed' : 'previewed') : result.approval ? 'approval_required' : 'blocked',
       type: step.type,
@@ -3904,7 +3952,7 @@ async function runAppWorkflowStep(step, execute) {
   }
 
   try {
-    const output = await executeLocalAction(args);
+    const output = await executeLocalAction(args, { approvalContext });
     return {
       status: 'executed',
       type: step.type,
@@ -4271,9 +4319,16 @@ async function runAppWorkflow(options = {}) {
   });
 
   const results = [];
+  const stepContext = {
+    workflowId: workflow.id,
+    title,
+    instruction,
+    steps,
+    source: options.source || 'app_workflow',
+  };
   for (const step of steps) {
     try {
-      const result = await runAppWorkflowStep(step, execute);
+      const result = await runAppWorkflowStep(step, execute, stepContext);
       results.push({ index: step.index, ...result });
       if (stopOnError && ['blocked', 'approval_required'].includes(result.status)) break;
     } catch (error) {
@@ -11628,6 +11683,7 @@ function evaluateMacActionPlan(plan, options = {}) {
     const approval = createActionApproval(
       plan,
       `risk_level_${plan.riskLevel}_requires_approval`,
+      options.approvalContext,
     );
     throw new ActionApprovalRequired(approval);
   }
@@ -11830,15 +11886,107 @@ async function executeLocalAction(args = {}, options = {}) {
   return executeMacAction(args, options);
 }
 
+async function executeApprovedAction(approval) {
+  if (approval.action === 'browser_control') {
+    if (approval.args?.domAction) {
+      const result = await executeBrowserDomAction({ ...approval.args, execute: true }, { approved: true });
+      return result.output;
+    }
+    const result = await executeBrowserControl(approval.args, { approved: true });
+    return result.output;
+  }
+  return executeLocalAction(approval.args, { approved: true });
+}
+
+async function continueAppWorkflowAfterApproval(approval, approvedOutput) {
+  const continuation = normalizeApprovalContinuation(approval.continuation);
+  if (!continuation || continuation.type !== 'app_workflow') return null;
+  const workflow = continuation.workflowId ? workflows.get(continuation.workflowId) || null : null;
+  const steps = normalizeAppWorkflowSteps(continuation.remainingSteps || []);
+  const results = [
+    {
+      index: continuation.stepIndex,
+      status: 'executed',
+      type: 'approved_action',
+      label: 'Approved action',
+      summary: approval.summary,
+      output: approvedOutput,
+    },
+  ];
+  const stepContext = {
+    workflowId: continuation.workflowId,
+    title: continuation.title,
+    instruction: continuation.instruction,
+    steps,
+    source: 'approval_continuation',
+  };
+
+  for (const step of steps) {
+    try {
+      const result = await runAppWorkflowStep(step, true, stepContext);
+      results.push({ index: step.index, ...result });
+      if (['blocked', 'approval_required'].includes(result.status)) break;
+    } catch (error) {
+      results.push({
+        index: step.index,
+        status: 'blocked',
+        type: step.type,
+        label: step.label,
+        summary: step.label,
+        output: error instanceof Error ? error.message : String(error),
+      });
+      break;
+    }
+  }
+
+  const blocked = results.some((result) => ['blocked', 'approval_required'].includes(result.status));
+  const status = blocked ? 'blocked' : 'done';
+  const continuationOutput = formatAppWorkflowResults(results);
+  const output = [
+    workflow?.result ? `${workflow.result}` : '',
+    `Approval ${approval.id} executed; continuing workflow.`,
+    continuationOutput,
+  ].filter(Boolean).join('\n');
+  const finalWorkflow = workflow
+    ? setWorkflow(workflow.id, {
+        status,
+        result: output,
+        completedAt: Date.now(),
+        target: {
+          ...(workflow.target || {}),
+          continuationApprovalId: approval.id,
+          continuationSteps: steps.length,
+          continuedAt: Date.now(),
+        },
+      })
+    : null;
+  appendAudit('approval.workflow_continued', {
+    approvalId: approval.id,
+    workflowId: continuation.workflowId,
+    status,
+    steps: steps.length,
+  });
+  return {
+    ok: status === 'done',
+    workflow: finalWorkflow,
+    results,
+    output,
+  };
+}
+
 async function executeApproval(approval) {
   if (approval.status !== 'pending') {
     throw new Error(`Approval ${approval.id} is already ${approval.status}.`);
   }
   setApproval(approval.id, { status: 'approved' });
   try {
-    const result = await executeLocalAction(approval.args, { approved: true });
-    setApproval(approval.id, { status: 'executed', result });
-    return { ok: true, output: result, approval: approvals.get(approval.id) };
+    const result = await executeApprovedAction(approval);
+    const continuation = await continueAppWorkflowAfterApproval(approval, result);
+    const output = continuation?.output
+      ? [result, continuation.output].filter(Boolean).join('\n')
+      : result;
+    setApproval(approval.id, { status: 'executed', result: output });
+    return { ok: true, output, approval: approvals.get(approval.id), continuation };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     setApproval(approval.id, { status: 'failed', result: message });

@@ -116,6 +116,7 @@ Default file policy:
 - `write_file`, `create_directory`, `copy_file`, and `move_file` are Level 3, require approval, and require `JAVIS_ENABLE_LOCAL_EXEC=true`.
 - `ax_press` and `ax_set_value` are Level 3, require approval, and require `JAVIS_ENABLE_LOCAL_EXEC=true`.
 - Codex and Claude Code delegation is Level 3, requires `JAVIS_ENABLE_LOCAL_EXEC=true`, and is governed by `allow.code_agent`.
+- App workflow approvals store only the remaining workflow steps needed to continue after the approved action; later steps still re-enter the same policy checks.
 - Failed jobs keep `attempts`, `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot so JAVIS can diagnose and continue instead of returning a bare failure.
 - Work-next recovery jobs are capped by `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` per failed parent job and keep Level 3 code-agent policy checks.
 - Autopilot ticks are limited to low-risk recovery diagnostics and safe-planner app workflow retries; they skip during live voice sessions or active background jobs.

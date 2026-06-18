@@ -312,6 +312,10 @@ curl -X POST http://127.0.0.1:3417/api/app/workflow \
 
 `/api/app/workflow` records one app workflow with per-step results. Supported step types are `open_app`, `open_url`, `wait`, `control_current_app`, `hotkey`, `type_text`, `mac_action`, and `file_action`. Each action step still uses the normal policy and audit path; `execute:false` previews the sequence.
 
+If a workflow pauses for an action approval, the pending approval stores a continuation with the
+remaining workflow steps. Approving that action executes the approved step and then continues the
+remaining steps until the workflow finishes, blocks, or hits another approval.
+
 For explicit local memory:
 
 ```bash
