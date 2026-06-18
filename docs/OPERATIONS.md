@@ -595,7 +595,7 @@ Browser DOM control can use Chrome/Safari Apple Events JavaScript. For Chrome, e
 Read the current frontmost app UI tree:
 
 ```bash
-curl 'http://127.0.0.1:3417/api/accessibility/tree?maxNodes=80&maxDepth=5'
+curl 'http://127.0.0.1:3417/api/accessibility/tree?maxNodes=240&maxDepth=9'
 ```
 
 Create a dry-run UI control plan:
@@ -607,6 +607,11 @@ curl -X POST http://127.0.0.1:3417/api/accessibility/plan \
 ```
 
 The CUI/API flow exposes this as `tree` -> `plan` -> `guard` -> `act`:
+
+For Chromium browsers, the tree reader attempts to enable the web accessibility tree before walking
+nodes, and captures web hints such as placeholder text, DOM role, DOM id, class list, editable state,
+and focus state. This makes side panes and web textboxes easier to target without bypassing the
+same Level 3 action policy used by `ax_press` and `ax_set_value`.
 
 - `UI`: read the current frontmost app tree.
 - `Plan`: identify a likely target from the tree.

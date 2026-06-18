@@ -120,7 +120,7 @@ const DEFAULT_ACTION_POLICY = {
     read_clipboard: { enabled: true, maxBytes: 20000 },
     write_clipboard: { enabled: true, maxBytes: 20000 },
     clear_clipboard: { enabled: true },
-    read_accessibility_tree: { enabled: true, maxNodes: 120, maxDepth: 6 },
+    read_accessibility_tree: { enabled: true, maxNodes: 240, maxDepth: 9 },
     ax_press: {
       enabled: true,
       allowedRoles: ['AXButton', 'AXCheckBox', 'AXLink', 'AXMenuButton', 'AXMenuItem', 'AXPopUpButton', 'AXRadioButton', 'AXTab'],
@@ -835,8 +835,14 @@ function normalizeActionPolicy(value) {
       },
       read_accessibility_tree: {
         enabled: raw.allow?.read_accessibility_tree?.enabled !== false,
-        maxNodes: Math.max(10, Math.min(500, Number(raw.allow?.read_accessibility_tree?.maxNodes || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxNodes))),
-        maxDepth: Math.max(1, Math.min(12, Number(raw.allow?.read_accessibility_tree?.maxDepth || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxDepth))),
+        maxNodes: Math.max(
+          DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxNodes,
+          Math.min(500, Number(raw.allow?.read_accessibility_tree?.maxNodes || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxNodes)),
+        ),
+        maxDepth: Math.max(
+          DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxDepth,
+          Math.min(12, Number(raw.allow?.read_accessibility_tree?.maxDepth || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxDepth)),
+        ),
       },
       ax_press: {
         enabled: raw.allow?.ax_press?.enabled !== false,
@@ -2942,7 +2948,7 @@ function normalizeAccessibilityTreeOptions(options = {}) {
 }
 
 function compactAccessibilityLabel(node = {}) {
-  return [node.name, node.description, node.value]
+  return [node.name, node.description, node.value, node.placeholder, node.title, node.domIdentifier, node.domRole]
     .map((item) => String(item || '').trim())
     .filter(Boolean)
     .find(Boolean) || '';
@@ -3031,6 +3037,31 @@ function readProp(element, name) {
   }
 }
 
+function readAttribute(element, name) {
+  try {
+    const value = element.attributes.byName(name).value();
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) return value.map((item) => String(item)).join(' ');
+    return String(value).replace(/[\\t\\r\\n]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
+function writeAttribute(element, name, value) {
+  try {
+    const attribute = element.attributes.byName(name);
+    if (attribute.value && attribute.value.set) {
+      attribute.value.set(value);
+      return true;
+    }
+    attribute.value = value;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function readBool(element, name) {
   try {
     const value = element[name]();
@@ -3059,7 +3090,11 @@ function childrenOf(element) {
 }
 
 function nodeLabel(node) {
-  return [node.name, node.description, node.value].filter(Boolean)[0] || '';
+  return [node.name, node.description, node.value, node.placeholder, node.title, node.domIdentifier, node.domRole].filter(Boolean)[0] || '';
+}
+
+function isChromiumApp(name) {
+  return /Google Chrome|Chrome Canary|Chromium|Brave Browser|Microsoft Edge|Arc|Comet/i.test(String(name || ''));
 }
 
 function readNode(element, depth, parentId, childCount) {
@@ -3074,6 +3109,13 @@ function readNode(element, depth, parentId, childCount) {
     name: readProp(element, 'name'),
     description: readProp(element, 'description'),
     value: readProp(element, 'value'),
+    placeholder: readAttribute(element, 'AXPlaceholderValue'),
+    title: readAttribute(element, 'AXTitle'),
+    domIdentifier: readAttribute(element, 'AXDOMIdentifier'),
+    domClassList: readAttribute(element, 'AXDOMClassList'),
+    domRole: readAttribute(element, 'AXDOMRole'),
+    editable: readAttribute(element, 'AXEditable'),
+    focused: readAttribute(element, 'AXFocused'),
     enabled: readBool(element, 'enabled'),
     position: readPair(element, 'position'),
     size: readPair(element, 'size'),
@@ -3088,6 +3130,13 @@ if (!processes.length) {
   JSON.stringify({ available: false, app: '', windowTitle: '', nodes: [], nodeCount: 0, truncated: false, maxNodes, maxDepth, error: 'no_frontmost_app' });
 } else {
   const process = processes[0];
+  const appName = readProp(process, 'name');
+  let chromiumAccessibilityActivated = false;
+  if (isChromiumApp(appName)) {
+    chromiumAccessibilityActivated =
+      writeAttribute(process, 'AXManualAccessibility', true)
+      || writeAttribute(process, 'AXEnhancedUserInterface', true);
+  }
   const windows = process.windows();
   let root = null;
   for (const window of windows) {
@@ -3126,6 +3175,7 @@ if (!processes.length) {
     maxNodes,
     maxDepth,
     nodes,
+    chromiumAccessibilityActivated,
     error: '',
     generatedAt: new Date().toISOString(),
   });
@@ -3209,7 +3259,21 @@ const ACTIONABLE_AX_ROLES = new Set([
 ]);
 
 function accessibilityNodeSearchText(node) {
-  return [node.role, node.subrole, node.roleDescription, node.name, node.description, node.value]
+  return [
+    node.role,
+    node.subrole,
+    node.roleDescription,
+    node.name,
+    node.description,
+    node.value,
+    node.placeholder,
+    node.title,
+    node.domIdentifier,
+    node.domClassList,
+    node.domRole,
+    node.editable,
+    node.focused,
+  ]
     .map((item) => String(item || '').toLowerCase())
     .filter(Boolean)
     .join(' ');
@@ -3232,10 +3296,20 @@ function accessibilityInstructionTokens(instruction) {
 }
 
 function matchedAccessibilityTokens(node, tokens, instruction = '') {
-  const labelParts = [node.name, node.description, node.value]
+  const labelParts = [
+    node.name,
+    node.description,
+    node.value,
+    node.placeholder,
+    node.title,
+    node.domIdentifier,
+    node.domClassList,
+    node.domRole,
+    node.roleDescription,
+  ]
     .map((item) => String(item || '').toLowerCase())
     .filter(Boolean);
-  const text = labelParts.join(' ');
+  const text = accessibilityNodeSearchText(node);
   const instructionText = String(instruction || '').toLowerCase();
   const matches = new Set(tokens.filter((token) => text.includes(token)));
   for (const label of labelParts) {
@@ -3249,6 +3323,8 @@ function scoreAccessibilityNode(node, tokens, matchedTokens = matchedAccessibili
   const label = compactAccessibilityLabel(node);
   let score = ACTIONABLE_AX_ROLES.has(node.role) ? 8 : 0;
   if (node.enabled === false) score -= 3;
+  if (node.focused === 'true') score += 3;
+  if (/text|search|edit|input|textbox|composer|compose|ask/i.test(accessibilityNodeSearchText(node))) score += 2;
   if (label) score += 2;
   for (const token of matchedTokens) score += 5;
   if (hasInstruction && matchedTokens.length === 0) score = Math.max(0, score - 9);
@@ -4138,6 +4214,17 @@ function readProp(element, name) {
   }
 }
 
+function readAttribute(element, name) {
+  try {
+    const value = element.attributes.byName(name).value();
+    if (value === null || value === undefined) return '';
+    if (Array.isArray(value)) return value.map((item) => String(item)).join(' ');
+    return String(value).replace(/[\\t\\r\\n]+/g, ' ').replace(/\\s{2,}/g, ' ').trim();
+  } catch (_) {
+    return '';
+  }
+}
+
 function childrenOf(element) {
   try {
     return element.uiElements();
@@ -4147,7 +4234,15 @@ function childrenOf(element) {
 }
 
 function labelOf(element) {
-  return [readProp(element, 'name'), readProp(element, 'description'), readProp(element, 'value')].filter(Boolean)[0] || '';
+  return [
+    readProp(element, 'name'),
+    readProp(element, 'description'),
+    readProp(element, 'value'),
+    readAttribute(element, 'AXPlaceholderValue'),
+    readAttribute(element, 'AXTitle'),
+    readAttribute(element, 'AXDOMIdentifier'),
+    readAttribute(element, 'AXDOMRole'),
+  ].filter(Boolean)[0] || '';
 }
 
 const processes = systemEvents.applicationProcesses.whose({ frontmost: true })();
