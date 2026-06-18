@@ -20,7 +20,12 @@ Login-start resident mode:
 ```bash
 npm run resident:install
 npm run resident:uninstall
+npm run resident:restart
 ```
+
+Resident install, uninstall, and restart stop stale JAVIS Electron/npm processes from this project
+before loading the LaunchAgent. This prevents an older process from keeping `JAVIS_API_PORT` open
+while a newer LaunchAgent instance appears to be running.
 
 ## Health
 
@@ -383,7 +388,9 @@ curl -X POST http://127.0.0.1:3417/api/setup/actions \
   -d '{"action":"install_resident_agent"}'
 ```
 
-`install_resident_agent` writes the LaunchAgent plist for the next login. It does not start a second Electron process beside the currently running manual process.
+`install_resident_agent` writes the LaunchAgent plist for the next login. The resident scripts stop
+stale project-owned Electron/npm processes before loading the LaunchAgent, so a previous manual or
+orphaned process should not keep the API port bound to older code.
 
 ## Runtime Data
 

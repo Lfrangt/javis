@@ -88,6 +88,8 @@ For a login-start version that runs from the built app instead of the Vite dev s
 npm run resident:install
 ```
 
+Install/restart first stops stale JAVIS Electron processes from this project and any project-owned listener on the configured API port, so the LaunchAgent does not leave an older API server behind.
+
 To remove it:
 
 ```bash

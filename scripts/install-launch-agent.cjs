@@ -9,6 +9,7 @@ const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
 const plistPath = path.join(launchAgentsDir, `${label}.plist`);
 const outLog = path.join(repoRoot, 'logs', 'resident.out.log');
 const errLog = path.join(repoRoot, 'logs', 'resident.err.log');
+const stopScript = path.join(repoRoot, 'scripts', 'stop-resident-processes.cjs');
 const uid = process.getuid?.();
 
 function xmlEscape(value) {
@@ -75,6 +76,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
 if (uid !== undefined) {
   run('launchctl', ['bootout', `gui/${uid}`, plistPath], { optional: true });
 }
+run(process.execPath, [stopScript], { stdio: 'inherit', optional: true });
 fs.writeFileSync(plistPath, plist, 'utf8');
 if (uid !== undefined) {
   const bootstrapped = run('launchctl', ['bootstrap', `gui/${uid}`, plistPath], { optional: true });

@@ -4,7 +4,9 @@ const os = require('node:os');
 const path = require('node:path');
 
 const label = 'com.haoge.javis';
+const repoRoot = path.resolve(__dirname, '..');
 const plistPath = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
+const stopScript = path.join(repoRoot, 'scripts', 'stop-resident-processes.cjs');
 const uid = process.getuid?.();
 
 function run(command, args) {
@@ -20,6 +22,8 @@ if (uid !== undefined) {
   run('launchctl', ['disable', `gui/${uid}/${label}`]);
   run('launchctl', ['unload', '-w', plistPath]);
 }
+
+run(process.execPath, [stopScript]);
 
 if (fs.existsSync(plistPath)) {
   fs.unlinkSync(plistPath);
