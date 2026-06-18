@@ -70,6 +70,8 @@ const AMBIENT_INTERVAL_MS = Math.max(2500, Math.min(60000, Number(process.env.JA
 const AMBIENT_LEARNING_ENABLED = process.env.JAVIS_AMBIENT_LEARNING === 'true';
 const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(process.env.JAVIS_AMBIENT_LEARNING_INTERVAL_MS || 60000)));
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
+const LEARNING_AUTO_MEMORY_ENABLED = process.env.JAVIS_LEARNING_AUTO_MEMORY !== 'false';
+const LEARNING_AUTO_MEMORY_MIN_EVENTS = Math.max(5, Math.min(200, Number(process.env.JAVIS_LEARNING_AUTO_MEMORY_MIN_EVENTS || 20)));
 const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true'
   || (process.env.JAVIS_AUTOPILOT_ENABLED !== 'false' && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
@@ -2196,6 +2198,15 @@ function distillAmbientLearning(options = {}) {
       topApp: learnedProfile.topApps[0]?.name || '',
       topHost: learnedProfile.topBrowserHosts[0]?.host || '',
     });
+    if (LEARNING_AUTO_MEMORY_ENABLED && total >= LEARNING_AUTO_MEMORY_MIN_EVENTS) {
+      try {
+        upsertLearningProfileMemory(learnedProfile, options.source || 'learning_auto');
+      } catch (error) {
+        appendAudit('learning.memory_auto_failed', {
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     return learningStateSnapshot();
   } catch (error) {
     appendAudit('learning.distill_failed', { message: error instanceof Error ? error.message : String(error) });
@@ -2429,11 +2440,8 @@ function learningMemoryText(profile) {
   ].filter(Boolean).join('\n');
 }
 
-function rememberLearningProfile(options = {}) {
-  const force = options.force !== false;
-  const learning = distillAmbientLearning({ source: options.source || 'learning_memory', force });
-  const profile = learning.profile || learningStateSnapshot().profile;
-  if (!profile.sourceEventCount) throw new Error('No learning profile is available yet.');
+function upsertLearningProfileMemory(profile, source = 'learning_memory') {
+  if (!profile?.sourceEventCount) throw new Error('No learning profile is available yet.');
   const text = learningMemoryText(profile);
   const existing = Array.from(memories.values()).find((memory) => (
     memory.source === 'learning' && memory.tags.includes('ambient-profile')
@@ -2454,12 +2462,21 @@ function rememberLearningProfile(options = {}) {
   persistMemories();
   appendAudit('learning.memory_upserted', {
     id: next.id,
+    source: String(source || 'learning_memory').slice(0, 80),
     sourceEventCount: profile.sourceEventCount,
     textLength: next.text.length,
   });
+  return next;
+}
+
+function rememberLearningProfile(options = {}) {
+  const force = options.force !== false;
+  const learning = distillAmbientLearning({ source: options.source || 'learning_memory', force });
+  const profile = learning.profile || learningStateSnapshot().profile;
+  const memory = upsertLearningProfileMemory(profile, options.source || 'learning_memory');
   return {
     ok: true,
-    memory: next,
+    memory,
     learning,
   };
 }
