@@ -1,10 +1,30 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 const args = new Set(process.argv.slice(2));
 const baseUrl = process.env.JAVIS_API_BASE || 'http://127.0.0.1:3417';
+const appSupportDir = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
+const dataDir = process.env.JAVIS_DATA_DIR || path.join(appSupportDir, 'Runtime');
+const apiTokenFile = process.env.JAVIS_API_TOKEN_FILE || path.join(dataDir, 'api-token');
 const jsonMode = args.has('--json');
 const allowBlocked = args.has('--allow-blocked');
 
+function readApiToken() {
+  const envToken = String(process.env.JAVIS_API_TOKEN || '').trim();
+  if (envToken) return envToken;
+  try {
+    return fs.readFileSync(apiTokenFile, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
 async function readDoctorReport() {
-  const response = await fetch(`${baseUrl}/api/doctor/report`);
+  const token = readApiToken();
+  const response = await fetch(`${baseUrl}/api/doctor/report`, {
+    headers: token ? { 'X-JAVIS-Token': token } : undefined,
+  });
   const data = await response.json().catch(() => null);
   if (!response.ok) {
     const message = data?.details || data?.error || response.statusText;

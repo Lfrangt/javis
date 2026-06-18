@@ -653,13 +653,33 @@ const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   updatedAt: startupTime,
 }
 
+function initialApiToken() {
+  const params = new URLSearchParams(window.location.search)
+  const queryToken = params.get('javisApiToken') || ''
+  if (queryToken) {
+    window.sessionStorage.setItem('javisApiToken', queryToken)
+    params.delete('javisApiToken')
+    const nextSearch = params.toString()
+    const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`
+    window.history.replaceState({}, document.title, nextUrl)
+    return queryToken
+  }
+  return window.sessionStorage.getItem('javisApiToken') || ''
+}
+
+const API_TOKEN = initialApiToken()
+
+function apiHeaders(init?: RequestInit, contentType = 'application/json') {
+  const headers = new Headers(init?.headers)
+  if (contentType && !headers.has('Content-Type')) headers.set('Content-Type', contentType)
+  if (API_TOKEN) headers.set('X-JAVIS-Token', API_TOKEN)
+  return headers
+}
+
 async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers || {}),
-    },
+    headers: apiHeaders(init),
   })
   const data = await response.json().catch(() => null)
   if (!response.ok) {
@@ -1292,7 +1312,7 @@ function App() {
       const response = await fetch(`${API_BASE}/api/realtime/session?micMode=${micMode}`, {
         method: 'POST',
         body: offer.sdp,
-        headers: { 'Content-Type': 'application/sdp' },
+        headers: apiHeaders(undefined, 'application/sdp'),
       })
       const answerSdp = await response.text()
       if (!response.ok) throw new Error(answerSdp || response.statusText)

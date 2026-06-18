@@ -1,11 +1,15 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const http = require('node:http');
+const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const readline = require('node:readline/promises');
 
 const API_BASE = process.env.JAVIS_API_BASE || `http://127.0.0.1:${process.env.JAVIS_API_PORT || 3417}`;
+const APP_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
+const DATA_DIR = process.env.JAVIS_DATA_DIR || path.join(APP_SUPPORT_DIR, 'Runtime');
+const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, 'api-token');
 const ENV_FILE = path.join(process.cwd(), '.env');
 const ENV_EXAMPLE_FILE = path.join(process.cwd(), '.env.example');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
@@ -32,15 +36,27 @@ function compact(value, max = 140) {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 3))}...` : text;
 }
 
+function readApiToken() {
+  const envToken = String(process.env.JAVIS_API_TOKEN || '').trim();
+  if (envToken) return envToken;
+  try {
+    return fs.readFileSync(API_TOKEN_FILE, 'utf8').trim();
+  } catch {
+    return '';
+  }
+}
+
 function request(path, options = {}) {
   const url = new URL(path, API_BASE);
   const body = options.body ? JSON.stringify(options.body) : '';
+  const token = readApiToken();
   return new Promise((resolve, reject) => {
     const req = http.request(url, {
       method: options.method || 'GET',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
+        ...(token ? { 'X-JAVIS-Token': token } : {}),
         ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}),
       },
     }, (res) => {

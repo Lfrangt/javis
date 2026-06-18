@@ -44,6 +44,7 @@ const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
 const ACTION_POLICY_FILE = path.join(DATA_DIR, 'action-policy.json');
+const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, 'api-token');
 const APPROVALS_FILE = path.join(DATA_DIR, 'approvals.json');
 const MEMORIES_FILE = path.join(DATA_DIR, 'memories.json');
 const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
@@ -73,6 +74,7 @@ const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true'
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
+const API_AUTH_ENABLED = process.env.JAVIS_API_AUTH !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
 const MAX_PERSISTED_ROUTING = Number(process.env.JAVIS_MAX_PERSISTED_ROUTING || 500);
@@ -217,6 +219,7 @@ let latestAccessibilityTree = null;
 let apiServer;
 let mainWindow;
 let actionPolicy;
+let apiToken = '';
 let screenPrivacy;
 let currentWindowMode = 'pet';
 let currentParkCorner = WINDOW_PARK_CORNER;
@@ -278,6 +281,7 @@ const notificationState = {
 };
 
 ensureRuntimeStorage();
+apiToken = loadOrCreateApiToken();
 actionPolicy = loadActionPolicy();
 screenPrivacy = loadScreenPrivacy();
 loadPersistedJobs();
@@ -298,6 +302,10 @@ appendAudit('process.start', {
     dryRun: actionPolicy.dryRun,
     maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
     requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+  },
+  apiAuth: {
+    enabled: API_AUTH_ENABLED,
+    tokenFile: API_TOKEN_FILE,
   },
 });
 
@@ -804,6 +812,80 @@ function ensureRuntimeStorage() {
   if (!process.env.JAVIS_DATA_DIR && fs.existsSync(legacyAuditFile) && !fs.existsSync(AUDIT_FILE)) {
     fs.copyFileSync(legacyAuditFile, AUDIT_FILE);
   }
+}
+
+function loadOrCreateApiToken() {
+  const envToken = String(process.env.JAVIS_API_TOKEN || '').trim();
+  if (envToken) return envToken;
+  try {
+    if (fs.existsSync(API_TOKEN_FILE)) {
+      const token = fs.readFileSync(API_TOKEN_FILE, 'utf8').trim();
+      if (token.length >= 32) {
+        try {
+          fs.chmodSync(API_TOKEN_FILE, 0o600);
+        } catch {}
+        return token;
+      }
+    }
+  } catch {}
+
+  const token = crypto.randomBytes(32).toString('base64url');
+  fs.writeFileSync(API_TOKEN_FILE, `${token}\n`, { encoding: 'utf8', mode: 0o600 });
+  try {
+    fs.chmodSync(API_TOKEN_FILE, 0o600);
+  } catch {}
+  return token;
+}
+
+function apiTokenMatches(value) {
+  if (!API_AUTH_ENABLED) return true;
+  const candidate = String(value || '').trim();
+  if (!candidate || !apiToken) return false;
+  const expected = Buffer.from(apiToken);
+  const actual = Buffer.from(candidate);
+  if (expected.length !== actual.length) return false;
+  return crypto.timingSafeEqual(expected, actual);
+}
+
+function requestApiToken(req) {
+  const explicit = req.get('x-javis-token') || req.get('x-javis-api-token');
+  if (explicit) return explicit;
+  const authorization = String(req.get('authorization') || '').trim();
+  const match = authorization.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : '';
+}
+
+function trustedApiOrigins() {
+  const origins = new Set([
+    'null',
+    'file://',
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+  ]);
+  const rendererUrl = String(process.env.JAVIS_RENDERER_URL || '').trim();
+  if (rendererUrl) {
+    try {
+      origins.add(new URL(rendererUrl).origin);
+    } catch {}
+  }
+  return origins;
+}
+
+function isTrustedApiOrigin(origin) {
+  if (!origin) return true;
+  return trustedApiOrigins().has(String(origin));
+}
+
+function isPublicApiPath(pathname) {
+  return pathname === '/api/health';
+}
+
+function apiAuthSnapshot() {
+  return {
+    enabled: API_AUTH_ENABLED,
+    tokenFile: API_TOKEN_FILE,
+    header: 'X-JAVIS-Token',
+  };
 }
 
 function writeJsonAtomic(filePath, value) {
@@ -10007,6 +10089,17 @@ function readinessSnapshot() {
       LOCAL_EXEC_ENABLED ? '' : 'Set JAVIS_ENABLE_LOCAL_EXEC=true only when you want local workers/actions enabled.',
     ),
     readinessItem(
+      'api_auth',
+      'Local API auth',
+      API_AUTH_ENABLED && Boolean(apiToken) ? 'ready' : TRUSTED_LOCAL_MODE ? 'warning' : 'ready',
+      API_AUTH_ENABLED && Boolean(apiToken)
+        ? 'Local API calls require the runtime token header.'
+        : 'Local API token protection is disabled.',
+      API_AUTH_ENABLED && Boolean(apiToken)
+        ? ''
+        : 'Leave JAVIS_API_AUTH enabled when trusted local mode is on.',
+    ),
+    readinessItem(
       'global_hotkey',
       'Global hotkey',
       toggleHotkeyRegistered ? 'ready' : 'warning',
@@ -10273,6 +10366,7 @@ function configCheckSnapshot() {
     },
     runtime: {
       apiBase: API_BASE,
+      apiAuth: apiAuthSnapshot(),
       localExecutionEnabled: LOCAL_EXEC_ENABLED,
       trustedLocalMode: TRUSTED_LOCAL_MODE,
       dryRun: actionPolicy.dryRun,
@@ -10315,6 +10409,7 @@ function healthSnapshot() {
     api: {
       baseUrl: API_BASE,
       port: API_PORT,
+      auth: apiAuthSnapshot(),
       hasOpenAiKey: Boolean(OPENAI_API_KEY),
       localExecutionEnabled: LOCAL_EXEC_ENABLED,
       trustedLocalMode: TRUSTED_LOCAL_MODE,
@@ -10478,6 +10573,7 @@ async function doctorReportSnapshot() {
     'screen_permission',
     'accessibility_permission',
     'local_execution',
+    'api_auth',
     'global_hotkey',
     'capture_hotkey',
     'menu_bar',
@@ -13470,14 +13566,35 @@ function createRealtimeSessionConfig(options = {}) {
 function startApiServer() {
   const api = express();
   api.use((req, res, next) => {
-    res.header('Access-Control-Allow-Origin', '*');
-    res.header('Access-Control-Allow-Headers', 'Content-Type');
-    res.header('Access-Control-Allow-Methods', 'GET,POST,DELETE,OPTIONS');
+    const origin = req.get('origin') || '';
+    if (isTrustedApiOrigin(origin)) {
+      res.header('Access-Control-Allow-Origin', origin || '*');
+      res.header('Vary', 'Origin');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, X-JAVIS-Token, X-JAVIS-API-Token, Authorization');
+      res.header('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+      res.header('Access-Control-Max-Age', '600');
+    } else {
+      appendAudit('api.origin_rejected', { origin, path: req.path, method: req.method });
+      if (req.method === 'OPTIONS') {
+        res.sendStatus(403);
+        return;
+      }
+      jsonError(res, 403, 'Untrusted API origin');
+      return;
+    }
     if (req.method === 'OPTIONS') {
       res.sendStatus(204);
       return;
     }
     next();
+  });
+  api.use((req, res, next) => {
+    if (!API_AUTH_ENABLED || isPublicApiPath(req.path) || apiTokenMatches(requestApiToken(req))) {
+      next();
+      return;
+    }
+    appendAudit('api.auth_rejected', { path: req.path, method: req.method, hasOrigin: Boolean(req.get('origin')) });
+    jsonError(res, 401, 'JAVIS API token required', 'Pass X-JAVIS-Token from the local runtime token file.');
   });
   api.use(express.json({ limit: '1mb' }));
 
@@ -13945,6 +14062,7 @@ function startApiServer() {
     res.json({
       api: {
         baseUrl: API_BASE,
+        auth: apiAuthSnapshot(),
         hasOpenAiKey: Boolean(OPENAI_API_KEY),
         localExecutionEnabled: LOCAL_EXEC_ENABLED,
         trustedLocalMode: TRUSTED_LOCAL_MODE,
@@ -14698,6 +14816,23 @@ function startApiServer() {
   });
 }
 
+function rendererUrlWithApiToken(rendererUrl) {
+  if (!API_AUTH_ENABLED || !apiToken) return rendererUrl;
+  try {
+    const url = new URL(rendererUrl);
+    url.searchParams.set('javisApiToken', apiToken);
+    return url.toString();
+  } catch {
+    return rendererUrl;
+  }
+}
+
+function rendererLoadFileOptions() {
+  return API_AUTH_ENABLED && apiToken
+    ? { query: { javisApiToken: apiToken } }
+    : undefined;
+}
+
 function createWindow() {
   const initialWindowMode = windowModes[currentWindowMode];
   mainWindow = new BrowserWindow({
@@ -14745,11 +14880,11 @@ function createWindow() {
   const rendererUrl = process.env.JAVIS_RENDERER_URL;
   const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
   if (rendererUrl) {
-    mainWindow.loadURL(rendererUrl);
+    mainWindow.loadURL(rendererUrlWithApiToken(rendererUrl));
   } else if (fs.existsSync(distIndex)) {
-    mainWindow.loadFile(distIndex);
+    mainWindow.loadFile(distIndex, rendererLoadFileOptions());
   } else {
-    mainWindow.loadURL('http://127.0.0.1:5173');
+    mainWindow.loadURL(rendererUrlWithApiToken('http://127.0.0.1:5173'));
   }
 }
 
