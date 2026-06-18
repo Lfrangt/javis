@@ -10564,24 +10564,82 @@ async function runDelegatedJob(job, task) {
 
 async function runCliJob(job, command) {
   const evaluation = evaluateCliCommand(command, { timeoutMs: job.timeoutMs });
+  const startedAt = Date.now();
+  addJobAttempt(job, {
+    tool: 'cli',
+    command,
+    status: 'running',
+    summary: `Starting CLI command: ${evaluation.commandName}`,
+    startedAt,
+  });
   appendJobLog(job.id, `Starting CLI command: ${evaluation.commandName}`);
-  return runShellJob(job, command, evaluation.timeoutMs);
+  try {
+    const result = await runShellJob(job, command, evaluation.timeoutMs);
+    addJobAttempt(job, {
+      tool: 'cli',
+      command,
+      status: 'done',
+      summary: 'CLI command completed.',
+      startedAt,
+      completedAt: Date.now(),
+    });
+    return result;
+  } catch (error) {
+    addJobAttempt(job, {
+      tool: 'cli',
+      command,
+      status: classifyJobFailure(error, { ...job, mode: 'cli' }),
+      summary: error instanceof Error ? error.message : String(error),
+      startedAt,
+      completedAt: Date.now(),
+    });
+    throw error;
+  }
 }
 
 async function runModelJob(job, task, signal) {
   const screenNote = latestScreen
     ? `A recent screen frame is available from ${new Date(latestScreen.updatedAt).toLocaleTimeString()}.`
     : 'No screen frame has been shared yet.';
-  appendJobLog(job.id, `Calling ${models.background}.`);
-  return callOpenAIResponses({
-    model: models.background,
-    instructions:
-      'You are the slow lane inside JAVIS. Produce careful, actionable results for harder user tasks. Be concise, concrete, and state assumptions.',
-    input: `${screenNote}\n\nTask:\n${task}`,
-    imageDataUrl: latestScreen?.imageDataUrl,
-    maxOutputTokens: 1400,
-    signal,
+  const startedAt = Date.now();
+  addJobAttempt(job, {
+    tool: 'background',
+    command: models.background,
+    status: 'running',
+    summary: `Calling ${models.background}.`,
+    startedAt,
   });
+  appendJobLog(job.id, `Calling ${models.background}.`);
+  try {
+    const output = await callOpenAIResponses({
+      model: models.background,
+      instructions:
+        'You are the slow lane inside JAVIS. Produce careful, actionable results for harder user tasks. Be concise, concrete, and state assumptions.',
+      input: `${screenNote}\n\nTask:\n${task}`,
+      imageDataUrl: latestScreen?.imageDataUrl,
+      maxOutputTokens: 1400,
+      signal,
+    });
+    addJobAttempt(job, {
+      tool: 'background',
+      command: models.background,
+      status: 'done',
+      summary: 'Background model completed.',
+      startedAt,
+      completedAt: Date.now(),
+    });
+    return output;
+  } catch (error) {
+    addJobAttempt(job, {
+      tool: 'background',
+      command: models.background,
+      status: classifyJobFailure(error, { ...job, mode: 'background' }),
+      summary: error instanceof Error ? error.message : String(error),
+      startedAt,
+      completedAt: Date.now(),
+    });
+    throw error;
+  }
 }
 
 async function processJob(job, task) {
