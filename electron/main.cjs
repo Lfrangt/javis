@@ -1908,6 +1908,7 @@ function normalizePersistedRoutingRecord(record) {
     recoveryPlan: normalizeRecoveryPlan(record.recoveryPlan),
     ownership: normalizeRoutingOwnership(record.ownership),
     memoryMatches: Math.max(0, Number(record.memoryMatches || 0)),
+    learningEvidence: normalizeLearningEvidence(record.learningEvidence),
     createdAt: Number(record.createdAt || Date.now()),
     updatedAt: Number(record.updatedAt || Date.now()),
     completedAt,
@@ -2173,11 +2174,37 @@ function normalizeLearningList(value, maxItems = 12) {
     .slice(0, maxItems);
 }
 
+function normalizeLearningStringList(value, maxItems = 40) {
+  if (!Array.isArray(value)) return [];
+  return Array.from(new Set(
+    value
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .slice(0, maxItems),
+  ));
+}
+
+function normalizeLearningControls(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  return {
+    paused: Boolean(raw.paused),
+    includeInPrompts: raw.includeInPrompts === undefined ? INCLUDE_LEARNING_IN_PROMPTS : Boolean(raw.includeInPrompts),
+    excludedApps: normalizeLearningStringList(raw.excludedApps),
+    excludedHosts: normalizeLearningStringList(raw.excludedHosts),
+    excludedFolders: normalizeLearningStringList(raw.excludedFolders),
+    updatedAt: Number(raw.updatedAt || 0),
+    updatedBy: String(raw.updatedBy || '').slice(0, 80),
+  };
+}
+
 function normalizeLearnedProfile(profile = {}) {
   const now = Date.now();
+  const controls = normalizeLearningControls(profile.controls);
   return {
     version: 1,
-    enabled: AMBIENT_LEARNING_ENABLED,
+    enabled: AMBIENT_LEARNING_ENABLED && !controls.paused,
+    configured: AMBIENT_LEARNING_ENABLED,
+    controls,
     updatedAt: Number(profile.updatedAt || 0),
     lastDistilledAt: Number(profile.lastDistilledAt || 0),
     sourceEventCount: Number(profile.sourceEventCount || 0),
@@ -2216,6 +2243,59 @@ function normalizeLearnedProfile(profile = {}) {
       : [],
     createdAt: Number(profile.createdAt || now),
   };
+}
+
+function currentLearningControls() {
+  return normalizeLearningControls(learnedProfile?.controls);
+}
+
+function learningRuntimeEnabled() {
+  return AMBIENT_LEARNING_ENABLED && !currentLearningControls().paused;
+}
+
+function learningPromptEnabled() {
+  const controls = currentLearningControls();
+  return AMBIENT_LEARNING_ENABLED && !controls.paused && controls.includeInPrompts;
+}
+
+function wildcardPatternMatches(value, pattern, options = {}) {
+  const rawValue = String(value || '').trim().toLowerCase();
+  const rawPattern = String(pattern || '').trim().toLowerCase();
+  if (!rawValue || !rawPattern) return false;
+  if (rawPattern === '*') return true;
+  if (rawPattern.includes('*')) {
+    const escaped = rawPattern
+      .split('*')
+      .map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+      .join('.*');
+    return new RegExp(`^${escaped}$`, 'i').test(rawValue);
+  }
+  if (options.host) {
+    const normalizedPattern = rawPattern.replace(/^\*\./, '');
+    return rawValue === normalizedPattern || rawValue.endsWith(`.${normalizedPattern}`);
+  }
+  if (options.path) {
+    return rawValue.includes(rawPattern.replace(/^~\//, `${os.homedir().toLowerCase()}/`));
+  }
+  return rawValue === rawPattern || rawValue.includes(rawPattern);
+}
+
+function learningExclusionForAmbientEvent(event = {}) {
+  const controls = currentLearningControls();
+  const appName = String(event.frontmost?.app || event.browser?.app || '').trim();
+  const host = browserHostFromAmbientEvent(event);
+  const pathish = [
+    event.frontmost?.windowTitle || '',
+    event.browser?.title || '',
+    event.browser?.url || '',
+  ].join('\n');
+  const appPattern = controls.excludedApps.find((pattern) => wildcardPatternMatches(appName, pattern));
+  if (appPattern) return { kind: 'app', pattern: appPattern, value: appName };
+  const hostPattern = controls.excludedHosts.find((pattern) => wildcardPatternMatches(host, pattern, { host: true }));
+  if (hostPattern) return { kind: 'site', pattern: hostPattern, value: host };
+  const folderPattern = controls.excludedFolders.find((pattern) => wildcardPatternMatches(pathish, pattern, { path: true }));
+  if (folderPattern) return { kind: 'folder', pattern: folderPattern, value: compactRecordText(pathish, 220) };
+  return null;
 }
 
 function loadPersistedJobs() {
@@ -2619,12 +2699,13 @@ function learningSignalsFromProfile(profile) {
 
 function distillAmbientLearning(options = {}) {
   const force = options.force === true;
-  if (!AMBIENT_LEARNING_ENABLED && !force) return learningStateSnapshot();
+  if (!learningRuntimeEnabled() && !force) return learningStateSnapshot();
   if (learningBusy) return learningStateSnapshot();
   learningBusy = true;
   try {
     const events = ambientSnapshot(MAX_LEARNING_SOURCE_EVENTS)
       .filter((event) => event?.frontmost?.available || event?.browser?.available)
+      .filter((event) => !learningExclusionForAmbientEvent(event))
       .sort((a, b) => b.createdAt - a.createdAt);
     const total = events.length;
     const appCounts = new Map();
@@ -2652,7 +2733,7 @@ function distillAmbientLearning(options = {}) {
     const eventTimes = events.map((event) => Number(event.createdAt || 0)).filter(Boolean);
     const nextProfile = normalizeLearnedProfile({
       ...(learnedProfile || {}),
-      enabled: AMBIENT_LEARNING_ENABLED,
+      controls: currentLearningControls(),
       updatedAt: Date.now(),
       lastDistilledAt: Date.now(),
       sourceEventCount: total,
@@ -2695,19 +2776,23 @@ function distillAmbientLearning(options = {}) {
 
 function learningStateSnapshot() {
   if (!learnedProfile) learnedProfile = normalizeLearnedProfile();
+  const controls = currentLearningControls();
   return {
-    enabled: AMBIENT_LEARNING_ENABLED,
-    includeInPrompts: INCLUDE_LEARNING_IN_PROMPTS,
+    configured: AMBIENT_LEARNING_ENABLED,
+    enabled: learningRuntimeEnabled(),
+    paused: controls.paused,
+    includeInPrompts: learningPromptEnabled(),
     intervalMs: AMBIENT_LEARNING_INTERVAL_MS,
     sourceEventLimit: MAX_LEARNING_SOURCE_EVENTS,
     learningFile: LEARNING_FILE,
+    controls,
     profile: normalizeLearnedProfile(learnedProfile),
   };
 }
 
 function learningContextForPrompt() {
   const profile = learningStateSnapshot().profile;
-  if (!AMBIENT_LEARNING_ENABLED || !INCLUDE_LEARNING_IN_PROMPTS || !profile.sourceEventCount) return '';
+  if (!learningPromptEnabled() || !profile.sourceEventCount) return '';
   return [
     'Local inferred user profile from passive ambient metadata. Treat as lightweight context, not explicit user-approved memory:',
     profile.summary,
@@ -2715,6 +2800,144 @@ function learningContextForPrompt() {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function setLearningControls(patch = {}, source = 'api') {
+  const current = currentLearningControls();
+  const next = normalizeLearningControls({
+    ...current,
+    ...patch,
+    updatedAt: Date.now(),
+    updatedBy: source,
+  });
+  learnedProfile = normalizeLearnedProfile({
+    ...(learnedProfile || {}),
+    controls: next,
+    updatedAt: Date.now(),
+  });
+  persistLearning();
+  if (next.paused) {
+    stopLearningMonitor();
+  } else {
+    startLearningMonitor();
+  }
+  appendAudit('learning.controls_updated', {
+    source,
+    paused: next.paused,
+    includeInPrompts: next.includeInPrompts,
+    excludedApps: next.excludedApps.length,
+    excludedHosts: next.excludedHosts.length,
+    excludedFolders: next.excludedFolders.length,
+  });
+  return learningStateSnapshot();
+}
+
+function learningExclusionField(kind) {
+  const normalized = String(kind || '').trim().toLowerCase();
+  if (['app', 'apps', 'application'].includes(normalized)) return 'excludedApps';
+  if (['site', 'host', 'domain', 'url', 'browser'].includes(normalized)) return 'excludedHosts';
+  if (['folder', 'path', 'directory'].includes(normalized)) return 'excludedFolders';
+  return '';
+}
+
+function updateLearningExclusion(options = {}) {
+  const field = learningExclusionField(options.kind || options.type);
+  const value = String(options.value || options.pattern || '').trim();
+  if (!field) throw new Error('Exclusion kind must be app, site, or folder.');
+  if (!value) throw new Error('Missing exclusion value.');
+  const source = String(options.source || 'api').slice(0, 80);
+  const controls = currentLearningControls();
+  const current = normalizeLearningStringList(controls[field]);
+  const removing = options.remove === true || String(options.action || '').toLowerCase() === 'remove';
+  const nextValues = removing
+    ? current.filter((item) => item.toLowerCase() !== value.toLowerCase())
+    : normalizeLearningStringList([...current, value]);
+  return setLearningControls({ [field]: nextValues }, source);
+}
+
+function resetLearningProfile(options = {}) {
+  const source = String(options.source || 'api').slice(0, 80);
+  const controls = options.keepControls === false ? normalizeLearningControls() : currentLearningControls();
+  learnedProfile = normalizeLearnedProfile({
+    controls,
+    updatedAt: Date.now(),
+    summary: 'No learned ambient profile yet.',
+    sourceEventCount: 0,
+    topApps: [],
+    topBrowserHosts: [],
+    recentContexts: [],
+    activeHours: [],
+    signals: [],
+  });
+  persistLearning();
+  if (options.clearAmbient === true) {
+    ambientEvents.splice(0, ambientEvents.length);
+    persistAmbient();
+  }
+  appendAudit('learning.deleted', {
+    source,
+    clearAmbient: Boolean(options.clearAmbient),
+    keepControls: options.keepControls !== false,
+  });
+  return learningStateSnapshot();
+}
+
+function normalizeLearningEvidence(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  return {
+    enabled: Boolean(raw.enabled),
+    paused: Boolean(raw.paused),
+    includeInPrompts: Boolean(raw.includeInPrompts),
+    usedInPrompt: Boolean(raw.usedInPrompt),
+    sourceEventCount: Math.max(0, Number(raw.sourceEventCount || 0)),
+    decisionEffect: compactRecordText(raw.decisionEffect || '', 220),
+    disabledReason: compactRecordText(raw.disabledReason || '', 180),
+    signals: normalizeLearningStringList(raw.signals, 6),
+    matchedSignals: normalizeLearningStringList(raw.matchedSignals, 6),
+    exclusions: {
+      apps: Math.max(0, Number(raw.exclusions?.apps || 0)),
+      hosts: Math.max(0, Number(raw.exclusions?.hosts || 0)),
+      folders: Math.max(0, Number(raw.exclusions?.folders || 0)),
+    },
+  };
+}
+
+function learningEvidenceForTask(task, options = {}) {
+  const state = learningStateSnapshot();
+  const profile = state.profile || {};
+  const controls = state.controls || {};
+  const signals = normalizeLearningStringList(profile.signals, 6);
+  const tokens = memoryQueryTokens(task);
+  const matchedSignals = signals.filter((signal) => {
+    const lower = signal.toLowerCase();
+    return tokens.some((token) => lower.includes(String(token || '').toLowerCase()));
+  });
+  let disabledReason = '';
+  if (!state.configured) disabledReason = 'ambient_learning_not_configured';
+  else if (state.paused) disabledReason = 'learning_paused';
+  else if (!state.includeInPrompts) disabledReason = 'prompt_inclusion_disabled';
+  else if (!profile.sourceEventCount) disabledReason = 'no_distilled_profile';
+  else if (options.useMemory === false) disabledReason = 'memory_context_disabled_for_task';
+  const usedInPrompt = Boolean(options.usedInPrompt && !disabledReason);
+  const decisionEffect = usedInPrompt
+    ? 'included_in_model_context_and_routing_evidence'
+    : disabledReason || 'available_but_not_attached';
+  return normalizeLearningEvidence({
+    enabled: state.enabled,
+    paused: state.paused,
+    includeInPrompts: state.includeInPrompts,
+    usedInPrompt,
+    sourceEventCount: profile.sourceEventCount || 0,
+    decisionEffect,
+    disabledReason,
+    signals,
+    matchedSignals,
+    exclusions: {
+      apps: controls.excludedApps?.length || 0,
+      hosts: controls.excludedHosts?.length || 0,
+      folders: controls.excludedFolders?.length || 0,
+    },
+  });
 }
 
 function approvalSnapshot(limit = 20) {
@@ -2847,7 +3070,12 @@ function formatMemoriesForPrompt(list = []) {
 
 function memoryContextForTask(task, options = {}) {
   if (options.useMemory === false) {
-    return { matches: [], learning: null, prompt: '' };
+    return {
+      matches: [],
+      learning: null,
+      learningEvidence: learningEvidenceForTask(task, { useMemory: false, usedInPrompt: false }),
+      prompt: '',
+    };
   }
   const queryMatches = searchMemories({ query: task, limit: Number(options.memoryLimit || 3) }).results;
   const recentPreferences = memorySnapshot(20)
@@ -2861,6 +3089,7 @@ function memoryContextForTask(task, options = {}) {
   return {
     matches,
     learning: learningPrompt ? learningStateSnapshot().profile : null,
+    learningEvidence: learningEvidenceForTask(task, { usedInPrompt: Boolean(learningPrompt) }),
     prompt: [learningPrompt, memoryPrompt].filter(Boolean).join('\n\n'),
   };
 }
@@ -10564,6 +10793,7 @@ async function routeTask(options = {}) {
     scope: options.scope || '',
     ownership: options.ownership,
   };
+  const routeLearningEvidence = learningEvidenceForTask(task, { usedInPrompt: false });
   const localCommand = localCommandDecision(task);
   if (localCommand) {
     const decision = localCommandDecisionPayload(localCommand, execute);
@@ -10583,9 +10813,13 @@ async function routeTask(options = {}) {
           localCommand: result.localCommand,
           approval: result.approval,
           memory: { matches: [], count: 0 },
+          learningEvidence: {
+            ...routeLearningEvidence,
+            decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
+          },
           output: result.output,
           data: result.data,
-        }, { ...routingContext, decision, localCommand });
+        }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence });
       }
       return finalizeRouteResult({
         ok: true,
@@ -10594,8 +10828,12 @@ async function routeTask(options = {}) {
         decision,
         localCommand,
         memory: { matches: [], count: 0 },
+        learningEvidence: {
+          ...routeLearningEvidence,
+          decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
+        },
         output: `Local: ${localCommand.label}`,
-      }, { ...routingContext, decision, localCommand });
+      }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence });
     }
     const result = await runLocalCommand(localCommand, { execute: true });
     appendAudit('local_command.completed', {
@@ -10611,9 +10849,13 @@ async function routeTask(options = {}) {
       localCommand: result.localCommand,
       approval: result.approval,
       memory: { matches: [], count: 0 },
+      learningEvidence: {
+        ...routeLearningEvidence,
+        decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
+      },
       output: result.output,
       data: result.data,
-    }, { ...routingContext, decision, localCommand });
+    }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence });
   }
   const memoryContext = memoryContextForTask(task, {
     useMemory: options.useMemory !== false,
@@ -10632,6 +10874,7 @@ async function routeTask(options = {}) {
     execute,
     chars: decision.features.chars,
     memoryMatches: memoryContext.matches.length,
+    learningEffect: memoryContext.learningEvidence.decisionEffect,
   });
 
   if (!execute) {
@@ -10643,9 +10886,16 @@ async function routeTask(options = {}) {
       memory: {
         matches: memoryContext.matches,
         count: memoryContext.matches.length,
+        learningEvidence: memoryContext.learningEvidence,
       },
+      learningEvidence: memoryContext.learningEvidence,
       output: `Route: ${decision.label} · ${decision.reason}`,
-    }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
+    }, {
+      ...routingContext,
+      decision,
+      memoryMatches: memoryContext.matches.length,
+      learningEvidence: memoryContext.learningEvidence,
+    });
   }
 
   if (decision.lane === 'quick') {
@@ -10664,9 +10914,16 @@ async function routeTask(options = {}) {
         memory: {
           matches: memoryContext.matches,
           count: memoryContext.matches.length,
+          learningEvidence: memoryContext.learningEvidence,
         },
+        learningEvidence: memoryContext.learningEvidence,
         output,
-      }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
+      }, {
+        ...routingContext,
+        decision,
+        memoryMatches: memoryContext.matches.length,
+        learningEvidence: memoryContext.learningEvidence,
+      });
     } catch (error) {
       return finalizeRouteResult({
         ok: false,
@@ -10676,9 +10933,16 @@ async function routeTask(options = {}) {
         memory: {
           matches: memoryContext.matches,
           count: memoryContext.matches.length,
+          learningEvidence: memoryContext.learningEvidence,
         },
+        learningEvidence: memoryContext.learningEvidence,
         output: error instanceof Error ? error.message : String(error),
-      }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
+      }, {
+        ...routingContext,
+        decision,
+        memoryMatches: memoryContext.matches.length,
+        learningEvidence: memoryContext.learningEvidence,
+      });
     }
   }
 
@@ -10692,10 +10956,17 @@ async function routeTask(options = {}) {
     memory: {
       matches: memoryContext.matches,
       count: memoryContext.matches.length,
+      learningEvidence: memoryContext.learningEvidence,
     },
+    learningEvidence: memoryContext.learningEvidence,
     job,
     output: `Routed to ${decision.label}: ${job.title}`,
-  }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
+  }, {
+    ...routingContext,
+    decision,
+    memoryMatches: memoryContext.matches.length,
+    learningEvidence: memoryContext.learningEvidence,
+  });
 }
 
 function normalizeParallelTaskItem(raw = {}, index = 0, defaults = {}) {
@@ -11641,6 +11912,16 @@ function ambientEventKey(event) {
 function recordAmbientEvent(rawEvent) {
   const event = normalizeAmbientEvent(rawEvent);
   if (!event) return null;
+  const exclusion = learningExclusionForAmbientEvent(event);
+  if (exclusion) {
+    appendAudit('ambient.excluded', {
+      kind: exclusion.kind,
+      pattern: exclusion.pattern,
+      value: compactRecordText(exclusion.value, 180),
+      source: event.source || 'ambient',
+    });
+    return null;
+  }
   const previous = ambientEvents[0] || null;
   const unchanged = previous && ambientEventKey(previous) === ambientEventKey(event);
   const stale = !previous || Date.now() - Number(previous.createdAt || 0) > 60000;
@@ -11648,7 +11929,7 @@ function recordAmbientEvent(rawEvent) {
   ambientEvents.unshift(event);
   ambientEvents.splice(MAX_PERSISTED_AMBIENT);
   persistAmbient();
-  if (AMBIENT_LEARNING_ENABLED) {
+  if (learningRuntimeEnabled()) {
     distillAmbientLearning({ source: `${event.source || 'ambient'}:sample` });
   }
   appendAudit('ambient.sample', {
@@ -11693,7 +11974,7 @@ function ambientStateSnapshot(limit = 8) {
     enabled: AMBIENT_OBSERVE_ENABLED,
     captureScreen: AMBIENT_CAPTURE_SCREEN,
     intervalMs: AMBIENT_INTERVAL_MS,
-    learningEnabled: AMBIENT_LEARNING_ENABLED,
+    learningEnabled: learningRuntimeEnabled(),
     count: ambientEvents.length,
     recent: ambientSnapshot(limit),
   };
@@ -12009,7 +12290,7 @@ function stopAmbientMonitor() {
 }
 
 function startLearningMonitor() {
-  if (!AMBIENT_LEARNING_ENABLED || learningTimer) return;
+  if (!learningRuntimeEnabled() || learningTimer) return;
   distillAmbientLearning({ source: 'learning_startup' });
   learningTimer = setInterval(() => {
     distillAmbientLearning({ source: 'learning_interval' });
@@ -12945,6 +13226,7 @@ function createRoutingRecord(options = {}) {
     recoveryPlan: normalizeRecoveryPlan(options.recoveryPlan),
     ownership: options.ownership || {},
     memoryMatches: options.memoryMatches || 0,
+    learningEvidence: normalizeLearningEvidence(options.learningEvidence),
     createdAt: now,
     updatedAt: now,
     completedAt: ['done', 'failed', 'cancelled', 'blocked'].includes(options.status) ? now : 0,
@@ -13135,6 +13417,8 @@ function routingLedgerEntry(record) {
     jobId: record.jobId,
     workflowId: record.workflowId,
     ownership: record.ownership,
+    memoryMatches: record.memoryMatches,
+    learningEvidence: record.learningEvidence,
     updatedAt: record.updatedAt,
   };
 }
@@ -13151,6 +13435,7 @@ function finalizeRouteResult(result, context = {}) {
     execute: result.executed || result.decision?.execute,
     localCommand: result.localCommand || context.localCommand,
     memoryMatches: result.memory?.count || context.memoryMatches || 0,
+    learningEvidence: result.learningEvidence || result.memory?.learningEvidence || context.learningEvidence,
     status,
     jobId: job?.id || '',
     workflowId: workflow?.id || '',
@@ -14676,7 +14961,7 @@ function readinessSnapshot() {
       'Local learning',
       !AMBIENT_LEARNING_ENABLED || memoryStoreCheck.ok ? 'ready' : 'blocked',
       AMBIENT_LEARNING_ENABLED
-        ? `Ambient learning is enabled with ${learningStateSnapshot().profile.sourceEventCount} distilled observation(s).`
+        ? `Ambient learning is ${learningRuntimeEnabled() ? 'enabled' : 'paused'} with ${learningStateSnapshot().profile.sourceEventCount} distilled observation(s).`
         : 'Ambient learning is off.',
       AMBIENT_LEARNING_ENABLED && !memoryStoreCheck.ok ? 'Fix runtime storage permissions before using ambient learning.' : '',
     ),
@@ -15123,6 +15408,10 @@ async function doctorReportSnapshot() {
     recordRouting: false,
     source: 'doctor',
   });
+  const learningControlPreview = learningStateSnapshot();
+  const learningEvidencePreview = learningEvidenceForTask('帮我根据我的工作习惯安排下一步任务', {
+    usedInPrompt: Boolean(learningContextForPrompt()),
+  });
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
   const setupGuidePreview = setupGuideSnapshot();
@@ -15431,6 +15720,30 @@ async function doctorReportSnapshot() {
       },
     },
     creativeWorkflowReady ? '' : 'Review planCreativeWorkflow(), runCreativeWorkflowAction(), and creativeWorkflowIntentFromInstruction().',
+  ));
+
+  const learningControlsReady =
+    Boolean(learningControlPreview.controls) &&
+    Array.isArray(learningControlPreview.controls.excludedApps) &&
+    Array.isArray(learningControlPreview.controls.excludedHosts) &&
+    Array.isArray(learningControlPreview.controls.excludedFolders) &&
+    Boolean(learningEvidencePreview.decisionEffect);
+  checks.push(doctorCheck(
+    'learning_controls',
+    'Learning controls',
+    learningControlsReady ? 'ready' : 'warning',
+    learningControlsReady
+      ? `Local learning controls expose pause, prompt inclusion, exclusions, and routing evidence (${learningEvidencePreview.decisionEffect}).`
+      : 'Local learning controls or routing evidence are incomplete.',
+    {
+      configured: learningControlPreview.configured,
+      enabled: learningControlPreview.enabled,
+      paused: learningControlPreview.paused,
+      includeInPrompts: learningControlPreview.includeInPrompts,
+      controls: learningControlPreview.controls,
+      evidence: learningEvidencePreview,
+    },
+    learningControlsReady ? '' : 'Review learningStateSnapshot(), learningEvidenceForTask(), and /api/learning/settings.',
   ));
 
   const briefingReady = Boolean(briefingPreview.summary && Array.isArray(briefingPreview.nextActions) && briefingPreview.nextActions.length);
@@ -17338,6 +17651,40 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(distillAmbientLearning({ source: 'voice', force: true })) };
   }
 
+  if (name === 'set_learning_controls') {
+    try {
+      const patch = {};
+      if (Object.prototype.hasOwnProperty.call(args || {}, 'paused')) patch.paused = Boolean(args.paused);
+      if (Object.prototype.hasOwnProperty.call(args || {}, 'includeInPrompts')) patch.includeInPrompts = Boolean(args.includeInPrompts);
+      const result = setLearningControls(patch, 'voice');
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'update_learning_exclusion') {
+    try {
+      const result = updateLearningExclusion({ ...(args || {}), source: 'voice' });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'delete_learning_profile') {
+    try {
+      const result = resetLearningProfile({
+        source: 'voice',
+        clearAmbient: Boolean(args?.clearAmbient),
+        keepControls: args?.keepControls !== false,
+      });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_inbox') {
     const status = String(args?.status || 'open');
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 5)));
@@ -17619,6 +17966,9 @@ function createRealtimeSessionConfig(options = {}) {
       'Use search_memory when the user asks what you remember or when a task may depend on prior remembered local preferences.',
       'Use get_learning_profile when the user asks what you have learned from passive local observation, recent app/browser focus, or inferred work patterns.',
       'Treat the learning profile as local inferred context, not as user-confirmed memory or a reason to act without being asked.',
+      'Use set_learning_controls when the user asks to pause, resume, or stop using inferred local learning in prompts.',
+      'Use update_learning_exclusion when the user asks JAVIS not to learn from a specific app, website, domain, folder, or path.',
+      'Use delete_learning_profile when the user explicitly asks to delete local inferred learning data.',
       'Use get_inbox when the user asks what is waiting, what they captured, or which Inbox items are open.',
       'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory.',
       'Use process_next_inbox only when the user explicitly asks to process, do, run, or start the next Inbox item.',
@@ -18229,6 +18579,48 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'set_learning_controls',
+        description: 'Pause/resume inferred local learning or toggle whether inferred learning is included in prompts. This does not delete explicit memories.',
+        parameters: {
+          type: 'object',
+          properties: {
+            paused: { type: 'boolean' },
+            includeInPrompts: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'update_learning_exclusion',
+        description: 'Add or remove a local learning exclusion for an app, site/domain, or folder/path.',
+        parameters: {
+          type: 'object',
+          properties: {
+            kind: { type: 'string', enum: ['app', 'site', 'folder'] },
+            value: { type: 'string' },
+            remove: { type: 'boolean' },
+            action: { type: 'string', enum: ['add', 'remove'] },
+          },
+          required: ['kind', 'value'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'delete_learning_profile',
+        description: 'Delete the local inferred learning profile. Optionally also clear stored ambient metadata. Does not delete explicit user memories unless separately requested.',
+        parameters: {
+          type: 'object',
+          properties: {
+            clearAmbient: { type: 'boolean' },
+            keepControls: { type: 'boolean' },
+          },
           additionalProperties: false,
         },
       },
@@ -19288,6 +19680,29 @@ function startApiServer() {
     res.json({ learning: learningStateSnapshot() });
   });
 
+  api.put('/api/learning/settings', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const body = req.body || {};
+      const patch = {};
+      if (Object.prototype.hasOwnProperty.call(body, 'paused')) patch.paused = Boolean(body.paused);
+      if (Object.prototype.hasOwnProperty.call(body, 'includeInPrompts')) patch.includeInPrompts = Boolean(body.includeInPrompts);
+      if (Array.isArray(body.excludedApps)) patch.excludedApps = body.excludedApps;
+      if (Array.isArray(body.excludedHosts)) patch.excludedHosts = body.excludedHosts;
+      if (Array.isArray(body.excludedFolders)) patch.excludedFolders = body.excludedFolders;
+      res.json({ ok: true, learning: setLearningControls(patch, body.source || 'api') });
+    } catch (error) {
+      jsonError(res, 400, 'Learning settings update failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/learning/pause', express.json({ limit: '64kb' }), (req, res) => {
+    res.json({ ok: true, learning: setLearningControls({ paused: true }, req.body?.source || 'api') });
+  });
+
+  api.post('/api/learning/resume', express.json({ limit: '64kb' }), (req, res) => {
+    res.json({ ok: true, learning: setLearningControls({ paused: false }, req.body?.source || 'api') });
+  });
+
   api.post('/api/learning/distill', express.json({ limit: '64kb' }), (req, res) => {
     res.json({ ok: true, learning: distillAmbientLearning({ source: req.body?.source || 'api', force: true }) });
   });
@@ -19298,6 +19713,46 @@ function startApiServer() {
       res.json({ ...result, memoriesFile: MEMORIES_FILE });
     } catch (error) {
       jsonError(res, 400, 'Learning memory upsert failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/learning/promote', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const result = rememberLearningProfile({ source: req.body?.source || 'api', force: req.body?.force !== false });
+      res.json({ ...result, memoriesFile: MEMORIES_FILE });
+    } catch (error) {
+      jsonError(res, 400, 'Learning promote failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/learning/exclusions', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      res.json({ ok: true, learning: updateLearningExclusion({ ...(req.body || {}), source: req.body?.source || 'api' }) });
+    } catch (error) {
+      jsonError(res, 400, 'Learning exclusion update failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.delete('/api/learning/exclusions', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      res.json({ ok: true, learning: updateLearningExclusion({ ...(req.body || {}), remove: true, source: req.body?.source || 'api' }) });
+    } catch (error) {
+      jsonError(res, 400, 'Learning exclusion removal failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.delete('/api/learning', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      res.json({
+        ok: true,
+        learning: resetLearningProfile({
+          source: req.body?.source || 'api',
+          clearAmbient: req.body?.clearAmbient === true,
+          keepControls: req.body?.keepControls !== false,
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 400, 'Learning delete failed', error instanceof Error ? error.message : String(error));
     }
   });
 

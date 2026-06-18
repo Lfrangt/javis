@@ -15,7 +15,7 @@ Local Mac-first realtime desktop buddy.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.
-- Local inferred learning profile distilled from passive ambient metadata without calling a model.
+- Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
@@ -132,6 +132,8 @@ Local Express service on 127.0.0.1:3417
   /api/workflows/copy-result -> copy the latest or specified workflow result to clipboard
   /api/lanes/contracts -> lane owner/scope/handoff/risk contracts for routing
   /api/memory           -> local memory list/search/create/delete
+  /api/learning         -> local inferred profile, controls, exclusions, and prompt-use state
+  /api/learning/settings -> pause/resume learning, prompt inclusion, and exclusion lists
   /api/learning/remember -> save the inferred learning profile into local memory
   /api/inbox            -> local persistent capture inbox
   /api/inbox/capture-clipboard -> capture current clipboard text into Inbox

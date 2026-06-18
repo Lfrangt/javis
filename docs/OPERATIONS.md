@@ -223,9 +223,18 @@ curl -X POST http://127.0.0.1:3417/api/ambient/sample \
   -H 'Content-Type: application/json' \
   -d '{}'
 curl http://127.0.0.1:3417/api/learning
+curl -X PUT http://127.0.0.1:3417/api/learning/settings \
+  -H 'Content-Type: application/json' \
+  -d '{"paused":false,"includeInPrompts":true}'
+curl -X POST http://127.0.0.1:3417/api/learning/exclusions \
+  -H 'Content-Type: application/json' \
+  -d '{"kind":"site","value":"example.com"}'
 curl -X POST http://127.0.0.1:3417/api/learning/distill \
   -H 'Content-Type: application/json' \
   -d '{}'
+curl -X DELETE http://127.0.0.1:3417/api/learning \
+  -H 'Content-Type: application/json' \
+  -d '{"clearAmbient":false,"keepControls":true}'
 curl http://127.0.0.1:3417/api/wake/status
 curl -X POST http://127.0.0.1:3417/api/wake/trigger \
   -H 'Content-Type: application/json' \
@@ -235,6 +244,8 @@ curl -X POST http://127.0.0.1:3417/api/screen/describe \
   -d '{"capture":true,"prompt":"Describe the current screen."}'
 curl -X DELETE http://127.0.0.1:3417/api/screen/frame
 ```
+
+Learning controls are local. `paused:true` stops future learning distillation, `includeInPrompts:false` keeps the profile on disk but prevents prompt injection, and exclusions keep matching apps/sites/folder-like contexts out of future ambient samples and distillation. Routing records include `learningEvidence` so you can see whether inferred habits were attached to a task prompt.
 
 `private` mode is the default. It downscales and blurs/pixelates frames before they are sent to the local API or Realtime. `/api/screen/capture-now` refreshes the latest full-screen frame from the resident process without a window picker. Use `{"mode":"clear"}` only when sharper screen context is worth the privacy tradeoff. `/api/conversation/state` tracks the renderer-reported voice lifecycle and heartbeats with a per-session token, so stale closes or heartbeats from an older Realtime connection do not overwrite the active session. `/api/realtime/context` is the silent preflight context sent into new voice sessions when `JAVIS_REALTIME_PREFLIGHT_CONTEXT` is not `false`. While voice is live, the renderer also polls `/api/work/progress` at `VITE_JAVIS_REALTIME_WORK_PROGRESS_SYNC_MS` and sends deduplicated silent updates when background work changes. `/api/presence` is a read-only standby/watch/work/listening summary over conversation state, wake state, ambient metadata, local learning, active jobs, approvals, and guardrails. Ambient observe stores local metadata and can keep the latest private screen frame fresh when `JAVIS_AMBIENT_CAPTURE_SCREEN=true`. Stopping screen context from the buddy clears the latest stored frame; the DELETE endpoint is the manual equivalent.
 

@@ -99,7 +99,7 @@ Renderer
 - Workflow continuation lane: creates follow-up workflows from prior records, preserving parent workflow ids and target context.
 - Workflow delivery lane: copies completed workflow results back to the system clipboard in result-only or Markdown format.
 - Memory lane: user-approved local memories for durable preferences, project facts, and notes, with keyword search, task-context injection, and delete.
-- Learning lane: optional local inferred profile distilled from passive ambient metadata, kept separate from user-approved memory.
+- Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, and routing evidence that records whether learned signals were attached to a task.
 - Clipboard lane: local clipboard read/write, guarded by policy and audit logs.
 - File lane: local file list/read/search/write/create/copy/move, guarded by allowed roots, risk levels, approvals, local-execution enablement, and audit logs.
 

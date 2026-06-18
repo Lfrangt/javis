@@ -193,7 +193,9 @@ async function printStatus() {
     }
     if (status.learning) {
       const profile = status.learning.profile || {};
-      console.log(`Learning: ${status.learning.enabled ? 'on' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${profile.summary || 'no profile yet'}`);
+      const controls = status.learning.controls || {};
+      const exclusions = (controls.excludedApps?.length || 0) + (controls.excludedHosts?.length || 0) + (controls.excludedFolders?.length || 0);
+      console.log(`Learning: ${status.learning.enabled ? 'on' : status.learning.paused ? 'paused' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${exclusions} exclusion(s) · ${profile.summary || 'no profile yet'}`);
     }
     if (status.presence) {
       const observing = status.presence.observing?.latest || {};
@@ -242,7 +244,10 @@ async function printStatus() {
   console.log('17. Toggle overnight autopilot');
   console.log('18. Refresh learning profile');
   console.log('19. Save learning as memory');
-  console.log('20. Quit');
+  console.log('20. Pause/resume learning');
+  console.log('21. Manage learning exclusions');
+  console.log('22. Delete inferred learning data');
+  console.log('23. Quit');
 }
 
 async function setupAction(action) {
@@ -479,6 +484,92 @@ async function toggleAutopilot(rl) {
   }
 }
 
+function printLearningControls(learning) {
+  const controls = learning?.controls || {};
+  const profile = learning?.profile || {};
+  console.log(`Learning: ${learning?.enabled ? 'on' : learning?.paused ? 'paused' : 'off'} · configured ${learning?.configured ? 'yes' : 'no'} · prompts ${learning?.includeInPrompts ? 'on' : 'off'}`);
+  console.log(`Distilled events: ${profile.sourceEventCount || 0}`);
+  if (profile.summary) console.log(`Summary: ${compact(profile.summary, 500)}`);
+  console.log(`Excluded apps: ${(controls.excludedApps || []).join(', ') || '-'}`);
+  console.log(`Excluded sites: ${(controls.excludedHosts || []).join(', ') || '-'}`);
+  console.log(`Excluded folders: ${(controls.excludedFolders || []).join(', ') || '-'}`);
+}
+
+async function toggleLearning(rl) {
+  const result = await request('/api/learning');
+  const learning = result.learning || {};
+  console.log('');
+  printLearningControls(learning);
+  if (!learning.configured) {
+    const answer = (await rl.question('Ambient learning is not enabled in .env. Type START to enable it and restart JAVIS: ')).trim();
+    if (answer !== 'START') {
+      console.log('\nNo change made.');
+      return;
+    }
+    setEnvValue('JAVIS_AMBIENT_LEARNING', 'true');
+    console.log(`\nSaved JAVIS_AMBIENT_LEARNING=true to ${ENV_FILE}.`);
+    await restartJavis();
+    return;
+  }
+  const nextPaused = !learning.paused;
+  const expected = nextPaused ? 'PAUSE' : 'RESUME';
+  const answer = (await rl.question(`Type ${expected} to ${nextPaused ? 'pause' : 'resume'} inferred learning: `)).trim();
+  if (answer !== expected) {
+    console.log('\nNo change made.');
+    return;
+  }
+  const updated = await request(nextPaused ? '/api/learning/pause' : '/api/learning/resume', {
+    method: 'POST',
+    body: { source: 'cui' },
+  });
+  console.log('');
+  printLearningControls(updated.learning);
+}
+
+async function manageLearningExclusions(rl) {
+  const before = await request('/api/learning');
+  console.log('');
+  printLearningControls(before.learning);
+  const action = (await rl.question('Add or remove exclusion? [add/remove/list] ')).trim().toLowerCase();
+  if (!action || action === 'list') return;
+  if (!['add', 'remove'].includes(action)) {
+    console.log('\nNo change made.');
+    return;
+  }
+  const kind = (await rl.question('Kind [app/site/folder]: ')).trim().toLowerCase();
+  const value = (await rl.question('Value or pattern: ')).trim();
+  if (!['app', 'site', 'folder'].includes(kind) || !value) {
+    console.log('\nNo change made.');
+    return;
+  }
+  const updated = await request(action === 'remove' ? '/api/learning/exclusions' : '/api/learning/exclusions', {
+    method: action === 'remove' ? 'DELETE' : 'POST',
+    body: { source: 'cui', kind, value },
+  });
+  console.log('');
+  printLearningControls(updated.learning);
+}
+
+async function deleteLearningData(rl) {
+  const current = await request('/api/learning');
+  console.log('');
+  printLearningControls(current.learning);
+  console.log('This deletes the inferred local profile. Explicit memories are not deleted.');
+  const clearAmbient = (await rl.question('Also clear stored ambient metadata? [y/N] ')).trim().toLowerCase();
+  const expected = clearAmbient === 'y' || clearAmbient === 'yes' ? 'DELETE ALL' : 'DELETE';
+  const answer = (await rl.question(`Type ${expected} to continue: `)).trim();
+  if (answer !== expected) {
+    console.log('\nNo change made.');
+    return;
+  }
+  const result = await request('/api/learning', {
+    method: 'DELETE',
+    body: { source: 'cui', clearAmbient: expected === 'DELETE ALL', keepControls: true },
+  });
+  console.log('');
+  printLearningControls(result.learning);
+}
+
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
   const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'notch';
@@ -564,7 +655,13 @@ async function main() {
           body: { source: 'cui' },
         });
         console.log(`\nSaved learning memory: ${result.memory?.text ? compact(result.memory.text, 500) : result.memory?.id || 'done'}`);
-      } else if (answer === '20' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '20') {
+        await toggleLearning(rl);
+      } else if (answer === '21') {
+        await manageLearningExclusions(rl);
+      } else if (answer === '22') {
+        await deleteLearningData(rl);
+      } else if (answer === '23' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');
