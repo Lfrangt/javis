@@ -1172,6 +1172,10 @@ function updateMenuBarMenu() {
       click: () => runMenuBarSetupAction('prepare_env_file'),
     },
     {
+      label: 'Open Microphone Settings',
+      click: () => runMenuBarSetupAction('open_microphone_settings'),
+    },
+    {
       label: 'Open Screen Recording Settings',
       click: () => runMenuBarSetupAction('open_screen_settings'),
     },

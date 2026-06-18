@@ -94,6 +94,8 @@ npm run config
 
 Use option `1. Set OpenAI API key` to paste the key locally with hidden input. It writes `OPENAI_API_KEY` to `.env` and can restart the resident service immediately. Do not paste API keys into chat or logs.
 
+Use option `M. Open Microphone settings` when doctor reports microphone permission denied or voice cannot start. macOS still requires a human toggle in System Settings.
+
 Use option `8. Toggle local execution` only when you want Level 3 local actions enabled. It requires typing `ENABLE` or `DISABLE`, writes `JAVIS_ENABLE_LOCAL_EXEC` to `.env`, and can restart the resident service immediately.
 
 Use option `9. Toggle Level 3 auto-run` to switch Level 3 actions between approval-gated and automatic. Automatic Level 3 covers local file edits, typing into apps, Accessibility clicks, and Codex/Claude delegation. Level 4 actions should still require confirmation.
@@ -483,9 +485,12 @@ curl -X POST http://127.0.0.1:3417/api/setup/actions \
 curl -X POST http://127.0.0.1:3417/api/setup/actions \
   -H 'Content-Type: application/json' \
   -d '{"action":"open_screen_settings"}'
+curl -X POST http://127.0.0.1:3417/api/setup/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"open_microphone_settings"}'
 ```
 
-Supported setup actions: `prepare_env_file`, `open_screen_settings`, `open_accessibility_settings`, `open_microphone_settings`, `open_runtime_dir`, and `open_action_policy`.
+Supported setup actions: `prepare_env_file`, `open_microphone_settings`, `open_screen_settings`, `open_accessibility_settings`, `open_full_disk_access_settings`, `open_runtime_dir`, `open_action_policy`, `install_resident_agent`, and `uninstall_resident_agent`.
 
 Resident status:
 

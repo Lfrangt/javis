@@ -236,6 +236,7 @@ async function printStatus() {
   console.log('\nActions');
   console.log('1. Set OpenAI API key');
   console.log('2. Open .env');
+  console.log('M. Open Microphone settings');
   console.log('3. Open Screen Recording settings');
   console.log('4. Open Accessibility settings');
   console.log('5. Open Full Disk Access settings');
@@ -715,6 +716,7 @@ async function main() {
       const answer = (await rl.question('\nChoose: ')).trim().toLowerCase();
       if (answer === '1') await setOpenAiKey(rl);
       else if (answer === '2') await setupAction('prepare_env_file');
+      else if (answer === 'm' || answer === 'mic' || answer === 'microphone') await setupAction('open_microphone_settings');
       else if (answer === '3') await setupAction('open_screen_settings');
       else if (answer === '4') await setupAction('open_accessibility_settings');
       else if (answer === '5') await setupAction('open_full_disk_access_settings');
