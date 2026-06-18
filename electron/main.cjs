@@ -6861,12 +6861,15 @@ async function runBrowserWorkflow(options = {}) {
     request,
     target: pageSummary,
   });
-  const output = await callOpenAIResponses({
+  const output = await callOpenAIResponsesWithFallback({
     model: models.fast,
     instructions:
       'You are the browser workflow lane inside JAVIS. Use only the provided page text and user request. Answer in concise Chinese with practical next steps.',
     input: prompt,
     maxOutputTokens: intent === 'draft' ? 1100 : 800,
+  }, {
+    source: 'browser_workflow',
+    timeoutMs: intent === 'draft' ? 90000 : 60000,
   });
 
   return {
@@ -8204,12 +8207,15 @@ async function runFileWorkflow(options = {}) {
     request,
     target: context.target,
   });
-  const output = await callOpenAIResponses({
+  const output = await callOpenAIResponsesWithFallback({
     model: models.fast,
     instructions:
       'You are the file workflow lane inside JAVIS. Use only the provided file or directory context. Answer in concise Chinese with practical next steps.',
     input: prompt,
     maxOutputTokens: 900,
+  }, {
+    source: 'file_workflow',
+    timeoutMs: 90000,
   });
   return {
     ok: Boolean(OPENAI_API_KEY),
@@ -9401,6 +9407,60 @@ async function callOpenAIResponses({ model, instructions, input, imageDataUrl, m
   return extractOutputText(data) || JSON.stringify(data);
 }
 
+function openAiFallbackFailureKind(error) {
+  const kind = classifyJobFailure(error, { mode: 'background' });
+  return ['model_quota_or_api', 'model_failed', 'openai_key_missing'].includes(kind) ? kind : '';
+}
+
+async function callLocalTextWorkerFallback(args = {}, options = {}) {
+  const mode = options.mode || preferredRecoveryWorkerMode();
+  if (!mode) throw new Error('No local text fallback worker is available.');
+  const baseCommand = codeAgentCommandForMode(mode);
+  const plan = buildCodeAgentPlan(mode, baseCommand, args.input || '');
+  const evaluation = evaluateCodeAgentPlan(plan, { timeoutMs: options.timeoutMs || 60000 });
+  const prompt = [
+    args.instructions || 'Answer the user clearly and concisely.',
+    '',
+    'Task:',
+    args.input || '',
+  ].join('\n');
+  appendAudit('model.worker_fallback_started', {
+    source: String(options.source || 'model_fallback').slice(0, 80),
+    mode,
+    command: redactCommandForLog(baseCommand),
+    failureKind: options.failureKind || '',
+    model: args.model || '',
+  });
+  const { stdout, stderr } = await execFileAsync('/bin/zsh', ['-lc', `${baseCommand} ${shellQuote(prompt)}`], {
+    cwd: process.cwd(),
+    env: process.env,
+    timeout: evaluation.timeoutMs,
+    maxBuffer: 1024 * 1024 * 4,
+  });
+  const output = String(stdout || stderr || '').trim();
+  if (!output) throw new Error(`${mode}_fallback_empty_output`);
+  appendAudit('model.worker_fallback_completed', {
+    source: String(options.source || 'model_fallback').slice(0, 80),
+    mode,
+    outputLength: output.length,
+  });
+  return output;
+}
+
+async function callOpenAIResponsesWithFallback(args = {}, options = {}) {
+  try {
+    return await callOpenAIResponses(args);
+  } catch (error) {
+    const failureKind = openAiFallbackFailureKind(error);
+    if (!failureKind || options.fallback === false || args.imageDataUrl) throw error;
+    return callLocalTextWorkerFallback(args, {
+      ...options,
+      failureKind,
+      source: options.source || 'openai_fallback',
+    });
+  }
+}
+
 function jobSnapshot() {
   return Array.from(jobs.values())
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -10544,12 +10604,15 @@ async function continueWorkflow(options = {}) {
     parentWorkflowId: parent.id,
     target,
   });
-  const output = await callOpenAIResponses({
+  const output = await callOpenAIResponsesWithFallback({
     model: models.fast,
     instructions:
       'You are the continuation lane inside JAVIS. Continue prior local workflow context. Be concise, practical, and state the next concrete step.',
     input: prompt,
     maxOutputTokens: 900,
+  }, {
+    source: 'workflow_continue',
+    timeoutMs: 90000,
   });
   return {
     ok: Boolean(OPENAI_API_KEY),
@@ -15583,13 +15646,16 @@ function startApiServer() {
         jsonError(res, 400, 'Missing message');
         return;
       }
-      const output = await callOpenAIResponses({
+      const output = await callOpenAIResponsesWithFallback({
         model: models.fast,
         instructions:
           'You are the fast lane inside JAVIS. Answer simple questions quickly in Chinese. If the task is complex, recommend sending it to the background lane.',
         input: message,
         imageDataUrl: req.body?.includeScreen ? latestScreen?.imageDataUrl : undefined,
         maxOutputTokens: 500,
+      }, {
+        source: 'chat_quick',
+        timeoutMs: 60000,
       });
       res.json({ output });
     } catch (error) {
