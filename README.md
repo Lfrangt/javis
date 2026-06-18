@@ -26,7 +26,7 @@ Local Mac-first realtime desktop buddy.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
 - Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
 - Current-state app workflow planning: observe frontmost app, Accessibility tree, and screen metadata to turn a natural request into previewable local workflow steps.
-- Creative app workflows: recognize video editing and music composition requests, choose a likely NLE/DAW such as Final Cut Pro, DaVinci Resolve, Premiere, iMovie, CapCut, Logic Pro, GarageBand, Ableton Live, FL Studio, or Pro Tools, and return stage action packs before touching the UI.
+- Creative app workflows: recognize video editing and music composition requests, choose a likely NLE/DAW such as Final Cut Pro, DaVinci Resolve, Premiere, iMovie, CapCut, Logic Pro, GarageBand, Ableton Live, FL Studio, or Pro Tools, return stage action packs, and execute one guarded action at a time.
 - Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context.
 - OpenClaw-style lane contract registry for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, and risk boundaries.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
@@ -159,6 +159,7 @@ Local Express service on 127.0.0.1:3417
   /api/app/plan        -> observe current state, plan steps, and optionally execute
   /api/app/workflow    -> preview or execute a short multi-step local app workflow
   /api/creative/workflow -> plan/start video-editing or music-composition workflows with stage action packs
+  /api/creative/action -> preview or execute one guarded creative workflow action
   /api/browser/context  -> supported browser tab title and URL
   /api/browser/page     -> read-only current browser page text and link extraction
   /api/browser/control  -> guarded current-browser navigation actions

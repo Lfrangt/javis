@@ -1789,6 +1789,19 @@ function normalizePersistedWorkflow(workflow, fromDisk = false) {
       textLength: Number(target.textLength || 0),
       returnedLength: Number(target.returnedLength || 0),
       resultCount: Number(target.resultCount || 0),
+      appId: String(target.appId || '').slice(0, 120),
+      appDomain: String(target.appDomain || '').slice(0, 80),
+      appInstalled: Boolean(target.appInstalled),
+      appPath: String(target.appPath || '').slice(0, 2000),
+      candidateCount: Number(target.candidateCount || 0),
+      stageCount: Number(target.stageCount || 0),
+      focusedStageId: String(target.focusedStageId || target.stageId || '').slice(0, 80),
+      stageId: String(target.stageId || target.focusedStageId || '').slice(0, 80),
+      actionId: String(target.actionId || '').slice(0, 120),
+      actionCount: Number(target.actionCount || 0),
+      riskLevel: Number(target.riskLevel || 0),
+      safeToAutoRun: Boolean(target.safeToAutoRun),
+      confirmationRequired: Boolean(target.confirmationRequired),
     },
     jobId: String(workflow.jobId || ''),
     createdAt: Number(workflow.createdAt || Date.now()),
@@ -5535,6 +5548,308 @@ async function planCreativeWorkflow(options = {}) {
 
   return {
     ...draft,
+    workflow,
+    routing,
+    output,
+  };
+}
+
+function creativeActionIdFromOptions(options = {}, actionPack = null) {
+  const requested = String(options.actionId || options.action || options.actionName || options.id || '').trim();
+  if (requested) return requested;
+  if (options.execute === true || String(options.execute || '').toLowerCase() === 'true') {
+    return actionPack?.safeAutoActionIds?.[0] || actionPack?.actions?.[0]?.id || '';
+  }
+  return actionPack?.actions?.[0]?.id || '';
+}
+
+function creativeActionRequiresConfirmation(action) {
+  if (!action) return false;
+  if (action.confirmationRequired) return true;
+  return Number(action.riskLevel || 0) >= 4;
+}
+
+function creativeActionConfirmationSatisfied(options = {}) {
+  return options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+}
+
+function formatCreativeActionExecutionOutput(result) {
+  const action = result.action || {};
+  return [
+    `创作动作: ${action.id || 'unknown'} · ${action.label || ''}`,
+    `状态: ${result.status}${result.executed ? ' · executed' : ' · preview'}`,
+    result.requiresConfirmation ? '需要确认: 是' : '',
+    result.missingRequirements?.length ? `缺少信息: ${result.missingRequirements.join(', ')}` : '',
+    result.result?.output ? `结果:\n${compactRecordText(result.result.output, 900)}` : '',
+    result.output && !result.result?.output ? result.output : '',
+  ].filter(Boolean).join('\n');
+}
+
+async function executeCreativeAction(action, options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      status: 'preview',
+      output: `${action.label}: ${action.summary || 'Prepared creative action preview.'}`,
+    };
+  }
+
+  if (action.type === 'app_workflow') {
+    const result = await runAppWorkflow({
+      title: `creative action · ${action.label}`,
+      instruction: options.instruction || action.summary || action.label,
+      execute: true,
+      source: 'creative_action',
+      steps: action.steps || [],
+      continueOnError: false,
+    });
+    return {
+      ok: result.ok,
+      executed: true,
+      status: result.ok ? 'done' : 'blocked',
+      result,
+      output: result.output,
+    };
+  }
+
+  if (action.type === 'observe') {
+    const observed = await observeNow({
+      ...(action.args || {}),
+      source: 'creative_action',
+      captureScreen: action.args?.captureScreen ?? 'auto',
+      includeAccessibility: action.args?.includeAccessibility ?? true,
+      screenMaxAgeMs: 8000,
+      accessibilityMaxAgeMs: 4000,
+      maxNodes: action.args?.maxNodes || options.maxNodes || 180,
+      maxDepth: action.args?.maxDepth || options.maxDepth || 8,
+    });
+    const output = formatObservationForLocalCommand(observed);
+    return {
+      ok: observed.ok,
+      executed: true,
+      status: observed.ok ? 'done' : 'blocked',
+      result: {
+        ok: observed.ok,
+        output,
+        mac: observed.mac,
+        screen: observed.screen,
+        accessibility: observed.accessibility,
+        errors: observed.errors,
+      },
+      output,
+    };
+  }
+
+  if (action.type === 'file_workflow') {
+    const targetPath = String(options.assetPath || options.path || options.folder || '').trim();
+    if (!targetPath) {
+      return {
+        ok: false,
+        executed: false,
+        status: 'blocked',
+        missingRequirements: ['assetPath'],
+        output: '需要素材文件夹路径后才能检查素材。',
+      };
+    }
+    const result = await runFileWorkflow({
+      path: targetPath,
+      intent: action.args?.intent || 'list',
+      instruction: options.instruction || action.summary || action.label,
+      mode: 'quick',
+      source: 'creative_action',
+      scope: `creative:${options.intent || 'creative'}:${action.id}`,
+      parallelGroup: options.parallelGroup || options.group || 'creative:file',
+    });
+    return {
+      ok: result.ok,
+      executed: true,
+      status: result.ok ? 'done' : 'blocked',
+      result,
+      output: result.output,
+    };
+  }
+
+  if (action.type === 'plan_ui_action') {
+    const result = await accessibilityActionPlan({
+      instruction: String(options.actionInstruction || action.instruction || action.summary || action.label),
+      maxNodes: options.maxNodes || 180,
+      maxDepth: options.maxDepth || 8,
+    });
+    return {
+      ok: result.ok,
+      executed: false,
+      status: result.ok ? 'done' : 'blocked',
+      result,
+      output: result.output || result.recommended?.summary || 'UI action plan generated.',
+    };
+  }
+
+  if (action.type === 'current_app_control') {
+    const result = await controlCurrentApp({
+      instruction: String(options.actionInstruction || action.instruction || action.summary || action.label),
+      content: options.content ?? options.value,
+      execute: true,
+      recordWorkflow: false,
+      maxNodes: options.maxNodes || 180,
+      maxDepth: options.maxDepth || 8,
+      approvalContext: {
+        workflowId: options.workflowId || '',
+        title: `creative action · ${action.label}`,
+        instruction: options.instruction || action.instruction || action.label,
+        source: 'creative_action',
+      },
+    });
+    return {
+      ok: result.ok,
+      executed: Boolean(result.executed),
+      status: result.ok ? 'done' : result.approval ? 'approval_required' : 'blocked',
+      approval: result.approval,
+      result,
+      output: result.output,
+    };
+  }
+
+  if (action.type === 'inbox') {
+    const body = String(options.body || options.text || options.instruction || '').trim();
+    if (!body) {
+      return {
+        ok: false,
+        executed: false,
+        status: 'blocked',
+        missingRequirements: ['body'],
+        output: '需要 brief 文本后才能保存到 Inbox。',
+      };
+    }
+    const item = createInboxItem({
+      title: options.title || action.label,
+      body,
+      source: 'creative_action',
+      priority: options.priority || 2,
+      tags: ['creative', options.intent || 'creative'].filter(Boolean),
+    });
+    return {
+      ok: true,
+      executed: true,
+      status: 'done',
+      result: { item, counts: inboxCounts() },
+      output: `已保存到 Inbox: ${item.title}`,
+    };
+  }
+
+  return {
+    ok: false,
+    executed: false,
+    status: 'blocked',
+    output: `${action.type} 动作需要用户补充信息或暂不支持自动执行。`,
+  };
+}
+
+async function runCreativeWorkflowAction(options = {}) {
+  const instruction = String(options.instruction || options.goal || options.task || '').trim();
+  if (!instruction) throw new Error('Creative action requires instruction.');
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const plan = await planCreativeWorkflow({
+    instruction,
+    intent: options.intent,
+    stage: options.stage || options.phase || options.step,
+    app: options.app || options.application,
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: options.source || 'creative_action',
+  });
+  const actionId = creativeActionIdFromOptions(options, plan.actionPack);
+  const action = (plan.actionPack?.actions || []).find((item) => item.id === actionId);
+  if (!action) throw new Error(`Creative action not found: ${actionId || 'missing actionId'}.`);
+
+  const confirmed = creativeActionConfirmationSatisfied(options);
+  const requiresConfirmation = creativeActionRequiresConfirmation(action);
+  let execution;
+  if (requiresConfirmation && execute && !confirmed) {
+    execution = {
+      ok: false,
+      executed: false,
+      status: 'blocked',
+      requiresConfirmation: true,
+      output: `需要明确确认后才能执行: ${action.label}`,
+    };
+  } else {
+    execution = await executeCreativeAction(action, {
+      ...options,
+      execute,
+      intent: plan.intent,
+    });
+  }
+
+  const outputDraft = {
+    ok: execution.ok,
+    executed: Boolean(execution.executed),
+    status: execution.status || (execution.ok ? 'done' : 'blocked'),
+    requiresConfirmation: Boolean(requiresConfirmation && execute && !confirmed),
+    missingRequirements: execution.missingRequirements || [],
+    plan,
+    action,
+    result: execution.result,
+    approval: execution.approval,
+    output: execution.output,
+  };
+  const output = formatCreativeActionExecutionOutput(outputDraft);
+  const workflowStatus = outputDraft.status === 'preview'
+    ? 'done'
+    : ['queued', 'running', 'done', 'failed', 'cancelled', 'blocked'].includes(outputDraft.status)
+      ? outputDraft.status
+      : 'blocked';
+  const workflowDraft = {
+    kind: 'creative_action',
+    source: 'creative_action',
+    status: workflowStatus,
+    title: `Creative action · ${action.label}`.slice(0, 180),
+    intent: action.id,
+    mode: execute ? 'local' : 'preview',
+    request: instruction,
+    result: output,
+    target: {
+      app: plan.selectedApp?.name || '',
+      appId: plan.selectedApp?.id || '',
+      appDomain: plan.selectedApp?.domain || creativeWorkflowDomain(plan.intent),
+      appInstalled: Boolean(plan.selectedApp?.installed),
+      appPath: plan.selectedApp?.appPath || '',
+      stageId: plan.focusedStage?.id || '',
+      focusedStageId: plan.focusedStage?.id || '',
+      actionId: action.id,
+      actionCount: plan.actionPack?.actions?.length || 0,
+      riskLevel: action.riskLevel,
+      safeToAutoRun: action.safeToAutoRun,
+      confirmationRequired: requiresConfirmation,
+      path: String(options.assetPath || options.path || ''),
+      type: action.type,
+    },
+  };
+  const workflow = options.recordWorkflow === false
+    ? {
+        id: '',
+        ...workflowDraft,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+      }
+    : createWorkflowRecord(workflowDraft);
+  const routing = options.recordRouting === false || !workflow.id
+    ? null
+    : createRoutingRecordForWorkflow({
+        workflow,
+        mode: 'local',
+        source: options.source || 'creative_action',
+        owner: 'app',
+        scope: `creative:${plan.intent}:${plan.focusedStage?.id || 'stage'}:${action.id}`,
+        parallelGroup: options.parallelGroup || options.group || `creative:${plan.selectedApp?.domain || plan.intent}`,
+        resultSummary: output,
+      });
+
+  return {
+    ...outputDraft,
     workflow,
     routing,
     output,
@@ -14590,6 +14905,27 @@ async function doctorReportSnapshot() {
     recordRouting: false,
     source: 'doctor',
   });
+  const creativeActionPreview = await runCreativeWorkflowAction({
+    instruction: '帮我剪辑一个短视频，先规划导入素材流程',
+    intent: 'video_edit',
+    stage: 'import',
+    actionId: 'open_app',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: 'doctor',
+  });
+  const creativeActionBlockedPreview = await runCreativeWorkflowAction({
+    instruction: '帮我剪辑一个短视频，先规划导入素材流程',
+    intent: 'video_edit',
+    stage: 'import',
+    actionId: 'open_import_ui',
+    execute: true,
+    confirm: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: 'doctor',
+  });
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
   const setupGuidePreview = setupGuideSnapshot();
@@ -14865,7 +15201,11 @@ async function doctorReportSnapshot() {
     creativeWorkflowPreview.stages.length >= 5 &&
     creativeWorkflowPreview.actionPack?.actions?.length >= 3 &&
     creativeWorkflowPreview.actionPack.safeAutoActionIds.length >= 1 &&
-    creativeWorkflowPreview.actionPack.confirmationActionIds.length >= 1;
+    creativeWorkflowPreview.actionPack.confirmationActionIds.length >= 1 &&
+    creativeActionPreview.ok &&
+    creativeActionPreview.status === 'preview' &&
+    creativeActionBlockedPreview.status === 'blocked' &&
+    creativeActionBlockedPreview.requiresConfirmation === true;
   checks.push(doctorCheck(
     'creative_workflow',
     'Creative workflow',
@@ -14879,8 +15219,17 @@ async function doctorReportSnapshot() {
       stageCount: creativeWorkflowPreview.stages.length,
       candidateCount: creativeWorkflowPreview.candidates.length,
       actionPack: creativeWorkflowPreview.actionPack,
+      actionPreview: {
+        status: creativeActionPreview.status,
+        actionId: creativeActionPreview.action?.id || '',
+      },
+      blockedPreview: {
+        status: creativeActionBlockedPreview.status,
+        requiresConfirmation: creativeActionBlockedPreview.requiresConfirmation,
+        actionId: creativeActionBlockedPreview.action?.id || '',
+      },
     },
-    creativeWorkflowReady ? '' : 'Review planCreativeWorkflow() and creativeWorkflowIntentFromInstruction().',
+    creativeWorkflowReady ? '' : 'Review planCreativeWorkflow(), runCreativeWorkflowAction(), and creativeWorkflowIntentFromInstruction().',
   ));
 
   const briefingReady = Boolean(briefingPreview.summary && Array.isArray(briefingPreview.nextActions) && briefingPreview.nextActions.length);
@@ -15048,6 +15397,8 @@ async function doctorReportSnapshot() {
         stageCount: creativeWorkflowPreview.stages.length,
         focusedStage: creativeWorkflowPreview.focusedStage,
         actionCount: creativeWorkflowPreview.actionPack?.actions?.length || 0,
+        actionPreviewStatus: creativeActionPreview.status,
+        blockedActionStatus: creativeActionBlockedPreview.status,
       },
       briefing: {
         summary: briefingPreview.summary,
@@ -16645,6 +16996,11 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'run_creative_action') {
+    const result = await runCreativeWorkflowAction({ ...(args || {}), source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_recent_workflows') {
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 8)));
     const workflowItems = workflowSnapshot(limit);
@@ -17049,6 +17405,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_app_workflow when the user explicitly asks for a small multi-step local computer operation, such as open an app, wait, press a UI target, type text, use a hotkey, or run a file action. Preview with execute:false when the target is ambiguous.',
       'Use plan_creative_workflow for video editing, short-form editing, subtitles, color, music composition, DAW, MIDI, beat-making, arranging, mixing, or other creative app work. It chooses a likely creative app, stage, and action pack without blindly editing.',
       'Use run_creative_workflow only when the user asks to start/open the creative task. It opens or focuses the selected app, observes the project window, and returns the staged action pack; saves, exports, uploads, and destructive edits still require explicit confirmation.',
+      'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
       'Use get_work_session when the user asks about the current work session.',
@@ -17384,6 +17741,43 @@ function createRealtimeSessionConfig(options = {}) {
             execute: { type: 'boolean' },
             observeAfterOpen: { type: 'boolean' },
             waitMs: { type: 'number' },
+            parallelGroup: { type: 'string' },
+          },
+          required: ['instruction'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'run_creative_action',
+        description: 'Preview or execute exactly one action from a creative workflow action pack. Low-risk actions can run directly; imports, UI edits, MIDI entry, mix changes, and export panels require confirm:true.',
+        parameters: {
+          type: 'object',
+          properties: {
+            instruction: { type: 'string' },
+            goal: { type: 'string' },
+            intent: { type: 'string', enum: ['video_edit', 'music_compose', 'creative_app'] },
+            stage: { type: 'string' },
+            phase: { type: 'string' },
+            step: { type: 'string' },
+            actionId: { type: 'string' },
+            action: { type: 'string' },
+            app: { type: 'string' },
+            application: { type: 'string' },
+            execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            assetPath: { type: 'string' },
+            path: { type: 'string' },
+            folder: { type: 'string' },
+            actionInstruction: { type: 'string' },
+            content: { type: 'string' },
+            value: { type: 'string' },
+            body: { type: 'string' },
+            text: { type: 'string' },
+            waitMs: { type: 'number' },
+            maxNodes: { type: 'number' },
+            maxDepth: { type: 'number' },
             parallelGroup: { type: 'string' },
           },
           required: ['instruction'],
@@ -18798,6 +19192,15 @@ function startApiServer() {
       res.status(result.ok ? 200 : 202).json(result);
     } catch (error) {
       jsonError(res, 400, 'Creative workflow failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/creative/action', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await runCreativeWorkflowAction({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : result.approval ? 202 : 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Creative action failed', error instanceof Error ? error.message : String(error));
     }
   });
 
