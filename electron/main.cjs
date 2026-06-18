@@ -1176,10 +1176,44 @@ function transformScreenImageForPrivacy(image, privacy) {
   });
 }
 
+function resizeScreenImageForPrivacy(image, privacy) {
+  const size = image.getSize();
+  const maxWidth = privacy.mode === 'private'
+    ? Math.max(320, Number(privacy.maxWidth || 640))
+    : Math.max(640, Number(privacy.maxWidth || 1280));
+  if (!size.width || size.width <= maxWidth) return image;
+  return image.resize({
+    width: maxWidth,
+    height: Math.max(180, Math.round(size.height * (maxWidth / size.width))),
+    quality: 'best',
+  });
+}
+
+function prepareScreenImageForStorage(image, privacy) {
+  return transformScreenImageForPrivacy(resizeScreenImageForPrivacy(image, privacy), privacy);
+}
+
 function nativeImageToDataUrl(image, privacy) {
-  const transformed = transformScreenImageForPrivacy(image, privacy);
-  const buffer = transformed.toJPEG(Math.max(1, Math.min(100, Math.round((privacy.jpegQuality || 0.46) * 100))));
+  const buffer = image.toJPEG(Math.max(1, Math.min(100, Math.round((privacy.jpegQuality || 0.46) * 100))));
   return `data:image/jpeg;base64,${buffer.toString('base64')}`;
+}
+
+async function captureScreenWithScreencapture() {
+  if (process.platform !== 'darwin') throw new Error('screencapture_fallback_unsupported');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'javis-screen-'));
+  const target = path.join(dir, 'screen.jpg');
+  try {
+    await execFileAsync('/usr/sbin/screencapture', ['-x', '-t', 'jpg', target], { timeout: 10000 });
+    const image = nativeImage.createFromPath(target);
+    if (image.isEmpty()) throw new Error('screencapture_thumbnail_empty');
+    return image;
+  } finally {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Temporary cleanup is best-effort.
+    }
+  }
 }
 
 async function captureResidentScreen(options = {}) {
@@ -1201,22 +1235,28 @@ async function captureResidentScreen(options = {}) {
   const source =
     sources.find((item) => String(item.display_id || '') === preferredDisplayId)
     || sources[0];
-  if (!source || source.thumbnail.isEmpty()) {
-    throw new Error('No screen source thumbnail is available.');
+  let capturedImage = source && !source.thumbnail.isEmpty() ? source.thumbnail : null;
+  let captureSource = 'desktopCapturer';
+  if (!capturedImage) {
+    capturedImage = await captureScreenWithScreencapture();
+    captureSource = 'screencapture';
   }
+  const storedImage = prepareScreenImageForStorage(capturedImage, privacy);
+  const storedSize = storedImage.getSize();
 
   latestScreen = {
-    imageDataUrl: nativeImageToDataUrl(source.thumbnail, privacy),
-    width: source.thumbnail.getSize().width,
-    height: source.thumbnail.getSize().height,
+    imageDataUrl: nativeImageToDataUrl(storedImage, privacy),
+    width: storedSize.width,
+    height: storedSize.height,
     privacy,
     source: 'resident',
-    displayId: String(source.display_id || ''),
-    displayName: source.name || '',
+    displayId: String(source?.display_id || display.id || ''),
+    displayName: source?.name || captureSource,
     updatedAt: Date.now(),
   };
   appendAudit('screen.frame_captured', {
     source: String(options.source || 'resident').slice(0, 80),
+    captureSource,
     width: latestScreen.width,
     height: latestScreen.height,
     privacy: privacy.mode,
@@ -1272,6 +1312,7 @@ function normalizeRecoveryPlan(plan) {
       .map((action) => (action && typeof action === 'object' ? {
         label: compactRecordText(action.label || '', 120),
         type: String(action.type || 'manual').slice(0, 80),
+        mode: String(action.mode || '').slice(0, 40),
         riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
         autoEligible: Boolean(action.autoEligible),
         command: redactCommandForLog(action.command || ''),
@@ -9502,8 +9543,8 @@ function finalizeRouteResult(result, context = {}) {
 
 function recoveryActionPriority(job, action) {
   const riskLevel = Number(action?.riskLevel || 0);
-  if (trustedRecoveryAutoEligible(job, action)) return riskLevel <= 1 ? 0 : 2;
-  if (action?.autoEligible && riskLevel <= 1) return 0;
+  if (trustedRecoveryAutoEligible(job, action)) return 0;
+  if (action?.autoEligible && riskLevel <= 1) return 1;
   if (job.failureKind === 'approval_required') return 1;
   if (riskLevel <= 1) return 2;
   return 3;
@@ -9550,7 +9591,12 @@ function reviewedRecoveryTypes(job) {
 
 function recoveryActionCandidates(recentJobs, limit = 4) {
   return recentJobs
-    .filter((job) => job.status === 'failed' && !job.recoveryForJobId && job.recoveryPlan?.nextActions?.length)
+    .filter((job) => (
+      job.status === 'failed'
+      && !job.recoveryForJobId
+      && !completedRecoveryChildJob(job.id)
+      && job.recoveryPlan?.nextActions?.length
+    ))
     .flatMap((job) => {
       if (activeRecoveryChildJob(job.id)) return [];
       const reviewed = reviewedRecoveryTypes(job);
@@ -9577,6 +9623,7 @@ function recoveryActionCandidates(recentJobs, limit = 4) {
           jobId: job.id,
           failureKind: job.failureKind || job.recoveryPlan.failureKind || '',
           recoveryType: action.type || 'manual',
+          mode: action.mode || '',
           autoEligible: Boolean(action.autoEligible),
           trustedAutoEligible: trustedRecoveryAutoEligible(job, action, childCount),
           riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
@@ -10059,7 +10106,16 @@ async function workNextAction(options = {}) {
       && execute
       && ['retry', 'alternative_worker'].includes(action.recoveryType)
       && (action.trustedAutoEligible || !options.autopilot)
-      && ['worker_failed', 'command_failed', 'timeout', 'interrupted', 'worker_command_missing'].includes(job.failureKind || job.recoveryPlan?.failureKind || action.failureKind),
+      && [
+        'worker_failed',
+        'command_failed',
+        'timeout',
+        'interrupted',
+        'worker_command_missing',
+        'model_failed',
+        'model_quota_or_api',
+        'openai_key_missing',
+      ].includes(job.failureKind || job.recoveryPlan?.failureKind || action.failureKind),
     );
     if (canQueueRecovery) {
       result = queueRecoveryJob(job, action, { source: options.source || 'work_next' });
@@ -10450,8 +10506,13 @@ function originalTaskForJob(job) {
 }
 
 function recoveryJobModeFor(job, action = {}) {
+  const explicitMode = String(action.mode || '').trim();
+  if (['background', 'codex', 'claude', 'cli'].includes(explicitMode)) return explicitMode;
   if (action.recoveryType === 'alternative_worker' && (job.mode === 'codex' || job.mode === 'claude')) {
     return codeAgentAlternativeMode(job.mode);
+  }
+  if (action.recoveryType === 'alternative_worker' && job.mode === 'background') {
+    return preferredRecoveryWorkerMode() || 'background';
   }
   if (job.mode === 'codex' || job.mode === 'claude') return job.mode;
   return 'background';
@@ -10628,6 +10689,35 @@ function finishJob(id, status, patch = {}) {
       result: job.result || patch.result || '',
       completedAt: Date.now(),
     });
+  }
+  if (status === 'done' && job?.recoveryForJobId) {
+    const parent = jobs.get(job.recoveryForJobId);
+    if (parent?.status === 'failed') {
+      const recoveryResult = [
+        parent.result || '',
+        `Recovered by ${job.mode} job ${job.id}.`,
+        job.result || patch.result || '',
+      ].filter(Boolean).join('\n\n');
+      setJob(parent.id, {
+        status: 'done',
+        completedAt: Date.now(),
+        failureKind: '',
+        result: recoveryResult,
+        log: `${parent.log || ''}\nRecovered by ${job.id}.`,
+      });
+      if (parent.workflowId) {
+        setWorkflow(parent.workflowId, {
+          status: 'done',
+          result: recoveryResult,
+          completedAt: Date.now(),
+        });
+      }
+      appendAudit('job.recovery_completed', {
+        id: parent.id,
+        recoveryJobId: job.id,
+        mode: job.mode,
+      });
+    }
   }
   if (job) {
     recordActiveSessionEvent('job_status', `Job ${status}: ${compactRecordText(job.title, 120)}`, job.source || 'job', {
@@ -11758,6 +11848,7 @@ function classifyJobFailure(error, job = {}) {
   if (/not allowed by policy|disabled by policy|allowlist/.test(text)) return 'policy_blocked';
   if (/interrupted by javis shutdown|not completed before the previous process exited|previous javis shutdown/.test(text)) return 'interrupted';
   if (/timed out|timeout|stopped by sigterm/.test(text) || error instanceof JobCancelled) return 'timeout';
+  if (/quota|billing|rate limit|429|insufficient_quota|temporarily unavailable|service unavailable|bad gateway/.test(text)) return 'model_quota_or_api';
   if (/openai api key|missing openai|api key is not configured/.test(text)) return 'openai_key_missing';
   if (job.mode === 'cli') return 'command_failed';
   if (job.mode === 'codex' || job.mode === 'claude') return 'worker_failed';
@@ -11772,6 +11863,14 @@ function codeAgentCommandForMode(mode) {
 
 function codeAgentAlternativeMode(mode) {
   return mode === 'codex' ? 'claude' : 'codex';
+}
+
+function preferredRecoveryWorkerMode() {
+  const claudeCommand = codeAgentCommandForMode('claude');
+  if (commandExists(claudeCommand)) return 'claude';
+  const codexCommand = codeAgentCommandForMode('codex');
+  if (commandExists(codexCommand)) return 'codex';
+  return '';
 }
 
 function buildCodeAgentPlan(mode, command, task) {
@@ -11874,6 +11973,24 @@ function buildRecoveryPlanForJob(job, error, options = {}) {
       command: alternativeCommand,
       reason: `${job.mode} hit ${failureKind}; try ${alternativeMode} with the same narrowed recovery context before asking the user.`,
     });
+  }
+  if (
+    job.mode === 'background'
+    && ['model_failed', 'model_quota_or_api', 'openai_key_missing', 'timeout', 'interrupted'].includes(failureKind)
+  ) {
+    const alternativeMode = preferredRecoveryWorkerMode();
+    if (alternativeMode) {
+      const alternativeCommand = codeAgentCommandForMode(alternativeMode);
+      nextActions.push({
+        type: 'alternative_worker',
+        label: `Try ${alternativeMode} worker`,
+        mode: alternativeMode,
+        riskLevel: 3,
+        autoEligible: false,
+        command: alternativeCommand,
+        reason: `The model lane hit ${failureKind}; delegate the narrowed recovery context to ${alternativeMode} before asking the user.`,
+      });
+    }
   }
   if (failureKind === 'policy_blocked') {
     nextActions.push({
