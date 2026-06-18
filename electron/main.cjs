@@ -8754,6 +8754,7 @@ function completedRecoveryChildJob(jobId) {
 
 function trustedRecoveryAutoEligible(job, action, childCount = null) {
   if (!job || !action) return false;
+  if (job.recoveryForJobId) return false;
   const type = action.type || action.recoveryType || 'manual';
   if (!['retry', 'alternative_worker'].includes(type)) return false;
   if (!LOCAL_EXEC_ENABLED || !TRUSTED_LOCAL_MODE) return false;
@@ -8776,7 +8777,7 @@ function reviewedRecoveryTypes(job) {
 
 function recoveryActionCandidates(recentJobs, limit = 4) {
   return recentJobs
-    .filter((job) => job.status === 'failed' && job.recoveryPlan?.nextActions?.length)
+    .filter((job) => job.status === 'failed' && !job.recoveryForJobId && job.recoveryPlan?.nextActions?.length)
     .flatMap((job) => {
       if (activeRecoveryChildJob(job.id)) return [];
       const reviewed = reviewedRecoveryTypes(job);
@@ -8785,6 +8786,7 @@ function recoveryActionCandidates(recentJobs, limit = 4) {
         .filter((action) => {
           const type = action.type || 'manual';
           if (['diagnose', 'policy', 'approval'].includes(type) && reviewed.has(type)) return false;
+          if (job.recoveryForJobId && ['retry', 'alternative_worker'].includes(type)) return false;
           if (['retry', 'alternative_worker'].includes(type) && completedRecoveryChildJob(job.id)) return false;
           if (['retry', 'alternative_worker'].includes(type) && childCount >= MAX_RECOVERY_JOB_ATTEMPTS) return false;
           return true;
