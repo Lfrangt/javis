@@ -86,6 +86,7 @@ const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES |
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
+const MAX_PARALLEL_TASKS = Math.max(2, Math.min(12, Number(process.env.JAVIS_MAX_PARALLEL_TASKS || 6)));
 const MAX_RECOVERY_JOB_ATTEMPTS = Math.max(0, Math.min(5, Number(process.env.JAVIS_MAX_RECOVERY_JOB_ATTEMPTS || 2)));
 const MAX_LEARNING_SOURCE_EVENTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_LEARNING_SOURCE_EVENTS || 200)));
 const startedAt = Date.now();
@@ -7823,6 +7824,209 @@ async function routeTask(options = {}) {
   }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
 }
 
+function normalizeParallelTaskItem(raw = {}, index = 0, defaults = {}) {
+  const command = String(raw.command || raw.cli || '').trim();
+  const task = String(raw.message || raw.task || raw.title || command || '').trim();
+  const requestedMode = String(raw.mode || raw.lane || defaults.mode || defaults.lane || '').trim();
+  const mode = command || requestedMode === 'cli'
+    ? 'cli'
+    : ['quick', 'background', 'codex', 'claude'].includes(requestedMode)
+      ? requestedMode
+      : '';
+  const scope = String(raw.scope || defaults.scope || '').trim()
+    || `parallel item ${index + 1}: ${compactRecordText(task, 110)}`;
+  return {
+    task,
+    command,
+    mode,
+    owner: String(raw.owner || defaults.owner || (mode === 'cli' ? 'local' : mode ? ownerForRoutingLane(mode) : '')).trim(),
+    scope,
+    title: String(raw.title || task).trim(),
+    includeScreen: raw.includeScreen ?? defaults.includeScreen,
+    useMemory: raw.useMemory ?? defaults.useMemory,
+    memoryLimit: raw.memoryLimit ?? defaults.memoryLimit,
+    timeoutMs: raw.timeoutMs ?? defaults.timeoutMs,
+  };
+}
+
+function parallelRouteCounts(results = []) {
+  return results.reduce(
+    (counts, item) => {
+      counts.total += 1;
+      if (item.ok) counts.ok += 1;
+      else counts.failed += 1;
+      if (item.queued) counts.queued += 1;
+      const lane = item.routing?.lane || item.decision?.lane || 'unknown';
+      counts.byLane[lane] = (counts.byLane[lane] || 0) + 1;
+      const status = item.routing?.status || item.status || 'unknown';
+      counts.byStatus[status] = (counts.byStatus[status] || 0) + 1;
+      return counts;
+    },
+    { total: 0, ok: 0, failed: 0, queued: 0, byLane: {}, byStatus: {} },
+  );
+}
+
+function previewParallelCliTask(item, context = {}) {
+  const decision = {
+    lane: 'local',
+    mode: 'cli',
+    label: 'CLI',
+    confidence: 1,
+    reason: 'parallel group includes explicit CLI command',
+    execute: false,
+    requiresOpenAiKey: false,
+    requiresLocalExecution: true,
+    localCommand: 'cli_command',
+  };
+  const record = createRoutingRecord({
+    task: item.title || redactCommandForLog(item.command),
+    decision,
+    source: context.source,
+    execute: false,
+    status: 'preview',
+    owner: item.owner || 'local',
+    scope: item.scope,
+    parallelGroup: context.parallelGroup,
+    resultSummary: `Preview CLI command: ${redactCommandForLog(item.command)}`,
+  });
+  return {
+    ok: true,
+    executed: false,
+    queued: false,
+    decision,
+    routing: record,
+    routeRecord: record,
+    output: `CLI preview: ${redactCommandForLog(item.command)}`,
+  };
+}
+
+function queueParallelCliTask(item, context = {}) {
+  const result = queueCliCommand({
+    command: item.command,
+    title: item.title || redactCommandForLog(item.command),
+    timeoutMs: item.timeoutMs,
+    source: context.source,
+  });
+  const decision = {
+    lane: 'local',
+    mode: 'cli',
+    label: 'CLI',
+    confidence: 1,
+    reason: 'parallel group includes explicit CLI command',
+    execute: true,
+    requiresOpenAiKey: false,
+    requiresLocalExecution: true,
+    localCommand: 'cli_command',
+  };
+  const routing = createRoutingRecord({
+    task: item.title || redactCommandForLog(item.command),
+    decision,
+    source: context.source,
+    execute: true,
+    status: result.job?.status || 'queued',
+    jobId: result.job?.id || '',
+    owner: item.owner || 'local',
+    scope: item.scope,
+    parallelGroup: context.parallelGroup,
+    resultSummary: result.output,
+  });
+  return {
+    ...result,
+    ok: true,
+    executed: true,
+    queued: true,
+    decision,
+    routing,
+    routeRecord: routing,
+  };
+}
+
+async function routeParallelTasks(options = {}) {
+  const rawTasks = Array.isArray(options.tasks)
+    ? options.tasks
+    : Array.isArray(options.items)
+      ? options.items
+      : [];
+  const tasks = rawTasks
+    .slice(0, MAX_PARALLEL_TASKS)
+    .map((item, index) => normalizeParallelTaskItem(item, index, options))
+    .filter((item) => item.task || item.command);
+  if (!tasks.length) throw new Error('No parallel tasks were provided.');
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const parallelGroup = String(options.parallelGroup || options.group || `parallel:${crypto.randomUUID()}`).slice(0, 120);
+  const source = String(options.source || 'parallel_router').slice(0, 80);
+  const startedAt = Date.now();
+  const results = [];
+
+  for (const [index, item] of tasks.entries()) {
+    try {
+      const result = item.command || item.mode === 'cli'
+        ? execute
+          ? queueParallelCliTask(item, { parallelGroup, source })
+          : previewParallelCliTask(item, { parallelGroup, source })
+        : await routeTask({
+          message: item.task,
+          execute,
+          includeScreen: Boolean(item.includeScreen),
+          useMemory: item.useMemory,
+          memoryLimit: item.memoryLimit,
+          mode: item.mode,
+          owner: item.owner,
+          scope: item.scope,
+          parallelGroup,
+          source,
+        });
+      results.push({
+        index,
+        task: item.task,
+        command: item.command ? redactCommandForLog(item.command) : '',
+        ok: result.ok !== false,
+        queued: Boolean(result.queued || result.job),
+        output: result.output || '',
+        decision: result.decision,
+        job: result.job,
+        routing: result.routing || result.routeRecord,
+      });
+    } catch (error) {
+      results.push({
+        index,
+        task: item.task,
+        command: item.command ? redactCommandForLog(item.command) : '',
+        ok: false,
+        queued: false,
+        output: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  const counts = parallelRouteCounts(results);
+  const output = [
+    `Parallel group ${parallelGroup}: ${counts.ok}/${counts.total} routed, ${counts.queued} queued.`,
+    results.map((item) => `${item.index + 1}. ${item.routing?.lane || item.decision?.lane || 'failed'}/${item.routing?.status || ''} · ${item.routing?.owner || ''} · ${compactRecordText(item.task || item.command, 100)} · ${item.routing?.resultLink || item.output}`).join('\n'),
+  ].filter(Boolean).join('\n');
+
+  appendAudit('task_parallel.routed', {
+    parallelGroup,
+    execute,
+    total: counts.total,
+    ok: counts.ok,
+    queued: counts.queued,
+    source,
+  });
+
+  return {
+    ok: counts.failed === 0,
+    executed: execute,
+    parallelGroup,
+    maxTasks: MAX_PARALLEL_TASKS,
+    elapsedMs: Date.now() - startedAt,
+    counts,
+    results,
+    routingLedger: results.map((item) => item.routing && routingLedgerEntry(item.routing)).filter(Boolean),
+    output,
+  };
+}
+
 function formatFileEntries(entries = []) {
   return entries
     .slice(0, 80)
@@ -11766,6 +11970,15 @@ async function doctorReportSnapshot() {
     codex: routeTaskDecision('修复这个 React bug 并跑测试'),
   };
   const localCommandPreview = await routeTask({ message: '状态', execute: true });
+  const parallelPreview = await routeParallelTasks({
+    execute: false,
+    source: 'doctor',
+    parallelGroup: 'doctor:parallel-preview',
+    tasks: [
+      { task: 'Read-only inspect current resident status.', mode: 'background', scope: 'doctor:status-inspection', owner: 'background' },
+      { command: 'echo doctor-parallel-preview', title: 'doctor parallel cli preview', scope: 'doctor:cli-preview', owner: 'local' },
+    ],
+  });
   const browserJavaScriptPreview = await browserJavaScriptStatusSnapshot();
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
@@ -11951,6 +12164,26 @@ async function doctorReportSnapshot() {
       missing: routingLedgerMissing,
     },
     routingLedgerReady ? '' : 'Review createRoutingRecord() and finalizeRouteResult().',
+  ));
+
+  const parallelReady =
+    parallelPreview.ok &&
+    parallelPreview.parallelGroup === 'doctor:parallel-preview' &&
+    parallelPreview.results.length === 2 &&
+    parallelPreview.routingLedger.every((entry) => entry.parallelGroup === 'doctor:parallel-preview' && entry.scope && entry.owner && entry.resultLink);
+  checks.push(doctorCheck(
+    'parallel_task_router',
+    'Parallel task router',
+    parallelReady ? 'ready' : 'warning',
+    parallelReady
+      ? `Parallel router grouped ${parallelPreview.results.length} task(s) with scoped owners and result links.`
+      : 'Parallel router did not produce complete grouped routing records.',
+    {
+      parallelGroup: parallelPreview.parallelGroup,
+      counts: parallelPreview.counts,
+      routingLedger: parallelPreview.routingLedger,
+    },
+    parallelReady ? '' : 'Review routeParallelTasks().',
   ));
 
   const localCommandReady =
@@ -13969,6 +14202,11 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'route_parallel_tasks') {
+    const result = await routeParallelTasks({ ...(args || {}), source: 'voice_parallel' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'capture_screen') {
     try {
       const screenFrame = await captureResidentScreen({ ...(args || {}), source: 'voice' });
@@ -14844,6 +15082,40 @@ function createRealtimeSessionConfig(options = {}) {
             parallelGroup: { type: 'string' },
             owner: { type: 'string' },
           },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'route_parallel_tasks',
+        description: 'Route a small group of independent tasks under one parallelGroup, preserving owner, scope, lane, status, and result links. Use when the user asks to split work across agents or run independent tasks together.',
+        parameters: {
+          type: 'object',
+          properties: {
+            execute: { type: 'boolean' },
+            parallelGroup: { type: 'string' },
+            includeScreen: { type: 'boolean' },
+            mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            tasks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  task: { type: 'string' },
+                  message: { type: 'string' },
+                  command: { type: 'string' },
+                  title: { type: 'string' },
+                  mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude', 'cli'] },
+                  lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude', 'cli'] },
+                  owner: { type: 'string' },
+                  scope: { type: 'string' },
+                  timeoutMs: { type: 'number' },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+          required: ['tasks'],
           additionalProperties: false,
         },
       },
@@ -16174,6 +16446,15 @@ function startApiServer() {
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'Task route failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/tasks/parallel', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await routeParallelTasks({ ...(req.body || {}), source: req.body?.source || 'api_parallel' });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Parallel task routing failed', error instanceof Error ? error.message : String(error));
     }
   });
 

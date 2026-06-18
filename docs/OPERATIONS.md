@@ -168,11 +168,16 @@ curl -X POST http://127.0.0.1:3417/api/work/next \
 curl -X POST http://127.0.0.1:3417/api/tasks/route \
   -H 'Content-Type: application/json' \
   -d '{"message":"Check this repo with Codex","execute":false}'
+curl -X POST http://127.0.0.1:3417/api/tasks/parallel \
+  -H 'Content-Type: application/json' \
+  -d '{"execute":true,"parallelGroup":"research-batch","tasks":[{"task":"Inspect docs for stale setup notes","mode":"background","owner":"background","scope":"docs read-only"},{"task":"Review code owner boundaries","mode":"codex","owner":"codex","scope":"repo read-only"}]}'
 ```
 
 The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, and workflows, including active work, recent completions, blockers, and next actions.
 
 `/api/tasks/route` persists a routing record for each previewed or executed task. Direct quick chat, voice delegation, explicit CLI runs, browser workflows, file workflows, and continuation workflows also write routing records. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, blocker/next-action context, and result link. Use `/api/tasks/routing` or `/api/tasks/routing/<route-id>` to inspect the ledger.
+
+`/api/tasks/parallel` accepts up to `JAVIS_MAX_PARALLEL_TASKS` independent task items and assigns them to one `parallelGroup`. Each item can specify its own `mode`, `owner`, and `scope`; explicit `command` items queue through the guarded local CLI lane. This is the API surface for splitting work across background, Codex, Claude, and local workers while keeping progress check-ins coherent.
 
 `/api/work/next` turns the top briefing action into one safe step. GET previews the selected action; POST runs exactly one step, such as opening the next setup target, showing approvals, checking session/progress state, or processing the next Inbox item. It does not approve actions or batch-run tasks.
 
