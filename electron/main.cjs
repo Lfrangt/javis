@@ -7614,12 +7614,10 @@ if (action === 'ax_press') {
     if (!focused) {
       throw new Error(setError ? 'accessibility_set_value_failed:' + setError : 'accessibility_set_value_unverified_no_focus:' + role);
     }
-    var sa = Application.currentApplication();
-    sa.includeStandardAdditions = true;
     systemEvents.keystroke('a', { using: 'command down' });
-    sa.delay(0.05);
+    $.NSThread.sleepForTimeInterval(0.05);
     systemEvents.keystroke(content);
-    sa.delay(0.05);
+    $.NSThread.sleepForTimeInterval(0.05);
     resultExtra.method = 'keystroke';
     valueAfter = readProp(target, 'value');
     // contenteditable often keeps AXValue empty; confirmed focus + keystroke is best-effort success.
