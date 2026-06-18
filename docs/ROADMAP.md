@@ -45,6 +45,8 @@
 - Route Inbox captures into quick/background/Codex/Claude work from CUI/API or voice tools.
 - Copy workflow results back to the clipboard from CUI/API or voice tools.
 - Add cancellable background workers with visible logs.
+- Add a multi-agent lane decision record for every routed task: realtime voice, background, Codex, Claude, owner, write scope, parallel group, approval requirement, status, and result link.
+- Add resident status views and spoken check-ins that report active parallel work by lane, owner, blocker, and next action.
 - Add a local config validator with terminal CUI diagnostics.
 - Add a setup guide that maps blockers to the next safe local setup action.
 - Add signed allowlists for local actions.
@@ -58,7 +60,8 @@
 - Calendar, email, notes, and reminders through explicit connectors or local apps.
 - Obsidian/MCP bridge for notes and knowledge work.
 - Creative app bridge experiments, starting with read-only/dry-run control plans.
-- Coding workflows through Codex and Claude Code with clear ownership and progress updates.
+- Coding workflows through Codex and Claude Code with clear ownership, write-scope boundaries, progress updates, and safe parallelization when tasks do not touch the same files or approvals.
+- Verifiable next task: route two read-only investigations in parallel and one scoped Codex documentation edit, then confirm task history records distinct owners, scopes, statuses, and result links.
 
 ## Phase 3: Natural Collaboration
 

@@ -10,6 +10,14 @@ JAVIS should stay quietly present on the desktop, listen when invited, understan
 
 A user can say what they want done, keep working normally, and JAVIS either answers immediately, watches the relevant screen context, or delegates a longer task to a background worker without breaking the flow.
 
+## Multi-Agent Execution Model
+
+- Realtime voice handles latency-sensitive collaboration: quick Q&A, screen-aware clarification, spoken progress check-ins, approval prompts, and small reversible local actions that need the user's immediate context.
+- Background workers handle durable non-blocking work: Inbox triage, deep research, file/workflow plans, long-running status checks, and jobs that need pause, resume, cancellation, logs, and evidence.
+- Codex and Claude handle repo-bound or code-heavy work: implementation, tests, review, documentation updates, issue investigation, and scoped edits with explicit ownership.
+- Parallel execution is allowed only for independent work scopes: separate repos, separate files, separate research tracks, or read-only investigations. Shared files, secrets, irreversible actions, and user approvals serialize through one visible owner.
+- Next verifiable engineering task: persist a lane decision record for every routed task with lane, owner, scope, parallel group, approval requirement, status, and result link, then surface it in history and spoken check-ins.
+
 ## Scope
 
 - Voice-first interaction.
