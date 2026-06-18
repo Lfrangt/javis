@@ -96,6 +96,8 @@ Policy knobs:
 - `allow.ax_set_value.allowedRoles`: accessibility roles that may receive a value write.
 - `allow.ax_set_value.maxBytes`: maximum text JAVIS may write through an accessibility value action.
 - `allow.browser_control.allowedActions`: browser navigation actions and guarded DOM actions JAVIS may execute in a supported active browser, including `dom_click`, `dom_fill`, and `dom_select`.
+- `allow.code_agent.allowedCommands`: code agent command names JAVIS may launch as background jobs, such as `codex` or `claude`.
+- `allow.code_agent.maxTimeoutMs`: maximum runtime for one code agent job before JAVIS stops it.
 - `allow.cli_command.allowedCommands`: CLI command names JAVIS may launch as background jobs. `*` means trusted local mode.
 - `allow.cli_command.maxTimeoutMs`: maximum runtime for one CLI job before JAVIS stops it.
 - `allow.read_browser_page.maxChars`: maximum active-tab page text JAVIS may return.
@@ -113,6 +115,8 @@ Default file policy:
 - Read-only file actions are Level 1.
 - `write_file`, `create_directory`, `copy_file`, and `move_file` are Level 3, require approval, and require `JAVIS_ENABLE_LOCAL_EXEC=true`.
 - `ax_press` and `ax_set_value` are Level 3, require approval, and require `JAVIS_ENABLE_LOCAL_EXEC=true`.
+- Codex and Claude Code delegation is Level 3, requires `JAVIS_ENABLE_LOCAL_EXEC=true`, and is governed by `allow.code_agent`.
+- Failed jobs keep `attempts`, `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot so JAVIS can diagnose and continue instead of returning a bare failure.
 - Read/list/search default roots are the current project, Desktop, Documents, and Downloads.
 - Write/create/copy/move default roots are the current project only.
 

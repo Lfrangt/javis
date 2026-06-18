@@ -83,6 +83,11 @@ Use option `9. Toggle Level 3 auto-run` to switch Level 3 actions between approv
 
 Use option `10. Toggle trusted local mode` when this Mac is intentionally being used as a high-autonomy local workstation. Enabling it writes `JAVIS_TRUSTED_LOCAL_MODE=true`, aligns Level 3 auto-run, and keeps Level 4 actions confirmation-gated. Doctor reports this as an acknowledged mode instead of a setup warning.
 
+Codex and Claude Code delegation uses the `allow.code_agent` policy block. Failed jobs keep `attempts`,
+`failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot in `/api/jobs/<job-id>` and linked routing records, so JAVIS can
+diagnose missing commands, disabled local execution, policy blocks, approvals, timeouts, and retry paths
+without turning the first failure into a dead end.
+
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
 The desktop pet is intentionally minimal. It is a small voice capsule on the edge of the screen and avoids showing setup state, diagnostic chips, or configuration controls.

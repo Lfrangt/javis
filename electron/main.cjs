@@ -134,6 +134,11 @@ const DEFAULT_ACTION_POLICY = {
       enabled: true,
       allowedActions: ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search', 'dom_click', 'dom_fill', 'dom_select'],
     },
+    code_agent: {
+      enabled: true,
+      allowedCommands: ['codex', 'claude'],
+      maxTimeoutMs: 3600000,
+    },
     cli_command: {
       enabled: true,
       allowedCommands: DEFAULT_CLI_COMMANDS,
@@ -163,6 +168,16 @@ class JobCancelled extends Error {
   constructor(message = 'Job was cancelled.') {
     super(message);
     this.name = 'JobCancelled';
+  }
+}
+
+class JobRecoveryFailure extends Error {
+  constructor(message, options = {}) {
+    super(message);
+    this.name = 'JobRecoveryFailure';
+    this.failureKind = String(options.failureKind || 'command_failed');
+    this.recoveryPlan = options.recoveryPlan || null;
+    this.attempt = options.attempt || null;
   }
 }
 
@@ -857,6 +872,14 @@ function normalizeActionPolicy(value) {
         enabled: raw.allow?.browser_control?.enabled !== false,
         allowedActions: browserAllowedActionsList(raw.allow?.browser_control?.allowedActions),
       },
+      code_agent: {
+        enabled: raw.allow?.code_agent?.enabled !== false,
+        allowedCommands: uniqueStringList(raw.allow?.code_agent?.allowedCommands, DEFAULT_ACTION_POLICY.allow.code_agent.allowedCommands),
+        maxTimeoutMs: Math.max(
+          1000,
+          Math.min(3600000, Number(raw.allow?.code_agent?.maxTimeoutMs || DEFAULT_ACTION_POLICY.allow.code_agent.maxTimeoutMs)),
+        ),
+      },
       cli_command: {
         enabled: raw.allow?.cli_command?.enabled !== false,
         allowedCommands: uniqueStringList(raw.allow?.cli_command?.allowedCommands, DEFAULT_ACTION_POLICY.allow.cli_command.allowedCommands),
@@ -1095,6 +1118,85 @@ function appendAudit(type, data = {}) {
   }
 }
 
+function normalizeJobAttempts(value) {
+  const list = Array.isArray(value) ? value : [];
+  return list
+    .map((attempt) => (attempt && typeof attempt === 'object' ? {
+      id: String(attempt.id || crypto.randomUUID()).slice(0, 120),
+      tool: String(attempt.tool || attempt.mode || '').slice(0, 80),
+      command: redactCommandForLog(attempt.command || ''),
+      status: String(attempt.status || '').slice(0, 40),
+      summary: compactRecordText(attempt.summary || attempt.error || '', 500),
+      startedAt: Number(attempt.startedAt || 0),
+      completedAt: Number(attempt.completedAt || 0),
+    } : null))
+    .filter(Boolean)
+    .slice(-12);
+}
+
+function normalizeRecoveryPlan(plan) {
+  if (!plan || typeof plan !== 'object') return null;
+  const nextActions = Array.isArray(plan.nextActions) ? plan.nextActions : [];
+  const diagnostics = plan.diagnostics && typeof plan.diagnostics === 'object' ? plan.diagnostics : null;
+  return {
+    failureKind: String(plan.failureKind || '').slice(0, 80),
+    summary: compactRecordText(plan.summary || '', 800),
+    attempted: Array.isArray(plan.attempted)
+      ? plan.attempted.map((item) => compactRecordText(item, 240)).filter(Boolean).slice(0, 8)
+      : [],
+    nextActions: nextActions
+      .map((action) => (action && typeof action === 'object' ? {
+        label: compactRecordText(action.label || '', 120),
+        type: String(action.type || 'manual').slice(0, 80),
+        riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+        autoEligible: Boolean(action.autoEligible),
+        command: redactCommandForLog(action.command || ''),
+        reason: compactRecordText(action.reason || '', 300),
+      } : null))
+      .filter(Boolean)
+      .slice(0, 8),
+    diagnostics: diagnostics ? {
+      overall: String(diagnostics.overall || '').slice(0, 40),
+      summary: compactRecordText(diagnostics.summary || '', 500),
+      counts: {
+        ready: Math.max(0, Number(diagnostics.counts?.ready || 0)),
+        warning: Math.max(0, Number(diagnostics.counts?.warning || 0)),
+        blocked: Math.max(0, Number(diagnostics.counts?.blocked || 0)),
+        total: Math.max(0, Number(diagnostics.counts?.total || 0)),
+      },
+      primaryIssue: diagnostics.primaryIssue && typeof diagnostics.primaryIssue === 'object' ? {
+        id: String(diagnostics.primaryIssue.id || '').slice(0, 80),
+        label: compactRecordText(diagnostics.primaryIssue.label || '', 120),
+        status: String(diagnostics.primaryIssue.status || '').slice(0, 40),
+        summary: compactRecordText(diagnostics.primaryIssue.summary || '', 300),
+        next: compactRecordText(diagnostics.primaryIssue.next || '', 300),
+      } : null,
+      runtime: diagnostics.runtime && typeof diagnostics.runtime === 'object' ? {
+        localExecutionEnabled: Boolean(diagnostics.runtime.localExecutionEnabled),
+        trustedLocalMode: Boolean(diagnostics.runtime.trustedLocalMode),
+        dryRun: Boolean(diagnostics.runtime.dryRun),
+        maxAutoRiskLevel: Math.max(0, Math.min(4, Number(diagnostics.runtime.maxAutoRiskLevel || 0))),
+        requireApprovalAtRiskLevel: Math.max(0, Math.min(4, Number(diagnostics.runtime.requireApprovalAtRiskLevel || 0))),
+      } : null,
+      workers: diagnostics.workers && typeof diagnostics.workers === 'object' ? {
+        codex: diagnostics.workers.codex && typeof diagnostics.workers.codex === 'object' ? {
+          available: Boolean(diagnostics.workers.codex.available),
+          command: redactCommandForLog(diagnostics.workers.codex.command || ''),
+        } : null,
+        claude: diagnostics.workers.claude && typeof diagnostics.workers.claude === 'object' ? {
+          available: Boolean(diagnostics.workers.claude.available),
+          command: redactCommandForLog(diagnostics.workers.claude.command || ''),
+        } : null,
+      } : null,
+      policy: diagnostics.policy && typeof diagnostics.policy === 'object' ? {
+        codeAgentEnabled: diagnostics.policy.codeAgentEnabled !== false,
+        codeAgentAllowedCommands: uniqueStringList(diagnostics.policy.codeAgentAllowedCommands, []),
+      } : null,
+    } : null,
+    generatedAt: Number(plan.generatedAt || Date.now()),
+  };
+}
+
 function normalizePersistedJob(job) {
   if (!job || typeof job !== 'object' || !job.id) return null;
   const status = ['queued', 'running', 'done', 'failed', 'cancelled'].includes(job.status) ? job.status : 'failed';
@@ -1116,6 +1218,9 @@ function normalizePersistedJob(job) {
     cancelRequested: false,
     log: interrupted ? 'Interrupted by previous JAVIS shutdown.' : String(job.log || ''),
     result: interrupted ? 'This job was not completed before the previous process exited.' : String(job.result || ''),
+    attempts: normalizeJobAttempts(job.attempts),
+    failureKind: String(job.failureKind || '').slice(0, 80),
+    recoveryPlan: normalizeRecoveryPlan(job.recoveryPlan),
   };
 }
 
@@ -1215,6 +1320,9 @@ function normalizePersistedRoutingRecord(record) {
     localCommand: String(record.localCommand || '').slice(0, 80),
     resultLink: String(record.resultLink || '').slice(0, 500),
     resultSummary: compactRecordText(record.resultSummary || '', 500),
+    attempts: normalizeJobAttempts(record.attempts),
+    failureKind: String(record.failureKind || '').slice(0, 80),
+    recoveryPlan: normalizeRecoveryPlan(record.recoveryPlan),
     memoryMatches: Math.max(0, Number(record.memoryMatches || 0)),
     createdAt: Number(record.createdAt || Date.now()),
     updatedAt: Number(record.updatedAt || Date.now()),
@@ -8136,6 +8244,9 @@ function createRoutingRecord(options = {}) {
     localCommand: decision.localCommand || options.localCommand?.intent || '',
     resultLink: options.resultLink || '',
     resultSummary: options.resultSummary || '',
+    attempts: normalizeJobAttempts(options.attempts),
+    failureKind: options.failureKind || '',
+    recoveryPlan: normalizeRecoveryPlan(options.recoveryPlan),
     memoryMatches: options.memoryMatches || 0,
     createdAt: now,
     updatedAt: now,
@@ -8190,6 +8301,9 @@ function updateRoutingRecordsForJob(job) {
     setRoutingRecord(record.id, {
       status: normalizeRoutingStatus(job.status),
       resultSummary: compactRecordText(job.result || job.log || record.resultSummary, 500),
+      attempts: normalizeJobAttempts(job.attempts),
+      failureKind: job.failureKind || '',
+      recoveryPlan: normalizeRecoveryPlan(job.recoveryPlan),
       resultLink: routeResultLink(record),
     });
   }
@@ -8930,6 +9044,9 @@ function createJob(task, mode, source, metadata = {}) {
     cancelRequested: false,
     log: `Queued${source ? ` from ${source}` : ''}.`,
     result: '',
+    attempts: [],
+    failureKind: '',
+    recoveryPlan: null,
   };
   jobs.set(id, job);
   persistJobs();
@@ -8952,6 +9069,9 @@ function setJob(id, patch) {
     updatedAt: Date.now(),
     log: patch.log === undefined ? existing.log : trimText(patch.log),
     result: patch.result === undefined ? existing.result : trimText(patch.result, 100000),
+    attempts: patch.attempts === undefined ? existing.attempts || [] : normalizeJobAttempts(patch.attempts),
+    failureKind: patch.failureKind === undefined ? existing.failureKind || '' : String(patch.failureKind || '').slice(0, 80),
+    recoveryPlan: patch.recoveryPlan === undefined ? existing.recoveryPlan || null : normalizeRecoveryPlan(patch.recoveryPlan),
   };
   jobs.set(id, next);
   persistJobs();
@@ -10084,23 +10204,281 @@ function runShellJob(job, command, timeoutMs = 180000) {
   });
 }
 
-async function runDelegatedJob(job, task) {
+function addJobAttempt(job, attempt) {
+  const existing = jobs.get(job.id) || job;
+  const attempts = normalizeJobAttempts([
+    ...(existing.attempts || []),
+    {
+      id: crypto.randomUUID(),
+      startedAt: Date.now(),
+      ...attempt,
+    },
+  ]);
+  setJob(job.id, { attempts });
+  return attempts[attempts.length - 1] || null;
+}
+
+function classifyJobFailure(error, job = {}) {
+  const text = String(error?.failureKind || error?.message || error || '').toLowerCase();
+  if (error instanceof ActionApprovalRequired || /approval/.test(text)) return 'approval_required';
+  if (/local execution|javis_enable_local_exec|level 3 local actions are disabled/.test(text)) return 'local_execution_disabled';
+  if (/not found on path|command not found|not available|enoent|could not identify/.test(text)) return 'worker_command_missing';
+  if (/not allowed by policy|disabled by policy|allowlist/.test(text)) return 'policy_blocked';
+  if (/timed out|timeout|stopped by sigterm/.test(text) || error instanceof JobCancelled) return 'timeout';
+  if (/openai api key|missing openai|api key is not configured/.test(text)) return 'openai_key_missing';
+  if (job.mode === 'cli') return 'command_failed';
+  if (job.mode === 'codex' || job.mode === 'claude') return 'worker_failed';
+  return 'model_failed';
+}
+
+function codeAgentCommandForMode(mode) {
+  return mode === 'codex'
+    ? process.env.JAVIS_CODEX_CMD || 'codex exec'
+    : process.env.JAVIS_CLAUDE_CMD || 'claude -p';
+}
+
+function codeAgentAlternativeMode(mode) {
+  return mode === 'codex' ? 'claude' : 'codex';
+}
+
+function buildCodeAgentPlan(mode, command, task) {
+  const commandName = shellCommandName(command);
+  return {
+    action: 'code_agent',
+    riskLevel: 3,
+    summary: `Run ${mode} code agent: ${commandName || mode}`,
+    target: commandName || mode,
+    args: {
+      mode,
+      command,
+      taskPreview: compactRecordText(task, 500),
+    },
+  };
+}
+
+function evaluateCodeAgentPlan(plan, options = {}) {
+  const config = actionPolicy.allow?.code_agent || {};
+  const command = String(plan.args?.command || '');
+  const commandName = shellCommandName(command);
+  const maxTimeoutMs = Number(config.maxTimeoutMs || DEFAULT_ACTION_POLICY.allow.code_agent.maxTimeoutMs);
+  if (config.enabled === false) throw new Error('Code agent execution is disabled by policy.');
   if (!LOCAL_EXEC_ENABLED) {
-    return [
-      `${job.mode} delegation is queued, but local execution is disabled.`,
-      'Set JAVIS_ENABLE_LOCAL_EXEC=true in .env to let JAVIS launch local code agents.',
-      job.mode === 'codex'
-        ? `Suggested command: codex exec ${shellQuote(task)}`
-        : `Suggested command: claude -p ${shellQuote(task)}`,
-    ].join('\n');
+    if (options.preview) {
+      return { dryRun: Boolean(actionPolicy.dryRun), needsApproval: true, blocked: true, reason: 'local_execution_disabled' };
+    }
+    throw new Error('Code agent execution requires JAVIS_ENABLE_LOCAL_EXEC=true.');
+  }
+  if (!commandName) throw new Error('Could not identify the code agent command name.');
+  if (!valueMatchesAllowlist(commandName, config.allowedCommands || [])) {
+    throw new Error(`Code agent command ${commandName} is not allowed by policy.`);
+  }
+  if (!commandExists(command)) throw new Error(`Code agent command not found on PATH: ${commandName}`);
+
+  const needsApproval =
+    !options.approved &&
+    (plan.riskLevel >= actionPolicy.requireApprovalAtRiskLevel || plan.riskLevel > actionPolicy.maxAutoRiskLevel);
+  if (needsApproval) {
+    if (options.preview) {
+      return { dryRun: Boolean(actionPolicy.dryRun), needsApproval: true, reason: `risk_level_${plan.riskLevel}_requires_approval` };
+    }
+    const approval = createActionApproval(plan, `risk_level_${plan.riskLevel}_requires_approval`);
+    throw new ActionApprovalRequired(approval);
+  }
+  return {
+    dryRun: Boolean(actionPolicy.dryRun),
+    needsApproval: false,
+    reason: '',
+    timeoutMs: Math.max(1000, Math.min(maxTimeoutMs, Number(options.timeoutMs || 180000))),
+  };
+}
+
+function buildRecoveryPlanForJob(job, error, options = {}) {
+  const failureKind = classifyJobFailure(error, job);
+  const attempts = normalizeJobAttempts(options.attempts || job.attempts || []);
+  const attempted = attempts.map((attempt) => `${attempt.tool || job.mode}: ${attempt.status}${attempt.summary ? ` · ${attempt.summary}` : ''}`);
+  const diagnostics = recoveryDiagnosticsSnapshot();
+  const nextActions = [
+    {
+      type: 'diagnose',
+      label: diagnostics ? 'Review attached diagnostics' : 'Run doctor/config check',
+      riskLevel: 0,
+      autoEligible: true,
+      reason: diagnostics
+        ? 'Use the attached setup, policy, worker command, and permission evidence before asking the user.'
+        : 'Collect setup, policy, worker command, and permission evidence before asking the user.',
+    },
+  ];
+
+  if (failureKind === 'local_execution_disabled') {
+    nextActions.push({
+      type: 'setup',
+      label: 'Enable local execution in CUI',
+      riskLevel: 0,
+      autoEligible: false,
+      reason: 'Codex, Claude, CLI, typing, and file mutation workers require JAVIS_ENABLE_LOCAL_EXEC=true.',
+    });
+  }
+  if (failureKind === 'approval_required') {
+    nextActions.push({
+      type: 'approval',
+      label: 'Wait for or surface pending approval',
+      riskLevel: 0,
+      autoEligible: true,
+      reason: 'A Level 3/4 action is ready but policy requires confirmation.',
+    });
+  }
+  if (failureKind === 'worker_command_missing') {
+    const alternativeMode = codeAgentAlternativeMode(job.mode);
+    const alternativeCommand = codeAgentCommandForMode(alternativeMode);
+    nextActions.push({
+      type: 'alternative_worker',
+      label: `Try ${alternativeMode} if available`,
+      riskLevel: 3,
+      autoEligible: false,
+      command: alternativeCommand,
+      reason: `${job.mode} command was unavailable; another code agent may be installed.`,
+    });
+  }
+  if (failureKind === 'policy_blocked') {
+    nextActions.push({
+      type: 'policy',
+      label: 'Inspect action policy',
+      riskLevel: 0,
+      autoEligible: true,
+      reason: 'The requested command/action is blocked by local policy and should be surfaced with exact policy evidence.',
+    });
+  }
+  if (['command_failed', 'worker_failed', 'timeout'].includes(failureKind)) {
+    nextActions.push({
+      type: 'retry',
+      label: 'Retry with narrower scope',
+      riskLevel: job.mode === 'background' ? 1 : 3,
+      autoEligible: false,
+      reason: 'The first attempt failed; retry should use a smaller scoped task and preserve the failure log.',
+    });
+  }
+  if (failureKind === 'openai_key_missing') {
+    nextActions.push({
+      type: 'setup',
+      label: 'Open config CUI for API key setup',
+      riskLevel: 0,
+      autoEligible: false,
+      reason: 'Model lanes need OPENAI_API_KEY configured before retrying.',
+    });
   }
 
-  const baseCommand =
-    job.mode === 'codex'
-      ? process.env.JAVIS_CODEX_CMD || 'codex exec'
-      : process.env.JAVIS_CLAUDE_CMD || 'claude -p';
-  appendJobLog(job.id, `Starting ${job.mode} worker.`);
-  return runShellJob(job, `${baseCommand} ${shellQuote(task)}`);
+  return normalizeRecoveryPlan({
+    failureKind,
+    summary: `${job.mode} job could not complete automatically: ${compactRecordText(error instanceof Error ? error.message : String(error), 500)}`,
+    attempted,
+    nextActions,
+    diagnostics,
+    generatedAt: Date.now(),
+  });
+}
+
+function recoveryDiagnosticsSnapshot() {
+  try {
+    const config = configCheckSnapshot();
+    return {
+      overall: config.overall,
+      summary: config.summary,
+      counts: config.counts,
+      primaryIssue: config.primaryIssue,
+      runtime: {
+        localExecutionEnabled: config.runtime?.localExecutionEnabled,
+        trustedLocalMode: config.runtime?.trustedLocalMode,
+        dryRun: config.runtime?.dryRun,
+        maxAutoRiskLevel: config.runtime?.maxAutoRiskLevel,
+        requireApprovalAtRiskLevel: config.runtime?.requireApprovalAtRiskLevel,
+      },
+      workers: config.workers,
+      policy: {
+        codeAgentEnabled: actionPolicy.allow?.code_agent?.enabled !== false,
+        codeAgentAllowedCommands: actionPolicy.allow?.code_agent?.allowedCommands || [],
+      },
+    };
+  } catch (error) {
+    appendAudit('job.recovery_diagnostics_failed', { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  }
+}
+
+function failJobWithRecovery(job, error, patch = {}) {
+  const current = jobs.get(job.id) || job;
+  const recoveryPlan = error instanceof JobRecoveryFailure && error.recoveryPlan
+    ? normalizeRecoveryPlan(error.recoveryPlan)
+    : buildRecoveryPlanForJob(current, error);
+  const failureKind = error instanceof JobRecoveryFailure ? error.failureKind : recoveryPlan?.failureKind || classifyJobFailure(error, current);
+  finishJob(job.id, 'failed', {
+    ...patch,
+    failureKind,
+    recoveryPlan,
+    result: [
+      error instanceof Error ? error.message : String(error),
+      recoveryPlan?.summary ? `Recovery: ${recoveryPlan.summary}` : '',
+      recoveryPlan?.nextActions?.length
+        ? `Next actions:\n${recoveryPlan.nextActions.map((action, index) => `${index + 1}. ${action.label}: ${action.reason}`).join('\n')}`
+        : '',
+    ].filter(Boolean).join('\n\n'),
+    log: `${jobs.get(job.id)?.log || current.log || ''}\nFailed with recovery plan: ${failureKind}.`,
+  });
+  appendAudit('job.recovery_plan', {
+    id: job.id,
+    mode: job.mode,
+    failureKind,
+    nextActions: recoveryPlan?.nextActions?.length || 0,
+  });
+}
+
+async function runDelegatedJob(job, task) {
+  const modes = [job.mode, codeAgentAlternativeMode(job.mode)].filter((mode, index, list) => list.indexOf(mode) === index);
+  const failures = [];
+  for (const mode of modes) {
+    const baseCommand = codeAgentCommandForMode(mode);
+    const command = `${baseCommand} ${shellQuote(task)}`;
+    const plan = buildCodeAgentPlan(mode, baseCommand, task);
+    const startedAt = Date.now();
+    try {
+      const evaluation = evaluateCodeAgentPlan(plan, { timeoutMs: job.timeoutMs });
+      appendJobLog(job.id, `Starting ${mode} worker: ${shellCommandName(baseCommand) || mode}.`);
+      addJobAttempt(job, {
+        tool: mode,
+        command: baseCommand,
+        status: 'running',
+        summary: plan.summary,
+        startedAt,
+      });
+      const result = await runShellJob(job, command, evaluation.timeoutMs);
+      addJobAttempt(job, {
+        tool: mode,
+        command: baseCommand,
+        status: 'done',
+        summary: 'Worker completed.',
+        startedAt,
+        completedAt: Date.now(),
+      });
+      return result;
+    } catch (error) {
+      const failureKind = classifyJobFailure(error, { ...job, mode });
+      failures.push(error);
+      addJobAttempt(job, {
+        tool: mode,
+        command: baseCommand,
+        status: failureKind,
+        summary: error instanceof Error ? error.message : String(error),
+        startedAt,
+        completedAt: Date.now(),
+      });
+      appendJobLog(job.id, `${mode} worker failed (${failureKind}): ${error instanceof Error ? error.message : String(error)}`);
+      if (!['worker_command_missing', 'policy_blocked'].includes(failureKind)) break;
+    }
+  }
+  const finalError = failures[failures.length - 1] || new Error(`${job.mode} worker failed before starting.`);
+  throw new JobRecoveryFailure(finalError instanceof Error ? finalError.message : String(finalError), {
+    failureKind: classifyJobFailure(finalError, job),
+    recoveryPlan: buildRecoveryPlanForJob(jobs.get(job.id) || job, finalError),
+  });
 }
 
 async function runCliJob(job, command) {
@@ -10147,10 +10525,7 @@ async function processJob(job, task) {
       });
       return;
     }
-    finishJob(job.id, 'failed', {
-      result: error instanceof Error ? error.message : String(error),
-      log: `${jobs.get(job.id)?.log || ''}\nFailed.`,
-    });
+    failJobWithRecovery(job, error);
   }
 }
 
