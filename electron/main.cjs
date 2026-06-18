@@ -2676,6 +2676,9 @@ async function routeInboxItem(options = {}) {
     useMemory: options.useMemory !== false,
     memoryLimit: options.memoryLimit,
     mode: options.mode || options.lane,
+    source: options.source || 'inbox',
+    scope: options.scope || `inbox:${item.id}`,
+    parallelGroup: options.parallelGroup || options.group || 'inbox',
   });
   const routeMeta = {
     lane: route.decision?.lane || '',
@@ -2812,12 +2815,16 @@ function sessionCheckIn(options = {}) {
   });
   const nextActions = (briefing.nextActions || []).slice(0, 3);
   const nextLines = nextActions.map((action, index) => `${index + 1}. ${action.label}: ${compactRecordText(action.summary, 150)}`);
+  const routingLines = (briefing.routingLedger || [])
+    .slice(0, 4)
+    .map((entry, index) => `${index + 1}. ${entry.lane}/${entry.status} · ${entry.owner} · ${compactRecordText(entry.taskTitle, 110)}${entry.blocker ? ` · blocker: ${compactRecordText(entry.blocker, 90)}` : ''}${entry.nextAction ? ` · next: ${compactRecordText(entry.nextAction, 100)}` : ''}`);
   const output = active
     ? [
         `当前会话: ${active.title}`,
         active.goal && active.goal !== active.title ? `目标: ${compactRecordText(active.goal, 180)}` : '',
         `已经记录 ${active.events.length} 个事件。`,
         eventLines.length ? `最近进展:\n${eventLines.join('\n')}` : '最近还没有新事件。',
+        routingLines.length ? `分流中的工作:\n${routingLines.join('\n')}` : '',
         nextLines.length ? `下一步:\n${nextLines.join('\n')}` : '',
       ]
         .filter(Boolean)
@@ -2825,6 +2832,7 @@ function sessionCheckIn(options = {}) {
     : [
         `当前没有 active session。历史 session 共 ${counts.total} 个。`,
         briefing.summary,
+        routingLines.length ? `分流中的工作:\n${routingLines.join('\n')}` : '',
         nextLines.length ? `下一步:\n${nextLines.join('\n')}` : '',
       ]
         .filter(Boolean)
@@ -6656,12 +6664,22 @@ async function runBrowserTaskWorkflow(options = {}) {
       target: pageSummary,
       result: page.error || 'No supported browser page is available.',
     });
+    const routing = createRoutingRecordForWorkflow({
+      task: instruction,
+      workflow,
+      mode: 'quick',
+      source: options.source || 'browser_task',
+      scope: options.scope || 'browser:act',
+      parallelGroup: options.parallelGroup || options.group || 'browser:quick',
+      resultSummary: workflow.result,
+    });
     return {
       ok: false,
       mode: 'quick',
       intent: 'act',
       queued: false,
       workflow,
+      routing,
       page: pageSummary,
       output: page.error || 'No supported browser page is available.',
     };
@@ -6761,6 +6779,15 @@ async function runBrowserTaskWorkflow(options = {}) {
     noSafeSteps,
     planner: plan.source,
   });
+  const routing = createRoutingRecordForWorkflow({
+    task: instruction,
+    workflow: finalWorkflow,
+    mode: 'quick',
+    source: options.source || 'browser_task',
+    scope: options.scope || 'browser:act',
+    parallelGroup: options.parallelGroup || options.group || 'browser:quick',
+    resultSummary: output,
+  });
 
   return {
     ok: !blocked,
@@ -6768,6 +6795,7 @@ async function runBrowserTaskWorkflow(options = {}) {
     intent: 'act',
     queued: false,
     workflow: finalWorkflow,
+    routing,
     page: browserWorkflowPageSummary(afterPage?.available ? afterPage : page),
     beforePage: pageSummary,
     dom,
@@ -6806,11 +6834,21 @@ async function runBrowserWorkflow(options = {}) {
       target: pageSummary,
       result: page.error || 'No supported browser page is available.',
     });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow,
+      mode,
+      source: options.source || 'browser_workflow',
+      scope: options.scope || `browser:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      resultSummary: workflow.result,
+    });
     return {
       ok: false,
       mode,
       intent,
       workflow,
+      routing,
       page: pageSummary,
       output: page.error || 'No supported browser page is available.',
     };
@@ -6840,13 +6878,24 @@ async function runBrowserWorkflow(options = {}) {
     });
     const job = createJob(prompt, mode === 'background' ? 'background' : mode, 'browser_workflow', { workflowId: workflow.id });
     setWorkflow(workflow.id, { jobId: job.id });
+    const finalWorkflow = workflows.get(workflow.id);
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow: finalWorkflow,
+      job,
+      mode,
+      source: options.source || 'browser_workflow',
+      scope: options.scope || `browser:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+    });
     return {
       ok: true,
       mode,
       intent,
       queued: true,
-      workflow: workflows.get(workflow.id),
+      workflow: finalWorkflow,
       job,
+      routing,
       page: pageSummary,
       output: `Queued ${mode} browser workflow for ${page.title || page.url}.`,
     };
@@ -6873,16 +6922,27 @@ async function runBrowserWorkflow(options = {}) {
     timeoutMs: intent === 'draft' ? 90000 : 60000,
   });
 
+  const finalWorkflow = setWorkflow(workflow.id, {
+    status: OPENAI_API_KEY ? 'done' : 'blocked',
+    result: output,
+    completedAt: Date.now(),
+  });
+  const routing = createRoutingRecordForWorkflow({
+    task: request,
+    workflow: finalWorkflow,
+    mode,
+    source: options.source || 'browser_workflow',
+    scope: options.scope || `browser:${intent}`,
+    parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+    resultSummary: output,
+  });
   return {
     ok: Boolean(OPENAI_API_KEY),
     mode,
     intent,
     queued: false,
-    workflow: setWorkflow(workflow.id, {
-      status: OPENAI_API_KEY ? 'done' : 'blocked',
-      result: output,
-      completedAt: Date.now(),
-    }),
+    workflow: finalWorkflow,
+    routing,
     page: pageSummary,
     output,
   };
@@ -7598,12 +7658,34 @@ function routeTaskDecision(message, options = {}) {
   };
 }
 
+async function answerQuickLane(options = {}) {
+  const task = String(options.message || options.task || '').trim();
+  if (!task) throw new Error('Missing message');
+  return callOpenAIResponsesWithFallback({
+    model: models.fast,
+    instructions:
+      'You are the fast lane inside JAVIS. Answer simple questions quickly in Chinese. If the task is complex, recommend sending it to the background lane.',
+    input: String(options.input || task),
+    imageDataUrl: options.includeScreen ? latestScreen?.imageDataUrl : undefined,
+    maxOutputTokens: Math.max(80, Math.min(900, Number(options.maxOutputTokens || 500))),
+  }, {
+    source: options.source || 'quick_lane',
+    timeoutMs: options.timeoutMs || 60000,
+  });
+}
+
+function quickLaneOutputOk(output) {
+  const text = String(output || '').trim();
+  return Boolean(text) && !text.startsWith('OpenAI API key is not configured.');
+}
+
 async function routeTask(options = {}) {
   const task = String(options.message || options.task || '').trim();
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const routingContext = {
     task,
     source: String(options.source || 'router').slice(0, 80),
+    owner: options.owner || '',
     parallelGroup: options.parallelGroup || options.group || '',
     scope: options.scope || '',
   };
@@ -7693,16 +7775,14 @@ async function routeTask(options = {}) {
 
   if (decision.lane === 'quick') {
     try {
-      const output = await callOpenAIResponses({
-        model: models.fast,
-        instructions:
-          'You are the fast lane inside JAVIS. Answer simple questions quickly in Chinese. If the task is complex, say it should be routed to the background lane.',
+      const output = await answerQuickLane({
+        message: task,
         input: [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n'),
-        imageDataUrl: options.includeScreen ? latestScreen?.imageDataUrl : undefined,
-        maxOutputTokens: 500,
+        includeScreen: Boolean(options.includeScreen),
+        source: routingContext.source === 'router' ? 'task_route_quick' : routingContext.source,
       });
       return finalizeRouteResult({
-        ok: Boolean(OPENAI_API_KEY),
+        ok: quickLaneOutputOk(output),
         executed: true,
         queued: false,
         decision,
@@ -8117,12 +8197,22 @@ async function runFileWorkflow(options = {}) {
       },
       result: plan.output,
     });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow,
+      mode: 'quick',
+      source: options.source || 'file_workflow',
+      scope: options.scope || `file:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || 'file:quick',
+      resultSummary: plan.output || plan.summary,
+    });
     return {
       ok: plan.ok,
       queued: false,
       mode: 'quick',
       intent,
       workflow,
+      routing,
       target: workflow.target,
       plan,
       output: plan.output || plan.summary,
@@ -8161,13 +8251,24 @@ async function runFileWorkflow(options = {}) {
     });
     const job = createJob(prompt, mode === 'background' ? 'background' : mode, 'file_workflow', { workflowId: workflow.id });
     setWorkflow(workflow.id, { jobId: job.id });
+    const finalWorkflow = workflows.get(workflow.id);
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow: finalWorkflow,
+      job,
+      mode,
+      source: options.source || 'file_workflow',
+      scope: options.scope || `file:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `file:${mode}`,
+    });
     return {
       ok: true,
       queued: true,
       mode,
       intent,
-      workflow: workflows.get(workflow.id),
+      workflow: finalWorkflow,
       job,
+      routing,
       target: context.target,
       output: `Queued ${mode} file workflow for ${context.path}.`,
     };
@@ -8186,12 +8287,22 @@ async function runFileWorkflow(options = {}) {
       target: context.target,
       result: output,
     });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow,
+      mode,
+      source: options.source || 'file_workflow',
+      scope: options.scope || `file:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `file:${mode}`,
+      resultSummary: output,
+    });
     return {
       ok: true,
       queued: false,
       mode,
       intent,
       workflow,
+      routing,
       target: context.target,
       data: context.result,
       output,
@@ -8218,16 +8329,27 @@ async function runFileWorkflow(options = {}) {
     source: 'file_workflow',
     timeoutMs: 90000,
   });
+  const finalWorkflow = setWorkflow(workflow.id, {
+    status: OPENAI_API_KEY ? 'done' : 'blocked',
+    result: output,
+    completedAt: Date.now(),
+  });
+  const routing = createRoutingRecordForWorkflow({
+    task: request,
+    workflow: finalWorkflow,
+    mode,
+    source: options.source || 'file_workflow',
+    scope: options.scope || `file:${intent}`,
+    parallelGroup: options.parallelGroup || options.group || `file:${mode}`,
+    resultSummary: output,
+  });
   return {
     ok: Boolean(OPENAI_API_KEY),
     queued: false,
     mode,
     intent,
-    workflow: setWorkflow(workflow.id, {
-      status: OPENAI_API_KEY ? 'done' : 'blocked',
-      result: output,
-      completedAt: Date.now(),
-    }),
+    workflow: finalWorkflow,
+    routing,
     target: context.target,
     output,
   };
@@ -8405,6 +8527,7 @@ function presenceStateSnapshot(options = {}) {
   const conversation = conversationStateSnapshot();
   const pendingApprovals = pendingApprovalSnapshot(10);
   const activeJobs = jobSnapshot().filter((job) => job.status === 'queued' || job.status === 'running');
+  const activeRoutes = activeRoutingSnapshot(6).map(routingLedgerEntry).filter(Boolean);
   const activeSession = activeSessionSnapshot();
   const latestAmbient = ambient.recent[0] || null;
   const latestScreen = latestScreenSnapshot();
@@ -8443,6 +8566,8 @@ function presenceStateSnapshot(options = {}) {
     nextIntervention = readiness.primaryIssue.next || readiness.primaryIssue.summary;
   } else if (activeJobs[0]) {
     nextIntervention = `Background work running: ${compactRecordText(activeJobs[0].title, 120)}`;
+  } else if (activeRoutes[0]) {
+    nextIntervention = `Routed work needs attention: ${activeRoutes[0].owner} ${activeRoutes[0].lane} ${compactRecordText(activeRoutes[0].taskTitle, 100)}`;
   } else if (wake.pending) {
     nextIntervention = 'Wake trigger is pending; voice may start from the resident pet.';
   }
@@ -8454,6 +8579,7 @@ function presenceStateSnapshot(options = {}) {
     mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
     mode === 'waking' ? 'Wake trigger received.' : '',
     mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
+    activeRoutes.length ? `${activeRoutes.length} routed task(s) active or blocked.` : '',
     mode === 'needs_attention' ? `${pendingApprovals.length} approval(s) need attention.` : '',
     mode === 'setup_blocked' ? `Setup blocked: ${readiness.summary}` : '',
     observing.available
@@ -8516,6 +8642,7 @@ function presenceStateSnapshot(options = {}) {
         title: job.title,
         updatedAt: job.updatedAt,
       })).slice(0, 6),
+      activeRoutes,
       pendingApprovals: pendingApprovals.map((approval) => ({
         id: approval.id,
         action: approval.action,
@@ -8557,6 +8684,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
   const latest = presence.observing?.latest || {};
   const nextActions = (briefing.nextActions || []).slice(0, 3);
   const activeJobs = presence.work?.activeJobs || [];
+  const activeRoutes = presence.work?.activeRoutes || [];
   const pendingApprovals = presence.work?.pendingApprovals || [];
   const learningSummary = presence.learning?.sourceEventCount ? presence.learning.summary : '';
   const currentApp = mac.frontmost?.available
@@ -8575,6 +8703,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
         screenFrame ? `Latest resident screen frame: ${screenFrame.width}x${screenFrame.height}, privacy ${screenFrame.privacy?.mode || 'unknown'}, age ${Math.round(latestScreenAgeMs() / 1000)}s.` : 'No resident screen frame is cached yet.',
         learningSummary ? `Local inferred profile: ${compactRecordText(learningSummary, 360)}` : '',
         activeJobs.length ? `Background work: ${activeJobs.map((job) => `${job.mode}/${job.status} ${compactRecordText(job.title, 80)}`).join('; ')}` : 'Background work: none active.',
+        activeRoutes.length ? `Routed work: ${activeRoutes.map((route) => `${route.lane}/${route.status} ${route.owner} ${compactRecordText(route.taskTitle, 80)} next=${compactRecordText(route.nextAction || 'check progress', 80)}`).join('; ')}` : 'Routed work: none active.',
         pendingApprovals.length ? `Approvals waiting: ${pendingApprovals.map((approval) => compactRecordText(approval.summary, 120)).join('; ')}` : 'Approvals waiting: none.',
         presence.work?.autopilot?.enabled ? `Autopilot: ${presence.work.autopilot.running ? 'running' : 'idle'}, executed ${presence.work.autopilot.executedCount || 0}, last ${compactRecordText(presence.work.autopilot.lastResult || 'none', 180)}.` : 'Autopilot: disabled.',
         nextActions.length ? `Likely next actions:\n${nextActions.map(formatRealtimeContextAction).join('\n')}` : '',
@@ -8606,6 +8735,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
     briefing: {
       summary: briefing.summary,
       nextActions,
+      routingLedger: briefing.routingLedger || [],
       counts: briefing.counts,
     },
   };
@@ -9638,6 +9768,18 @@ function updateRoutingRecordsForWorkflow(workflow) {
   }
 }
 
+function routingRecordsForJob(jobId) {
+  const id = String(jobId || '');
+  if (!id) return [];
+  return routingSnapshot(200).filter((record) => record.jobId === id);
+}
+
+function routingRecordsForWorkflow(workflowId) {
+  const id = String(workflowId || '');
+  if (!id) return [];
+  return routingSnapshot(200).filter((record) => record.workflowId === id);
+}
+
 function reconcileRoutingRecords() {
   for (const record of routingRecords.values()) {
     const job = record.jobId ? jobs.get(record.jobId) : null;
@@ -9651,6 +9793,17 @@ function routingSnapshot(limit = 20, status = '') {
   const wantedStatus = String(status || '').trim();
   return Array.from(routingRecords.values())
     .filter((record) => !wantedStatus || record.status === wantedStatus)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
+}
+
+function isRoutingAttentionStatus(status) {
+  return ['queued', 'running', 'approval_required', 'blocked', 'failed'].includes(String(status || ''));
+}
+
+function activeRoutingSnapshot(limit = 20) {
+  return Array.from(routingRecords.values())
+    .filter((record) => isRoutingAttentionStatus(record.status))
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
 }
@@ -9682,6 +9835,55 @@ function routingCounts() {
   );
 }
 
+const ROUTING_LEDGER_REQUIRED_FIELDS = ['id', 'taskTitle', 'lane', 'owner', 'scope', 'parallelGroup', 'approvalRequirement', 'status', 'resultLink'];
+
+function missingRoutingLedgerFields(record) {
+  if (!record) return ROUTING_LEDGER_REQUIRED_FIELDS;
+  return ROUTING_LEDGER_REQUIRED_FIELDS.filter((field) => !String(record[field] || '').trim());
+}
+
+function routingBlockerForRecord(record) {
+  if (!record) return '';
+  if (record.status === 'approval_required') return record.approvalRequirement || 'approval required';
+  if (record.status === 'failed') return record.failureKind || record.recoveryPlan?.failureKind || compactRecordText(record.resultSummary, 160) || 'failed';
+  if (record.status === 'blocked') return record.failureKind || record.recoveryPlan?.summary || compactRecordText(record.resultSummary, 160) || 'blocked';
+  return '';
+}
+
+function routingNextActionForRecord(record) {
+  if (!record) return '';
+  if (record.status === 'queued') return `${record.owner} should start or stay queued in ${record.lane}.`;
+  if (record.status === 'running') return `${record.owner} is running; check ${record.resultLink}.`;
+  if (record.status === 'approval_required') return `Review approval before ${record.owner} can continue.`;
+  if (record.recoveryPlan?.nextActions?.length) {
+    const action = record.recoveryPlan.nextActions[0];
+    return `${action.label}: ${compactRecordText(action.reason || action.recoveryType || '', 140)}`;
+  }
+  if (record.status === 'blocked' || record.status === 'failed') return `Inspect ${record.resultLink} and queue recovery if appropriate.`;
+  return record.resultLink ? `Review ${record.resultLink}.` : '';
+}
+
+function routingLedgerEntry(record) {
+  if (!record) return null;
+  return {
+    id: record.id,
+    taskTitle: record.taskTitle,
+    lane: record.lane,
+    owner: record.owner,
+    scope: record.scope,
+    parallelGroup: record.parallelGroup,
+    approvalRequirement: record.approvalRequirement,
+    status: record.status,
+    blocker: routingBlockerForRecord(record),
+    nextAction: routingNextActionForRecord(record),
+    resultLink: record.resultLink,
+    resultSummary: record.resultSummary,
+    jobId: record.jobId,
+    workflowId: record.workflowId,
+    updatedAt: record.updatedAt,
+  };
+}
+
 function finalizeRouteResult(result, context = {}) {
   const job = result.job || result.data?.job || null;
   const workflow = result.workflow || result.data?.workflow || result.data?.result?.workflow || null;
@@ -9690,6 +9892,7 @@ function finalizeRouteResult(result, context = {}) {
     task: context.task,
     decision: result.decision || context.decision,
     source: context.source,
+    owner: context.owner,
     execute: result.executed || result.decision?.execute,
     localCommand: result.localCommand || context.localCommand,
     memoryMatches: result.memory?.count || context.memoryMatches || 0,
@@ -9706,6 +9909,42 @@ function finalizeRouteResult(result, context = {}) {
     routing: record,
     routeRecord: record,
   };
+}
+
+function routingDecisionForWorkflow(mode, source = 'workflow') {
+  const lane = normalizeRoutingLane(mode === 'quick' ? 'quick' : mode);
+  return {
+    lane,
+    mode: lane,
+    label: lane === 'quick' ? 'Quick' : lane === 'background' ? 'Deep' : lane === 'codex' ? 'Codex' : lane === 'claude' ? 'Claude' : 'Local',
+    confidence: 1,
+    reason: `${source} workflow selected ${lane} lane`,
+    execute: true,
+    requiresOpenAiKey: lane === 'quick' || lane === 'background',
+    requiresLocalExecution: lane === 'codex' || lane === 'claude' || lane === 'local',
+  };
+}
+
+function createRoutingRecordForWorkflow(options = {}) {
+  const workflow = options.workflow || null;
+  if (!workflow?.id) return null;
+  const job = options.job || null;
+  const mode = options.mode || workflow.mode || job?.mode || 'quick';
+  const source = String(options.source || workflow.source || 'workflow').slice(0, 80);
+  const decision = options.decision || routingDecisionForWorkflow(mode, source);
+  return createRoutingRecord({
+    task: options.task || workflow.request || workflow.title,
+    decision,
+    source,
+    execute: true,
+    status: job?.status || workflow.status,
+    jobId: job?.id || workflow.jobId || '',
+    workflowId: workflow.id,
+    owner: options.owner || ownerForRoutingLane(decision.lane),
+    scope: options.scope || `${workflow.kind || 'workflow'}:${workflow.intent || workflow.source || source}`,
+    parallelGroup: options.parallelGroup || options.group || decision.lane,
+    resultSummary: options.resultSummary || workflow.result || '',
+  });
 }
 
 function recoveryActionPriority(job, action) {
@@ -9887,7 +10126,8 @@ function workflowBriefing(options = {}) {
   const activeSession = activeSessionSnapshot();
   const pendingApprovals = pendingApprovalSnapshot(10);
   const recentRoutes = routingSnapshot(6);
-  const activeRoutes = recentRoutes.filter((record) => ['queued', 'running', 'approval_required', 'blocked'].includes(record.status));
+  const activeRoutes = activeRoutingSnapshot(12);
+  const routingLedger = activeRoutes.map(routingLedgerEntry).filter(Boolean);
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const recoveryActions = recoveryActionCandidates(recentJobs);
   const recentBlockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
@@ -9957,12 +10197,12 @@ function workflowBriefing(options = {}) {
   }
 
   if (activeRoutes.length) {
-    const first = activeRoutes[0];
+    const first = routingLedger[0];
     nextActions.push({
       id: `route:${first.id}`,
       priority: 2,
       label: 'Check routed work',
-      summary: `${activeRoutes.length} routed task(s) active. ${first.owner} owns ${first.lane}: ${first.taskTitle}.`,
+      summary: `${routingLedger.length} routed task(s) active/blocked. ${first.owner} owns ${first.lane}: ${first.taskTitle}. Next: ${first.nextAction || 'check progress'}`,
       source: 'routing',
       routeId: first.id,
     });
@@ -10042,12 +10282,13 @@ function workflowBriefing(options = {}) {
       sessions: sessionCounts(),
       routing: routingCounts(),
       activeJobs: activeJobs.length,
-      activeRoutes: activeRoutes.length,
+      activeRoutes: routingLedger.length,
       recoveryActions: recoveryActions.length,
       blockedWorkflows: blockedWorkflows.length,
       resolvedBlockedWorkflows: resolvedBlockedWorkflows.length,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
+    routingLedger,
     recent: {
       workflows: recentWorkflows.map((workflow) => ({
         id: workflow.id,
@@ -10106,8 +10347,11 @@ function formatWorkflowProgressLine(workflow) {
 }
 
 function formatRoutingProgressLine(record) {
-  const detail = record.resultSummary ? ` · ${compactRecordText(record.resultSummary, 120)}` : '';
-  return `${record.lane}/${record.status} · ${record.owner} · ${compactRecordText(record.taskTitle, 90)} · ${progressAgeLabel(record.updatedAt)} · ${record.resultLink}${detail}`;
+  const entry = routingLedgerEntry(record);
+  const blocker = entry.blocker ? ` · blocker: ${compactRecordText(entry.blocker, 100)}` : '';
+  const next = entry.nextAction ? ` · next: ${compactRecordText(entry.nextAction, 120)}` : '';
+  const detail = entry.resultSummary ? ` · ${compactRecordText(entry.resultSummary, 100)}` : '';
+  return `${entry.lane}/${entry.status} · owner:${entry.owner} · group:${entry.parallelGroup} · ${compactRecordText(entry.taskTitle, 90)} · ${progressAgeLabel(entry.updatedAt)} · ${entry.resultLink}${blocker}${next}${detail}`;
 }
 
 function uniqueProgressRecords(list, keyForRecord) {
@@ -10126,6 +10370,7 @@ function workProgressCheckIn(options = {}) {
   const recentJobs = jobSnapshot().slice(0, jobLimit);
   const recentWorkflows = workflowSnapshot(workflowLimit);
   const recentRoutes = routingSnapshot(Math.max(jobLimit, workflowLimit, 5));
+  const activeRouteSnapshot = activeRoutingSnapshot(Math.max(jobLimit, workflowLimit, 5));
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const activeWorkflows = uniqueProgressRecords(
     recentWorkflows.filter((workflow) => workflow.status === 'queued' || workflow.status === 'running'),
@@ -10136,9 +10381,10 @@ function workProgressCheckIn(options = {}) {
     (workflow) => `${workflow.status}:${workflow.title}:${compactRecordText(workflow.result || workflow.request, 90)}`,
   );
   const activeRoutes = uniqueProgressRecords(
-    recentRoutes.filter((record) => ['queued', 'running', 'approval_required', 'blocked'].includes(record.status)),
+    activeRouteSnapshot,
     (record) => `${record.lane}:${record.owner}:${record.taskTitle}:${record.jobId}:${record.workflowId}`,
   );
+  const routingLedger = activeRoutes.map(routingLedgerEntry).filter(Boolean);
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
   const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
   const latestDoneRoute = recentRoutes.find((record) => record.status === 'done') || null;
@@ -10192,6 +10438,7 @@ function workProgressCheckIn(options = {}) {
       activeRoutes: activeRoutes.length,
       routing: routingCounts(),
     },
+    routingLedger,
     activeRoutes,
     recentRoutes,
     activeJobs,
@@ -10397,10 +10644,15 @@ async function workNextAction(options = {}) {
     });
     output = result.output;
   } else if (action.source === 'routing') {
-    const record = action.routeId ? routingRecords.get(action.routeId) || null : routingSnapshot(1)[0] || null;
-    result = { route: record, counts: routingCounts() };
+    const record = action.routeId ? routingRecords.get(action.routeId) || null : activeRoutingSnapshot(1)[0] || routingSnapshot(1)[0] || null;
+    const entry = routingLedgerEntry(record);
+    result = { route: record, ledgerEntry: entry, activeLedger: activeRoutingSnapshot(5).map(routingLedgerEntry).filter(Boolean), counts: routingCounts() };
     output = record
-      ? `分流任务: ${formatRoutingProgressLine(record)}`
+      ? [
+        `分流任务: ${formatRoutingProgressLine(record)}`,
+        entry?.blocker ? `阻塞: ${entry.blocker}` : '',
+        entry?.nextAction ? `下一步: ${entry.nextAction}` : '',
+      ].filter(Boolean).join('\n')
       : '当前没有可查看的分流任务。';
   } else if (action.source === 'approvals') {
     const pending = pendingApprovalSnapshot(10);
@@ -10583,13 +10835,24 @@ async function continueWorkflow(options = {}) {
     });
     const job = createJob(prompt, mode === 'background' ? 'background' : mode, 'workflow_continue', { workflowId: workflow.id });
     setWorkflow(workflow.id, { jobId: job.id });
+    const finalWorkflow = workflows.get(workflow.id);
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow: finalWorkflow,
+      job,
+      mode,
+      source: options.source || 'workflow_continue',
+      scope: options.scope || `workflow_continue:${parent.kind || 'general'}`,
+      parallelGroup: options.parallelGroup || options.group || `continue:${mode}`,
+    });
     return {
       ok: true,
       queued: true,
       mode,
       parentWorkflow: parent,
-      workflow: workflows.get(workflow.id),
+      workflow: finalWorkflow,
       job,
+      routing,
       output: `Queued continuation workflow ${workflow.id}.`,
     };
   }
@@ -10615,16 +10878,27 @@ async function continueWorkflow(options = {}) {
     source: 'workflow_continue',
     timeoutMs: 90000,
   });
+  const finalWorkflow = setWorkflow(workflow.id, {
+    status: OPENAI_API_KEY ? 'done' : 'blocked',
+    result: output,
+    completedAt: Date.now(),
+  });
+  const routing = createRoutingRecordForWorkflow({
+    task: request,
+    workflow: finalWorkflow,
+    mode,
+    source: options.source || 'workflow_continue',
+    scope: options.scope || `workflow_continue:${parent.kind || 'general'}`,
+    parallelGroup: options.parallelGroup || options.group || `continue:${mode}`,
+    resultSummary: output,
+  });
   return {
     ok: Boolean(OPENAI_API_KEY),
     queued: false,
     mode,
     parentWorkflow: parent,
-    workflow: setWorkflow(workflow.id, {
-      status: OPENAI_API_KEY ? 'done' : 'blocked',
-      result: output,
-      completedAt: Date.now(),
-    }),
+    workflow: finalWorkflow,
+    routing,
     output,
   };
 }
@@ -11656,6 +11930,27 @@ async function doctorReportSnapshot() {
       : 'Task router did not classify one or more doctor samples as expected.',
     routerPreview,
     routerReady ? '' : 'Review routeTaskDecision heuristics.',
+  ));
+
+  const routingLedgerPreview = localCommandPreview.routing || localCommandPreview.routeRecord || null;
+  const routingLedgerMissing = missingRoutingLedgerFields(routingLedgerPreview);
+  const routingLedgerReady = Boolean(
+    routingLedgerPreview &&
+    routingRecords.has(routingLedgerPreview.id) &&
+    routingLedgerMissing.length === 0,
+  );
+  checks.push(doctorCheck(
+    'routing_ledger',
+    'Task routing ledger',
+    routingLedgerReady ? 'ready' : 'warning',
+    routingLedgerReady
+      ? `Routing ledger records lane, owner, scope, parallel group, approval requirement, status, and result link.`
+      : `Routing ledger record is missing: ${routingLedgerMissing.join(', ') || 'record not persisted'}.`,
+    {
+      record: routingLedgerPreview,
+      missing: routingLedgerMissing,
+    },
+    routingLedgerReady ? '' : 'Review createRoutingRecord() and finalizeRouteResult().',
   ));
 
   const localCommandReady =
@@ -13421,7 +13716,15 @@ async function executeTool(name, args) {
 
   if (name === 'get_recent_workflows') {
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 8)));
-    return { ok: true, output: JSON.stringify({ workflows: workflowSnapshot(limit), counts: workflowCounts() }) };
+    const workflowItems = workflowSnapshot(limit);
+    return {
+      ok: true,
+      output: JSON.stringify({
+        workflows: workflowItems,
+        routes: Object.fromEntries(workflowItems.map((workflow) => [workflow.id, routingRecordsForWorkflow(workflow.id)])),
+        counts: workflowCounts(),
+      }),
+    };
   }
 
   if (name === 'get_work_briefing') {
@@ -13595,7 +13898,7 @@ async function executeTool(name, args) {
   }
 
   if (name === 'continue_workflow') {
-    const result = await continueWorkflow(args || {});
+    const result = await continueWorkflow({ ...(args || {}), source: 'voice' });
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
@@ -13642,12 +13945,12 @@ async function executeTool(name, args) {
   }
 
   if (name === 'run_browser_workflow') {
-    const result = await runBrowserWorkflow(args || {});
+    const result = await runBrowserWorkflow({ ...(args || {}), source: 'voice' });
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
   if (name === 'run_file_workflow') {
-    const result = await runFileWorkflow(args || {});
+    const result = await runFileWorkflow({ ...(args || {}), source: 'voice' });
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
@@ -13662,7 +13965,7 @@ async function executeTool(name, args) {
   }
 
   if (name === 'route_task') {
-    const result = await routeTask(args || {});
+    const result = await routeTask({ ...(args || {}), source: 'voice' });
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
@@ -13694,8 +13997,16 @@ async function executeTool(name, args) {
     const task = String(args?.task || '').trim();
     if (!task) return { ok: false, output: 'No task was provided.' };
     const mode = ['codex', 'claude', 'background'].includes(args?.mode) ? args.mode : 'background';
-    const job = createJob(task, mode, 'voice');
-    return { ok: true, output: `Queued ${mode} job ${job.id}.` };
+    const result = await routeTask({
+      message: task,
+      execute: true,
+      mode,
+      source: 'voice_delegate',
+      owner: args?.owner || ownerForRoutingLane(mode),
+      scope: args?.scope || 'voice delegated task',
+      parallelGroup: args?.parallelGroup || args?.group || mode,
+    });
+    return { ok: result.ok, output: JSON.stringify(result) };
   }
 
   if (name === 'run_cli_tool') {
@@ -13706,7 +14017,30 @@ async function executeTool(name, args) {
         timeoutMs: args?.timeoutMs,
         source: 'voice',
       });
-      return { ok: true, output: JSON.stringify(result) };
+      const decision = {
+        lane: 'local',
+        mode: 'cli',
+        label: 'CLI',
+        confidence: 1,
+        reason: 'voice requested explicit CLI tool',
+        execute: true,
+        requiresOpenAiKey: false,
+        requiresLocalExecution: true,
+        localCommand: 'cli_command',
+      };
+      const routing = createRoutingRecord({
+        task: args?.title || redactCommandForLog(args?.command),
+        decision,
+        source: 'voice_cli',
+        execute: true,
+        status: result.job?.status || 'queued',
+        jobId: result.job?.id || '',
+        owner: args?.owner || 'local',
+        scope: args?.scope || 'explicit CLI command',
+        parallelGroup: args?.parallelGroup || args?.group || 'cli',
+        resultSummary: result.output,
+      });
+      return { ok: true, output: JSON.stringify({ ...result, routing }) };
     } catch (error) {
       return { ok: false, output: error instanceof Error ? error.message : String(error) };
     }
@@ -14128,6 +14462,8 @@ function createRealtimeSessionConfig(options = {}) {
             lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             useMemory: { type: 'boolean' },
             memoryLimit: { type: 'number' },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
           },
           additionalProperties: false,
         },
@@ -14385,6 +14721,8 @@ function createRealtimeSessionConfig(options = {}) {
             workflowId: { type: 'string' },
             instruction: { type: 'string' },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
           },
           additionalProperties: false,
         },
@@ -14429,6 +14767,8 @@ function createRealtimeSessionConfig(options = {}) {
             maxChars: { type: 'number' },
             maxSteps: { type: 'number' },
             execute: { type: 'boolean' },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
           },
           additionalProperties: false,
         },
@@ -14448,6 +14788,8 @@ function createRealtimeSessionConfig(options = {}) {
             maxEntries: { type: 'number' },
             maxResults: { type: 'number' },
             maxBytes: { type: 'number' },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
           },
           additionalProperties: false,
         },
@@ -14497,6 +14839,10 @@ function createRealtimeSessionConfig(options = {}) {
             includeScreen: { type: 'boolean' },
             useMemory: { type: 'boolean' },
             memoryLimit: { type: 'number' },
+            lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
+            owner: { type: 'string' },
           },
           additionalProperties: false,
         },
@@ -14534,6 +14880,9 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             task: { type: 'string' },
             mode: { type: 'string', enum: ['background', 'codex', 'claude'] },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
+            owner: { type: 'string' },
           },
           required: ['task'],
           additionalProperties: false,
@@ -14549,6 +14898,9 @@ function createRealtimeSessionConfig(options = {}) {
             command: { type: 'string' },
             title: { type: 'string' },
             timeoutMs: { type: 'number' },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
+            owner: { type: 'string' },
           },
           required: ['command'],
           additionalProperties: false,
@@ -14820,10 +15172,12 @@ function startApiServer() {
 
   api.get('/api/jobs', (req, res) => {
     const limit = Number(req.query.limit || 50);
+    const jobItems = Array.from(jobs.values())
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, Math.max(1, Math.min(200, limit)));
     res.json({
-      jobs: Array.from(jobs.values())
-        .sort((a, b) => b.createdAt - a.createdAt)
-        .slice(0, Math.max(1, Math.min(200, limit))),
+      jobs: jobItems,
+      routes: Object.fromEntries(jobItems.map((job) => [job.id, routingRecordsForJob(job.id)])),
       counts: queueCounts(),
     });
   });
@@ -14834,15 +15188,39 @@ function startApiServer() {
       jsonError(res, 404, 'Job not found');
       return;
     }
-    res.json({ job, active: activeJobRuns.has(job.id) });
+    res.json({ job, active: activeJobRuns.has(job.id), routes: routingRecordsForJob(job.id) });
   });
 
   api.post('/api/cli/run', express.json({ limit: '1mb' }), (req, res) => {
     try {
-      res.json(queueCliCommand({
+      const result = queueCliCommand({
         ...(req.body || {}),
         source: req.body?.source || 'api',
-      }));
+      });
+      const decision = {
+        lane: 'local',
+        mode: 'cli',
+        label: 'CLI',
+        confidence: 1,
+        reason: 'API requested explicit CLI command',
+        execute: true,
+        requiresOpenAiKey: false,
+        requiresLocalExecution: true,
+        localCommand: 'cli_command',
+      };
+      const routing = createRoutingRecord({
+        task: req.body?.title || redactCommandForLog(req.body?.command),
+        decision,
+        source: req.body?.source || 'api_cli',
+        execute: true,
+        status: result.job?.status || 'queued',
+        jobId: result.job?.id || '',
+        owner: req.body?.owner || 'local',
+        scope: req.body?.scope || 'explicit CLI command',
+        parallelGroup: req.body?.parallelGroup || req.body?.group || 'cli',
+        resultSummary: result.output,
+      });
+      res.json({ ...result, routing });
     } catch (error) {
       jsonError(res, 400, 'CLI command failed', error instanceof Error ? error.message : String(error));
     }
@@ -14850,8 +15228,10 @@ function startApiServer() {
 
   api.get('/api/workflows', (req, res) => {
     const limit = Number(req.query.limit || 50);
+    const workflowItems = workflowSnapshot(limit);
     res.json({
-      workflows: workflowSnapshot(limit),
+      workflows: workflowItems,
+      routes: Object.fromEntries(workflowItems.map((workflow) => [workflow.id, routingRecordsForWorkflow(workflow.id)])),
       counts: workflowCounts(),
       workflowsFile: WORKFLOWS_FILE,
     });
@@ -14922,7 +15302,7 @@ function startApiServer() {
       return;
     }
     const job = workflow.jobId ? jobs.get(workflow.jobId) || null : null;
-    res.json({ workflow, job });
+    res.json({ workflow, job, routes: routingRecordsForWorkflow(workflow.id) });
   });
 
   api.get('/api/memory', (req, res) => {
@@ -15143,6 +15523,8 @@ function startApiServer() {
       workflowCounts: workflowCounts(),
       routing: {
         counts: routingCounts(),
+        active: activeRoutingSnapshot(8),
+        ledger: activeRoutingSnapshot(8).map(routingLedgerEntry).filter(Boolean),
         recent: routingSnapshot(8),
       },
       memory: {
@@ -15722,26 +16104,67 @@ function startApiServer() {
   });
 
   api.post('/api/chat/quick', async (req, res) => {
+    const message = String(req.body?.message || '').trim();
+    const includeScreen = Boolean(req.body?.includeScreen);
+    const memoryContext = message
+      ? memoryContextForTask(message, {
+        useMemory: req.body?.useMemory !== false,
+        memoryLimit: req.body?.memoryLimit,
+      })
+      : { matches: [], prompt: '' };
+    const decision = message
+      ? routeTaskDecision(message, { execute: true, includeScreen, mode: 'quick' })
+      : null;
+    const routingContext = {
+      task: message,
+      decision,
+      source: String(req.body?.source || 'chat_quick').slice(0, 80),
+      owner: req.body?.owner || 'realtime',
+      parallelGroup: req.body?.parallelGroup || req.body?.group || 'quick',
+      scope: req.body?.scope || 'realtime voice / fast answer',
+      memoryMatches: memoryContext.matches.length,
+    };
     try {
-      const message = String(req.body?.message || '').trim();
       if (!message) {
         jsonError(res, 400, 'Missing message');
         return;
       }
-      const output = await callOpenAIResponsesWithFallback({
-        model: models.fast,
-        instructions:
-          'You are the fast lane inside JAVIS. Answer simple questions quickly in Chinese. If the task is complex, recommend sending it to the background lane.',
-        input: message,
-        imageDataUrl: req.body?.includeScreen ? latestScreen?.imageDataUrl : undefined,
-        maxOutputTokens: 500,
-      }, {
-        source: 'chat_quick',
-        timeoutMs: 60000,
+      const output = await answerQuickLane({
+        message,
+        input: [memoryContext.prompt, 'Task:', message].filter(Boolean).join('\n\n'),
+        includeScreen,
+        source: routingContext.source,
       });
-      res.json({ output });
+      const result = finalizeRouteResult({
+        ok: quickLaneOutputOk(output),
+        executed: true,
+        queued: false,
+        decision,
+        memory: {
+          matches: memoryContext.matches,
+          count: memoryContext.matches.length,
+        },
+        output,
+      }, routingContext);
+      res.json(result);
     } catch (error) {
-      jsonError(res, 500, 'Quick answer failed', error instanceof Error ? error.message : String(error));
+      const output = error instanceof Error ? error.message : String(error);
+      if (decision) {
+        const result = finalizeRouteResult({
+          ok: false,
+          executed: true,
+          queued: false,
+          decision,
+          memory: {
+            matches: memoryContext.matches,
+            count: memoryContext.matches.length,
+          },
+          output,
+        }, routingContext);
+        res.status(500).json({ ...result, error: 'Quick answer failed', details: output });
+        return;
+      }
+      jsonError(res, 500, 'Quick answer failed', output);
     }
   });
 
@@ -15803,6 +16226,7 @@ function startApiServer() {
       execute: true,
       status: job.status,
       jobId: job.id,
+      owner: req.body?.owner || ownerForRoutingLane(mode),
       memoryMatches: memoryContext.matches.length,
       resultSummary: job.log,
       parallelGroup: req.body?.parallelGroup || req.body?.group || mode,

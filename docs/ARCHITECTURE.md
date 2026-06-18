@@ -107,6 +107,7 @@ By default, local runtime state lives in:
   Runtime/
     jobs.json
     workflows.json
+    routing.json
     sessions.json
     memories.json
     learned-profile.json
@@ -119,6 +120,8 @@ By default, local runtime state lives in:
 `jobs.json` preserves recent background jobs across restarts. Any job that was queued or running when the process exited is marked failed on next boot so the user can see that it was interrupted.
 
 `workflows.json` preserves recent user-level workflows, such as current-page summaries or background browser tasks. Workflow records store target app/page metadata, status, linked job id, parent workflow id, request text, and result summary so JAVIS can explain, continue, or copy recent work back to the clipboard.
+
+`routing.json` preserves user-level lane decisions across quick, background, Codex, Claude, local CLI, browser workflow, file workflow, and continuation paths. Records store lane, owner, scope, parallel group, approval requirement, status, result link, job/workflow ids, and compact result summaries so progress check-ins can explain who owns active work and what the next step is.
 
 `sessions.json` preserves local work sessions. Session records store a goal, active/done/cancelled status, local events, source, tags, timestamps, and deterministic summaries. Only one active session is allowed at a time, and the active session is surfaced in status, menu bar, briefing, and the buddy panel.
 

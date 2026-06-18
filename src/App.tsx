@@ -167,6 +167,36 @@ type WorkflowRecord = {
   completedAt: number
 }
 
+type RoutingLedgerEntry = {
+  id: string
+  taskTitle: string
+  lane: 'quick' | 'background' | 'codex' | 'claude' | 'local'
+  owner: string
+  scope: string
+  parallelGroup: string
+  approvalRequirement: string
+  status: string
+  blocker: string
+  nextAction: string
+  resultLink: string
+  resultSummary: string
+  jobId: string
+  workflowId: string
+  updatedAt: number
+}
+
+type RoutingRecord = RoutingLedgerEntry & {
+  label?: string
+  source?: string
+  execute?: boolean
+  confidence?: number
+  reason?: string
+  localCommand?: string
+  memoryMatches?: number
+  createdAt?: number
+  completedAt?: number
+}
+
 type Approval = {
   id: string
   action: string
@@ -375,6 +405,12 @@ type Status = {
     active: WorkSession | null
     recent: WorkSession[]
   }
+  routing?: {
+    counts: Record<string, number>
+    active: RoutingRecord[]
+    ledger: RoutingLedgerEntry[]
+    recent: RoutingRecord[]
+  }
   queue: Job[]
   workflows?: WorkflowRecord[]
 }
@@ -478,7 +514,10 @@ type WorkBriefing = {
     blockedWorkflows: number
     workflows: Record<string, number>
     jobs: Record<string, number>
+    routing?: Record<string, number>
+    activeRoutes?: number
   }
+  routingLedger?: RoutingLedgerEntry[]
   nextActions: BriefingNextAction[]
 }
 
@@ -491,7 +530,12 @@ type WorkProgress = {
     activeJobs: number
     activeWorkflows: number
     blockedWorkflows: number
+    activeRoutes?: number
+    routing?: Record<string, number>
   }
+  routingLedger?: RoutingLedgerEntry[]
+  activeRoutes?: RoutingRecord[]
+  recentRoutes?: RoutingRecord[]
   activeJobs: Job[]
   recentJobs: Job[]
   activeWorkflows: WorkflowRecord[]
@@ -500,6 +544,7 @@ type WorkProgress = {
   latestDone?: {
     job: Job | null
     workflow: WorkflowRecord | null
+    route?: RoutingRecord | null
   }
   nextActions: BriefingNextAction[]
 }
@@ -742,12 +787,16 @@ function compactWorkflowText(workflow: WorkflowRecord) {
 function realtimeWorkProgressContext(progress: WorkProgress, since: number) {
   const latestDoneJobIsFresh = Boolean(progress.latestDone?.job?.updatedAt && progress.latestDone.job.updatedAt >= since - 5000)
   const latestDoneWorkflowIsFresh = Boolean(progress.latestDone?.workflow?.updatedAt && progress.latestDone.workflow.updatedAt >= since - 5000)
+  const latestDoneRouteIsFresh = Boolean(progress.latestDone?.route?.updatedAt && progress.latestDone.route.updatedAt >= since - 5000)
+  const activeRouteCount = progress.counts.activeRoutes || progress.activeRoutes?.length || progress.routingLedger?.length || 0
   const hasActiveWork =
     progress.counts.activeJobs > 0 ||
     progress.counts.activeWorkflows > 0 ||
     progress.counts.blockedWorkflows > 0 ||
+    activeRouteCount > 0 ||
     latestDoneJobIsFresh ||
-    latestDoneWorkflowIsFresh
+    latestDoneWorkflowIsFresh ||
+    latestDoneRouteIsFresh
   if (!hasActiveWork || !progress.output.trim()) return ''
   return [
     'Silent JAVIS background work progress update. Do not answer this message by itself.',
