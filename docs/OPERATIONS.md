@@ -171,6 +171,12 @@ curl -X POST http://127.0.0.1:3417/api/tasks/route \
 curl -X POST http://127.0.0.1:3417/api/tasks/parallel \
   -H 'Content-Type: application/json' \
   -d '{"execute":true,"parallelGroup":"research-batch","tasks":[{"task":"Inspect docs for stale setup notes","mode":"background","owner":"background","scope":"docs read-only"},{"task":"Review code owner boundaries","mode":"codex","owner":"codex","scope":"repo read-only"}]}'
+curl -X POST http://127.0.0.1:3417/api/browser/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"intent":"search","query":"OpenAI Realtime API docs","mode":"quick"}'
+curl -X POST http://127.0.0.1:3417/api/browser/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"intent":"compare","queries":["OpenAI Realtime API docs","WebRTC voice agent examples"],"mode":"background"}'
 ```
 
 The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, and workflows, including active work, recent completions, blockers, and next actions.
@@ -178,6 +184,8 @@ The briefing combines readiness, routing records, jobs, workflows, approvals, me
 `/api/tasks/route` persists a routing record for each previewed or executed task. Direct quick chat, voice delegation, explicit CLI runs, browser workflows, file workflows, and continuation workflows also write routing records. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, blocker/next-action context, and result link. Use `/api/tasks/routing` or `/api/tasks/routing/<route-id>` to inspect the ledger.
 
 `/api/tasks/parallel` accepts up to `JAVIS_MAX_PARALLEL_TASKS` independent task items and assigns them to one `parallelGroup`. Each item can specify its own `mode`, `owner`, and `scope`; explicit `command` items queue through the guarded local CLI lane. This is the API surface for splitting work across background, Codex, Claude, and local workers while keeping progress check-ins coherent.
+
+`/api/browser/workflow` supports `search` and `compare` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages, capture those result pages, and route the captured context through quick/background/Codex/Claude. They do not click search results or submit forms.
 
 `/api/work/next` turns the top briefing action into one safe step. GET previews the selected action; POST runs exactly one step, such as opening the next setup target, showing approvals, checking session/progress state, or processing the next Inbox item. It does not approve actions or batch-run tasks.
 

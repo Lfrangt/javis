@@ -32,7 +32,7 @@ import './App.css'
 type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 type WorkflowStatus = JobStatus | 'blocked'
 type JobMode = 'background' | 'codex' | 'claude' | 'cli'
-type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask' | 'act'
+type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask' | 'act' | 'search' | 'compare'
 type BrowserWorkflowMode = 'quick' | JobMode
 type VoiceStatus = 'idle' | 'connecting' | 'live' | 'error'
 type MicMode = 'open' | 'push'
@@ -1980,14 +1980,20 @@ function App() {
       event.preventDefault()
       setBrowserBusy(true)
       try {
+        const browserText = browserInstruction.trim()
+        const browserQueries = browserIntent === 'compare'
+          ? browserText.split(/\n|;|；|\s+\|\s+/).map((item) => item.trim()).filter(Boolean)
+          : []
         const result = await apiJson<BrowserWorkflowResult>('/api/browser/workflow', {
           method: 'POST',
           body: JSON.stringify({
             intent: browserIntent,
             mode: browserMode,
-            instruction: browserInstruction.trim(),
+            instruction: browserText,
+            query: browserIntent === 'search' ? browserText : undefined,
+            queries: browserQueries.length ? browserQueries : undefined,
             maxChars: browserMode === 'quick' ? 12000 : 30000,
-            execute: browserIntent === 'act',
+            execute: browserIntent === 'act' || browserIntent === 'search' || browserIntent === 'compare',
             maxSteps: 5,
           }),
         })
@@ -1996,7 +2002,7 @@ function App() {
         } else {
           addMessage(result.ok ? 'assistant' : 'system', result.output)
         }
-        if (browserInstruction.trim()) setBrowserInstruction('')
+        if (browserText) setBrowserInstruction('')
         refreshStatus()
       } catch (error) {
         addMessage('system', error instanceof Error ? error.message : String(error))
@@ -2515,6 +2521,8 @@ function App() {
                 <option value="draft">Draft</option>
                 <option value="ask">Ask</option>
                 <option value="act">Act</option>
+                <option value="search">Search</option>
+                <option value="compare">Compare</option>
               </select>
               <select value={browserMode} onChange={(event) => setBrowserMode(event.target.value as BrowserWorkflowMode)}>
                 <option value="quick">Quick</option>

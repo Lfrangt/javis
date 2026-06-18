@@ -87,6 +87,7 @@ const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300)
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PARALLEL_TASKS = Math.max(2, Math.min(12, Number(process.env.JAVIS_MAX_PARALLEL_TASKS || 6)));
+const MAX_BROWSER_SEARCH_QUERIES = Math.max(1, Math.min(6, Number(process.env.JAVIS_MAX_BROWSER_SEARCH_QUERIES || 4)));
 const MAX_RECOVERY_JOB_ATTEMPTS = Math.max(0, Math.min(5, Number(process.env.JAVIS_MAX_RECOVERY_JOB_ATTEMPTS || 2)));
 const MAX_LEARNING_SOURCE_EVENTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_LEARNING_SOURCE_EVENTS || 200)));
 const startedAt = Date.now();
@@ -6112,7 +6113,7 @@ async function executeBrowserControl(args = {}, options = {}) {
 
 function normalizeBrowserWorkflowIntent(value) {
   const intent = String(value || '').trim();
-  if (['summarize', 'extract_actions', 'draft', 'ask', 'act'].includes(intent)) return intent;
+  if (['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare'].includes(intent)) return intent;
   return 'summarize';
 }
 
@@ -6146,6 +6147,8 @@ function browserWorkflowPrompt(page, intent, instruction) {
     draft: '基于当前网页起草一段可直接使用的中文内容；如果用户给了具体要求，严格按要求写。',
     ask: '回答用户关于当前网页的问题；如果网页内容不足，说明缺口。',
     act: '规划并执行当前网页上的安全浏览器操作。',
+    search: '搜索网页并总结结果页。',
+    compare: '搜索多个查询并比较结果页。',
   };
   const pageText = page.selectedText || page.text || '';
   return [
@@ -6164,6 +6167,47 @@ function browserWorkflowPrompt(page, intent, instruction) {
   ]
     .filter((line) => line !== '')
     .join('\n');
+}
+
+function normalizeBrowserSearchQueries(options = {}) {
+  const rawList = Array.isArray(options.queries)
+    ? options.queries
+    : Array.isArray(options.query)
+      ? options.query
+      : [];
+  const textQuery = String(options.query || options.instruction || '').trim();
+  const splitTextQueries = textQuery
+    ? textQuery.split(/\n|;|；|\s+\|\s+/).map((item) => item.trim()).filter(Boolean)
+    : [];
+  const queries = [...rawList, ...splitTextQueries]
+    .map((item) => String(item || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return Array.from(new Set(queries)).slice(0, MAX_BROWSER_SEARCH_QUERIES);
+}
+
+function browserSearchWorkflowPrompt(searches = [], intent = 'search', instruction = '') {
+  const payload = searches.map((item, index) => ({
+    index: index + 1,
+    query: item.query,
+    app: item.page?.app || '',
+    title: item.page?.title || '',
+    url: item.page?.url || '',
+    headings: item.page?.headings?.slice(0, 12) || [],
+    text: compactRecordText(item.page?.selectedText || item.page?.text || '', 5000),
+    error: item.page?.error || '',
+  }));
+  return [
+    `Browser ${intent} workflow.`,
+    `User request: ${instruction || searches.map((item) => item.query).join(' ; ')}`,
+    '',
+    'Use only these browser search result page snapshots. Do not invent facts beyond them.',
+    intent === 'compare'
+      ? 'Compare the result pages, identify overlaps, conflicts, strongest next links/queries, and concrete next actions.'
+      : 'Summarize the result page, identify likely useful next links/queries, and concrete next actions.',
+    'Answer in concise Chinese.',
+    '',
+    JSON.stringify(payload, null, 2),
+  ].join('\n');
 }
 
 function parseJsonFromModelText(text) {
@@ -6807,9 +6851,237 @@ async function runBrowserTaskWorkflow(options = {}) {
   };
 }
 
+async function runBrowserSearchWorkflow(options = {}) {
+  const intent = normalizeBrowserWorkflowIntent(options.intent) === 'compare' ? 'compare' : 'search';
+  const mode = normalizeBrowserWorkflowMode(options.mode);
+  const instruction = String(options.instruction || '').trim();
+  const queries = normalizeBrowserSearchQueries(options);
+  if (!queries.length) throw new Error('Browser search workflow requires query or queries.');
+  const execute = options.execute !== false;
+  const maxChars = normalizeBrowserMaxChars(options.maxChars || (mode === 'quick' ? 12000 : 24000));
+  const waitMsAfterSearch = Math.max(500, Math.min(6000, Number(options.waitMs || 1800)));
+  const request = instruction || queries.join(' ; ');
+  const workflowTitle = `${intent} · ${queries.join(' vs ')}`.slice(0, 180);
+
+  if (!execute) {
+    const workflow = createWorkflowRecord({
+      kind: 'browser',
+      source: 'browser_search_workflow',
+      status: 'done',
+      title: workflowTitle,
+      intent,
+      mode,
+      request,
+      target: {
+        app: 'Browser',
+        title: 'Search preview',
+        url: '',
+        fallback: '',
+        textLength: 0,
+        returnedLength: 0,
+        resultCount: queries.length,
+      },
+      result: `Preview only. Would search: ${queries.join(' ; ')}`,
+    });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow,
+      mode,
+      source: options.source || 'browser_search_workflow',
+      scope: options.scope || `browser:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      resultSummary: workflow.result,
+    });
+    return {
+      ok: true,
+      executed: false,
+      queued: false,
+      mode,
+      intent,
+      queries,
+      workflow,
+      routing,
+      searches: [],
+      output: workflow.result,
+    };
+  }
+
+  const workflow = createWorkflowRecord({
+    kind: 'browser',
+    source: 'browser_search_workflow',
+    status: 'running',
+    title: workflowTitle,
+    intent,
+    mode,
+    request,
+    target: {
+      app: 'Browser',
+      title: queries[0],
+      url: '',
+      fallback: '',
+      textLength: 0,
+      returnedLength: 0,
+      resultCount: queries.length,
+    },
+  });
+
+  const searches = [];
+  for (const [index, query] of queries.entries()) {
+    try {
+      const action = await executeBrowserControl({
+        action: 'search',
+        query,
+        app: options.app,
+      }, {
+        approvalContext: {
+          type: 'browser_search_workflow',
+          workflowId: workflow.id,
+          title: workflowTitle,
+          instruction: request,
+          stepIndex: index,
+        },
+      });
+      await waitMs(waitMsAfterSearch);
+      const page = await browserPageSnapshot({ app: options.app, maxChars });
+      searches.push({
+        query,
+        action,
+        page,
+        pageSummary: browserWorkflowPageSummary(page),
+      });
+    } catch (error) {
+      searches.push({
+        query,
+        error: error instanceof Error ? error.message : String(error),
+        page: null,
+        pageSummary: { available: false, supported: false, app: '', title: '', url: '', selectedTextLength: 0, returnedLength: 0, textLength: 0, truncated: false, fallback: '', error: error instanceof Error ? error.message : String(error), headings: [] },
+      });
+      break;
+    }
+  }
+
+  const failed = searches.some((item) => item.error || !item.page?.available);
+  if (failed) {
+    const output = [
+      `Browser ${intent} blocked.`,
+      searches.map((item, index) => `${index + 1}. ${item.query}: ${item.error || item.page?.error || 'page unavailable'}`).join('\n'),
+    ].join('\n');
+    const finalWorkflow = setWorkflow(workflow.id, {
+      status: 'blocked',
+      result: output,
+      completedAt: Date.now(),
+      target: {
+        ...(workflow.target || {}),
+        resultCount: searches.length,
+      },
+    });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow: finalWorkflow,
+      mode,
+      source: options.source || 'browser_search_workflow',
+      scope: options.scope || `browser:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      resultSummary: output,
+    });
+    return {
+      ok: false,
+      executed: true,
+      queued: false,
+      mode,
+      intent,
+      queries,
+      workflow: finalWorkflow,
+      routing,
+      searches,
+      output,
+    };
+  }
+
+  const prompt = browserSearchWorkflowPrompt(searches, intent, request);
+  const latestPage = searches[searches.length - 1]?.pageSummary || {};
+  if (mode !== 'quick') {
+    const queuedWorkflow = setWorkflow(workflow.id, {
+      status: 'queued',
+      target: {
+        ...(latestPage || {}),
+        resultCount: searches.length,
+        searchQueries: queries,
+      },
+    });
+    const job = createJob(prompt, mode === 'background' ? 'background' : mode, 'browser_search_workflow', { workflowId: workflow.id });
+    const finalWorkflow = setWorkflow(workflow.id, { jobId: job.id });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow: finalWorkflow,
+      job,
+      mode,
+      source: options.source || 'browser_search_workflow',
+      scope: options.scope || `browser:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+    });
+    return {
+      ok: true,
+      executed: true,
+      queued: true,
+      mode,
+      intent,
+      queries,
+      workflow: finalWorkflow || queuedWorkflow,
+      job,
+      routing,
+      searches: searches.map((item) => ({ query: item.query, page: item.pageSummary })),
+      output: `Queued ${mode} browser ${intent} workflow for ${queries.join(' ; ')}.`,
+    };
+  }
+
+  const output = await callOpenAIResponsesWithFallback({
+    model: models.fast,
+    instructions:
+      'You are the browser search lane inside JAVIS. Use only the provided search result page snapshots. Answer in concise Chinese with concrete next actions and useful follow-up queries/links.',
+    input: prompt,
+    maxOutputTokens: intent === 'compare' ? 1200 : 850,
+  }, {
+    source: 'browser_search_workflow',
+    timeoutMs: intent === 'compare' ? 90000 : 60000,
+  });
+  const finalWorkflow = setWorkflow(workflow.id, {
+    status: quickLaneOutputOk(output) ? 'done' : 'blocked',
+    result: output,
+    completedAt: Date.now(),
+    target: {
+      ...(latestPage || {}),
+      resultCount: searches.length,
+      searchQueries: queries,
+    },
+  });
+  const routing = createRoutingRecordForWorkflow({
+    task: request,
+    workflow: finalWorkflow,
+    mode,
+    source: options.source || 'browser_search_workflow',
+    scope: options.scope || `browser:${intent}`,
+    parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+    resultSummary: output,
+  });
+  return {
+    ok: quickLaneOutputOk(output),
+    executed: true,
+    queued: false,
+    mode,
+    intent,
+    queries,
+    workflow: finalWorkflow,
+    routing,
+    searches: searches.map((item) => ({ query: item.query, page: item.pageSummary })),
+    output,
+  };
+}
+
 async function runBrowserWorkflow(options = {}) {
   const intent = normalizeBrowserWorkflowIntent(options.intent);
   if (intent === 'act') return runBrowserTaskWorkflow(options);
+  if (intent === 'search' || intent === 'compare') return runBrowserSearchWorkflow({ ...options, intent });
   const mode = normalizeBrowserWorkflowMode(options.mode);
   const instruction = String(options.instruction || '').trim();
   const maxChars = normalizeBrowserMaxChars(options.maxChars || (mode === 'quick' ? 12000 : 30000));
@@ -14994,16 +15266,22 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_browser_workflow',
-        description: 'Run a practical workflow over the current browser page: summarize, extract actions, draft, answer a page-specific question, or safely act on the page with a short observe-plan-execute-review loop.',
+        description: 'Run a practical workflow over the current browser page, or search/compare web result pages before summarizing. Search and compare navigate the browser to Google result pages but do not click results or submit forms.',
         parameters: {
           type: 'object',
           properties: {
             app: { type: 'string' },
-            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask', 'act'] },
+            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare'] },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            query: { type: 'string' },
+            queries: {
+              type: 'array',
+              items: { type: 'string' },
+            },
             instruction: { type: 'string' },
             maxChars: { type: 'number' },
             maxSteps: { type: 'number' },
+            waitMs: { type: 'number' },
             execute: { type: 'boolean' },
             scope: { type: 'string' },
             parallelGroup: { type: 'string' },
