@@ -38,6 +38,7 @@
 - Add local work sessions for focus goals, notes/events, resume handoffs, automatic evidence capture, spoken check-ins, and end-of-session summaries.
 - Add safe local command routing before model calls for basic resident operations.
 - Persist explicit local memories for user-approved preferences, project facts, and notes.
+- Persist a local inferred learning profile from passive ambient metadata, separate from explicit memory.
 - Persist local Inbox captures for clipboard/manual follow-ups and include them in briefing.
 - Add read-only Inbox triage for priority sorting and lane suggestions.
 - Add explicit process-next Inbox flow for doing one highest-priority capture at a time.
@@ -64,7 +65,7 @@
 - Wake-word or push-to-talk mode.
 - Better interruption handling.
 - Ongoing screen context with privacy zones: current build supports a global private/clear screen mode; next, add selectable app/window/region redaction.
-- Task memory scoped to the local machine: current build supports explicit local memories; next, richer retrieval inside workflows.
+- Task memory scoped to the local machine: current build supports explicit local memories and an optional local inferred learning profile; next, richer retrieval inside workflows.
 - Capture queue scoped to the local machine: current build supports persistent Inbox items, read-only triage, explicit process-next, and routing them into work lanes; next, add spoken confirmation policies and richer triage grouping.
 - Work sessions scoped to the local machine: current build supports start/resume/status/note/check-in/end plus automatic evidence from Inbox, jobs, workflows, and approvals; next, improve spoken handoff quality.
 - Long-running work status scoped to the local machine: current build supports deterministic progress check-ins over jobs and workflows; next, stream richer live updates into active voice sessions.

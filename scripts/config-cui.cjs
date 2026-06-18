@@ -148,6 +148,10 @@ async function printStatus() {
     if (status.ambient) {
       console.log(`Ambient: ${status.ambient.enabled ? 'on' : 'off'} · screen ${status.ambient.captureScreen ? 'on' : 'off'} · ${status.ambient.count || 0} sample(s)`);
     }
+    if (status.learning) {
+      const profile = status.learning.profile || {};
+      console.log(`Learning: ${status.learning.enabled ? 'on' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${profile.summary || 'no profile yet'}`);
+    }
     console.log(`Doctor: ${doctor.doctor?.counts?.ready || 0}/${doctor.doctor?.counts?.total || 0} ready · ${doctor.doctor?.overall || 'unknown'}`);
     const issues = issueLines(doctor.doctor);
     if (issues.length) {
@@ -171,7 +175,8 @@ async function printStatus() {
   console.log('10. Toggle trusted local mode');
   console.log('11. Run doctor');
   console.log('12. Test wake trigger');
-  console.log('13. Quit');
+  console.log('13. Refresh learning profile');
+  console.log('14. Quit');
 }
 
 async function setupAction(action) {
@@ -348,7 +353,13 @@ async function main() {
           body: { source: 'cui', phrase: 'manual test' },
         });
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
-      } else if (answer === '13' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '13') {
+        const result = await request('/api/learning/distill', {
+          method: 'POST',
+          body: { source: 'cui' },
+        });
+        console.log(`\nLearning refreshed: ${result.learning?.profile?.summary || 'no profile yet'}`);
+      } else if (answer === '14' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

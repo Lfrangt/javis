@@ -49,6 +49,7 @@ const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
+const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const LAUNCH_AGENT_FILE = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 const RESIDENT_OUT_LOG = path.join(process.cwd(), 'logs', 'resident.out.log');
@@ -62,6 +63,9 @@ const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
 const AMBIENT_OBSERVE_ENABLED = process.env.JAVIS_AMBIENT_OBSERVE === 'true';
 const AMBIENT_CAPTURE_SCREEN = process.env.JAVIS_AMBIENT_CAPTURE_SCREEN === 'true';
 const AMBIENT_INTERVAL_MS = Math.max(2500, Math.min(60000, Number(process.env.JAVIS_AMBIENT_INTERVAL_MS || 8000)));
+const AMBIENT_LEARNING_ENABLED = process.env.JAVIS_AMBIENT_LEARNING === 'true';
+const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(process.env.JAVIS_AMBIENT_LEARNING_INTERVAL_MS || 60000)));
+const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
 const MAX_PERSISTED_APPROVALS = Number(process.env.JAVIS_MAX_PERSISTED_APPROVALS || 200);
@@ -69,6 +73,7 @@ const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES |
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
+const MAX_LEARNING_SOURCE_EVENTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_LEARNING_SOURCE_EVENTS || 200)));
 const startedAt = Date.now();
 const packageInfo = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'package.json'), 'utf8'));
 const DEFAULT_FILE_ROOTS = [
@@ -172,6 +177,7 @@ const inboxItems = new Map();
 const workSessions = new Map();
 const ambientEvents = [];
 const activeJobRuns = new Map();
+let learnedProfile = null;
 const windowModes = {
   pet: { width: 166, height: 54 },
   panel: { width: 166, height: 54 },
@@ -191,6 +197,8 @@ let menuBarTray = null;
 let menuBarUpdatedAt = 0;
 let ambientTimer = null;
 let ambientSampling = false;
+let learningTimer = null;
+let learningBusy = false;
 let wakeEngineProcess = null;
 let wakeState = {
   lastTriggerAt: 0,
@@ -220,6 +228,7 @@ loadPersistedMemories();
 loadPersistedInbox();
 loadPersistedSessions();
 loadPersistedAmbient();
+loadPersistedLearning();
 appendAudit('process.start', {
   pid: process.pid,
   version: packageInfo.version,
@@ -297,6 +306,16 @@ function enforceWindowSize(mode = currentWindowMode) {
     });
   }
   return windowBoundsSnapshot();
+}
+
+function scheduleWindowSizeEnforcement(source = 'window') {
+  for (const delay of [0, 160, 700, 1500]) {
+    setTimeout(() => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      enforceWindowSize(currentWindowMode);
+      parkWindow(source, { corner: currentParkCorner, display: WINDOW_PARK_DISPLAY, menu: false });
+    }, delay);
+  }
 }
 
 function parkedPosition(mode = currentWindowMode, corner = currentParkCorner, displayMode = WINDOW_PARK_DISPLAY) {
@@ -1277,6 +1296,59 @@ function normalizeAmbientEvent(event) {
   };
 }
 
+function normalizeLearningList(value, maxItems = 12) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (item && typeof item === 'object' ? item : null))
+    .filter(Boolean)
+    .slice(0, maxItems);
+}
+
+function normalizeLearnedProfile(profile = {}) {
+  const now = Date.now();
+  return {
+    version: 1,
+    enabled: AMBIENT_LEARNING_ENABLED,
+    updatedAt: Number(profile.updatedAt || 0),
+    lastDistilledAt: Number(profile.lastDistilledAt || 0),
+    sourceEventCount: Number(profile.sourceEventCount || 0),
+    sourceRange: profile.sourceRange && typeof profile.sourceRange === 'object'
+      ? {
+          oldestAt: Number(profile.sourceRange.oldestAt || 0),
+          newestAt: Number(profile.sourceRange.newestAt || 0),
+        }
+      : { oldestAt: 0, newestAt: 0 },
+    summary: String(profile.summary || 'No learned ambient profile yet.').slice(0, 1200),
+    topApps: normalizeLearningList(profile.topApps).map((item) => ({
+      name: String(item.name || '').slice(0, 120),
+      count: Number(item.count || 0),
+      share: Number(item.share || 0),
+      lastSeenAt: Number(item.lastSeenAt || 0),
+    })).filter((item) => item.name),
+    topBrowserHosts: normalizeLearningList(profile.topBrowserHosts).map((item) => ({
+      host: String(item.host || '').slice(0, 200),
+      title: String(item.title || '').slice(0, 200),
+      count: Number(item.count || 0),
+      share: Number(item.share || 0),
+      lastSeenAt: Number(item.lastSeenAt || 0),
+    })).filter((item) => item.host),
+    recentContexts: normalizeLearningList(profile.recentContexts, 10).map((item) => ({
+      app: String(item.app || '').slice(0, 120),
+      title: String(item.title || '').slice(0, 220),
+      host: String(item.host || '').slice(0, 200),
+      createdAt: Number(item.createdAt || 0),
+    })).filter((item) => item.app || item.title || item.host),
+    activeHours: normalizeLearningList(profile.activeHours, 24).map((item) => ({
+      hour: Math.max(0, Math.min(23, Number(item.hour || 0))),
+      count: Number(item.count || 0),
+    })).filter((item) => item.count > 0),
+    signals: Array.isArray(profile.signals)
+      ? profile.signals.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+      : [],
+    createdAt: Number(profile.createdAt || now),
+  };
+}
+
 function loadPersistedJobs() {
   if (!fs.existsSync(JOBS_FILE)) return;
   try {
@@ -1390,6 +1462,21 @@ function loadPersistedAmbient() {
   }
 }
 
+function loadPersistedLearning() {
+  if (!fs.existsSync(LEARNING_FILE)) {
+    learnedProfile = normalizeLearnedProfile();
+    return;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(LEARNING_FILE, 'utf8'));
+    learnedProfile = normalizeLearnedProfile(parsed?.profile || parsed);
+    appendAudit('learning.loaded', { sourceEventCount: learnedProfile.sourceEventCount });
+  } catch (error) {
+    learnedProfile = normalizeLearnedProfile();
+    appendAudit('learning.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function persistJobs() {
   const jobsForStorage = Array.from(jobs.values())
     .sort((a, b) => b.createdAt - a.createdAt)
@@ -1468,11 +1555,214 @@ function persistAmbient() {
   });
 }
 
+function persistLearning() {
+  const profile = normalizeLearnedProfile(learnedProfile || {});
+  learnedProfile = profile;
+  writeJsonAtomic(LEARNING_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    profile,
+  });
+}
+
 function ambientSnapshot(limit = 20) {
   return ambientEvents
     .slice()
     .sort((a, b) => b.createdAt - a.createdAt)
     .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
+}
+
+function browserHostFromAmbientEvent(event) {
+  const rawUrl = String(event?.browser?.url || '').trim();
+  if (!rawUrl) return '';
+  try {
+    return new URL(rawUrl).hostname.replace(/^www\./, '').slice(0, 200);
+  } catch {
+    return '';
+  }
+}
+
+function incrementLearningCounter(map, key, patch = {}) {
+  const normalizedKey = String(key || '').trim();
+  if (!normalizedKey) return;
+  const existing = map.get(normalizedKey) || {
+    key: normalizedKey,
+    count: 0,
+    lastSeenAt: 0,
+    ...patch,
+  };
+  existing.count += 1;
+  existing.lastSeenAt = Math.max(existing.lastSeenAt || 0, Number(patch.lastSeenAt || 0));
+  map.set(normalizedKey, { ...existing, ...patch, count: existing.count, lastSeenAt: existing.lastSeenAt });
+}
+
+function sanitizeLearningTitle(value, app = '') {
+  let text = compactRecordText(value, 180)
+    .replace(/sk-[A-Za-z0-9_-]{10,}/g, '[redacted-key]')
+    .replace(/gh[pousr]_[A-Za-z0-9_]{10,}/g, '[redacted-token]')
+    .replace(/(api[-_ ]?key|token|secret|password)=("[^"]*"|'[^']*'|[^\s]+)/gi, '$1=[redacted]')
+    .trim();
+  if (/terminal|iterm/i.test(String(app || '')) && text.length > 80) {
+    text = text.split('—').slice(0, 2).join('—').trim() || text.slice(0, 80);
+  }
+  return text;
+}
+
+function learningCounterList(map, total, mapper, limit = 8) {
+  return Array.from(map.values())
+    .sort((a, b) => b.count - a.count || b.lastSeenAt - a.lastSeenAt)
+    .slice(0, limit)
+    .map((item) => ({
+      ...mapper(item),
+      count: item.count,
+      share: total ? Number((item.count / total).toFixed(3)) : 0,
+      lastSeenAt: item.lastSeenAt || 0,
+    }));
+}
+
+function uniqueRecentAmbientContexts(events, limit = 6) {
+  const seen = new Set();
+  const contexts = [];
+  for (const event of events) {
+    const app = String(event.frontmost?.app || '').trim();
+    const title = sanitizeLearningTitle(event.browser?.title || event.frontmost?.windowTitle || '', app);
+    const host = browserHostFromAmbientEvent(event);
+    const key = [app, title, host].join('\n');
+    if (!app && !title && !host) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    contexts.push({
+      app,
+      title,
+      host,
+      createdAt: Number(event.createdAt || 0),
+    });
+    if (contexts.length >= limit) break;
+  }
+  return contexts;
+}
+
+function learnedProfileSummary(profile) {
+  const parts = [];
+  const total = Number(profile.sourceEventCount || 0);
+  if (!total) return 'No ambient learning has been distilled yet.';
+  const topApps = profile.topApps.slice(0, 3).map((item) => `${item.name} ${Math.round(item.share * 100)}%`);
+  const topHosts = profile.topBrowserHosts.slice(0, 3).map((item) => item.host);
+  parts.push(`Distilled from ${total} local ambient observation(s).`);
+  if (topApps.length) parts.push(`Primary apps: ${topApps.join(', ')}.`);
+  if (topHosts.length) parts.push(`Frequent browser hosts: ${topHosts.join(', ')}.`);
+  if (profile.activeHours.length) {
+    const hours = profile.activeHours
+      .slice(0, 3)
+      .map((item) => `${String(item.hour).padStart(2, '0')}:00`)
+      .join(', ');
+    parts.push(`Common active hours: ${hours}.`);
+  }
+  return parts.join(' ');
+}
+
+function learningSignalsFromProfile(profile) {
+  const signals = [];
+  const primaryApp = profile.topApps[0];
+  if (primaryApp) signals.push(`current work often happens in ${primaryApp.name}`);
+  const primaryHost = profile.topBrowserHosts[0];
+  if (primaryHost) signals.push(`recent browser focus often includes ${primaryHost.host}`);
+  const recent = profile.recentContexts[0];
+  if (recent?.app || recent?.title) {
+    signals.push(`latest observed context: ${[recent.app, recent.host || recent.title].filter(Boolean).join(' · ')}`);
+  }
+  return signals.slice(0, 6);
+}
+
+function distillAmbientLearning(options = {}) {
+  const force = options.force === true;
+  if (!AMBIENT_LEARNING_ENABLED && !force) return learningStateSnapshot();
+  if (learningBusy) return learningStateSnapshot();
+  learningBusy = true;
+  try {
+    const events = ambientSnapshot(MAX_LEARNING_SOURCE_EVENTS)
+      .filter((event) => event?.frontmost?.available || event?.browser?.available)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const total = events.length;
+    const appCounts = new Map();
+    const hostCounts = new Map();
+    const hourCounts = new Map();
+
+    for (const event of events) {
+      const createdAt = Number(event.createdAt || 0);
+      const appName = String(event.frontmost?.app || '').trim();
+      incrementLearningCounter(appCounts, appName, { name: appName, lastSeenAt: createdAt });
+
+      const host = browserHostFromAmbientEvent(event);
+      incrementLearningCounter(hostCounts, host, {
+        host,
+        title: sanitizeLearningTitle(event.browser?.title || '', event.browser?.app || event.frontmost?.app || ''),
+        lastSeenAt: createdAt,
+      });
+
+      if (createdAt) {
+        const hour = new Date(createdAt).getHours();
+        incrementLearningCounter(hourCounts, String(hour), { hour, lastSeenAt: createdAt });
+      }
+    }
+
+    const eventTimes = events.map((event) => Number(event.createdAt || 0)).filter(Boolean);
+    const nextProfile = normalizeLearnedProfile({
+      ...(learnedProfile || {}),
+      enabled: AMBIENT_LEARNING_ENABLED,
+      updatedAt: Date.now(),
+      lastDistilledAt: Date.now(),
+      sourceEventCount: total,
+      sourceRange: {
+        oldestAt: eventTimes.length ? Math.min(...eventTimes) : 0,
+        newestAt: eventTimes.length ? Math.max(...eventTimes) : 0,
+      },
+      topApps: learningCounterList(appCounts, total, (item) => ({ name: item.name || item.key })),
+      topBrowserHosts: learningCounterList(hostCounts, total, (item) => ({ host: item.host || item.key, title: item.title || '' })),
+      activeHours: learningCounterList(hourCounts, total, (item) => ({ hour: Number(item.hour || item.key) }), 6),
+      recentContexts: uniqueRecentAmbientContexts(events, 6),
+    });
+    nextProfile.summary = learnedProfileSummary(nextProfile);
+    nextProfile.signals = learningSignalsFromProfile(nextProfile);
+    learnedProfile = nextProfile;
+    persistLearning();
+    appendAudit('learning.distilled', {
+      source: String(options.source || 'ambient').slice(0, 80),
+      sourceEventCount: total,
+      topApp: learnedProfile.topApps[0]?.name || '',
+      topHost: learnedProfile.topBrowserHosts[0]?.host || '',
+    });
+    return learningStateSnapshot();
+  } catch (error) {
+    appendAudit('learning.distill_failed', { message: error instanceof Error ? error.message : String(error) });
+    return learningStateSnapshot();
+  } finally {
+    learningBusy = false;
+  }
+}
+
+function learningStateSnapshot() {
+  if (!learnedProfile) learnedProfile = normalizeLearnedProfile();
+  return {
+    enabled: AMBIENT_LEARNING_ENABLED,
+    includeInPrompts: INCLUDE_LEARNING_IN_PROMPTS,
+    intervalMs: AMBIENT_LEARNING_INTERVAL_MS,
+    sourceEventLimit: MAX_LEARNING_SOURCE_EVENTS,
+    learningFile: LEARNING_FILE,
+    profile: normalizeLearnedProfile(learnedProfile),
+  };
+}
+
+function learningContextForPrompt() {
+  const profile = learningStateSnapshot().profile;
+  if (!AMBIENT_LEARNING_ENABLED || !INCLUDE_LEARNING_IN_PROMPTS || !profile.sourceEventCount) return '';
+  return [
+    'Local inferred user profile from passive ambient metadata. Treat as lightweight context, not explicit user-approved memory:',
+    profile.summary,
+    profile.signals.length ? `Signals: ${profile.signals.join('; ')}` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function approvalSnapshot(limit = 20) {
@@ -1604,18 +1894,21 @@ function formatMemoriesForPrompt(list = []) {
 
 function memoryContextForTask(task, options = {}) {
   if (options.useMemory === false) {
-    return { matches: [], prompt: '' };
+    return { matches: [], learning: null, prompt: '' };
   }
   const queryMatches = searchMemories({ query: task, limit: Number(options.memoryLimit || 3) }).results;
   const recentPreferences = memorySnapshot(20)
     .filter((memory) => memory.kind === 'preference')
     .slice(0, 2);
   const matches = uniqueMemories([...queryMatches, ...recentPreferences]).slice(0, Number(options.memoryLimit || 5));
+  const learningPrompt = learningContextForPrompt();
+  const memoryPrompt = matches.length
+    ? ['Relevant local memories approved by the user:', formatMemoriesForPrompt(matches)].join('\n')
+    : '';
   return {
     matches,
-    prompt: matches.length
-      ? ['Relevant local memories approved by the user:', formatMemoriesForPrompt(matches)].join('\n')
-      : '',
+    learning: learningPrompt ? learningStateSnapshot().profile : null,
+    prompt: [learningPrompt, memoryPrompt].filter(Boolean).join('\n\n'),
   };
 }
 
@@ -5813,6 +6106,9 @@ function recordAmbientEvent(rawEvent) {
   ambientEvents.unshift(event);
   ambientEvents.splice(MAX_PERSISTED_AMBIENT);
   persistAmbient();
+  if (AMBIENT_LEARNING_ENABLED) {
+    distillAmbientLearning({ source: `${event.source || 'ambient'}:sample` });
+  }
   appendAudit('ambient.sample', {
     app: event.frontmost.app,
     windowTitle: compactRecordText(event.frontmost.windowTitle, 120),
@@ -5855,6 +6151,7 @@ function ambientStateSnapshot(limit = 8) {
     enabled: AMBIENT_OBSERVE_ENABLED,
     captureScreen: AMBIENT_CAPTURE_SCREEN,
     intervalMs: AMBIENT_INTERVAL_MS,
+    learningEnabled: AMBIENT_LEARNING_ENABLED,
     count: ambientEvents.length,
     recent: ambientSnapshot(limit),
   };
@@ -5877,6 +6174,25 @@ function stopAmbientMonitor() {
   clearInterval(ambientTimer);
   ambientTimer = null;
   appendAudit('ambient.stopped');
+}
+
+function startLearningMonitor() {
+  if (!AMBIENT_LEARNING_ENABLED || learningTimer) return;
+  distillAmbientLearning({ source: 'learning_startup' });
+  learningTimer = setInterval(() => {
+    distillAmbientLearning({ source: 'learning_interval' });
+  }, AMBIENT_LEARNING_INTERVAL_MS);
+  appendAudit('learning.started', {
+    intervalMs: AMBIENT_LEARNING_INTERVAL_MS,
+    sourceEventLimit: MAX_LEARNING_SOURCE_EVENTS,
+  });
+}
+
+function stopLearningMonitor() {
+  if (!learningTimer) return;
+  clearInterval(learningTimer);
+  learningTimer = null;
+  appendAudit('learning.stopped');
 }
 
 function wakeStatusSnapshot(options = {}) {
@@ -6459,6 +6775,7 @@ function workflowBriefing(options = {}) {
   const blockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
   const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
+  const learning = learningStateSnapshot();
   const nextActions = [];
 
   if (readiness.primaryIssue) {
@@ -6550,6 +6867,7 @@ function workflowBriefing(options = {}) {
   const summary = [
     readiness.overall === 'blocked' ? `Setup blocked: ${readiness.summary}` : readiness.overall === 'degraded' ? `Needs attention: ${readiness.summary}` : 'Resident is ready.',
     `${workflowCounts().total} workflow(s), ${queueCounts().total} job(s), ${memories.size} memory record(s).`,
+    learning.enabled && learning.profile.sourceEventCount ? `Learning: ${learning.profile.summary}` : '',
     activeSession ? `Active session: ${activeSession.title}.` : '',
     openInbox.length ? `${openInbox.length} open inbox item(s).` : '',
     nextActions[0]?.summary || '',
@@ -6572,6 +6890,7 @@ function workflowBriefing(options = {}) {
       jobs: queueCounts(),
       pendingApprovals: pendingApprovals.length,
       memories: memories.size,
+      learnedProfileEvents: learning.profile.sourceEventCount,
       inbox: inboxCounts(),
       sessions: sessionCounts(),
       activeJobs: activeJobs.length,
@@ -6598,6 +6917,7 @@ function workflowBriefing(options = {}) {
         result: compactRecordText(job.result),
       })),
       memories: memorySnapshot(3),
+      learnedProfile: learning.profile,
       inbox: openInbox.slice(0, 3),
       sessions: sessionSnapshot(3),
     },
@@ -7335,6 +7655,15 @@ function readinessSnapshot() {
       memoryStoreCheck.ok ? '' : 'Fix runtime storage permissions before using memory.',
     ),
     readinessItem(
+      'learning_profile',
+      'Local learning',
+      !AMBIENT_LEARNING_ENABLED || memoryStoreCheck.ok ? 'ready' : 'blocked',
+      AMBIENT_LEARNING_ENABLED
+        ? `Ambient learning is enabled with ${learningStateSnapshot().profile.sourceEventCount} distilled observation(s).`
+        : 'Ambient learning is off.',
+      AMBIENT_LEARNING_ENABLED && !memoryStoreCheck.ok ? 'Fix runtime storage permissions before using ambient learning.' : '',
+    ),
+    readinessItem(
       'clipboard_policy',
       'Clipboard',
       actionPolicy.allow?.read_clipboard?.enabled && actionPolicy.allow?.write_clipboard?.enabled
@@ -7509,6 +7838,7 @@ function configCheckSnapshot() {
       sessionsFile: SESSIONS_FILE,
       screenPrivacyFile: SCREEN_PRIVACY_FILE,
       ambientFile: AMBIENT_FILE,
+      learningFile: LEARNING_FILE,
       jobsFile: JOBS_FILE,
       workflowsFile: WORKFLOWS_FILE,
       auditFile: AUDIT_FILE,
@@ -7527,6 +7857,7 @@ function configCheckSnapshot() {
       notifications: notificationSnapshot(),
       screenPrivacy: screenPrivacySnapshot(),
       ambient: ambientStateSnapshot(5),
+      learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),
     },
     models,
@@ -7573,6 +7904,7 @@ function healthSnapshot() {
       sessionsFile: SESSIONS_FILE,
       screenPrivacyFile: SCREEN_PRIVACY_FILE,
       ambientFile: AMBIENT_FILE,
+      learningFile: LEARNING_FILE,
       persistedJobs: jobs.size,
       persistedWorkflows: workflows.size,
       persistedApprovals: approvals.size,
@@ -7580,12 +7912,14 @@ function healthSnapshot() {
       persistedInboxItems: inboxItems.size,
       persistedSessions: workSessions.size,
       persistedAmbientEvents: ambientEvents.length,
+      persistedLearningEvents: learningStateSnapshot().profile.sourceEventCount,
       maxPersistedJobs: MAX_PERSISTED_JOBS,
       maxPersistedWorkflows: MAX_PERSISTED_WORKFLOWS,
       maxPersistedMemories: MAX_PERSISTED_MEMORIES,
       maxPersistedInboxItems: MAX_PERSISTED_INBOX,
       maxPersistedSessions: MAX_PERSISTED_SESSIONS,
       maxPersistedAmbientEvents: MAX_PERSISTED_AMBIENT,
+      maxLearningSourceEvents: MAX_LEARNING_SOURCE_EVENTS,
     },
     actionPolicy: {
       dryRun: actionPolicy.dryRun,
@@ -7598,6 +7932,7 @@ function healthSnapshot() {
     notifications: notificationSnapshot(),
     screenPrivacy: screenPrivacySnapshot(),
     ambient: ambientStateSnapshot(5),
+    learning: learningStateSnapshot(),
     wake: wakeStatusSnapshot(),
     approvals: {
       pending: pendingApprovalSnapshot(20),
@@ -9199,6 +9534,14 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(result) };
   }
 
+  if (name === 'get_learning_profile') {
+    return { ok: true, output: JSON.stringify(learningStateSnapshot()) };
+  }
+
+  if (name === 'distill_learning_profile') {
+    return { ok: true, output: JSON.stringify(distillAmbientLearning({ source: 'voice', force: true })) };
+  }
+
   if (name === 'get_inbox') {
     const status = String(args?.status || 'open');
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 5)));
@@ -9416,6 +9759,8 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_recent_workflows when the user asks what you just did, wants to continue prior work, or references the last task.',
       'Use remember_memory only when the user explicitly asks you to remember a preference, durable fact, or project note.',
       'Use search_memory when the user asks what you remember or when a task may depend on prior remembered local preferences.',
+      'Use get_learning_profile when the user asks what you have learned from passive local observation, recent app/browser focus, or inferred work patterns.',
+      'Treat the learning profile as local inferred context, not as user-confirmed memory or a reason to act without being asked.',
       'Use get_inbox when the user asks what is waiting, what they captured, or which Inbox items are open.',
       'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory.',
       'Use process_next_inbox only when the user explicitly asks to process, do, run, or start the next Inbox item.',
@@ -9847,6 +10192,26 @@ function createRealtimeSessionConfig(options = {}) {
             scope: { type: 'string' },
             limit: { type: 'number' },
           },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_learning_profile',
+        description: 'Get the local inferred learning profile distilled from passive ambient app/window/browser metadata. This is not explicit user-approved memory.',
+        parameters: {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'distill_learning_profile',
+        description: 'Refresh the local inferred learning profile from recent ambient observations. Does not call a model or execute computer actions.',
+        parameters: {
+          type: 'object',
+          properties: {},
           additionalProperties: false,
         },
       },
@@ -10656,6 +11021,7 @@ function startApiServer() {
       },
       screenPrivacy: screenPrivacySnapshot(),
       ambient: ambientStateSnapshot(5),
+      learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),
       window: windowStateSnapshot(),
       menuBar: menuBarSnapshot(),
@@ -10676,6 +11042,7 @@ function startApiServer() {
         total: memories.size,
         recent: memorySnapshot(3),
       },
+      learnedProfile: learningStateSnapshot().profile,
       inbox: {
         counts: inboxCounts(),
         open: inboxSnapshot(5, 'open'),
@@ -10712,6 +11079,14 @@ function startApiServer() {
     } catch (error) {
       jsonError(res, 500, 'Ambient sample failed', error instanceof Error ? error.message : String(error));
     }
+  });
+
+  api.get('/api/learning', (_req, res) => {
+    res.json({ learning: learningStateSnapshot() });
+  });
+
+  api.post('/api/learning/distill', express.json({ limit: '64kb' }), (req, res) => {
+    res.json({ ok: true, learning: distillAmbientLearning({ source: req.body?.source || 'api', force: true }) });
   });
 
   api.get('/api/wake/status', (req, res) => {
@@ -11276,6 +11651,7 @@ function createWindow() {
   mainWindow.setAlwaysOnTop(true, 'floating');
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
   parkWindow('startup', { menu: false });
+  scheduleWindowSizeEnforcement('startup_enforce');
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     appendAudit('renderer.load_failed', {
@@ -11286,6 +11662,12 @@ function createWindow() {
   });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     appendAudit('renderer.process_gone', details || {});
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    scheduleWindowSizeEnforcement('renderer_ready');
+  });
+  mainWindow.on('ready-to-show', () => {
+    scheduleWindowSizeEnforcement('ready_to_show');
   });
 
   const rendererUrl = process.env.JAVIS_RENDERER_URL;
@@ -11329,6 +11711,7 @@ app.whenReady().then(async () => {
     registerGlobalHotkeys();
     createMenuBarTray();
     startAmbientMonitor();
+    startLearningMonitor();
     startWakeEngine();
   } catch (error) {
     handleStartupError(error);
@@ -11347,6 +11730,7 @@ app.on('before-quit', () => {
   appendAudit('process.before_quit', { pid: process.pid, queue: queueCounts() });
   globalShortcut.unregisterAll();
   stopAmbientMonitor();
+  stopLearningMonitor();
   stopWakeEngine();
   if (menuBarAvailable()) {
     menuBarTray.destroy();
