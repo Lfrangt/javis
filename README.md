@@ -23,6 +23,7 @@ Local Mac-first realtime desktop buddy.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
 - Browser workflows: summarize, extract actions, draft, ask about the current page, search/compare result pages with structured candidate links, open and review one selected result, or synthesize across multiple result pages through quick or background lanes.
+- Explicit local control modes: observe-only, ask-before-action, trusted-local, and supervised-takeover posture on top of the action policy.
 - File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
 - Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
@@ -82,13 +83,14 @@ Use the terminal CUI to paste `OPENAI_API_KEY` locally. It hides the input, writ
 
 The same CUI can explicitly toggle `JAVIS_ENABLE_LOCAL_EXEC` for Level 3 local actions after typing `ENABLE` or `DISABLE`.
 It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowledges that automatic Level 3 local actions are intentional while Level 4 sends, purchases, deletes, form submissions, and account changes still require confirmation.
-The CUI also exposes next-work execution, overnight autopilot status, one-tick manual advance, learning refresh, inferred-memory save, learning skill draft preview/export, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
+The CUI also exposes explicit control-mode switching, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh, inferred-memory save, learning skill draft preview/export, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
 
 Use `npm run verify:ax` as a read-only Accessibility targeting smoke test. For the strict Chrome/Gemini side-pane case, focus Chrome and run `npm run verify:ax -- --require-chromium`.
 
-Use `npm run eval` against a running resident for a broader local product-lane scorecard. It uses read-only or preview checks by default and can be scoped with `npm run eval -- --only=health,routing`.
+Use `npm run eval` against a running resident for a broader local product-lane scorecard. It uses read-only or preview checks by default and can be scoped with `npm run eval -- --only=health,routing`. The control-mode lane temporarily switches modes, preview-tests the gates, and restores the previous mode.
 
 Local file policy lives in `~/Library/Application Support/JAVIS/Runtime/action-policy.json`; broad Home-directory access can be enabled there while protected macOS folders may still need Full Disk Access approval.
+Local autonomy posture lives in `~/Library/Application Support/JAVIS/Runtime/control-mode.json` and is also available through `/api/control/mode`.
 
 macOS will ask for microphone and screen recording permissions the first time those features are used.
 

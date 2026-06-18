@@ -24,6 +24,7 @@ Electron process
   Local explicit memory store
   Local Inbox store
   Structured audit log
+  Control mode posture
   Mac action bridge
   Mac context and clipboard bridge
   Browser context bridge
@@ -73,6 +74,7 @@ Renderer
 - Background lane: slower higher-quality model work.
 - Delegation lane: hands code or long tasks to Codex or Claude Code with streamed logs, PID tracking, and cancellation.
 - Action lane: small local Mac actions, guarded by allowlists and confirmation.
+- Control mode lane: local runtime posture (`observe_only`, `ask_before_action`, `trusted_local`, `takeover_supervised`) that tightens effective action thresholds before actions, CLI jobs, or code-agent workers can run.
 - Context lane: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Config lane: repeatable `.env`, permissions, resident mode, policy, and worker readiness diagnostics.
 - Setup guide lane: maps the current setup blockers to the next safe local action, such as opening `.env` or macOS permission settings.
@@ -123,6 +125,7 @@ By default, local runtime state lives in:
     inbox.json
     audit.jsonl
     action-policy.json
+    control-mode.json
     approvals.json
 ```
 
@@ -148,6 +151,8 @@ Running jobs keep their latest log in `jobs.json`. Codex and Claude workers are 
 `audit.jsonl` records structured process, job, tool, and local-action events for debugging and later replay/audit work.
 
 `action-policy.json` controls which local actions can run automatically, which require approval, and whether actions should run in dry-run mode.
+
+`control-mode.json` stores the current runtime autonomy posture. It never expands allowlists or file roots; it only tightens effective thresholds before Mac actions, browser/Accessibility actions, CLI jobs, and Codex/Claude workers run.
 
 `approvals.json` stores pending and historical approvals for higher-risk local actions.
 

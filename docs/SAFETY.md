@@ -50,6 +50,7 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 - Setup guide and setup-next only choose which existing setup action to open. They do not bypass macOS consent, write secrets, or change execution policy.
 - Local execution is explicit opt-in through `.env` or the terminal CUI. The CUI requires typing `ENABLE` or `DISABLE` before changing `JAVIS_ENABLE_LOCAL_EXEC`.
 - Trusted local mode is a separate acknowledgement for a personal workstation. The CUI requires typing `TRUST` before setting `JAVIS_TRUSTED_LOCAL_MODE=true`, enabling local execution, and aligning automatic Level 3 policy. It does not make Level 4 actions automatic.
+- Control mode is a runtime posture on top of action policy. `observe_only` blocks Level 2+ actions, `ask_before_action` requires approval for Level 2+ actions, and `trusted_local` / `takeover_supervised` still cannot exceed action-policy allowlists or thresholds.
 - File operations can be scoped broadly, such as to `/Users/Haoge`, through `action-policy.json`; macOS Full Disk Access for protected folders still requires the user to approve JAVIS/Electron in System Settings.
 - The resident install setup action writes a user LaunchAgent for next login. It does not start another Electron process while the current manual server is running.
 - High-permission local execution is off by default.
@@ -74,6 +75,21 @@ The resident server keeps a local policy file:
 ```text
 ~/Library/Application Support/JAVIS/Runtime/action-policy.json
 ```
+
+The resident also keeps a control-mode file:
+
+```text
+~/Library/Application Support/JAVIS/Runtime/control-mode.json
+```
+
+`/api/control/mode` exposes and updates the current posture:
+
+- `observe_only`: read/status/context actions only; Level 2+ local actions are blocked.
+- `ask_before_action`: Level 1 read-only actions can run; Level 2+ actions require approval.
+- `trusted_local`: uses the existing action policy for a trusted personal workstation.
+- `takeover_supervised`: makes the takeover intent explicit while still keeping Level 4 and policy-disallowed actions gated.
+
+Control mode only tightens the effective thresholds. It does not enable disabled actions, expand allowlists, widen file roots, bypass macOS permissions, or make Level 4 external side effects automatic.
 
 Default behavior:
 

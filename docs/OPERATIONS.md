@@ -51,7 +51,7 @@ curl http://127.0.0.1:3417/api/setup/guide
 npm run doctor
 ```
 
-Readiness checks cover the OpenAI key, microphone, screen capture, Accessibility, local execution, action policy, runtime storage, queue state, and pending approvals.
+Readiness checks cover the OpenAI key, microphone, screen capture, Accessibility, local execution, action policy, control mode, runtime storage, queue state, and pending approvals.
 
 The config check adds repeatable setup evidence for `.env`, `.env.example`, resident LaunchAgent installation, runtime files, policy files, and Codex/Claude worker command availability.
 
@@ -83,7 +83,7 @@ npm run eval -- --only=health,routing,collaboration
 npm run eval:json
 ```
 
-Current eval lanes cover resident health, work briefing, explicit memory, Inbox, routing/parallel ownership, collaboration claims, browser snapshots, file read/search/plan previews, and local learning/skill-draft preview.
+Current eval lanes cover resident health, work briefing, explicit memory, Inbox, routing/parallel ownership, collaboration claims, control-mode gates, browser snapshots, file read/search/plan previews, and local learning/skill-draft preview.
 
 Routine maintenance lives in the terminal CUI instead of the desktop pet:
 
@@ -99,6 +99,8 @@ Use option `9. Toggle Level 3 auto-run` to switch Level 3 actions between approv
 
 Use option `10. Toggle trusted local mode` when this Mac is intentionally being used as a high-autonomy local workstation. Enabling it writes `JAVIS_TRUSTED_LOCAL_MODE=true`, aligns Level 3 auto-run, and keeps Level 4 actions confirmation-gated. Doctor reports this as an acknowledged mode instead of a setup warning.
 
+Use option `11. Set control mode` to switch the runtime posture without editing JSON. `observe_only` keeps JAVIS watching and reading but blocks local actions, `ask_before_action` requires approval for Level 2+ actions, and `trusted_local` / `takeover_supervised` stay bounded by action policy.
+
 In trusted local mode, file write/create/copy/move roots default to the project, Desktop, Documents,
 and Downloads. Set `JAVIS_ALLOWED_WRITE_ROOTS` or edit `action-policy.json` in the CUI if you want a
 different local scope.
@@ -112,27 +114,27 @@ actions can be reviewed there without opening a separate UI. Retryable failed jo
 from work-next into a narrower recovery job with the original task, attempts, diagnostics, and log tail
 attached. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs per failed parent job.
 
-Use option `13. Show next work item` to preview the current `/api/work/next` action from the CUI.
+Use option `14. Show next work item` to preview the current `/api/work/next` action from the CUI.
 
-Use option `14. Run next work item` to preview and then execute the current workbench action after
+Use option `15. Run next work item` to preview and then execute the current workbench action after
 typing `RUN`. This is the manual path for recovering blocked jobs, processing the top Inbox item,
 checking progress, or delivering a completed workflow result without memorizing HTTP calls. Internal
 smoke/verification workflows are not offered as deliverable results.
 
-Use option `15. Show autopilot status` to see the resident overnight loop, last tick, last result,
+Use option `16. Show autopilot status` to see the resident overnight loop, last tick, last result,
 and the next workbench action without opening a separate UI.
 
-Use option `16. Run one autopilot tick` to preview and then manually advance the resident loop once.
+Use option `17. Run one autopilot tick` to preview and then manually advance the resident loop once.
 It calls `/api/autopilot/tick` and requires typing `RUN` before executing.
 
-Use option `17. Toggle overnight autopilot` to write `JAVIS_AUTOPILOT_ENABLED` in `.env`. Enabling it
+Use option `18. Toggle overnight autopilot` to write `JAVIS_AUTOPILOT_ENABLED` in `.env`. Enabling it
 also aligns local execution, trusted local mode, and Level 3 auto-run so the resident can keep making
 low-risk progress while unattended. The resident autopilot executes only low-risk recovery diagnostics
 and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
 another background job is running. When multiple work-next actions exist, autopilot skips manual-only
 items and executes the first action that passes its auto-executable guard.
 
-Use options `18`-`24` for local learning maintenance: refresh the inferred profile, save it as an
+Use options `19`-`25` for local learning maintenance: refresh the inferred profile, save it as an
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, preview
 a Codex-style skill draft, or export that draft to `~/.agents/skills` after typing `SAVE`.
 
@@ -560,6 +562,10 @@ curl -X POST http://127.0.0.1:3417/api/jobs/<job-id>/cancel \
   -d '{"reason":"Not now"}'
 curl http://127.0.0.1:3417/api/audit/recent
 curl http://127.0.0.1:3417/api/actions/policy
+curl http://127.0.0.1:3417/api/control/mode
+curl -X PUT http://127.0.0.1:3417/api/control/mode \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"observe_only"}'
 curl -X POST http://127.0.0.1:3417/api/observe \
   -H 'Content-Type: application/json' \
   -d '{"captureScreen":true,"includeAccessibility":true,"describeScreen":false}'

@@ -14,6 +14,7 @@ const ENV_FILE = path.join(process.cwd(), '.env');
 const ENV_EXAMPLE_FILE = path.join(process.cwd(), '.env.example');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const PARK_CORNERS = ['notch', 'bottom-right', 'bottom-left', 'top-right', 'top-left'];
+const CONTROL_MODES = ['observe_only', 'ask_before_action', 'trusted_local', 'takeover_supervised'];
 
 function formatTime(value) {
   const number = Number(value || 0);
@@ -178,6 +179,10 @@ async function printStatus() {
     console.log(`Trusted local mode: ${status.api?.trustedLocalMode ? 'enabled' : 'off'}`);
     if (status.actionPolicy) {
       console.log(`Auto-run: Level ${status.actionPolicy.maxAutoRiskLevel}; approval at Level ${status.actionPolicy.requireApprovalAtRiskLevel}`);
+      if (status.actionPolicy.controlMode) {
+        const mode = status.actionPolicy.controlMode;
+        console.log(`Control mode: ${mode.mode || '-'} · effective auto Level ${mode.effective?.maxAutoRiskLevel ?? '-'} · approval at Level ${mode.effective?.requireApprovalAtRiskLevel ?? '-'}`);
+      }
     }
     console.log(`Pet: ${window.mode || 'pet'} ${window.position ? `@ ${window.position.x},${window.position.y}` : ''}`);
     console.log(`Hotkeys: pet ${window.hotkeyRegistered ? 'ready' : 'off'} (${window.hotkey || '-'}) · capture ${window.captureHotkeyRegistered ? 'ready' : 'off'} (${window.captureHotkey || '-'})`);
@@ -239,22 +244,23 @@ async function printStatus() {
   console.log('8. Toggle local execution');
   console.log('9. Toggle Level 3 auto-run');
   console.log('10. Toggle trusted local mode');
-  console.log('11. Run doctor');
-  console.log('12. Test wake trigger');
-  console.log('13. Show next work item');
-  console.log('14. Run next work item');
-  console.log('15. Show autopilot status');
-  console.log('16. Run one autopilot tick');
-  console.log('17. Toggle overnight autopilot');
-  console.log('18. Refresh learning profile');
-  console.log('19. Save learning as memory');
-  console.log('20. Pause/resume learning');
-  console.log('21. Manage learning exclusions');
-  console.log('22. Delete inferred learning data');
-  console.log('23. Preview learning skill draft');
-  console.log('24. Export learning skill');
-  console.log('25. Show collaboration claims');
-  console.log('26. Quit');
+  console.log('11. Set control mode');
+  console.log('12. Run doctor');
+  console.log('13. Test wake trigger');
+  console.log('14. Show next work item');
+  console.log('15. Run next work item');
+  console.log('16. Show autopilot status');
+  console.log('17. Run one autopilot tick');
+  console.log('18. Toggle overnight autopilot');
+  console.log('19. Refresh learning profile');
+  console.log('20. Save learning as memory');
+  console.log('21. Pause/resume learning');
+  console.log('22. Manage learning exclusions');
+  console.log('23. Delete inferred learning data');
+  console.log('24. Preview learning skill draft');
+  console.log('25. Export learning skill');
+  console.log('26. Show collaboration claims');
+  console.log('27. Quit');
 }
 
 async function setupAction(action) {
@@ -366,6 +372,38 @@ async function toggleTrustedLocalMode(rl) {
   if (!restart || restart === 'y' || restart === 'yes') {
     await restartJavis();
   }
+}
+
+async function setControlMode(rl) {
+  const current = await request('/api/control/mode');
+  const mode = current.controlMode || {};
+  console.log(`\nControl mode is currently ${mode.mode || '-'}.`);
+  console.log('observe_only: watch/read/status only; blocks actions.');
+  console.log('ask_before_action: read-only auto; asks before Level 2+ actions.');
+  console.log('trusted_local: use local action policy for this Mac.');
+  console.log('takeover_supervised: trusted local actions, Level 4 still gated.');
+  CONTROL_MODES.forEach((id, index) => {
+    console.log(`${index + 1}. ${id}`);
+  });
+  const answer = (await rl.question(`Choose mode [1-${CONTROL_MODES.length}]: `)).trim();
+  const selected = CONTROL_MODES[Number(answer) - 1];
+  if (!selected) {
+    console.log('\nNo change made.');
+    return;
+  }
+  const expected = selected === 'observe_only' ? 'OBSERVE' : selected === 'ask_before_action' ? 'ASK' : selected === 'trusted_local' ? 'TRUST' : 'TAKEOVER';
+  const confirm = (await rl.question(`Type ${expected} to switch to ${selected}: `)).trim();
+  if (confirm !== expected) {
+    console.log('\nNo change made.');
+    return;
+  }
+  const updated = await request('/api/control/mode', {
+    method: 'PUT',
+    body: { mode: selected, source: 'cui' },
+  });
+  const next = updated.controlMode || {};
+  console.log(`\nControl mode saved: ${next.mode || selected}.`);
+  console.log(`Effective auto Level ${next.effective?.maxAutoRiskLevel ?? '-'}; approval at Level ${next.effective?.requireApprovalAtRiskLevel ?? '-'}.`);
 }
 
 function printAutopilotDetails(autopilot) {
@@ -691,50 +729,52 @@ async function main() {
       } else if (answer === '10') {
         await toggleTrustedLocalMode(rl);
       } else if (answer === '11') {
+        await setControlMode(rl);
+      } else if (answer === '12') {
         const doctor = await request('/api/doctor/report');
         console.log(`\n${doctor.doctor?.label || doctor.doctor?.overall || 'Doctor complete'}`);
         console.log(issueLines(doctor.doctor).join('\n') || 'All checks ready.');
-      } else if (answer === '12') {
+      } else if (answer === '13') {
         const result = await request('/api/wake/trigger', {
           method: 'POST',
           body: { source: 'cui', phrase: 'manual test' },
         });
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
-      } else if (answer === '13') {
-        await showWorkbenchNext();
       } else if (answer === '14') {
-        await runWorkbenchNext(rl);
+        await showWorkbenchNext();
       } else if (answer === '15') {
-        await showAutopilotStatus();
+        await runWorkbenchNext(rl);
       } else if (answer === '16') {
-        await runAutopilotTick(rl);
+        await showAutopilotStatus();
       } else if (answer === '17') {
-        await toggleAutopilot(rl);
+        await runAutopilotTick(rl);
       } else if (answer === '18') {
+        await toggleAutopilot(rl);
+      } else if (answer === '19') {
         const result = await request('/api/learning/distill', {
           method: 'POST',
           body: { source: 'cui' },
         });
         console.log(`\nLearning refreshed: ${result.learning?.profile?.summary || 'no profile yet'}`);
-      } else if (answer === '19') {
+      } else if (answer === '20') {
         const result = await request('/api/learning/remember', {
           method: 'POST',
           body: { source: 'cui' },
         });
         console.log(`\nSaved learning memory: ${result.memory?.text ? compact(result.memory.text, 500) : result.memory?.id || 'done'}`);
-      } else if (answer === '20') {
-        await toggleLearning(rl);
       } else if (answer === '21') {
-        await manageLearningExclusions(rl);
+        await toggleLearning(rl);
       } else if (answer === '22') {
-        await deleteLearningData(rl);
+        await manageLearningExclusions(rl);
       } else if (answer === '23') {
-        await previewLearningSkillDraft();
+        await deleteLearningData(rl);
       } else if (answer === '24') {
-        await exportLearningSkillDraft(rl);
+        await previewLearningSkillDraft();
       } else if (answer === '25') {
+        await exportLearningSkillDraft(rl);
+      } else if (answer === '26') {
         await showCollaborationClaims();
-      } else if (answer === '26' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '27' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

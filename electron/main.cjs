@@ -45,6 +45,7 @@ const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
 const COLLABORATION_FILE = path.join(DATA_DIR, 'collaboration.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
 const ACTION_POLICY_FILE = path.join(DATA_DIR, 'action-policy.json');
+const CONTROL_MODE_FILE = path.join(DATA_DIR, 'control-mode.json');
 const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, 'api-token');
 const APPROVALS_FILE = path.join(DATA_DIR, 'approvals.json');
 const MEMORIES_FILE = path.join(DATA_DIR, 'memories.json');
@@ -252,6 +253,55 @@ const DEFAULT_ACTION_POLICY = {
     copy_file: { enabled: true, allowedRoots: DEFAULT_WRITE_ROOTS, maxBytes: 400000 },
     move_file: { enabled: true, allowedRoots: DEFAULT_WRITE_ROOTS },
   },
+};
+
+const CONTROL_MODE_DEFINITIONS = {
+  observe_only: {
+    id: 'observe_only',
+    label: 'Observe only',
+    description: 'Read context and report status, but block local computer actions.',
+    maxAutoRiskLevel: 1,
+    requireApprovalAtRiskLevel: 2,
+    blocksActionsAtRiskLevel: 2,
+  },
+  ask_before_action: {
+    id: 'ask_before_action',
+    label: 'Ask before action',
+    description: 'Allow read-only context automatically; require approval for reversible or higher-risk actions.',
+    maxAutoRiskLevel: 1,
+    requireApprovalAtRiskLevel: 2,
+    blocksActionsAtRiskLevel: 0,
+  },
+  trusted_local: {
+    id: 'trusted_local',
+    label: 'Trusted local',
+    description: 'Use the local action policy thresholds for this personal workstation.',
+    maxAutoRiskLevel: 3,
+    requireApprovalAtRiskLevel: 4,
+    blocksActionsAtRiskLevel: 0,
+  },
+  takeover_supervised: {
+    id: 'takeover_supervised',
+    label: 'Supervised takeover',
+    description: 'Run trusted local actions while keeping Level 4 and policy-disallowed work gated.',
+    maxAutoRiskLevel: 3,
+    requireApprovalAtRiskLevel: 4,
+    blocksActionsAtRiskLevel: 0,
+  },
+};
+
+const CONTROL_MODE_ALIASES = {
+  observe: 'observe_only',
+  readonly: 'observe_only',
+  read_only: 'observe_only',
+  watch: 'observe_only',
+  ask: 'ask_before_action',
+  guarded: 'ask_before_action',
+  manual: 'ask_before_action',
+  trusted: 'trusted_local',
+  local: 'trusted_local',
+  takeover: 'takeover_supervised',
+  autopilot: 'takeover_supervised',
 };
 
 class ActionApprovalRequired extends Error {
@@ -525,6 +575,7 @@ let apiServer;
 let mainWindow;
 let speechProcess = null;
 let actionPolicy;
+let controlModeState;
 let apiToken = '';
 let screenPrivacy;
 let currentWindowMode = 'pet';
@@ -590,6 +641,7 @@ const notificationState = {
 ensureRuntimeStorage();
 apiToken = loadOrCreateApiToken();
 actionPolicy = loadActionPolicy();
+controlModeState = loadControlMode();
 screenPrivacy = loadScreenPrivacy();
 loadPersistedJobs();
 loadPersistedWorkflows();
@@ -611,6 +663,7 @@ appendAudit('process.start', {
     maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
     requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
   },
+  controlMode: controlModeSnapshot(),
   apiAuth: {
     enabled: API_AUTH_ENABLED,
     tokenFile: API_TOKEN_FILE,
@@ -1446,6 +1499,151 @@ function loadActionPolicy() {
 
 function persistActionPolicy() {
   writeJsonAtomic(ACTION_POLICY_FILE, actionPolicy);
+}
+
+function defaultControlModeId() {
+  return LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE ? 'trusted_local' : 'ask_before_action';
+}
+
+function normalizeControlModeId(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliased = CONTROL_MODE_ALIASES[normalized] || normalized;
+  return CONTROL_MODE_DEFINITIONS[aliased] ? aliased : '';
+}
+
+function controlModeDefinition(value) {
+  const id = normalizeControlModeId(value) || defaultControlModeId();
+  return CONTROL_MODE_DEFINITIONS[id] || CONTROL_MODE_DEFINITIONS.ask_before_action;
+}
+
+function availableControlModes() {
+  return Object.values(CONTROL_MODE_DEFINITIONS).map((mode) => ({ ...mode }));
+}
+
+function normalizeControlModeState(value = {}) {
+  const mode = controlModeDefinition(value.mode || value.id || defaultControlModeId());
+  return {
+    version: 1,
+    mode: mode.id,
+    label: mode.label,
+    description: mode.description,
+    maxAutoRiskLevel: mode.maxAutoRiskLevel,
+    requireApprovalAtRiskLevel: mode.requireApprovalAtRiskLevel,
+    blocksActionsAtRiskLevel: mode.blocksActionsAtRiskLevel,
+    source: compactRecordText(value.source || 'default', 80),
+    updatedAt: Number(value.updatedAt || Date.now()),
+  };
+}
+
+function loadControlMode() {
+  if (!fs.existsSync(CONTROL_MODE_FILE)) {
+    const state = normalizeControlModeState({ mode: defaultControlModeId(), source: 'default' });
+    writeJsonAtomic(CONTROL_MODE_FILE, state);
+    return state;
+  }
+  try {
+    const state = normalizeControlModeState(JSON.parse(fs.readFileSync(CONTROL_MODE_FILE, 'utf8')));
+    writeJsonAtomic(CONTROL_MODE_FILE, state);
+    return state;
+  } catch (error) {
+    appendAudit('control_mode.load_failed', { message: error instanceof Error ? error.message : String(error) });
+    return normalizeControlModeState({ mode: defaultControlModeId(), source: 'fallback' });
+  }
+}
+
+function persistControlMode() {
+  writeJsonAtomic(CONTROL_MODE_FILE, controlModeState);
+}
+
+function controlModeSnapshot(options = {}) {
+  const snapshot = normalizeControlModeState(controlModeState || { mode: defaultControlModeId() });
+  return {
+    ...snapshot,
+    effective: {
+      maxAutoRiskLevel: Math.min(actionPolicy.maxAutoRiskLevel, snapshot.maxAutoRiskLevel),
+      requireApprovalAtRiskLevel: Math.min(actionPolicy.requireApprovalAtRiskLevel, snapshot.requireApprovalAtRiskLevel),
+    },
+    policyMaxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
+    policyRequireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+    localExecutionEnabled: LOCAL_EXEC_ENABLED,
+    trustedLocalMode: TRUSTED_LOCAL_MODE,
+    ...(options.includeAvailableModes ? { availableModes: availableControlModes() } : {}),
+  };
+}
+
+function setControlMode(options = {}) {
+  const modeId = normalizeControlModeId(options.mode || options.id);
+  if (!modeId) {
+    throw new Error(`Unsupported control mode: ${options.mode || options.id || ''}`);
+  }
+  controlModeState = normalizeControlModeState({
+    mode: modeId,
+    source: options.source || 'api',
+    updatedAt: Date.now(),
+  });
+  persistControlMode();
+  appendAudit('control_mode.updated', {
+    mode: controlModeState.mode,
+    source: controlModeState.source,
+    effectiveMaxAutoRiskLevel: controlModeSnapshot().effective.maxAutoRiskLevel,
+    effectiveRequireApprovalAtRiskLevel: controlModeSnapshot().effective.requireApprovalAtRiskLevel,
+  });
+  return {
+    ok: true,
+    controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+    effectivePolicy: effectiveActionPolicySnapshot(),
+    controlModeFile: CONTROL_MODE_FILE,
+  };
+}
+
+function effectiveActionPolicySnapshot() {
+  const controlMode = controlModeSnapshot();
+  return {
+    version: actionPolicy.version,
+    dryRun: actionPolicy.dryRun,
+    maxAutoRiskLevel: controlMode.effective.maxAutoRiskLevel,
+    requireApprovalAtRiskLevel: controlMode.effective.requireApprovalAtRiskLevel,
+    policyMaxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
+    policyRequireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+    allow: actionPolicy.allow,
+    controlMode,
+    localExecutionEnabled: LOCAL_EXEC_ENABLED,
+    trustedLocalMode: TRUSTED_LOCAL_MODE,
+  };
+}
+
+function evaluateControlModeRisk(plan, options = {}) {
+  const effective = effectiveActionPolicySnapshot();
+  const controlMode = effective.controlMode;
+  const blockAt = Number(controlMode.blocksActionsAtRiskLevel || 0);
+  if (blockAt > 0 && Number(plan.riskLevel || 0) >= blockAt) {
+    return {
+      dryRun: Boolean(actionPolicy.dryRun),
+      needsApproval: false,
+      blocked: true,
+      reason: `control_mode_${controlMode.mode}_blocks_risk_level_${plan.riskLevel}`,
+      controlMode,
+      effectivePolicy: {
+        maxAutoRiskLevel: effective.maxAutoRiskLevel,
+        requireApprovalAtRiskLevel: effective.requireApprovalAtRiskLevel,
+      },
+    };
+  }
+
+  const needsApproval =
+    !options.approved &&
+    (plan.riskLevel >= effective.requireApprovalAtRiskLevel || plan.riskLevel > effective.maxAutoRiskLevel);
+  return {
+    dryRun: Boolean(actionPolicy.dryRun),
+    needsApproval,
+    blocked: false,
+    reason: needsApproval ? `risk_level_${plan.riskLevel}_requires_approval` : '',
+    controlMode,
+    effectivePolicy: {
+      maxAutoRiskLevel: effective.maxAutoRiskLevel,
+      requireApprovalAtRiskLevel: effective.requireApprovalAtRiskLevel,
+    },
+  };
 }
 
 function normalizeScreenPrivacy(value = {}) {
@@ -16082,6 +16280,13 @@ function readinessSnapshot() {
           : 'Review /api/actions/policy before enabling more autonomy.',
     ),
     readinessItem(
+      'control_mode',
+      'Control mode',
+      'ready',
+      `${controlModeState.label}: auto Level ${controlModeSnapshot().effective.maxAutoRiskLevel}; approval at Level ${controlModeSnapshot().effective.requireApprovalAtRiskLevel}.`,
+      '',
+    ),
+    readinessItem(
       'file_roots',
       'File roots',
       missingRoots.length === 0 ? 'ready' : 'warning',
@@ -16252,6 +16457,13 @@ function configCheckSnapshot() {
       fs.existsSync(ACTION_POLICY_FILE) ? `Policy file: ${ACTION_POLICY_FILE}` : 'Action policy file is missing.',
       fs.existsSync(ACTION_POLICY_FILE) ? '' : 'Restart JAVIS so the default policy can be created.',
     ),
+    checkItem(
+      'control_mode_file',
+      'Control mode file',
+      fs.existsSync(CONTROL_MODE_FILE) ? 'ready' : 'blocked',
+      fs.existsSync(CONTROL_MODE_FILE) ? `Control mode file: ${CONTROL_MODE_FILE}` : 'Control mode file is missing.',
+      fs.existsSync(CONTROL_MODE_FILE) ? '' : 'Restart JAVIS so the default control mode can be created.',
+    ),
   ];
   const items = [...readiness.items, ...localItems, ...workerItems];
   const blocked = items.filter((item) => item.status === 'blocked').length;
@@ -16275,6 +16487,7 @@ function configCheckSnapshot() {
       envExampleFile,
       dataDir: DATA_DIR,
       actionPolicyFile: ACTION_POLICY_FILE,
+      controlModeFile: CONTROL_MODE_FILE,
       approvalsFile: APPROVALS_FILE,
       memoriesFile: MEMORIES_FILE,
       inboxFile: INBOX_FILE,
@@ -16296,6 +16509,8 @@ function configCheckSnapshot() {
       dryRun: actionPolicy.dryRun,
       maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
       requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+      controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+      effectiveActionPolicy: effectiveActionPolicySnapshot(),
       launchAgentInstalled,
       window: windowStateSnapshot(),
       menuBar: menuBarSnapshot(),
@@ -16353,6 +16568,7 @@ function healthSnapshot() {
       collaborationFile: COLLABORATION_FILE,
       auditFile: AUDIT_FILE,
       actionPolicyFile: ACTION_POLICY_FILE,
+      controlModeFile: CONTROL_MODE_FILE,
       approvalsFile: APPROVALS_FILE,
       memoriesFile: MEMORIES_FILE,
       inboxFile: INBOX_FILE,
@@ -16385,6 +16601,8 @@ function healthSnapshot() {
       maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
       requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
       allow: actionPolicy.allow,
+      controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+      effective: effectiveActionPolicySnapshot(),
     },
     window: windowStateSnapshot(),
     menuBar: menuBarSnapshot(),
@@ -17198,7 +17416,23 @@ function evaluateCliCommand(command, options = {}) {
   if (!valueMatchesAllowlist(snapshot.commandName, snapshot.allowedCommands)) {
     throw new Error(`CLI command ${snapshot.commandName} is not allowed by policy.`);
   }
-  return snapshot;
+  const controlEvaluation = evaluateControlModeRisk({
+    action: 'cli_command',
+    riskLevel: 3,
+    summary: `Run CLI command: ${snapshot.commandName}`,
+    target: snapshot.commandName,
+  }, options);
+  if (controlEvaluation.blocked) {
+    throw new Error(`${controlEvaluation.reason}. Current mode: ${controlEvaluation.controlMode.label}.`);
+  }
+  if (controlEvaluation.needsApproval && !options.approved) {
+    throw new Error(`${controlEvaluation.reason}; explicit CLI jobs are not queued until control mode allows Level 3.`);
+  }
+  return {
+    ...snapshot,
+    controlMode: controlEvaluation.controlMode,
+    effectivePolicy: controlEvaluation.effectivePolicy,
+  };
 }
 
 function queueCliCommand(options = {}) {
@@ -17366,6 +17600,7 @@ function addJobAttempt(job, attempt) {
 function classifyJobFailure(error, job = {}) {
   const text = String(error?.failureKind || error?.message || error || '').toLowerCase();
   if (error instanceof ActionApprovalRequired || /approval/.test(text)) return 'approval_required';
+  if (/control_mode|control mode/.test(text)) return 'policy_blocked';
   if (/local execution|javis_enable_local_exec|level 3 local actions are disabled/.test(text)) return 'local_execution_disabled';
   if (/not found on path|command not found|not available|enoent|could not identify/.test(text)) return 'worker_command_missing';
   if (/not allowed by policy|disabled by policy|allowlist/.test(text)) return 'policy_blocked';
@@ -17419,7 +17654,7 @@ function evaluateCodeAgentPlan(plan, options = {}) {
   if (config.enabled === false) throw new Error('Code agent execution is disabled by policy.');
   if (!LOCAL_EXEC_ENABLED) {
     if (options.preview) {
-      return { dryRun: Boolean(actionPolicy.dryRun), needsApproval: true, blocked: true, reason: 'local_execution_disabled' };
+      return { dryRun: Boolean(actionPolicy.dryRun), needsApproval: true, blocked: true, reason: 'local_execution_disabled', controlMode: controlModeSnapshot() };
     }
     throw new Error('Code agent execution requires JAVIS_ENABLE_LOCAL_EXEC=true.');
   }
@@ -17429,20 +17664,20 @@ function evaluateCodeAgentPlan(plan, options = {}) {
   }
   if (!commandExists(command)) throw new Error(`Code agent command not found on PATH: ${commandName}`);
 
-  const needsApproval =
-    !options.approved &&
-    (plan.riskLevel >= actionPolicy.requireApprovalAtRiskLevel || plan.riskLevel > actionPolicy.maxAutoRiskLevel);
-  if (needsApproval) {
+  const controlEvaluation = evaluateControlModeRisk(plan, options);
+  if (controlEvaluation.blocked) {
+    if (options.preview) return controlEvaluation;
+    throw new Error(`${controlEvaluation.reason}. Current mode: ${controlEvaluation.controlMode.label}.`);
+  }
+  if (controlEvaluation.needsApproval) {
     if (options.preview) {
-      return { dryRun: Boolean(actionPolicy.dryRun), needsApproval: true, reason: `risk_level_${plan.riskLevel}_requires_approval` };
+      return controlEvaluation;
     }
-    const approval = createActionApproval(plan, `risk_level_${plan.riskLevel}_requires_approval`);
+    const approval = createActionApproval(plan, controlEvaluation.reason);
     throw new ActionApprovalRequired(approval);
   }
   return {
-    dryRun: Boolean(actionPolicy.dryRun),
-    needsApproval: false,
-    reason: '',
+    ...controlEvaluation,
     timeoutMs: Math.max(1000, Math.min(maxTimeoutMs, Number(options.timeoutMs || 180000))),
   };
 }
@@ -17567,6 +17802,8 @@ function recoveryDiagnosticsSnapshot() {
         dryRun: config.runtime?.dryRun,
         maxAutoRiskLevel: config.runtime?.maxAutoRiskLevel,
         requireApprovalAtRiskLevel: config.runtime?.requireApprovalAtRiskLevel,
+        controlMode: config.runtime?.controlMode,
+        effectiveActionPolicy: config.runtime?.effectiveActionPolicy,
       },
       workers: config.workers,
       policy: {
@@ -18324,32 +18561,31 @@ function evaluateMacActionPlan(plan, options = {}) {
         needsApproval: true,
         blocked: true,
         reason: 'local_execution_disabled',
+        controlMode: controlModeSnapshot(),
       };
     }
     throw new Error('Level 3 local actions are disabled. Set JAVIS_ENABLE_LOCAL_EXEC=true and restart JAVIS first.');
   }
 
-  const needsApproval =
-    !options.approved &&
-    (plan.riskLevel >= actionPolicy.requireApprovalAtRiskLevel || plan.riskLevel > actionPolicy.maxAutoRiskLevel);
+  const controlEvaluation = evaluateControlModeRisk(plan, options);
+  if (controlEvaluation.blocked) {
+    if (options.preview) return controlEvaluation;
+    throw new Error(`${controlEvaluation.reason}. Current mode: ${controlEvaluation.controlMode.label}.`);
+  }
 
-  if (needsApproval) {
+  if (controlEvaluation.needsApproval) {
     if (options.preview) {
-      return {
-        dryRun: Boolean(actionPolicy.dryRun),
-        needsApproval: true,
-        reason: `risk_level_${plan.riskLevel}_requires_approval`,
-      };
+      return controlEvaluation;
     }
     const approval = createActionApproval(
       plan,
-      `risk_level_${plan.riskLevel}_requires_approval`,
+      controlEvaluation.reason,
       options.approvalContext,
     );
     throw new ActionApprovalRequired(approval);
   }
 
-  return { dryRun: Boolean(actionPolicy.dryRun), needsApproval: false, reason: '' };
+  return controlEvaluation;
 }
 
 async function runMacActionPlan(plan, evaluation) {
@@ -18701,6 +18937,25 @@ async function executeTool(name, args) {
 
   if (name === 'get_config_check') {
     return { ok: true, output: JSON.stringify(configCheckSnapshot()) };
+  }
+
+  if (name === 'get_control_mode') {
+    return {
+      ok: true,
+      output: JSON.stringify({
+        controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+        effectivePolicy: effectiveActionPolicySnapshot(),
+      }),
+    };
+  }
+
+  if (name === 'set_control_mode') {
+    try {
+      const result = setControlMode({ mode: args?.mode, source: 'voice' });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
   }
 
   if (name === 'get_setup_guide') {
@@ -19198,6 +19453,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use read_browser_dom before choosing a clickable or fillable element inside the current webpage.',
       'Use control_browser_dom only when the user explicitly asks to click, fill, or select an element inside the current webpage. Do not use it for submits, purchases, sends, logins, deletes, or account changes without confirmation.',
       'Use get_config_check when setup, permission, resident mode, or local worker readiness is unclear.',
+      'Use get_control_mode when the user asks whether JAVIS is observing, asking, trusted, or in supervised takeover mode. Use set_control_mode only when the user explicitly asks to change autonomy.',
       'Use get_setup_guide when the user asks what setup remains. Use run_setup_next only when the user asks to fix, open, or do the next setup step.',
       'Use read_accessibility_tree before planning control of a visible Mac app through its UI structure.',
       'Use plan_ui_action when the user asks you to click, choose, fill, edit, or control the current app; this is a dry-run plan, not execution.',
@@ -19383,6 +19639,29 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_control_mode',
+        description: 'Read the current JAVIS control mode and effective action thresholds. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'set_control_mode',
+        description: 'Switch JAVIS between observe_only, ask_before_action, trusted_local, and takeover_supervised. Use only when the user explicitly asks to change autonomy.',
+        parameters: {
+          type: 'object',
+          properties: {
+            mode: { type: 'string', enum: ['observe_only', 'ask_before_action', 'trusted_local', 'takeover_supervised'] },
+          },
+          required: ['mode'],
           additionalProperties: false,
         },
       },
@@ -20871,6 +21150,8 @@ function startApiServer() {
         dryRun: actionPolicy.dryRun,
         maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
         requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+        controlMode: controlModeSnapshot(),
+        effective: effectiveActionPolicySnapshot(),
       },
       screenPrivacy: screenPrivacySnapshot(),
       presence,
@@ -21346,7 +21627,13 @@ function startApiServer() {
   });
 
   api.get('/api/actions/policy', (_req, res) => {
-    res.json({ policy: actionPolicy, policyFile: ACTION_POLICY_FILE });
+    res.json({
+      policy: actionPolicy,
+      effectivePolicy: effectiveActionPolicySnapshot(),
+      controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+      policyFile: ACTION_POLICY_FILE,
+      controlModeFile: CONTROL_MODE_FILE,
+    });
   });
 
   api.put('/api/actions/policy', (req, res) => {
@@ -21365,19 +21652,54 @@ function startApiServer() {
       maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
       requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
     });
-    res.json({ policy: actionPolicy, policyFile: ACTION_POLICY_FILE });
+    res.json({
+      policy: actionPolicy,
+      effectivePolicy: effectiveActionPolicySnapshot(),
+      controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+      policyFile: ACTION_POLICY_FILE,
+      controlModeFile: CONTROL_MODE_FILE,
+    });
+  });
+
+  api.get('/api/control/mode', (_req, res) => {
+    res.json({
+      controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+      effectivePolicy: effectiveActionPolicySnapshot(),
+      controlModeFile: CONTROL_MODE_FILE,
+      policyFile: ACTION_POLICY_FILE,
+    });
+  });
+
+  api.put('/api/control/mode', (req, res) => {
+    try {
+      const result = setControlMode({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Control mode update failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/control/mode', (req, res) => {
+    try {
+      const result = setControlMode({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Control mode update failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.post('/api/actions/preview', (req, res) => {
     try {
       const plan = buildLocalActionPlan(req.body || {});
       const evaluation = evaluateMacActionPlan(plan, { preview: true });
-      res.json({ ok: true, plan, evaluation, policy: actionPolicy });
+      res.json({ ok: true, plan, evaluation, policy: actionPolicy, effectivePolicy: effectiveActionPolicySnapshot(), controlMode: controlModeSnapshot() });
     } catch (error) {
       res.json({
         ok: false,
         error: error instanceof Error ? error.message : String(error),
         policy: actionPolicy,
+        effectivePolicy: effectiveActionPolicySnapshot(),
+        controlMode: controlModeSnapshot(),
       });
     }
   });
