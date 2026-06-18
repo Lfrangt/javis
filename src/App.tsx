@@ -638,10 +638,10 @@ type ChatMessage = {
 
 const API_BASE = import.meta.env.VITE_JAVIS_API_BASE || 'http://127.0.0.1:3417'
 const startupTime = Date.now()
-const REALTIME_WORK_PROGRESS_SYNC_MS = Math.max(
-  15000,
-  Math.min(120000, Number(import.meta.env.VITE_JAVIS_REALTIME_WORK_PROGRESS_SYNC_MS || 30000)),
-)
+const realtimeWorkProgressSyncMs = Number(import.meta.env.VITE_JAVIS_REALTIME_WORK_PROGRESS_SYNC_MS || 30000)
+const REALTIME_WORK_PROGRESS_SYNC_MS = Number.isFinite(realtimeWorkProgressSyncMs)
+  ? Math.max(15000, Math.min(120000, realtimeWorkProgressSyncMs))
+  : 30000
 const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   version: 1,
   mode: 'private',
@@ -711,17 +711,6 @@ function compactJobText(job: Job) {
 function compactWorkflowText(workflow: WorkflowRecord) {
   const text = workflow.result || workflow.request || workflow.target?.url || ''
   return text.split('\n').filter(Boolean).slice(0, 2).join(' · ')
-}
-
-function workProgressSignature(progress: WorkProgress) {
-  return JSON.stringify({
-    counts: progress.counts,
-    activeJobs: progress.activeJobs.map((job) => [job.id, job.status, job.updatedAt, job.result.length]),
-    activeWorkflows: progress.activeWorkflows.map((workflow) => [workflow.id, workflow.status, workflow.updatedAt, workflow.result.length]),
-    blockedWorkflows: progress.blockedWorkflows.map((workflow) => [workflow.id, workflow.status, workflow.updatedAt, workflow.result.length]),
-    latestDoneJob: progress.latestDone?.job ? [progress.latestDone.job.id, progress.latestDone.job.updatedAt, progress.latestDone.job.result.length] : null,
-    latestDoneWorkflow: progress.latestDone?.workflow ? [progress.latestDone.workflow.id, progress.latestDone.workflow.updatedAt, progress.latestDone.workflow.result.length] : null,
-  })
 }
 
 function realtimeWorkProgressContext(progress: WorkProgress, since: number) {
@@ -804,6 +793,8 @@ function App() {
   const lastWakeHandledAtRef = useRef(0)
   const screenPreviewRef = useRef('')
   const screenFrameRef = useRef<{ width: number; height: number } | null>(null)
+  const realtimeScreenContextRef = useRef(realtimeScreenContext)
+  const initialScreenContextTimeoutRef = useRef<number | null>(null)
   const dragStateRef = useRef<{
     pointerId: number
     startScreenX: number
@@ -848,6 +839,10 @@ function App() {
       { id: crypto.randomUUID(), role, text, createdAt: Date.now() },
     ])
   }, [])
+
+  useEffect(() => {
+    realtimeScreenContextRef.current = realtimeScreenContext
+  }, [realtimeScreenContext])
 
   const loadDoctorReport = useCallback(async () => {
     const doctor = await fetchDoctorReport()
@@ -1115,6 +1110,10 @@ function App() {
   }, [])
 
   const stopVoice = useCallback((options: { report?: boolean } = {}) => {
+    if (initialScreenContextTimeoutRef.current !== null) {
+      window.clearTimeout(initialScreenContextTimeoutRef.current)
+      initialScreenContextTimeoutRef.current = null
+    }
     dataChannelRef.current?.close()
     peerRef.current?.close()
     micStreamRef.current?.getTracks().forEach((track) => track.stop())
@@ -1219,10 +1218,11 @@ function App() {
     [addMessage, runRealtimeToolOnce],
   )
 
-  const startVoice = useCallback(async () => {
+  const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
+    const intendedScreenLive = options.screenLive ?? screenLive
     setLastError('')
     setVoiceStatus('connecting')
-    void updateResidentConversation({ status: 'connecting', micMode, screenLive })
+    void updateResidentConversation({ status: 'connecting', micMode, screenLive: intendedScreenLive })
     try {
       const peer = new RTCPeerConnection()
       peerRef.current = peer
@@ -1243,11 +1243,13 @@ function App() {
       const dataChannel = peer.createDataChannel('oai-events')
       dataChannelRef.current = dataChannel
       dataChannel.addEventListener('open', () => {
+        if (dataChannelRef.current !== dataChannel) return
         setVoiceStatus('live')
-        void updateResidentConversation({ status: 'live', micMode, screenLive })
+        void updateResidentConversation({ status: 'live', micMode, screenLive: intendedScreenLive })
         addMessage('system', 'Voice link live.')
         apiJson<{ context: RealtimePreflightContext }>('/api/realtime/context?source=renderer')
           .then((result) => {
+            if (dataChannelRef.current !== dataChannel || dataChannel.readyState !== 'open') return
             if (result.context.enabled && result.context.prompt) {
               pushRealtimeTextContext(result.context.prompt)
             }
@@ -1255,15 +1257,26 @@ function App() {
           .catch((error) => {
             addMessage('tool', `Preflight context failed: ${error instanceof Error ? error.message : String(error)}`)
           })
-        if (screenPreviewRef.current) {
-          const frame = screenFrameRef.current
-          window.setTimeout(() => {
-            pushRealtimeScreenContext(screenPreviewRef.current, frame?.width || status?.screen?.width || 0, frame?.height || status?.screen?.height || 0, true)
+        if (screenPreviewRef.current && realtimeScreenContextRef.current) {
+          const fallbackFrame = screenFrameRef.current
+          const fallbackWidth = status?.screen?.width || 0
+          const fallbackHeight = status?.screen?.height || 0
+          if (initialScreenContextTimeoutRef.current !== null) {
+            window.clearTimeout(initialScreenContextTimeoutRef.current)
+          }
+          initialScreenContextTimeoutRef.current = window.setTimeout(() => {
+            initialScreenContextTimeoutRef.current = null
+            if (dataChannelRef.current !== dataChannel || dataChannel.readyState !== 'open' || !realtimeScreenContextRef.current) return
+            const imageDataUrl = screenPreviewRef.current
+            if (!imageDataUrl) return
+            const frame = screenFrameRef.current || fallbackFrame
+            pushRealtimeScreenContext(imageDataUrl, frame?.width || fallbackWidth, frame?.height || fallbackHeight, true)
           }, 250)
         }
       })
       dataChannel.addEventListener('message', handleRealtimeEvent)
       dataChannel.addEventListener('close', () => {
+        if (dataChannelRef.current !== dataChannel) return
         setVoiceStatus((current) => (current === 'live' ? 'idle' : current))
         void updateResidentConversation({ status: 'idle', micMode, screenLive: false })
       })
@@ -1282,7 +1295,7 @@ function App() {
       stopVoice({ report: false })
       setVoiceStatus('error')
       const message = error instanceof Error ? error.message : String(error)
-      void updateResidentConversation({ status: 'error', micMode, screenLive, error: message })
+      void updateResidentConversation({ status: 'error', micMode, screenLive: intendedScreenLive, error: message })
       setLastError(message)
       addMessage('system', message)
     }
@@ -1311,7 +1324,7 @@ function App() {
         if (disposed) return
         const contextText = realtimeWorkProgressContext(result.progress, liveStartedAt)
         if (!contextText) return
-        const signature = workProgressSignature(result.progress)
+        const signature = contextText
         if (signature === lastRealtimeWorkProgressSignatureRef.current) return
         const now = Date.now()
         if (now - lastRealtimeWorkProgressSyncAtRef.current < 10000) return
@@ -1417,12 +1430,13 @@ function App() {
     [addMessage, pushRealtimeScreenContext, refreshStatus],
   )
 
-  const startScreen = useCallback(async () => {
+  const startScreen = useCallback(async (options: { describe?: boolean } = {}) => {
+    const describe = options.describe ?? true
     setLastError('')
     try {
       setScreenLive(true)
       void updateResidentConversation({ screenLive: true, micMode })
-      await captureFrame(true)
+      await captureFrame(describe)
       return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -1449,10 +1463,9 @@ function App() {
   const beginAssistantSession = useCallback(async () => {
     if (voiceStatus === 'connecting' || voiceStatus === 'live') return
     if (!screenLive) {
-      const started = await startScreen()
-      if (!started) return
+      void startScreen({ describe: false })
     }
-    await startVoice()
+    await startVoice({ screenLive: true })
   }, [screenLive, startScreen, startVoice, voiceStatus])
 
   const startAssistantSession = useCallback(async () => {
@@ -2039,7 +2052,13 @@ function App() {
     }
     stopVoice()
   }, [startVoice, stopVoice, voiceStatus])
-  const screenAction = screenLive ? stopScreen : startScreen
+  const screenAction = useCallback(() => {
+    if (screenLive) {
+      stopScreen()
+      return
+    }
+    void startScreen({ describe: true })
+  }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
   const petAction = status?.api.hasOpenAiKey ? startAssistantSession : openConfigCui
   const petActionLabel = !status?.api.hasOpenAiKey
