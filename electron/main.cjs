@@ -217,8 +217,8 @@ const ambientEvents = [];
 const activeJobRuns = new Map();
 let learnedProfile = null;
 const windowModes = {
-  pet: { width: 166, height: 54 },
-  panel: { width: 166, height: 54 },
+  pet: { width: 196, height: 56 },
+  panel: { width: 196, height: 56 },
 };
 let latestScreen = null;
 let latestAccessibilityTree = null;

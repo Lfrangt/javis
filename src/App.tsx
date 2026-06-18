@@ -1,7 +1,6 @@
 import {
   Activity,
   Bell,
-  Check,
   Brain,
   ChevronDown,
   ChevronUp,
@@ -22,11 +21,10 @@ import {
   ShieldCheck,
   Settings,
   Square,
-  X,
   XCircle,
 } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent, PointerEvent as ReactPointerEvent } from 'react'
+import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import './App.css'
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
@@ -2231,17 +2229,13 @@ function App() {
           aria-label={petActionLabel}
           title="Click to talk. Right-click for config."
         >
-          <span className="capsule-orb capsule-orb-left" aria-hidden="true">
-            <X size={17} strokeWidth={2.35} />
+          <span className="island-glow" aria-hidden="true" />
+          <span className="island-lights" aria-hidden="true">
+            <span className="island-light light-red" />
+            <span className="island-light light-yellow" />
+            <span className="island-light light-green" />
           </span>
-          <span className="capsule-wave" aria-hidden="true">
-            {Array.from({ length: 17 }, (_, index) => (
-              <span key={index} style={{ '--bar-index': index } as CSSProperties} />
-            ))}
-          </span>
-          <span className="capsule-orb capsule-orb-right" aria-hidden="true">
-            <Check size={18} strokeWidth={2.55} />
-          </span>
+          <span className="island-core" aria-hidden="true" />
         </button>
 
         <div className="speech no-drag">
