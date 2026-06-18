@@ -5575,11 +5575,15 @@ function creativeActionConfirmationSatisfied(options = {}) {
 
 function formatCreativeActionExecutionOutput(result) {
   const action = result.action || {};
+  const verification = result.verification || null;
+  const recoveryHints = verification?.recoveryHints || [];
   return [
     `创作动作: ${action.id || 'unknown'} · ${action.label || ''}`,
     `状态: ${result.status}${result.executed ? ' · executed' : ' · preview'}`,
     result.requiresConfirmation ? '需要确认: 是' : '',
     result.missingRequirements?.length ? `缺少信息: ${result.missingRequirements.join(', ')}` : '',
+    verification ? `验收: ${verification.status} · ${verification.summary}` : '',
+    recoveryHints.length ? `补救:\n${recoveryHints.map((hint, index) => `${index + 1}. ${hint}`).join('\n')}` : '',
     result.result?.output ? `结果:\n${compactRecordText(result.result.output, 900)}` : '',
     result.output && !result.result?.output ? result.output : '',
   ].filter(Boolean).join('\n');
@@ -5746,6 +5750,192 @@ async function executeCreativeAction(action, options = {}) {
   };
 }
 
+function creativeActionVerificationEnabled(options = {}, execute = false) {
+  const value = options.verify;
+  if (value === false || String(value || '').toLowerCase() === 'false') return false;
+  if (value === true || String(value || '').toLowerCase() === 'true') return true;
+  return Boolean(execute);
+}
+
+function creativeActionExpectedAppMatches(actualApp, expectedApp) {
+  const actual = normalizedCreativeMatchText(actualApp);
+  const expected = normalizedCreativeMatchText(expectedApp);
+  if (!actual || !expected) return null;
+  const compactActual = actual.replace(/\s+/g, '');
+  const compactExpected = expected.replace(/\s+/g, '');
+  return (
+    actual === expected ||
+    actual.includes(expected) ||
+    expected.includes(actual) ||
+    compactActual.includes(compactExpected) ||
+    compactExpected.includes(compactActual)
+  );
+}
+
+function creativeActionExpectsCreativeApp(action) {
+  return ['app_workflow', 'observe', 'plan_ui_action', 'current_app_control'].includes(action?.type);
+}
+
+function creativeActionVerificationSignals(action, plan, observation = null) {
+  const mac = observation?.mac || {};
+  const frontmost = mac.frontmost || {};
+  const accessibility = observation?.accessibility || {};
+  const expectedApp = plan?.selectedApp?.name || '';
+  const frontmostApp = frontmost.app || accessibility.app || '';
+  const expectsCreativeApp = creativeActionExpectsCreativeApp(action);
+  const frontmostMatchesExpected = expectsCreativeApp
+    ? creativeActionExpectedAppMatches(frontmostApp, expectedApp)
+    : null;
+  return {
+    actionId: action?.id || '',
+    actionType: action?.type || '',
+    expectedApp,
+    frontmostApp,
+    windowTitle: frontmost.windowTitle || accessibility.windowTitle || '',
+    frontmostMatchesExpected,
+    screenAvailable: Boolean(observation?.screen),
+    accessibilityAvailable: Boolean(accessibility?.available),
+    accessibilityNodeCount: Number(accessibility?.nodeCount || 0),
+    errors: Array.isArray(observation?.errors) ? observation.errors : [],
+  };
+}
+
+function creativeActionRecoveryHints(action, execution, plan, verification = null) {
+  const hints = [];
+  const actionId = action?.id || '';
+  const selectedApp = plan?.selectedApp?.name || '目标创作软件';
+  const add = (hint) => {
+    const text = String(hint || '').trim();
+    if (text && !hints.includes(text)) hints.push(text);
+  };
+
+  if (execution?.requiresConfirmation) {
+    add(`确认目标无误后，重新运行 actionId:${actionId} 并传入 confirm:true。`);
+  }
+
+  for (const requirement of execution?.missingRequirements || []) {
+    if (requirement === 'assetPath') add('补充素材文件夹路径 assetPath，再让它检查素材。');
+    else if (requirement === 'body') add('补充 brief 文本 body/text，再保存到 Inbox。');
+    else add(`补充缺少的信息: ${requirement}。`);
+  }
+
+  if (execution?.approval) {
+    add('先在本地 approvals 队列里批准这一步，再继续剩余动作。');
+  }
+
+  if (action?.type === 'prompt' || action?.requires?.length) {
+    add(`补齐 ${action.requires?.join(', ') || '创作 brief'} 后，再继续同一阶段。`);
+  }
+
+  if (action?.type === 'app_workflow' && execution?.ok === false) {
+    add(`确认 ${selectedApp} 已安装并能手动打开；如果软件名不对，传入 app 指定正确应用。`);
+  }
+
+  if (action?.type === 'file_workflow' && !execution?.ok) {
+    add('先提供可访问的本地素材目录，并保持素材检查为只读。');
+  }
+
+  if (['current_app_control', 'plan_ui_action'].includes(action?.type) && !execution?.ok) {
+    add('先执行 observe_project 读取当前窗口，再执行对应的 plan_ui_action 缩小目标。');
+    add('如果目标按钮/面板不清楚，用 actionInstruction 明确要点击或填写的 UI。');
+  }
+
+  if (verification?.signals?.frontmostMatchesExpected === false) {
+    add(`先执行 open_app 聚焦 ${selectedApp}，确认前台窗口正确后再继续。`);
+  }
+
+  if (verification?.status === 'needs_review' && !verification?.signals?.accessibilityAvailable) {
+    add('如果目标软件已在前台但 UI 树仍为空，再刷新 macOS Accessibility 权限后继续。');
+  }
+
+  if (!hints.length && verification?.status === 'needs_review') {
+    add('重新观察屏幕和 UI 树，确认界面状态后再执行下一步。');
+  }
+
+  return hints.slice(0, 6);
+}
+
+async function verifyCreativeAction(action, execution, plan, options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  if (!creativeActionVerificationEnabled(options, execute)) return null;
+
+  if (!execution?.executed) {
+    const status = execution?.status === 'preview' ? 'preview' : execution?.approval ? 'approval_required' : 'blocked';
+    const verification = {
+      ok: Boolean(execution?.ok),
+      status,
+      summary: status === 'preview'
+        ? '预览模式未执行动作。'
+        : compactRecordText(execution?.output || '动作未执行，等待补充信息或确认。', 220),
+      signals: creativeActionVerificationSignals(action, plan, null),
+      output: '',
+      recoveryHints: [],
+    };
+    verification.recoveryHints = creativeActionRecoveryHints(action, execution, plan, verification);
+    return verification;
+  }
+
+  let observation = null;
+  if (action?.type === 'observe' && execution.result) {
+    observation = {
+      ok: execution.result.ok,
+      generatedAt: new Date().toISOString(),
+      mac: execution.result.mac || {},
+      screen: execution.result.screen || execution.result.mac?.screen || null,
+      accessibility: execution.result.accessibility || null,
+      errors: execution.result.errors || [],
+    };
+  } else {
+    try {
+      observation = await observeNow({
+        source: 'creative_action_verify',
+        captureScreen: 'auto',
+        includeAccessibility: true,
+        screenMaxAgeMs: 5000,
+        accessibilityMaxAgeMs: 1500,
+        maxNodes: options.verifyMaxNodes || options.maxNodes || 140,
+        maxDepth: options.verifyMaxDepth || options.maxDepth || 7,
+      });
+    } catch (error) {
+      observation = {
+        ok: false,
+        generatedAt: new Date().toISOString(),
+        mac: {},
+        screen: null,
+        accessibility: null,
+        errors: [error instanceof Error ? error.message : String(error)],
+      };
+    }
+  }
+
+  const signals = creativeActionVerificationSignals(action, plan, observation);
+  let status = 'verified';
+  if (!execution.ok) status = execution.approval ? 'approval_required' : 'blocked';
+  else if (signals.frontmostMatchesExpected === false) status = 'needs_review';
+  else if (signals.errors.length) status = 'needs_review';
+  else if (action?.type === 'observe' && !signals.screenAvailable && !signals.accessibilityAvailable) status = 'needs_review';
+
+  const summary = status === 'verified'
+    ? signals.frontmostApp
+      ? `已观察到 ${signals.frontmostApp}${signals.accessibilityAvailable ? `，UI ${signals.accessibilityNodeCount} nodes` : ''}。`
+      : '动作执行后已完成复查。'
+    : status === 'needs_review'
+      ? `复查需要人工或下一步确认: ${signals.frontmostApp || '未识别前台 App'}。`
+      : compactRecordText(execution.output || '动作未完成。', 220);
+
+  const output = observation ? compactRecordText(formatObservationForLocalCommand(observation), 1200) : '';
+  const verification = {
+    ok: status === 'verified',
+    status,
+    summary,
+    signals,
+    output,
+    recoveryHints: [],
+  };
+  verification.recoveryHints = creativeActionRecoveryHints(action, execution, plan, verification);
+  return verification;
+}
+
 async function runCreativeWorkflowAction(options = {}) {
   const instruction = String(options.instruction || options.goal || options.task || '').trim();
   if (!instruction) throw new Error('Creative action requires instruction.');
@@ -5783,6 +5973,10 @@ async function runCreativeWorkflowAction(options = {}) {
     });
   }
 
+  const verification = await verifyCreativeAction(action, execution, plan, {
+    ...options,
+    execute,
+  });
   const outputDraft = {
     ok: execution.ok,
     executed: Boolean(execution.executed),
@@ -5793,6 +5987,7 @@ async function runCreativeWorkflowAction(options = {}) {
     action,
     result: execution.result,
     approval: execution.approval,
+    verification,
     output: execution.output,
   };
   const output = formatCreativeActionExecutionOutput(outputDraft);
@@ -5823,6 +6018,8 @@ async function runCreativeWorkflowAction(options = {}) {
       riskLevel: action.riskLevel,
       safeToAutoRun: action.safeToAutoRun,
       confirmationRequired: requiresConfirmation,
+      verificationStatus: verification?.status || '',
+      recoveryHintCount: verification?.recoveryHints?.length || 0,
       path: String(options.assetPath || options.path || ''),
       type: action.type,
     },
@@ -15205,7 +15402,9 @@ async function doctorReportSnapshot() {
     creativeActionPreview.ok &&
     creativeActionPreview.status === 'preview' &&
     creativeActionBlockedPreview.status === 'blocked' &&
-    creativeActionBlockedPreview.requiresConfirmation === true;
+    creativeActionBlockedPreview.requiresConfirmation === true &&
+    creativeActionBlockedPreview.verification?.status === 'blocked' &&
+    creativeActionBlockedPreview.verification?.recoveryHints?.length >= 1;
   checks.push(doctorCheck(
     'creative_workflow',
     'Creative workflow',
@@ -15227,6 +15426,8 @@ async function doctorReportSnapshot() {
         status: creativeActionBlockedPreview.status,
         requiresConfirmation: creativeActionBlockedPreview.requiresConfirmation,
         actionId: creativeActionBlockedPreview.action?.id || '',
+        verificationStatus: creativeActionBlockedPreview.verification?.status || '',
+        recoveryHints: creativeActionBlockedPreview.verification?.recoveryHints || [],
       },
     },
     creativeWorkflowReady ? '' : 'Review planCreativeWorkflow(), runCreativeWorkflowAction(), and creativeWorkflowIntentFromInstruction().',
@@ -15399,6 +15600,7 @@ async function doctorReportSnapshot() {
         actionCount: creativeWorkflowPreview.actionPack?.actions?.length || 0,
         actionPreviewStatus: creativeActionPreview.status,
         blockedActionStatus: creativeActionBlockedPreview.status,
+        blockedActionVerification: creativeActionBlockedPreview.verification?.status || '',
       },
       briefing: {
         summary: briefingPreview.summary,
@@ -17405,7 +17607,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_app_workflow when the user explicitly asks for a small multi-step local computer operation, such as open an app, wait, press a UI target, type text, use a hotkey, or run a file action. Preview with execute:false when the target is ambiguous.',
       'Use plan_creative_workflow for video editing, short-form editing, subtitles, color, music composition, DAW, MIDI, beat-making, arranging, mixing, or other creative app work. It chooses a likely creative app, stage, and action pack without blindly editing.',
       'Use run_creative_workflow only when the user asks to start/open the creative task. It opens or focuses the selected app, observes the project window, and returns the staged action pack; saves, exports, uploads, and destructive edits still require explicit confirmation.',
-      'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
+      'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. Executed actions verify the screen/UI state and return recovery hints unless verify:false is passed. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
       'Use get_work_session when the user asks about the current work session.',
@@ -17750,7 +17952,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_creative_action',
-        description: 'Preview or execute exactly one action from a creative workflow action pack. Low-risk actions can run directly; imports, UI edits, MIDI entry, mix changes, and export panels require confirm:true.',
+        description: 'Preview or execute exactly one action from a creative workflow action pack. Executed actions verify screen/UI state and return recovery hints by default. Low-risk actions can run directly; imports, UI edits, MIDI entry, mix changes, and export panels require confirm:true.',
         parameters: {
           type: 'object',
           properties: {
@@ -17765,6 +17967,7 @@ function createRealtimeSessionConfig(options = {}) {
             app: { type: 'string' },
             application: { type: 'string' },
             execute: { type: 'boolean' },
+            verify: { type: 'boolean' },
             confirm: { type: 'boolean' },
             confirmed: { type: 'boolean' },
             assetPath: { type: 'string' },

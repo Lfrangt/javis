@@ -361,13 +361,15 @@ curl -X POST http://127.0.0.1:3417/api/creative/workflow \
   -d '{"instruction":"用 GarageBand 做一个 30 秒 demo，先规划 MIDI 草稿步骤","intent":"music_compose","stage":"sketch","execute":false}'
 curl -X POST http://127.0.0.1:3417/api/creative/action \
   -H 'Content-Type: application/json' \
-  -d '{"instruction":"帮我剪辑一个短视频，先用 Final Cut Pro 规划导入素材流程","intent":"video_edit","stage":"import","actionId":"observe_project","execute":true}'
+  -d '{"instruction":"帮我剪辑一个短视频，先用 Final Cut Pro 规划导入素材流程","intent":"video_edit","stage":"import","actionId":"observe_project","execute":true,"verify":true}'
 curl -X POST http://127.0.0.1:3417/api/creative/action \
   -H 'Content-Type: application/json' \
   -d '{"instruction":"帮我剪辑一个短视频，先用 Final Cut Pro 规划导入素材流程","intent":"video_edit","stage":"import","actionId":"open_import_ui","execute":true,"confirm":false}'
 ```
 
 `/api/creative/workflow` recognizes video editing and music composition requests, ranks common creative apps, records stage action packs, and can open/focus/observe the selected app with `execute:true`. `/api/creative/action` previews or executes one action from that pack. Each `actionPack` separates low-risk automatic actions such as opening the app and observing the project from confirmation-required actions such as imports, timeline edits, MIDI entry, mix changes, and export panels. It does not save, export, upload, or blindly edit the timeline/session; those steps should be handled through observe/current-app control with explicit confirmation.
+
+Executed creative actions run a post-action verification pass by default. The response includes `verification.status`, observed app/UI signals, and `recoveryHints`; pass `verify:false` when you need a faster preview or already have fresh screen context.
 
 For explicit local memory:
 

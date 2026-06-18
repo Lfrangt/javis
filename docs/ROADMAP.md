@@ -61,7 +61,7 @@
 - File workflows: current build supports list/search/summarize/Q&A plus guarded by-type organization plans and Level 3 create/copy/move/rename actions; next, richer rename/convert plans and batch execution UX.
 - Calendar, email, notes, and reminders through explicit connectors or local apps.
 - Obsidian/MCP bridge for notes and knowledge work.
-- Creative app bridge: current build recognizes video editing and music composition tasks, chooses common NLE/DAW apps, records stage action packs for imports, timeline edits, subtitles, MIDI sketches, mix/export previews, and executes one guarded action at a time; next, add app-specific recovery and result verification loops.
+- Creative app bridge: current build recognizes video editing and music composition tasks, chooses common NLE/DAW apps, records stage action packs for imports, timeline edits, subtitles, MIDI sketches, mix/export previews, executes one guarded action at a time, and performs post-action screen/UI verification with recovery hints; next, add app-specific result checks for Final Cut Pro, Resolve, Logic, GarageBand, and Ableton.
 - Coding workflows through Codex and Claude Code with clear owner/scope boundaries, progress updates, and parallel routing for independent work. Current build records per-task ownership metadata and serializes overlapping write scopes instead of launching competing agents against the same files; next, dogfood it on real mixed read/write code batches.
 - Verifiable next task: route two read-only investigations plus two overlapping scoped documentation edits through `/api/tasks/parallel`, then confirm independent work stays parallel while the later overlapping write is serialized and every route records owner, scope, ownership, status, and result link.
 
