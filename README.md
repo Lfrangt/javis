@@ -21,7 +21,7 @@ Local Mac-first realtime desktop buddy.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
-- Browser workflows: summarize, extract actions, draft, ask about the current page, or search/compare result pages with structured candidate links through quick or background lanes.
+- Browser workflows: summarize, extract actions, draft, ask about the current page, search/compare result pages with structured candidate links, or open and review one selected result through quick or background lanes.
 - File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
 - Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
@@ -159,7 +159,7 @@ Local Express service on 127.0.0.1:3417
   /api/browser/javascript -> browser JavaScript bridge status
   /api/browser/dom      -> read visible clickable/fillable page controls
   /api/browser/dom-action -> guarded webpage element click/fill/select
-  /api/browser/workflow -> summarize, extract actions, draft, ask, act, search, or compare browser pages
+  /api/browser/workflow -> summarize, extract actions, draft, ask, act, search, compare, or review one browser result
   /api/cli/run          -> queue an explicit local CLI command as a background job
   /api/files/execute    -> local file tool execution
   /api/files/plan       -> preview a policy-aware folder organization plan

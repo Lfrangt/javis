@@ -6264,7 +6264,7 @@ async function executeBrowserControl(args = {}, options = {}) {
 
 function normalizeBrowserWorkflowIntent(value) {
   const intent = String(value || '').trim();
-  if (['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare'].includes(intent)) return intent;
+  if (['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare', 'review_result'].includes(intent)) return intent;
   return 'summarize';
 }
 
@@ -6303,6 +6303,7 @@ function browserWorkflowPrompt(page, intent, instruction) {
     act: '规划并执行当前网页上的安全浏览器操作。',
     search: '搜索网页并总结结果页。',
     compare: '搜索多个查询并比较结果页。',
+    review_result: '打开一个搜索结果或 URL，读取目标页面并总结可执行结论。',
   };
   const pageText = page.selectedText || page.text || '';
   return [
@@ -6365,6 +6366,84 @@ function browserSearchWorkflowPrompt(searches = [], intent = 'search', instructi
     '',
     JSON.stringify(payload, null, 2),
   ].join('\n');
+}
+
+function browserFailedPageSummary(error) {
+  const message = error instanceof Error ? error.message : String(error || 'page unavailable');
+  return {
+    available: false,
+    supported: false,
+    app: '',
+    title: '',
+    url: '',
+    selectedTextLength: 0,
+    returnedLength: 0,
+    textLength: 0,
+    truncated: false,
+    fallback: '',
+    error: message,
+    headings: [],
+    linkCount: 0,
+    links: [],
+    searchResults: [],
+  };
+}
+
+function browserReviewExplicitUrl(options = {}) {
+  const direct = String(options.url || options.href || '').trim();
+  const instruction = String(options.instruction || options.query || '').trim();
+  const fromText = instruction.match(/https?:\/\/[^\s"'<>）)]+/i)?.[0] || '';
+  return normalizeBrowserHref(direct || fromText);
+}
+
+function normalizeBrowserResultIndex(value) {
+  const parsed = Number(value || 1);
+  if (!Number.isFinite(parsed)) return 1;
+  return Math.max(1, Math.min(MAX_BROWSER_PAGE_LINKS, Math.floor(parsed)));
+}
+
+function selectBrowserReviewLink(candidates = [], options = {}) {
+  const links = Array.isArray(candidates) ? candidates : [];
+  if (!links.length) return null;
+  const preferredHost = String(options.host || options.domain || '').trim().replace(/^www\./i, '').toLowerCase();
+  if (preferredHost) {
+    const hostHit = links.find((link) => String(link.host || '').toLowerCase().includes(preferredHost));
+    if (hostHit) return hostHit;
+  }
+  const preferredUrl = String(options.urlContains || options.hrefContains || '').trim().toLowerCase();
+  if (preferredUrl) {
+    const urlHit = links.find((link) => String(link.href || '').toLowerCase().includes(preferredUrl));
+    if (urlHit) return urlHit;
+  }
+  const index = normalizeBrowserResultIndex(options.resultIndex || options.index || options.position);
+  return links[index - 1] || links[0] || null;
+}
+
+function browserResultReviewPrompt({ request, query, searchPage, selectedLink, targetPage }) {
+  const pageText = targetPage?.selectedText || targetPage?.text || '';
+  return [
+    'Browser result review workflow.',
+    `User request: ${request}`,
+    query ? `Search query: ${query}` : '',
+    selectedLink ? `Selected link: ${selectedLink.text} · ${selectedLink.href}` : '',
+    '',
+    'Use only the provided target page snapshot. If the page content is insufficient, say what is missing.',
+    'Answer in concise Chinese with concrete next actions and useful follow-up links from the page.',
+    '',
+    searchPage
+      ? `Search page candidates:\n${JSON.stringify(browserSearchResultLinks(searchPage, 8), null, 2)}`
+      : '',
+    '',
+    'Target page:',
+    `Title: ${targetPage?.title || ''}`,
+    `URL: ${targetPage?.url || ''}`,
+    targetPage?.metaDescription ? `Description: ${targetPage.metaDescription}` : '',
+    targetPage?.headings?.length ? `Headings: ${targetPage.headings.slice(0, 16).join(' / ')}` : '',
+    browserWorkflowLinksBlock(targetPage) ? `Links:\n${browserWorkflowLinksBlock(targetPage)}` : '',
+    '',
+    'Target page text:',
+    compactRecordText(pageText, 12000),
+  ].filter((line) => line !== '').join('\n');
 }
 
 function parseJsonFromModelText(text) {
@@ -7235,9 +7314,272 @@ async function runBrowserSearchWorkflow(options = {}) {
   };
 }
 
+async function runBrowserResultReviewWorkflow(options = {}) {
+  const mode = normalizeBrowserWorkflowMode(options.mode);
+  const instruction = String(options.instruction || '').trim();
+  const queries = normalizeBrowserSearchQueries(options);
+  const explicitUrl = browserReviewExplicitUrl(options);
+  const query = explicitUrl ? '' : queries[0];
+  if (!explicitUrl && !query) throw new Error('Browser result review requires a URL or search query.');
+  const execute = options.execute !== false;
+  const maxChars = normalizeBrowserMaxChars(options.maxChars || (mode === 'quick' ? 14000 : 30000));
+  const waitMsAfterSearch = Math.max(500, Math.min(6000, Number(options.waitMs || 1800)));
+  const waitMsAfterOpen = Math.max(500, Math.min(8000, Number(options.openWaitMs || options.waitMsAfterOpen || 2200)));
+  const request = instruction || explicitUrl || query;
+  const workflowTitle = `review_result · ${explicitUrl || query}`.slice(0, 180);
+
+  if (!execute) {
+    const workflow = createWorkflowRecord({
+      kind: 'browser',
+      source: 'browser_result_review_workflow',
+      status: 'done',
+      title: workflowTitle,
+      intent: 'review_result',
+      mode,
+      request,
+      target: {
+        app: 'Browser',
+        title: explicitUrl ? 'URL preview' : 'Search result preview',
+        url: explicitUrl,
+        fallback: '',
+        textLength: 0,
+        returnedLength: 0,
+        resultCount: explicitUrl ? 1 : 0,
+      },
+      result: explicitUrl
+        ? `Preview only. Would open and review: ${explicitUrl}`
+        : `Preview only. Would search "${query}" and review result #${normalizeBrowserResultIndex(options.resultIndex || options.index || options.position)}.`,
+    });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow,
+      mode,
+      source: options.source || 'browser_result_review_workflow',
+      scope: options.scope || 'browser:review_result',
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      resultSummary: workflow.result,
+    });
+    return {
+      ok: true,
+      executed: false,
+      queued: false,
+      mode,
+      intent: 'review_result',
+      query,
+      selected: explicitUrl ? { index: 1, text: explicitUrl, href: explicitUrl, host: new URL(explicitUrl).hostname.replace(/^www\./i, ''), sameHost: false } : null,
+      workflow,
+      routing,
+      output: workflow.result,
+    };
+  }
+
+  const workflow = createWorkflowRecord({
+    kind: 'browser',
+    source: 'browser_result_review_workflow',
+    status: 'running',
+    title: workflowTitle,
+    intent: 'review_result',
+    mode,
+    request,
+    target: {
+      app: 'Browser',
+      title: explicitUrl || query,
+      url: explicitUrl,
+      fallback: '',
+      textLength: 0,
+      returnedLength: 0,
+      resultCount: 0,
+    },
+  });
+
+  let search = null;
+  let selected = explicitUrl
+    ? { index: 1, text: explicitUrl, href: explicitUrl, host: new URL(explicitUrl).hostname.replace(/^www\./i, ''), sameHost: false }
+    : null;
+
+  try {
+    if (!selected) {
+      const action = await executeBrowserControl({
+        action: 'search',
+        query,
+        app: options.app,
+      }, {
+        approvalContext: {
+          type: 'browser_result_review_workflow',
+          workflowId: workflow.id,
+          title: workflowTitle,
+          instruction: request,
+          stepIndex: 0,
+        },
+      });
+      await waitMs(waitMsAfterSearch);
+      const page = await browserPageSnapshot({ app: options.app, maxChars });
+      const candidates = browserSearchResultLinks(page, MAX_BROWSER_PAGE_LINKS);
+      selected = selectBrowserReviewLink(candidates, options);
+      search = {
+        query,
+        action,
+        page,
+        pageSummary: browserWorkflowPageSummary(page),
+        candidates: candidates.slice(0, 12),
+      };
+      if (!page.available) throw new Error(page.error || 'Search result page is unavailable.');
+      if (!selected) throw new Error('No reviewable search result link was found.');
+    }
+
+    const openAction = await executeBrowserControl({
+      action: 'open_url',
+      url: selected.href,
+      app: options.app,
+    }, {
+      approvalContext: {
+        type: 'browser_result_review_workflow',
+        workflowId: workflow.id,
+        title: workflowTitle,
+        instruction: request,
+        stepIndex: selected ? 1 : 0,
+      },
+    });
+    await waitMs(waitMsAfterOpen);
+    const targetPage = await browserPageSnapshot({ app: options.app, maxChars });
+    const targetSummary = browserWorkflowPageSummary(targetPage);
+    if (!targetPage.available) throw new Error(targetPage.error || 'Target page is unavailable.');
+
+    const prompt = browserResultReviewPrompt({
+      request,
+      query,
+      searchPage: search?.page,
+      selectedLink: selected,
+      targetPage,
+    });
+
+    if (mode !== 'quick') {
+      const queuedWorkflow = setWorkflow(workflow.id, {
+        status: 'queued',
+        target: {
+          ...targetSummary,
+          selected,
+          query,
+          resultCount: search?.candidates?.length || 1,
+        },
+      });
+      const job = createJob(prompt, mode === 'background' ? 'background' : mode, 'browser_result_review_workflow', { workflowId: workflow.id });
+      const finalWorkflow = setWorkflow(workflow.id, { jobId: job.id });
+      const routing = createRoutingRecordForWorkflow({
+        task: request,
+        workflow: finalWorkflow,
+        job,
+        mode,
+        source: options.source || 'browser_result_review_workflow',
+        scope: options.scope || 'browser:review_result',
+        parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      });
+      return {
+        ok: true,
+        executed: true,
+        queued: true,
+        mode,
+        intent: 'review_result',
+        query,
+        selected,
+        search: search ? { query: search.query, page: search.pageSummary, candidates: search.candidates } : null,
+        openAction,
+        page: targetSummary,
+        workflow: finalWorkflow || queuedWorkflow,
+        job,
+        routing,
+        output: `Queued ${mode} browser result review for ${selected.href}.`,
+      };
+    }
+
+    const output = await callOpenAIResponsesWithFallback({
+      model: models.fast,
+      instructions:
+        'You are the browser result review lane inside JAVIS. Use only the provided target page snapshot. Answer in concise Chinese with concrete conclusions, useful next links, and what JAVIS should do next.',
+      input: prompt,
+      maxOutputTokens: 1000,
+    }, {
+      source: 'browser_result_review_workflow',
+      timeoutMs: 70000,
+    });
+    const finalWorkflow = setWorkflow(workflow.id, {
+      status: quickLaneOutputOk(output) ? 'done' : 'blocked',
+      result: output,
+      completedAt: Date.now(),
+      target: {
+        ...targetSummary,
+        selected,
+        query,
+        resultCount: search?.candidates?.length || 1,
+      },
+    });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow: finalWorkflow,
+      mode,
+      source: options.source || 'browser_result_review_workflow',
+      scope: options.scope || 'browser:review_result',
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      resultSummary: output,
+    });
+    return {
+      ok: quickLaneOutputOk(output),
+      executed: true,
+      queued: false,
+      mode,
+      intent: 'review_result',
+      query,
+      selected,
+      search: search ? { query: search.query, page: search.pageSummary, candidates: search.candidates } : null,
+      openAction,
+      page: targetSummary,
+      workflow: finalWorkflow,
+      routing,
+      output,
+    };
+  } catch (error) {
+    const output = `Browser review_result blocked: ${error instanceof Error ? error.message : String(error)}`;
+    const finalWorkflow = setWorkflow(workflow.id, {
+      status: 'blocked',
+      result: output,
+      completedAt: Date.now(),
+      target: {
+        ...(workflow.target || {}),
+        selected,
+        query,
+        resultCount: search?.candidates?.length || 0,
+      },
+    });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow: finalWorkflow,
+      mode,
+      source: options.source || 'browser_result_review_workflow',
+      scope: options.scope || 'browser:review_result',
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      resultSummary: output,
+    });
+    return {
+      ok: false,
+      executed: true,
+      queued: false,
+      mode,
+      intent: 'review_result',
+      query,
+      selected,
+      search: search ? { query: search.query, page: search.pageSummary, candidates: search.candidates } : null,
+      page: browserFailedPageSummary(error),
+      workflow: finalWorkflow,
+      routing,
+      output,
+    };
+  }
+}
+
 async function runBrowserWorkflow(options = {}) {
   const intent = normalizeBrowserWorkflowIntent(options.intent);
   if (intent === 'act') return runBrowserTaskWorkflow(options);
+  if (intent === 'review_result') return runBrowserResultReviewWorkflow(options);
   if (intent === 'search' || intent === 'compare') return runBrowserSearchWorkflow({ ...options, intent });
   const mode = normalizeBrowserWorkflowMode(options.mode);
   const instruction = String(options.instruction || '').trim();

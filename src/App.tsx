@@ -32,7 +32,7 @@ import './App.css'
 type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 type WorkflowStatus = JobStatus | 'blocked'
 type JobMode = 'background' | 'codex' | 'claude' | 'cli'
-type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask' | 'act' | 'search' | 'compare'
+type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask' | 'act' | 'search' | 'compare' | 'review_result'
 type BrowserWorkflowMode = 'quick' | JobMode
 type VoiceStatus = 'idle' | 'connecting' | 'live' | 'error'
 type MicMode = 'open' | 'push'
@@ -1993,10 +1993,10 @@ function App() {
             intent: browserIntent,
             mode: browserMode,
             instruction: browserText,
-            query: browserIntent === 'search' ? browserText : undefined,
+            query: browserIntent === 'search' || browserIntent === 'review_result' ? browserText : undefined,
             queries: browserQueries.length ? browserQueries : undefined,
             maxChars: browserMode === 'quick' ? 12000 : 30000,
-            execute: browserIntent === 'act' || browserIntent === 'search' || browserIntent === 'compare',
+            execute: browserIntent === 'act' || browserIntent === 'search' || browserIntent === 'compare' || browserIntent === 'review_result',
             maxSteps: 5,
           }),
         })
@@ -2526,6 +2526,7 @@ function App() {
                 <option value="act">Act</option>
                 <option value="search">Search</option>
                 <option value="compare">Compare</option>
+                <option value="review_result">Review result</option>
               </select>
               <select value={browserMode} onChange={(event) => setBrowserMode(event.target.value as BrowserWorkflowMode)}>
                 <option value="quick">Quick</option>
