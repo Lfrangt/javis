@@ -105,7 +105,7 @@ const DEFAULT_CLI_COMMANDS = process.env.JAVIS_ALLOWED_CLI_COMMANDS
   ? process.env.JAVIS_ALLOWED_CLI_COMMANDS.split(',').map((item) => item.trim()).filter(Boolean)
   : TRUSTED_LOCAL_MODE
     ? ['*']
-    : ['codex', 'claude', 'gh', 'git', 'npm', 'pnpm', 'yarn', 'bun', 'node', 'npx', 'python', 'python3', 'uv'];
+    : ['codex', 'claude', 'gh', 'git', 'npm', 'pnpm', 'yarn', 'bun', 'node', 'npx', 'python', 'python3', 'uv', 'say'];
 const FILE_ACTIONS = [
   'list_directory',
   'read_file',
@@ -221,6 +221,7 @@ let latestScreen = null;
 let latestAccessibilityTree = null;
 let apiServer;
 let mainWindow;
+let speechProcess = null;
 let actionPolicy;
 let apiToken = '';
 let screenPrivacy;
@@ -11331,6 +11332,7 @@ function configCheckSnapshot() {
       learning: learningStateSnapshot(),
       autopilot: autopilotStateSnapshot(),
       wake: wakeStatusSnapshot(),
+      speech: speechStateSnapshot(),
     },
     models,
     workers: {
@@ -11410,6 +11412,7 @@ function healthSnapshot() {
     ambient: ambientStateSnapshot(5),
     learning: learningStateSnapshot(),
     wake: wakeStatusSnapshot(),
+    speech: speechStateSnapshot(),
     approvals: {
       pending: pendingApprovalSnapshot(20),
       total: approvals.size,
@@ -11925,6 +11928,66 @@ function queueCliCommand(options = {}) {
     ok: true,
     job,
     output: `Queued CLI job ${job.id}: ${job.title}`,
+  };
+}
+
+function stopSpeechProcess(reason = 'stop') {
+  if (!speechProcess) return false;
+  try {
+    speechProcess.kill('SIGTERM');
+  } catch {
+    // The speech process may have already exited.
+  }
+  appendAudit('speech.stop', { reason });
+  speechProcess = null;
+  return true;
+}
+
+function speechStateSnapshot() {
+  return {
+    available: process.platform === 'darwin',
+    enabled: LOCAL_EXEC_ENABLED,
+    speaking: Boolean(speechProcess?.pid),
+    pid: speechProcess?.pid || null,
+  };
+}
+
+function speechSay(options = {}) {
+  const text = compactRecordText(options.text || options.output || options.message || '', 1200);
+  if (!text) throw new Error('Missing speech text.');
+  if (!LOCAL_EXEC_ENABLED) throw new Error('Local speech requires JAVIS_ENABLE_LOCAL_EXEC=true.');
+  if (process.platform !== 'darwin') throw new Error('Local speech requires macOS /usr/bin/say.');
+  stopSpeechProcess('replace');
+  const args = ['-r', String(Math.max(120, Math.min(260, Number(options.rate || 190))))];
+  const voice = String(options.voice || process.env.JAVIS_LOCAL_TTS_VOICE || '').trim();
+  if (voice) args.push('-v', voice.slice(0, 80));
+  args.push(text);
+  const child = spawn('/usr/bin/say', args, {
+    stdio: 'ignore',
+    detached: false,
+  });
+  speechProcess = child;
+  appendAudit('speech.say', {
+    pid: child.pid || null,
+    commandName: 'say',
+    textLength: text.length,
+    voice,
+    rate: args[1],
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  child.on('close', (code, signal) => {
+    if (speechProcess === child) speechProcess = null;
+    appendAudit('speech.done', { pid: child.pid || null, code, signal });
+  });
+  child.on('error', (error) => {
+    if (speechProcess === child) speechProcess = null;
+    appendAudit('speech.failed', { error: error instanceof Error ? error.message : String(error) });
+  });
+  return {
+    ok: true,
+    speaking: true,
+    pid: child.pid || null,
+    text,
   };
 }
 
@@ -15062,6 +15125,7 @@ function startApiServer() {
       ambient: ambientStateSnapshot(5),
       learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),
+      speech: speechStateSnapshot(),
       window: windowStateSnapshot(),
       menuBar: menuBarSnapshot(),
       notifications: notificationSnapshot(),
@@ -15190,6 +15254,24 @@ function startApiServer() {
   api.post('/api/wake/engine/restart', express.json({ limit: '64kb' }), (_req, res) => {
     stopWakeEngine();
     res.json({ ok: true, wake: startWakeEngine() });
+  });
+
+  api.get('/api/speech/state', (_req, res) => {
+    res.json({ speech: speechStateSnapshot() });
+  });
+
+  api.post('/api/speech/say', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const result = speechSay({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.json({ ...result, speech: speechStateSnapshot() });
+    } catch (error) {
+      jsonError(res, 400, 'Speech failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/speech/stop', express.json({ limit: '64kb' }), (req, res) => {
+    const stopped = stopSpeechProcess(String(req.body?.reason || req.body?.source || 'api'));
+    res.json({ ok: true, stopped, speech: speechStateSnapshot() });
   });
 
   api.post('/api/observe', express.json({ limit: '1mb' }), async (req, res) => {
@@ -15923,6 +16005,7 @@ app.on('before-quit', () => {
   stopLearningMonitor();
   stopAutopilotMonitor();
   stopWakeEngine();
+  stopSpeechProcess('quit');
   if (menuBarAvailable()) {
     menuBarTray.destroy();
     menuBarTray = null;

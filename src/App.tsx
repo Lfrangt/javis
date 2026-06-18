@@ -305,6 +305,12 @@ type Status = {
   }
   screenPrivacy?: ScreenPrivacy
   conversation?: ConversationState
+  speech?: {
+    available: boolean
+    enabled: boolean
+    speaking: boolean
+    pid: number | null
+  }
   ambient?: {
     enabled: boolean
     captureScreen: boolean
@@ -1148,7 +1154,15 @@ function App() {
     voiceSessionIdRef.current = ''
     setIsPushingToTalk(false)
     setVoiceStatus('idle')
-    if (options.report !== false) void updateResidentConversation({ status: 'idle', sessionId: voiceSessionId, screenLive: false })
+    if (options.report !== false) {
+      void apiJson('/api/speech/stop', {
+        method: 'POST',
+        body: JSON.stringify({ source: 'renderer_stop' }),
+      }).catch(() => {
+        // Local speech is best-effort; realtime cleanup should not depend on it.
+      })
+      void updateResidentConversation({ status: 'idle', sessionId: voiceSessionId, screenLive: false })
+    }
   }, [updateResidentConversation])
 
   const runRealtimeTool = useCallback(
@@ -1241,6 +1255,41 @@ function App() {
     [addMessage, runRealtimeToolOnce],
   )
 
+  const speakLocal = useCallback(async (text: string) => {
+    const cleanText = text.trim()
+    if (!cleanText) return
+    await apiJson('/api/speech/say', {
+      method: 'POST',
+      body: JSON.stringify({ text: cleanText, source: 'renderer_voice_fallback' }),
+    })
+  }, [])
+
+  const fallbackIncludesScreen = Boolean(status?.screen)
+
+  const runLocalVoiceFallback = useCallback(async () => {
+    const prompt = quickInput.trim()
+    try {
+      if (!prompt) {
+        const notice = '实时语音暂时连不上。我先切到本地语音；你可以在输入框里发消息。'
+        addMessage('assistant', notice)
+        await speakLocal(notice)
+        return
+      }
+
+      setQuickInput('')
+      addMessage('user', prompt)
+      const result = await apiJson<{ output: string }>('/api/chat/quick', {
+        method: 'POST',
+        body: JSON.stringify({ message: prompt, includeScreen: fallbackIncludesScreen }),
+      })
+      const output = result.output?.trim() || '我没有拿到有效回复。'
+      addMessage('assistant', output)
+      await speakLocal(output)
+    } catch (error) {
+      addMessage('system', `本地语音兜底失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }, [addMessage, fallbackIncludesScreen, quickInput, speakLocal])
+
   const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
     const intendedScreenLive = options.screenLive ?? screenLive
     const voiceSessionId = crypto.randomUUID()
@@ -1324,8 +1373,9 @@ function App() {
       void updateResidentConversation({ status: 'error', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive, error: message })
       setLastError(message)
       addMessage('system', message)
+      void runLocalVoiceFallback()
     }
-  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
+  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, runLocalVoiceFallback, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return undefined
