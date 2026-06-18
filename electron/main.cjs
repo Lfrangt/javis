@@ -4992,17 +4992,419 @@ function creativeWorkflowStages(intent) {
   ];
 }
 
+function creativeStageIdFromInstruction(instruction, intent) {
+  const text = String(instruction || '');
+  const stageSignals = intent === 'music_compose'
+    ? [
+        ['export', /导出|bounce|export|stems?|音频文件|wav|mp3/i],
+        ['mix', /混音|母带|音量|eq|压缩|reverb|delay|mix|master/i],
+        ['arrange', /编排|结构|段落|verse|hook|chorus|bridge|intro|outro|arrange/i],
+        ['sketch', /midi|录音|旋律|和弦|鼓|beat|loop|草稿|写一段|sketch/i],
+        ['sound', /音色|乐器|鼓组|bass|贝斯|synth|采样|sound|instrument/i],
+        ['brief', /风格|速度|bpm|调性|key|参考|需求|brief/i],
+      ]
+    : intent === 'video_edit'
+      ? [
+          ['export', /导出|交付|成片|render|export|share|mp4|mov/i],
+          ['grade', /调色|声音|音量|降噪|color|grade|audio/i],
+          ['polish', /精剪|字幕|转场|b-roll|特效|标题|caption|subtitle|transition|polish/i],
+          ['rough_cut', /粗剪|时间线|剪掉|片段|节奏|rough|timeline|cut/i],
+          ['import', /导入|素材|media|footage|asset|图片|视频文件|音频文件|import/i],
+          ['brief', /比例|时长|平台|脚本|大纲|brief|format/i],
+        ]
+      : [
+          ['export', /导出|保存|交付|export|share/i],
+          ['execute', /执行|操作|点击|填写|run|do/i],
+          ['plan', /计划|拆解|下一步|plan/i],
+          ['open', /打开|启动|open|launch/i],
+          ['brief', /目标|需求|brief/i],
+        ];
+  return stageSignals.find(([_stage, pattern]) => pattern.test(text))?.[0] || '';
+}
+
+function normalizeCreativeStageId(value, intent, instruction = '') {
+  const raw = String(value || '').trim().toLowerCase();
+  const stageIds = new Set(creativeWorkflowStages(intent).map((stage) => stage.id));
+  const aliases = {
+    video_edit: {
+      media: 'import',
+      asset: 'import',
+      assets: 'import',
+      import_media: 'import',
+      rough: 'rough_cut',
+      roughcut: 'rough_cut',
+      cut: 'rough_cut',
+      timeline: 'rough_cut',
+      subtitle: 'polish',
+      captions: 'polish',
+      caption: 'polish',
+      transition: 'polish',
+      color: 'grade',
+      audio: 'grade',
+      render: 'export',
+      share: 'export',
+    },
+    music_compose: {
+      bpm: 'brief',
+      key: 'brief',
+      instrument: 'sound',
+      instruments: 'sound',
+      sound: 'sound',
+      midi: 'sketch',
+      record: 'sketch',
+      loop: 'sketch',
+      beat: 'sketch',
+      arrangement: 'arrange',
+      structure: 'arrange',
+      mixing: 'mix',
+      master: 'mix',
+      bounce: 'export',
+      stems: 'export',
+    },
+  };
+  const alias = aliases[intent]?.[raw] || raw;
+  if (stageIds.has(alias)) return alias;
+  const inferred = creativeStageIdFromInstruction(instruction, intent);
+  if (inferred && stageIds.has(inferred)) return inferred;
+  return creativeWorkflowStages(intent)[0]?.id || '';
+}
+
+function creativeStageDefinition(intent, stageId) {
+  const stages = creativeWorkflowStages(intent);
+  return stages.find((stage) => stage.id === stageId) || stages[0] || null;
+}
+
+function creativeStageRiskLevel(stageId) {
+  if (stageId === 'export') return 4;
+  if (['import', 'rough_cut', 'polish', 'grade', 'sound', 'sketch', 'arrange', 'mix', 'execute'].includes(stageId)) return 3;
+  return 2;
+}
+
+function creativeAppStageHint(selectedApp, stageId) {
+  const appId = selectedApp?.id || '';
+  const fallback = {
+    import: '使用该软件的 Import/Open Media 入口，先只打开导入面板，不确认覆盖或移动文件。',
+    rough_cut: '在时间线里先做可撤销的粗剪；每次剪切前后都重新观察时间线状态。',
+    polish: '优先用字幕/标题/转场面板，逐个添加并复查画面。',
+    grade: '进入调色或音频面板，先做预览调整，不直接覆盖导出。',
+    export: '打开导出/分享面板后等待用户确认格式、路径和是否覆盖。',
+    sound: '打开音色库或乐器轨，先选择可回退的音色。',
+    sketch: '建立短 loop 或 MIDI 草稿，先确认 tempo/key 后再录入。',
+    arrange: '复制/移动段落前先观察轨道和小节位置。',
+    mix: '先做电平/EQ/空间预览，避免直接覆盖母带文件。',
+  };
+  const appHints = {
+    final_cut_pro: {
+      import: 'Final Cut Pro 常用 File > Import > Media，也可以用 Cmd+I；导入前先确认 library/event。',
+      rough_cut: 'Final Cut Pro 粗剪优先使用浏览器选择片段、Append/Insert 到 timeline，再观察 magnetic timeline。',
+      polish: 'Final Cut Pro 字幕/标题/转场应从 Titles/Transitions 面板逐个添加并复查。',
+      grade: 'Final Cut Pro 调色/音频先打开 Inspector，使用 Color/Audio 面板做预览调整。',
+      export: 'Final Cut Pro 导出使用 Share 面板；路径、格式、覆盖都需要确认。',
+    },
+    davinci_resolve: {
+      import: 'DaVinci Resolve 可在 Media 页或 File > Import > Media 导入；先确认 media pool/bin。',
+      rough_cut: 'DaVinci Resolve 粗剪优先在 Cut/Edit 页操作，先观察 timeline 和 playhead。',
+      polish: 'DaVinci Resolve 字幕、标题、转场在 Edit 页逐个处理并回看。',
+      grade: 'DaVinci Resolve 调色进入 Color 页；音频进入 Fairlight 页，先做预览。',
+      export: 'DaVinci Resolve 导出走 Deliver 页，render queue 前需要确认。',
+    },
+    adobe_premiere_pro: {
+      import: 'Premiere Pro 可用 File > Import 或 Media Browser；先确认 project panel 位置。',
+      rough_cut: 'Premiere Pro 粗剪前先观察 sequence、source monitor 和 playhead。',
+      polish: 'Premiere Pro 字幕/转场/标题通过 Text/Effects 面板处理，逐步验证。',
+      grade: 'Premiere Pro 调色用 Lumetri Color，声音用 Essential Sound，先预览。',
+      export: 'Premiere Pro 导出/Media Encoder 前确认 preset、路径和覆盖。',
+    },
+    imovie: {
+      import: 'iMovie 用 Import Media 入口；导入前确认当前项目和素材库。',
+      rough_cut: 'iMovie 粗剪以项目时间线为主，先观察片段选中状态。',
+      polish: 'iMovie 标题、转场、背景音乐逐项添加并回看。',
+      export: 'iMovie 分享/导出前确认文件名、分辨率和保存位置。',
+    },
+    capcut: {
+      import: 'CapCut 先进入项目媒体区导入素材，确认项目比例和媒体列表。',
+      polish: 'CapCut 字幕/贴纸/特效很多，先逐项预览，不批量套用。',
+      export: 'CapCut 导出前确认分辨率、帧率、水印和保存路径。',
+    },
+    logic_pro: {
+      sound: 'Logic Pro 先选 Software Instrument/Audio 轨和 Library 音色。',
+      sketch: 'Logic Pro 先设置 tempo/key，再录入短 MIDI region 或 drummer loop。',
+      arrange: 'Logic Pro 编排前确认 bar/section 标记和 region 选中状态。',
+      mix: 'Logic Pro 混音先调 mixer/channel strip，bounce 前需要确认。',
+      export: 'Logic Pro Bounce/Export 前确认 cycle range、格式、路径和是否覆盖。',
+    },
+    garageband: {
+      sound: 'GarageBand 先选择轨道类型和 Library 音色。',
+      sketch: 'GarageBand 先设置 tempo/key，再创建短 loop 或录入 MIDI。',
+      arrange: 'GarageBand 编排前确认小节位置和 region 选中状态。',
+      mix: 'GarageBand 先调轨道音量、pan 和效果，导出前再确认。',
+      export: 'GarageBand 分享/导出前确认格式、名称和保存位置。',
+    },
+    ableton_live: {
+      sound: 'Ableton Live 先确认 Session/Arrangement 视图和 instrument/device。',
+      sketch: 'Ableton Live 可先做 MIDI clip 或 drum rack loop，确认 BPM 后录入。',
+      arrange: 'Ableton Live 从 Session clips 或 Arrangement timeline 组织段落。',
+      mix: 'Ableton Live 混音先处理 track volume、devices、sends，导出需确认。',
+      export: 'Ableton Live Export Audio/Video 前确认 range、normalize、format 和路径。',
+    },
+  };
+  return appHints[appId]?.[stageId] || fallback[stageId] || '先观察当前工程状态，再选择最小可回退动作。';
+}
+
+function creativeAction(id, type, label, options = {}) {
+  return {
+    id,
+    type,
+    label,
+    summary: options.summary || '',
+    tool: options.tool || '',
+    riskLevel: Math.max(1, Math.min(4, Number(options.riskLevel || 2))),
+    safeToAutoRun: Boolean(options.safeToAutoRun),
+    requires: Array.isArray(options.requires) ? options.requires : [],
+    confirmationRequired: Boolean(options.confirmationRequired),
+    instruction: options.instruction || '',
+    args: options.args || {},
+    steps: options.steps || undefined,
+  };
+}
+
+function creativeStageActionPack({ intent, stageId, selectedApp, instruction }) {
+  const stage = creativeStageDefinition(intent, stageId);
+  const appName = selectedApp?.name || 'creative app';
+  const riskLevel = creativeStageRiskLevel(stageId);
+  const hint = creativeAppStageHint(selectedApp, stageId);
+  const actions = [
+    creativeAction('open_app', 'app_workflow', `打开/聚焦 ${appName}`, {
+      tool: 'run_app_workflow',
+      riskLevel: 2,
+      safeToAutoRun: true,
+      summary: '低风险：只打开或聚焦创作软件。',
+      steps: [
+        { type: 'open_app', app: appName, label: `Open ${appName}` },
+        { type: 'wait', ms: 1200, label: 'Wait for creative app' },
+      ],
+    }),
+    creativeAction('observe_project', 'observe', '观察当前工程窗口', {
+      tool: 'observe_now',
+      riskLevel: 1,
+      safeToAutoRun: true,
+      summary: '读取当前 App、屏幕和 Accessibility 树，确认下一步目标。',
+      args: { captureScreen: 'auto', includeAccessibility: true, maxNodes: 180, maxDepth: 8 },
+    }),
+  ];
+
+  if (stageId === 'brief') {
+    actions.push(
+      creativeAction('collect_brief', 'prompt', '补齐创作 brief', {
+        riskLevel: 1,
+        summary: intent === 'music_compose'
+          ? '确认风格、BPM、key、时长、参考曲和交付格式。'
+          : '确认平台、比例、时长、素材路径、参考风格和导出格式。',
+        requires: ['style', 'duration', 'deliverable'],
+      }),
+      creativeAction('save_brief', 'inbox', '把 brief 存到 Inbox/会话', {
+        tool: 'capture_inbox_item',
+        riskLevel: 1,
+        summary: '把创作约束存成本地待办，方便后台或下次继续。',
+      }),
+    );
+  } else if (stageId === 'import') {
+    actions.push(
+      creativeAction('inspect_assets', 'file_workflow', '检查素材文件夹', {
+        tool: 'run_file_workflow',
+        riskLevel: 1,
+        summary: '列出素材目录，确认视频、音频、图片、字幕等文件存在。',
+        requires: ['assetPath'],
+        args: { intent: 'list' },
+      }),
+      creativeAction('open_import_ui', 'current_app_control', '打开导入素材入口', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        summary: hint,
+        confirmationRequired: true,
+        instruction: `在 ${appName} 里打开导入素材/Import Media 入口，但不要确认覆盖或移动文件。`,
+      }),
+    );
+  } else if (stageId === 'rough_cut') {
+    actions.push(
+      creativeAction('observe_timeline', 'observe', '观察时间线和选中片段', {
+        tool: 'observe_now',
+        riskLevel: 1,
+        safeToAutoRun: true,
+        summary: '确认 playhead、timeline、片段和当前工具状态。',
+      }),
+      creativeAction('make_cut_plan', 'plan_ui_action', '规划一次粗剪动作', {
+        tool: 'plan_ui_action',
+        riskLevel: 2,
+        summary: hint,
+        instruction: `只规划 ${appName} 里一次可撤销的粗剪/移动片段动作，不执行。`,
+      }),
+      creativeAction('execute_one_cut', 'current_app_control', '执行一次已确认剪切/移动', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        summary: '只有目标片段和操作明确后才执行，并在执行后重新观察。',
+      }),
+    );
+  } else if (stageId === 'polish') {
+    actions.push(
+      creativeAction('plan_caption_or_transition', 'plan_ui_action', '规划字幕/转场/标题动作', {
+        tool: 'plan_ui_action',
+        riskLevel: 2,
+        summary: hint,
+        instruction: `只规划 ${appName} 里添加字幕、标题或转场的下一步，不执行。`,
+      }),
+      creativeAction('apply_polish_step', 'current_app_control', '应用一个已确认修饰动作', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        summary: '一次只应用一个字幕、标题、转场或特效，并观察结果。',
+      }),
+    );
+  } else if (stageId === 'grade') {
+    actions.push(
+      creativeAction('open_adjustment_panel', 'current_app_control', '打开调色/音频面板', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        summary: hint,
+        instruction: `在 ${appName} 中打开调色或音频调整面板，但不要导出或覆盖文件。`,
+      }),
+      creativeAction('verify_preview', 'observe', '复查预览画面/音量', {
+        tool: 'observe_now',
+        riskLevel: 1,
+        safeToAutoRun: true,
+        summary: '调整后重新观察画面、面板和时间线状态。',
+      }),
+    );
+  } else if (stageId === 'sound') {
+    actions.push(
+      creativeAction('open_sound_library', 'current_app_control', '打开音色/乐器库', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        summary: hint,
+        instruction: `在 ${appName} 中打开音色库或新建乐器轨，不录音、不覆盖工程。`,
+      }),
+      creativeAction('choose_sound_plan', 'plan_ui_action', '规划音色选择', {
+        tool: 'plan_ui_action',
+        riskLevel: 2,
+        summary: '先规划目标音色或乐器轨选择，不执行。',
+      }),
+    );
+  } else if (stageId === 'sketch') {
+    actions.push(
+      creativeAction('confirm_tempo_key', 'prompt', '确认 BPM/key/小节长度', {
+        riskLevel: 1,
+        summary: '录入 MIDI 或 loop 前确认速度、调性、长度和参考。',
+        requires: ['bpm', 'key', 'bars'],
+      }),
+      creativeAction('plan_midi_entry', 'plan_ui_action', '规划一次 MIDI/loop 草稿动作', {
+        tool: 'plan_ui_action',
+        riskLevel: 2,
+        summary: hint,
+        instruction: `只规划 ${appName} 中创建短 MIDI/loop 草稿的下一步，不执行。`,
+      }),
+      creativeAction('enter_short_sketch', 'current_app_control', '执行一个已确认草稿动作', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        summary: '一次只执行一个明确的 MIDI、loop 或录音准备动作。',
+      }),
+    );
+  } else if (stageId === 'arrange') {
+    actions.push(
+      creativeAction('observe_sections', 'observe', '观察段落/小节/region', {
+        tool: 'observe_now',
+        riskLevel: 1,
+        safeToAutoRun: true,
+        summary: '确认当前段落、region、clip 或小节位置。',
+      }),
+      creativeAction('plan_arrangement_move', 'plan_ui_action', '规划一次编排移动/复制', {
+        tool: 'plan_ui_action',
+        riskLevel: 2,
+        summary: hint,
+        instruction: `只规划 ${appName} 里一次段落、clip 或 region 的移动/复制，不执行。`,
+      }),
+    );
+  } else if (stageId === 'mix') {
+    actions.push(
+      creativeAction('open_mixer', 'current_app_control', '打开混音器/轨道控制', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        summary: hint,
+        instruction: `在 ${appName} 中打开 mixer/track controls，只做预览性调整。`,
+      }),
+      creativeAction('verify_mix', 'observe', '观察电平和效果状态', {
+        tool: 'observe_now',
+        riskLevel: 1,
+        safeToAutoRun: true,
+        summary: '调整后重新观察电平、轨道和插件状态。',
+      }),
+    );
+  } else if (stageId === 'export') {
+    actions.push(
+      creativeAction('open_export_panel', 'current_app_control', '打开导出/分享面板', {
+        tool: 'control_current_app',
+        riskLevel: 4,
+        confirmationRequired: true,
+        summary: hint,
+        requires: ['format', 'destinationPath', 'overwriteConfirmation'],
+        instruction: `只打开 ${appName} 的导出/分享面板，不开始导出、不覆盖文件。`,
+      }),
+      creativeAction('verify_export_settings', 'prompt', '确认导出设置', {
+        riskLevel: 4,
+        confirmationRequired: true,
+        summary: '确认格式、分辨率/采样率、范围、路径、文件名和覆盖策略。',
+        requires: ['format', 'destinationPath', 'fileName'],
+      }),
+    );
+  } else {
+    actions.push(
+      creativeAction('plan_current_step', 'plan_ui_action', '规划当前创作软件下一步', {
+        tool: 'plan_ui_action',
+        riskLevel: 2,
+        summary: hint,
+        instruction: `观察 ${appName} 后只规划下一步，不执行。`,
+      }),
+    );
+  }
+
+  return {
+    id: stageId,
+    label: stage?.label || stageId,
+    summary: stage?.summary || '',
+    intent,
+    app: selectedApp?.name || '',
+    riskLevel,
+    hint,
+    actions,
+    safeAutoActionIds: actions.filter((action) => action.safeToAutoRun).map((action) => action.id),
+    confirmationActionIds: actions.filter((action) => action.confirmationRequired).map((action) => action.id),
+  };
+}
+
 function formatCreativeWorkflowOutput(result) {
   const appLabel = result.selectedApp?.name || '未选择';
   const installedLabel = result.selectedApp?.installed
     ? `已检测到 ${result.selectedApp.appPath}`
     : '未在常见位置检测到；仍可尝试用 macOS 打开应用名。';
   const stageLines = result.stages.map((stage, index) => `${index + 1}. ${stage.label}: ${stage.summary}`);
+  const actionLines = result.actionPack?.actions?.length
+    ? result.actionPack.actions
+      .slice(0, 5)
+      .map((action, index) => `${index + 1}. L${action.riskLevel} ${action.label}${action.tool ? ` -> ${action.tool}` : ''}${action.safeToAutoRun ? ' (可自动)' : action.confirmationRequired ? ' (需确认)' : ''}`)
+      .join('\n')
+    : '';
   return [
     `创作工作流: ${result.intent} · ${appLabel}`,
     `软件: ${installedLabel}`,
     `阶段:\n${stageLines.join('\n')}`,
+    result.focusedStage ? `焦点阶段: ${result.focusedStage.label}` : '',
+    actionLines ? `动作包:\n${actionLines}` : '',
     result.appRun?.output ? `本地操作:\n${result.appRun.output}` : '',
+    result.observation?.output ? `观察:\n${result.observation.output}` : '',
     `下一步: ${result.nextActions[0] || '确认要使用的软件和素材位置。'}`,
   ].filter(Boolean).join('\n');
 }
@@ -5021,14 +5423,24 @@ async function planCreativeWorkflow(options = {}) {
     null;
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const stages = creativeWorkflowStages(intent);
+  const focusedStageId = normalizeCreativeStageId(options.stage || options.phase || options.step, intent, instruction);
+  const focusedStage = creativeStageDefinition(intent, focusedStageId);
+  const actionPacks = stages.map((stage) => creativeStageActionPack({
+    intent,
+    stageId: stage.id,
+    selectedApp,
+    instruction,
+  }));
+  const actionPack = actionPacks.find((pack) => pack.id === focusedStageId) || actionPacks[0] || null;
   const nextActions = [
     selectedApp
-      ? `打开/聚焦 ${selectedApp.name} 后先观察工程窗口，再把下一步拆成可审批的小动作。`
+      ? `${focusedStage?.label || '下一阶段'}: ${actionPack?.actions?.[0]?.label || `打开/聚焦 ${selectedApp.name}`}，然后观察工程窗口。`
       : '先指定要使用的剪辑或编曲软件。',
     '确认素材、工程位置、成品规格和是否允许保存/导出。',
     '复杂编辑不盲点界面；每次点击、输入、导出都通过现有本地动作策略执行。',
   ];
   let appRun = null;
+  let observation = null;
 
   if (execute && selectedApp?.name) {
     appRun = await runAppWorkflow({
@@ -5042,6 +5454,25 @@ async function planCreativeWorkflow(options = {}) {
       ],
       continueOnError: false,
     });
+    if (appRun.ok && options.observeAfterOpen !== false) {
+      const observed = await observeNow({
+        source: 'creative_workflow',
+        captureScreen: 'auto',
+        includeAccessibility: true,
+        screenMaxAgeMs: 8000,
+        accessibilityMaxAgeMs: 4000,
+        maxNodes: 180,
+        maxDepth: 8,
+      });
+      observation = {
+        ok: observed.ok,
+        output: formatObservationForLocalCommand(observed),
+        mac: observed.mac,
+        screen: observed.screen,
+        accessibility: observed.accessibility,
+        errors: observed.errors,
+      };
+    }
   }
 
   const draft = {
@@ -5051,8 +5482,12 @@ async function planCreativeWorkflow(options = {}) {
     selectedApp,
     candidates,
     stages,
+    focusedStage,
+    actionPacks,
+    actionPack,
     nextActions,
     appRun,
+    observation,
   };
   const output = formatCreativeWorkflowOutput(draft);
   const workflowDraft = {
@@ -5072,6 +5507,8 @@ async function planCreativeWorkflow(options = {}) {
       appPath: selectedApp?.appPath || '',
       candidateCount: candidates.length,
       stageCount: stages.length,
+      focusedStageId,
+      actionCount: actionPack?.actions?.length || 0,
       appWorkflowId: appRun?.workflow?.id || '',
     },
   };
@@ -9017,6 +9454,7 @@ function localCommandDecision(task) {
   const creativeIntent = creativeWorkflowIntentFromInstruction(text);
   if (creativeIntent) {
     const selectedApp = CREATIVE_APP_CATALOG.find((item) => creativeAppMatchesText(item, text));
+    const creativeStage = creativeStageIdFromInstruction(text, creativeIntent);
     return {
       intent: 'creative_workflow',
       label: creativeIntent === 'music_compose' ? 'Music workflow' : creativeIntent === 'video_edit' ? 'Video workflow' : 'Creative workflow',
@@ -9024,6 +9462,7 @@ function localCommandDecision(task) {
       args: {
         instruction: text,
         intent: creativeIntent,
+        stage: creativeStage,
         app: selectedApp?.name || '',
       },
     };
@@ -9460,6 +9899,7 @@ async function runLocalCommand(command, options = {}) {
       const result = await planCreativeWorkflow({
         instruction: command.args.instruction,
         intent: command.args.intent,
+        stage: command.args.stage,
         app: command.args.app,
         execute,
         recordRouting: false,
@@ -14142,8 +14582,9 @@ async function doctorReportSnapshot() {
   const browserJavaScriptPreview = await browserJavaScriptStatusSnapshot();
   const realtimeBrowserToolPreview = realtimeBrowserWorkflowToolSnapshot();
   const creativeWorkflowPreview = await planCreativeWorkflow({
-    instruction: '帮我剪辑一个短视频，先规划流程',
+    instruction: '帮我剪辑一个短视频，先规划导入素材流程',
     intent: 'video_edit',
+    stage: 'import',
     execute: false,
     recordWorkflow: false,
     recordRouting: false,
@@ -14421,19 +14862,23 @@ async function doctorReportSnapshot() {
     creativeWorkflowPreview.ok &&
     creativeWorkflowPreview.intent === 'video_edit' &&
     Boolean(creativeWorkflowPreview.selectedApp?.name) &&
-    creativeWorkflowPreview.stages.length >= 5;
+    creativeWorkflowPreview.stages.length >= 5 &&
+    creativeWorkflowPreview.actionPack?.actions?.length >= 3 &&
+    creativeWorkflowPreview.actionPack.safeAutoActionIds.length >= 1 &&
+    creativeWorkflowPreview.actionPack.confirmationActionIds.length >= 1;
   checks.push(doctorCheck(
     'creative_workflow',
     'Creative workflow',
     creativeWorkflowReady ? 'ready' : 'warning',
     creativeWorkflowReady
-      ? `Creative workflow planner selected ${creativeWorkflowPreview.selectedApp.name} with ${creativeWorkflowPreview.stages.length} staged step(s).`
-      : 'Creative workflow planner did not produce a usable video-editing plan.',
+      ? `Creative workflow planner selected ${creativeWorkflowPreview.selectedApp.name}/${creativeWorkflowPreview.actionPack.label} with ${creativeWorkflowPreview.actionPack.actions.length} action(s).`
+      : 'Creative workflow planner did not produce a usable video-editing action pack.',
     {
       intent: creativeWorkflowPreview.intent,
       selectedApp: creativeWorkflowPreview.selectedApp,
       stageCount: creativeWorkflowPreview.stages.length,
       candidateCount: creativeWorkflowPreview.candidates.length,
+      actionPack: creativeWorkflowPreview.actionPack,
     },
     creativeWorkflowReady ? '' : 'Review planCreativeWorkflow() and creativeWorkflowIntentFromInstruction().',
   ));
@@ -14601,6 +15046,8 @@ async function doctorReportSnapshot() {
         intent: creativeWorkflowPreview.intent,
         selectedApp: creativeWorkflowPreview.selectedApp,
         stageCount: creativeWorkflowPreview.stages.length,
+        focusedStage: creativeWorkflowPreview.focusedStage,
+        actionCount: creativeWorkflowPreview.actionPack?.actions?.length || 0,
       },
       briefing: {
         summary: briefingPreview.summary,
@@ -16600,8 +17047,8 @@ function createRealtimeSessionConfig(options = {}) {
       'Use control_current_app when the user explicitly asks you to click, choose, press, toggle, or fill something in the current Mac app. It plans the target and executes through the guarded local action policy.',
       'Use plan_app_workflow when the user gives a natural multi-step computer operation and you need JAVIS to observe the current Mac state, create steps, and optionally execute them.',
       'Use run_app_workflow when the user explicitly asks for a small multi-step local computer operation, such as open an app, wait, press a UI target, type text, use a hotkey, or run a file action. Preview with execute:false when the target is ambiguous.',
-      'Use plan_creative_workflow for video editing, short-form editing, subtitles, color, music composition, DAW, MIDI, beat-making, arranging, mixing, or other creative app work. It chooses a likely creative app and staged workflow without blindly editing.',
-      'Use run_creative_workflow only when the user asks to start/open the creative task. It opens or focuses the selected app and returns the staged plan; saves, exports, uploads, and destructive edits still require explicit confirmation.',
+      'Use plan_creative_workflow for video editing, short-form editing, subtitles, color, music composition, DAW, MIDI, beat-making, arranging, mixing, or other creative app work. It chooses a likely creative app, stage, and action pack without blindly editing.',
+      'Use run_creative_workflow only when the user asks to start/open the creative task. It opens or focuses the selected app, observes the project window, and returns the staged action pack; saves, exports, uploads, and destructive edits still require explicit confirmation.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
       'Use get_work_session when the user asks about the current work session.',
@@ -16905,9 +17352,13 @@ function createRealtimeSessionConfig(options = {}) {
             instruction: { type: 'string' },
             goal: { type: 'string' },
             intent: { type: 'string', enum: ['video_edit', 'music_compose', 'creative_app'] },
+            stage: { type: 'string' },
+            phase: { type: 'string' },
+            step: { type: 'string' },
             app: { type: 'string' },
             application: { type: 'string' },
             execute: { type: 'boolean' },
+            observeAfterOpen: { type: 'boolean' },
             waitMs: { type: 'number' },
             parallelGroup: { type: 'string' },
           },
@@ -16925,9 +17376,13 @@ function createRealtimeSessionConfig(options = {}) {
             instruction: { type: 'string' },
             goal: { type: 'string' },
             intent: { type: 'string', enum: ['video_edit', 'music_compose', 'creative_app'] },
+            stage: { type: 'string' },
+            phase: { type: 'string' },
+            step: { type: 'string' },
             app: { type: 'string' },
             application: { type: 'string' },
             execute: { type: 'boolean' },
+            observeAfterOpen: { type: 'boolean' },
             waitMs: { type: 'number' },
             parallelGroup: { type: 'string' },
           },

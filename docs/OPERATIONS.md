@@ -355,13 +355,13 @@ For creative software work:
 ```bash
 curl -X POST http://127.0.0.1:3417/api/creative/workflow \
   -H 'Content-Type: application/json' \
-  -d '{"instruction":"帮我剪辑一个短视频，先用 Final Cut Pro 规划流程","intent":"video_edit","execute":false}'
+  -d '{"instruction":"帮我剪辑一个短视频，先用 Final Cut Pro 规划导入素材流程","intent":"video_edit","stage":"import","execute":false}'
 curl -X POST http://127.0.0.1:3417/api/creative/workflow \
   -H 'Content-Type: application/json' \
-  -d '{"instruction":"用 GarageBand 做一个 30 秒 demo，先规划编曲步骤","intent":"music_compose","execute":false}'
+  -d '{"instruction":"用 GarageBand 做一个 30 秒 demo，先规划 MIDI 草稿步骤","intent":"music_compose","stage":"sketch","execute":false}'
 ```
 
-`/api/creative/workflow` recognizes video editing and music composition requests, ranks common creative apps, records a staged workflow, and can open/focus the selected app with `execute:true`. It does not save, export, upload, or blindly edit the timeline/session; those steps should be handled through observe/current-app control with explicit confirmation.
+`/api/creative/workflow` recognizes video editing and music composition requests, ranks common creative apps, records stage action packs, and can open/focus/observe the selected app with `execute:true`. Each `actionPack` separates low-risk automatic actions such as opening the app and observing the project from confirmation-required actions such as imports, timeline edits, MIDI entry, mix changes, and export panels. It does not save, export, upload, or blindly edit the timeline/session; those steps should be handled through observe/current-app control with explicit confirmation.
 
 For explicit local memory:
 
