@@ -7696,6 +7696,10 @@ function isAutopilotExecutableAction(action) {
   return false;
 }
 
+function firstAutopilotExecutableAction(actions = []) {
+  return (actions || []).find((action) => isAutopilotExecutableAction(action)) || null;
+}
+
 async function autopilotTick(options = {}) {
   const source = String(options.source || 'api').slice(0, 80);
   const execute = options.execute !== false;
@@ -7712,28 +7716,36 @@ async function autopilotTick(options = {}) {
   };
   try {
     const briefing = workflowBriefing({ workflowLimit: options.workflowLimit || 6, jobLimit: options.jobLimit || 6 });
-    const action = (briefing.nextActions || [])[0] || null;
+    const firstAction = (briefing.nextActions || [])[0] || null;
+    const action = firstAutopilotExecutableAction(briefing.nextActions);
     const conversation = conversationStateSnapshot();
     let reason = '';
     if (!AUTOPILOT_ENABLED) reason = 'autopilot_disabled';
     else if (!execute) reason = 'preview_only';
     else if (conversation.active) reason = 'conversation_active';
     else if (activeJobRuns.size) reason = 'active_job_running';
-    else if (!isAutopilotExecutableAction(action)) reason = action ? 'action_not_auto_executable' : 'no_action';
+    else if (!action) reason = firstAction ? 'no_auto_executable_action' : 'no_action';
 
     if (reason) {
       autopilotState = {
         ...autopilotState,
         skippedCount: Number(autopilotState.skippedCount || 0) + 1,
-        lastAction: action,
+        lastAction: action || firstAction,
         lastResult: reason,
       };
-      appendAudit('autopilot.skipped', { source, reason, action: action?.id || '', actionSource: action?.source || '' });
-      return { ok: true, executed: false, skipped: true, reason, action, briefing, autopilot: autopilotStateSnapshot() };
+      appendAudit('autopilot.skipped', {
+        source,
+        reason,
+        action: action?.id || firstAction?.id || '',
+        actionSource: action?.source || firstAction?.source || '',
+        nextActions: (briefing.nextActions || []).length,
+      });
+      return { ok: true, executed: false, skipped: true, reason, action: action || firstAction, selectedAction: action, briefing, autopilot: autopilotStateSnapshot() };
     }
 
     const result = await workNextAction({
       execute: true,
+      actionId: action.id,
       source: `autopilot:${source}`,
       workflowLimit: options.workflowLimit || 6,
       jobLimit: options.jobLimit || 6,

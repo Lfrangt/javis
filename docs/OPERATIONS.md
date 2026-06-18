@@ -117,7 +117,8 @@ Use option `17. Toggle overnight autopilot` to write `JAVIS_AUTOPILOT_ENABLED` i
 also aligns local execution, trusted local mode, and Level 3 auto-run so the resident can keep making
 low-risk progress while unattended. The resident autopilot executes only low-risk recovery diagnostics
 and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
-another background job is running.
+another background job is running. When multiple work-next actions exist, autopilot skips manual-only
+items and executes the first action that passes its auto-executable guard.
 
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
