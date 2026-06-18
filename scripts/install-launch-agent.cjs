@@ -77,7 +77,11 @@ if (uid !== undefined) {
 }
 fs.writeFileSync(plistPath, plist, 'utf8');
 if (uid !== undefined) {
-  run('launchctl', ['bootstrap', `gui/${uid}`, plistPath]);
+  const bootstrapped = run('launchctl', ['bootstrap', `gui/${uid}`, plistPath], { optional: true });
+  if (!bootstrapped) {
+    console.log('launchctl bootstrap failed; falling back to launchctl load -w.');
+    run('launchctl', ['load', '-w', plistPath]);
+  }
   run('launchctl', ['enable', `gui/${uid}/${label}`], { optional: true });
   run('launchctl', ['kickstart', '-k', `gui/${uid}/${label}`], { optional: true });
 }

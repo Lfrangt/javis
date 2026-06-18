@@ -18,6 +18,7 @@ function run(command, args) {
 if (uid !== undefined) {
   run('launchctl', ['bootout', `gui/${uid}`, plistPath]);
   run('launchctl', ['disable', `gui/${uid}/${label}`]);
+  run('launchctl', ['unload', '-w', plistPath]);
 }
 
 if (fs.existsSync(plistPath)) {
