@@ -67,12 +67,13 @@ Renderer
 - Doctor lane: one report that validates service health, setup, policy guards, resident mode, workers, storage, queue, workflows, and approvals.
 - Browser context lane: current supported browser tab title and URL for webpage-aware tasks.
 - Browser page lane: read-only extraction of selected text, headings, and visible page text from supported active tabs.
+- Browser DOM lane: read-only visible control extraction plus guarded one-step click/fill/select actions inside supported active tabs.
 - Browser workflow lane: page-aware summarize, action extraction, drafting, and Q&A routed through quick or background lanes.
 - Accessibility tree lane: read-only frontmost App UI structure for operating non-browser Mac apps through the accessibility model.
 - UI planning lane: dry-run target selection and next-action plans from the current accessibility tree.
 - Current-app control lane: voice/API wrapper that plans one UI target and executes a press or value write through the guarded local action path.
 - App workflow planning lane: observes frontmost app/window, Accessibility tree, and latest screen metadata, then turns natural requests into previewable workflow steps.
-- App workflow lane: short multi-step Mac workflows that sequence app opens, waits, hotkeys, typed text, current-app controls, and file/Mac actions into one auditable workflow record.
+- App workflow lane: short multi-step Mac workflows that sequence app opens, waits, hotkeys, typed text, current-app controls, browser DOM actions, and file/Mac actions into one auditable workflow record.
 - Guarded UI action lane: Level 3 `AXPress` and value-setting actions through policy, approvals, role allowlists, and expected target checks.
 - File workflow lane: policy-guarded local file/folder list, search, summarize, Q&A, and folder organization planning routed through quick or background lanes.
 - File organization lane: deterministic by-type folder plans with per-step policy preview, explicit apply confirmation, and the same approval/local-execution gates before any move/copy/create action.

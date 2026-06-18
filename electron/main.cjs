@@ -127,7 +127,7 @@ const DEFAULT_ACTION_POLICY = {
     },
     browser_control: {
       enabled: true,
-      allowedActions: ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search'],
+      allowedActions: ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search', 'dom_click', 'dom_fill', 'dom_select'],
     },
     cli_command: {
       enabled: true,
@@ -770,6 +770,11 @@ function uniqueStringList(value, fallback) {
   return Array.from(new Set(list.map((item) => String(item).trim()).filter(Boolean)));
 }
 
+function browserAllowedActionsList(value) {
+  const current = uniqueStringList(value, DEFAULT_ACTION_POLICY.allow.browser_control.allowedActions);
+  return Array.from(new Set([...current, ...DEFAULT_ACTION_POLICY.allow.browser_control.allowedActions]));
+}
+
 function normalizeActionPolicy(value) {
   const raw = value && typeof value === 'object' ? value : {};
   return {
@@ -823,7 +828,7 @@ function normalizeActionPolicy(value) {
       },
       browser_control: {
         enabled: raw.allow?.browser_control?.enabled !== false,
-        allowedActions: uniqueStringList(raw.allow?.browser_control?.allowedActions, DEFAULT_ACTION_POLICY.allow.browser_control.allowedActions),
+        allowedActions: browserAllowedActionsList(raw.allow?.browser_control?.allowedActions),
       },
       cli_command: {
         enabled: raw.allow?.cli_command?.enabled !== false,
@@ -3396,6 +3401,9 @@ function normalizeAppWorkflowStep(raw = {}, index = 0) {
     ui: 'control_current_app',
     control: 'control_current_app',
     accessibility: 'control_current_app',
+    browser: 'browser_dom',
+    browser_dom_action: 'browser_dom',
+    webpage: 'browser_dom',
     mac: 'mac_action',
     file: 'file_action',
     sleep: 'wait',
@@ -3521,6 +3529,34 @@ async function runAppWorkflowStep(step, execute) {
       output: result.output,
       target: result.target,
       approval: result.approval,
+    };
+  }
+
+  if (step.type === 'browser_dom') {
+    const requestedAction = [
+      step.domAction,
+      step.browserAction,
+      step.actionName,
+      step.mode,
+      step.action,
+    ].find((value) => ['click', 'fill', 'select'].includes(String(value || '').trim()));
+    const result = await executeBrowserDomAction({
+      action: requestedAction || 'click',
+      app: step.app,
+      selector: step.selector,
+      query: step.query || step.label || step.text,
+      value: step.value ?? step.content,
+      execute,
+      source: 'app_workflow',
+    }, { preview: !execute });
+    return {
+      status: result.ok ? (result.executed ? 'executed' : 'previewed') : result.approval ? 'approval_required' : 'blocked',
+      type: step.type,
+      label: step.label,
+      summary: result.plan?.summary || result.action || step.label,
+      output: result.output,
+      approval: result.approval,
+      preview: result.plan ? { plan: result.plan, evaluation: result.evaluation } : undefined,
     };
   }
 
@@ -3735,8 +3771,9 @@ function sanitizePlannedAppWorkflow(rawPlan = {}, fallbackTitle = 'Planned app w
 function appWorkflowPlanningPrompt({ instruction, macContext, tree }) {
   return [
     'Plan a short local Mac app workflow as strict JSON only.',
-    'Allowed step types: open_app, open_url, wait, control_current_app, hotkey, type_text, mac_action, file_action.',
+    'Allowed step types: open_app, open_url, wait, control_current_app, browser_dom, hotkey, type_text, mac_action, file_action.',
     'Prefer control_current_app for visible UI targets and keep max 5 steps.',
+    'Prefer browser_dom only for explicit webpage element click/fill/select tasks, and do not plan submits, purchases, sends, deletes, logins, or account changes.',
     'Do not plan sends, purchases, deletes, account changes, or irreversible external actions.',
     'If ambiguous, return needsClarification true and an empty steps array.',
     '',
@@ -4362,7 +4399,7 @@ async function browserPageSnapshot(options = {}) {
     });
     return result;
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = compactBrowserJavaScriptError(error);
     const fileFallback = browserPageFromFileUrl(browser, maxChars, message);
     if (fileFallback) {
       appendAudit('browser_page.read', {
@@ -4398,6 +4435,509 @@ async function browserPageSnapshot(options = {}) {
     });
     return metadataFallback;
   }
+}
+
+async function executeBrowserJavaScript(browser, js, options = {}) {
+  const appName = browser?.app || String(options.app || '').trim();
+  if (!appName) throw new Error('No supported browser is active.');
+  const isSafari = appName === 'Safari' || appName === 'Safari Technology Preview';
+  const quotedApp = appleScriptString(appName);
+  const quotedJs = appleScriptString(js);
+  const script = isSafari
+    ? [
+        `tell application ${quotedApp}`,
+        '  if not (exists front document) then error "No front document"',
+        `  set pageResult to do JavaScript ${quotedJs} in front document`,
+        'end tell',
+        'return pageResult',
+      ].join('\n')
+    : [
+        `tell application ${quotedApp}`,
+        '  if not (exists front window) then error "No front window"',
+        `  set pageResult to execute active tab of front window javascript ${quotedJs}`,
+        'end tell',
+        'return pageResult',
+      ].join('\n');
+  const { stdout } = await execFileAsync('osascript', ['-e', script], {
+    timeout: Math.max(1000, Math.min(15000, Number(options.timeoutMs || 6000))),
+    maxBuffer: Math.max(1024 * 256, Math.min(1024 * 1024 * 8, Number(options.maxBuffer || 1024 * 1024 * 4))),
+  });
+  return String(stdout || '').trim();
+}
+
+function compactBrowserJavaScriptError(error) {
+  const message = String(error?.stderr || (error instanceof Error ? error.message : error) || '');
+  if (/AppleScript.*JavaScript|Apple Events|Apple 事件|执行 JavaScript 的功能已关闭|Allow JavaScript from Apple Events/i.test(message)) {
+    return 'browser_javascript_from_apple_events_disabled';
+  }
+  return message.split('\n')[0].slice(0, 500) || 'browser_javascript_unavailable';
+}
+
+async function browserJavaScriptStatusSnapshot(options = {}) {
+  const browser = await browserContextSnapshot({ app: options.app });
+  if (!browser.supported || !browser.available) {
+    return {
+      available: false,
+      supported: Boolean(browser.supported),
+      enabled: false,
+      app: browser.app || '',
+      title: browser.title || '',
+      url: browser.url || '',
+      error: browser.error || 'no_supported_browser_page',
+    };
+  }
+  try {
+    const raw = await executeBrowserJavaScript(browser, 'JSON.stringify({ ok: true, title: document.title || "", url: location.href })', {
+      timeoutMs: 3000,
+      maxBuffer: 1024 * 256,
+    });
+    const parsed = JSON.parse(raw || '{}');
+    return {
+      available: true,
+      supported: true,
+      enabled: parsed.ok === true,
+      app: browser.app,
+      title: parsed.title || browser.title,
+      url: parsed.url || browser.url,
+      error: '',
+    };
+  } catch (error) {
+    return {
+      available: true,
+      supported: true,
+      enabled: false,
+      app: browser.app,
+      title: browser.title,
+      url: browser.url,
+      error: compactBrowserJavaScriptError(error),
+    };
+  }
+}
+
+function browserDomSnapshotScript(limit) {
+  return `
+(() => {
+  const limit = ${JSON.stringify(limit)};
+  const clean = (value, max = 180) => String(value || '')
+    .replace(/[\\t\\r\\n ]+/g, ' ')
+    .trim()
+    .slice(0, max);
+  const cssEscape = (value) => {
+    if (window.CSS && typeof window.CSS.escape === 'function') return window.CSS.escape(String(value));
+    return String(value).replace(/[^a-zA-Z0-9_-]/g, (char) => '\\\\' + char);
+  };
+  const attrEscape = (value) => String(value).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+  const visible = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  };
+  const selectorFor = (el) => {
+    if (el.id) {
+      const selector = '#' + cssEscape(el.id);
+      if (document.querySelectorAll(selector).length === 1) return selector;
+    }
+    for (const attr of ['data-testid', 'data-test', 'aria-label', 'name', 'placeholder', 'title']) {
+      const value = el.getAttribute(attr);
+      if (!value) continue;
+      const selector = el.tagName.toLowerCase() + '[' + attr + '="' + attrEscape(value) + '"]';
+      try {
+        if (document.querySelectorAll(selector).length === 1) return selector;
+      } catch (_) {}
+    }
+    const parts = [];
+    let node = el;
+    while (node && node.nodeType === 1 && node !== document.documentElement && parts.length < 5) {
+      const tag = node.tagName.toLowerCase();
+      const parent = node.parentElement;
+      if (!parent) break;
+      const sameTag = Array.from(parent.children).filter((child) => child.tagName === node.tagName);
+      const index = sameTag.indexOf(node) + 1;
+      parts.unshift(tag + ':nth-of-type(' + index + ')');
+      const selector = parts.join(' > ');
+      try {
+        if (document.querySelector(selector) === el) return selector;
+      } catch (_) {}
+      node = parent;
+    }
+    return parts.join(' > ');
+  };
+  const labelsFor = (el) => {
+    const values = [
+      el.getAttribute('aria-label'),
+      el.getAttribute('title'),
+      el.getAttribute('alt'),
+      el.getAttribute('placeholder'),
+      el.getAttribute('name'),
+      el.innerText,
+      el.textContent,
+    ];
+    if (el.id) {
+      const label = document.querySelector('label[for="' + attrEscape(el.id) + '"]');
+      if (label) values.unshift(label.innerText);
+    }
+    if (el.labels) {
+      for (const label of Array.from(el.labels)) values.unshift(label.innerText);
+    }
+    if (['button', 'submit', 'reset'].includes(String(el.type || '').toLowerCase())) values.unshift(el.value);
+    return values.map((value) => clean(value)).filter(Boolean);
+  };
+  const selector = [
+    'a[href]',
+    'button',
+    'input',
+    'textarea',
+    'select',
+    '[role="button"]',
+    '[role="link"]',
+    '[role="menuitem"]',
+    '[role="checkbox"]',
+    '[role="radio"]',
+    '[role="tab"]',
+    '[contenteditable="true"]',
+    '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
+  const elements = Array.from(document.querySelectorAll(selector))
+    .filter(visible)
+    .slice(0, limit)
+    .map((el, index) => {
+      const rect = el.getBoundingClientRect();
+      const tag = el.tagName.toLowerCase();
+      const type = clean(el.getAttribute('type') || el.getAttribute('role') || '', 40);
+      const labels = labelsFor(el);
+      const label = labels[0] || '';
+      const disabled = Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
+      const valuePreview = tag === 'select'
+        ? clean(el.options?.[el.selectedIndex]?.text || '', 80)
+        : (['checkbox', 'radio'].includes(String(el.type || '').toLowerCase()) ? String(Boolean(el.checked)) : '');
+      return {
+        id: String(index + 1),
+        selector: selectorFor(el),
+        tag,
+        type,
+        role: clean(el.getAttribute('role') || '', 60),
+        label,
+        text: clean(el.innerText || el.textContent || '', 160),
+        placeholder: clean(el.getAttribute('placeholder') || '', 100),
+        name: clean(el.getAttribute('name') || '', 80),
+        href: clean(el.getAttribute('href') || '', 220),
+        valuePreview,
+        disabled,
+        rect: {
+          x: Math.round(rect.x),
+          y: Math.round(rect.y),
+          width: Math.round(rect.width),
+          height: Math.round(rect.height)
+        }
+      };
+    });
+  return JSON.stringify({
+    available: true,
+    title: document.title || '',
+    url: location.href,
+    count: elements.length,
+    elements
+  });
+})()
+  `.trim();
+}
+
+async function browserDomSnapshot(options = {}) {
+  const actionConfig = actionPolicy.allow?.read_browser_page;
+  if (!actionConfig?.enabled) {
+    return {
+      available: false,
+      supported: false,
+      app: '',
+      title: '',
+      url: '',
+      count: 0,
+      elements: [],
+      error: 'read_browser_page_disabled_by_policy',
+    };
+  }
+  const browser = await browserContextSnapshot({ app: options.app });
+  if (!browser.available || !browser.supported) {
+    return {
+      ...browser,
+      count: 0,
+      elements: [],
+    };
+  }
+  const limit = Math.max(1, Math.min(120, Number(options.limit || 60)));
+  try {
+    const raw = await executeBrowserJavaScript(browser, browserDomSnapshotScript(limit), { timeoutMs: 6000 });
+    const parsed = JSON.parse(raw || '{}');
+    const result = {
+      available: true,
+      supported: true,
+      app: browser.app,
+      title: String(parsed.title || browser.title || ''),
+      url: String(parsed.url || browser.url || ''),
+      count: Number(parsed.count || 0),
+      elements: Array.isArray(parsed.elements) ? parsed.elements.slice(0, limit) : [],
+      error: '',
+    };
+    appendAudit('browser_dom.read', {
+      app: result.app,
+      url: result.url,
+      count: result.count,
+      returned: result.elements.length,
+    });
+    return result;
+  } catch (error) {
+    return {
+      available: false,
+      supported: true,
+      app: browser.app,
+      title: browser.title,
+      url: browser.url,
+      count: 0,
+      elements: [],
+      error: compactBrowserJavaScriptError(error),
+    };
+  }
+}
+
+const BROWSER_DOM_ACTIONS = new Set(['click', 'fill', 'select']);
+const BROWSER_DOM_DANGEROUS_RE = /\b(submit|send|buy|purchase|pay|checkout|delete|remove|destroy|confirm|login|log in|sign in|sign up|register|subscribe|unsubscribe|post|publish|share|transfer|withdraw|deposit|trade)\b|提交|发送|购买|付款|支付|删除|移除|确认|登录|注册|发布|分享|转账|提现|充值|交易/i;
+
+function normalizeBrowserDomAction(value) {
+  const raw = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  const aliases = {
+    press: 'click',
+    tap: 'click',
+    choose: 'select',
+    set: 'fill',
+    set_value: 'fill',
+    type: 'fill',
+    input: 'fill',
+    点击: 'click',
+    按: 'click',
+    选择: 'select',
+    填写: 'fill',
+    输入: 'fill',
+  };
+  const normalized = aliases[raw] || raw;
+  return BROWSER_DOM_ACTIONS.has(normalized) ? normalized : '';
+}
+
+function browserDomActionRisk(args = {}, domAction = '') {
+  const text = [
+    args.query,
+    args.label,
+    args.text,
+    args.selector,
+    args.expectedText,
+    args.value,
+  ].map((item) => String(item || '')).join(' ');
+  if (BROWSER_DOM_DANGEROUS_RE.test(text)) return 4;
+  if (domAction === 'click') return 3;
+  if (domAction === 'fill' || domAction === 'select') return 3;
+  return 2;
+}
+
+function buildBrowserDomActionPlan(args = {}) {
+  const domAction = normalizeBrowserDomAction(args.domAction || args.browserAction || args.action);
+  if (!domAction) throw new Error('Unsupported browser DOM action.');
+  const browserAction = `dom_${domAction}`;
+  const actionConfig = actionPolicy.allow?.browser_control || {};
+  if (!valueMatchesAllowlist(browserAction, actionConfig.allowedActions || [])) {
+    throw new Error(`Browser action ${browserAction} is not allowed by policy.`);
+  }
+  const selector = String(args.selector || '').trim().slice(0, 500);
+  const query = String(args.query || args.label || args.text || '').trim().slice(0, 300);
+  const value = String(args.value ?? args.content ?? '').slice(0, 4000);
+  if (!selector && !query) throw new Error('Browser DOM action requires selector or query.');
+  if ((domAction === 'fill' || domAction === 'select') && !value) throw new Error('Browser DOM fill/select requires value.');
+  const target = selector || query;
+  return {
+    action: 'browser_control',
+    riskLevel: browserDomActionRisk({ ...args, selector, query, value }, domAction),
+    summary: domAction === 'click'
+      ? `Click browser element ${compactRecordText(target, 120)}`
+      : `${domAction === 'select' ? 'Select' : 'Fill'} browser element ${compactRecordText(target, 120)}`,
+    target: browserAction,
+    args: {
+      action: 'browser_control',
+      browserAction,
+      domAction,
+      app: String(args.app || '').trim(),
+      selector,
+      query,
+      value,
+    },
+    metadata: { browserAction, domAction },
+  };
+}
+
+function browserDomActionScript(plan) {
+  const args = plan.args || {};
+  return `
+(() => {
+  const domAction = ${JSON.stringify(args.domAction)};
+  const selector = ${JSON.stringify(args.selector || '')};
+  const query = ${JSON.stringify(args.query || '')}.toLowerCase();
+  const value = ${JSON.stringify(args.value || '')};
+  const clean = (input, max = 220) => String(input || '').replace(/[\\t\\r\\n ]+/g, ' ').trim().slice(0, max);
+  const attrEscape = (input) => String(input).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+  const visible = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  };
+  const labelOf = (el) => {
+    const values = [
+      el.getAttribute('aria-label'),
+      el.getAttribute('title'),
+      el.getAttribute('alt'),
+      el.getAttribute('placeholder'),
+      el.getAttribute('name'),
+      el.innerText,
+      el.textContent,
+    ];
+    if (el.id) {
+      const label = document.querySelector('label[for="' + attrEscape(el.id) + '"]');
+      if (label) values.unshift(label.innerText);
+    }
+    if (el.labels) {
+      for (const label of Array.from(el.labels)) values.unshift(label.innerText);
+    }
+    if (['button', 'submit', 'reset'].includes(String(el.type || '').toLowerCase())) values.unshift(el.value);
+    return values.map((item) => clean(item)).filter(Boolean)[0] || '';
+  };
+  const selectorFor = (el) => {
+    if (el.id) return '#' + (window.CSS?.escape ? CSS.escape(el.id) : String(el.id).replace(/[^a-zA-Z0-9_-]/g, (char) => '\\\\' + char));
+    return el.tagName.toLowerCase();
+  };
+  const interactive = [
+    'a[href]', 'button', 'input', 'textarea', 'select',
+    '[role="button"]', '[role="link"]', '[role="menuitem"]',
+    '[role="checkbox"]', '[role="radio"]', '[role="tab"]',
+    '[contenteditable="true"]', '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
+  let target = null;
+  if (selector) {
+    target = document.querySelector(selector);
+  } else {
+    target = Array.from(document.querySelectorAll(interactive))
+      .filter(visible)
+      .find((el) => labelOf(el).toLowerCase().includes(query) || clean(el.innerText || el.textContent).toLowerCase().includes(query));
+  }
+  if (!target) throw new Error('browser_dom_target_not_found');
+  if (!visible(target)) throw new Error('browser_dom_target_not_visible');
+  const tag = target.tagName.toLowerCase();
+  const type = String(target.getAttribute('type') || '').toLowerCase();
+  const label = labelOf(target);
+  if (target.disabled || target.getAttribute('aria-disabled') === 'true') throw new Error('browser_dom_target_disabled');
+  if ((domAction === 'fill' || domAction === 'select') && type === 'password') throw new Error('browser_dom_password_field_blocked');
+  target.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+  if (typeof target.focus === 'function') target.focus();
+  if (domAction === 'click') {
+    target.click();
+  } else if (domAction === 'select') {
+    if (tag !== 'select') throw new Error('browser_dom_target_is_not_select');
+    const option = Array.from(target.options).find((item) => item.value === value || clean(item.text).toLowerCase() === value.toLowerCase() || clean(item.text).toLowerCase().includes(value.toLowerCase()));
+    if (!option) throw new Error('browser_dom_select_option_not_found');
+    target.value = option.value;
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+  } else if (domAction === 'fill') {
+    if (target.isContentEditable) {
+      target.textContent = value;
+    } else if (tag === 'input' || tag === 'textarea') {
+      target.value = value;
+    } else {
+      throw new Error('browser_dom_target_not_fillable');
+    }
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    target.dispatchEvent(new Event('change', { bubbles: true }));
+  } else {
+    throw new Error('unsupported_browser_dom_action:' + domAction);
+  }
+  const rect = target.getBoundingClientRect();
+  return JSON.stringify({
+    ok: true,
+    action: domAction,
+    selector: selector || selectorFor(target),
+    tag,
+    type,
+    label,
+    url: location.href,
+    title: document.title || '',
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    }
+  });
+})()
+  `.trim();
+}
+
+async function runBrowserDomActionPlan(plan, evaluation) {
+  if (evaluation.dryRun) {
+    appendAudit('browser_dom.dry_run', {
+      action: plan.args.domAction,
+      riskLevel: plan.riskLevel,
+      summary: plan.summary,
+    });
+    return `[dry-run] ${plan.summary}`;
+  }
+  const browser = await browserContextSnapshot({ app: plan.args.app });
+  if (!browser.supported || !browser.available) throw new Error(browser.error || 'frontmost_app_is_not_supported_browser');
+  const raw = await executeBrowserJavaScript(browser, browserDomActionScript(plan), { timeoutMs: 6000 });
+  const result = JSON.parse(raw || '{}');
+  appendAudit('browser_dom.executed', {
+    app: browser.app,
+    action: plan.args.domAction,
+    selector: result.selector,
+    label: compactRecordText(result.label, 120),
+    url: result.url || browser.url,
+  });
+  return `${result.action} executed on ${result.tag}${result.label ? ` "${result.label}"` : ''}.`;
+}
+
+async function executeBrowserDomAction(args = {}, options = {}) {
+  const plan = buildBrowserDomActionPlan(args);
+  const preview = args.execute === false || options.preview === true;
+  appendAudit('browser_dom.requested', {
+    action: plan.args.domAction,
+    riskLevel: plan.riskLevel,
+    summary: plan.summary,
+    localExecutionEnabled: LOCAL_EXEC_ENABLED,
+    preview,
+    approved: Boolean(options.approved),
+  });
+  const evaluation = evaluateMacActionPlan(plan, { ...options, preview });
+  if (preview) {
+    return {
+      ok: !evaluation.blocked,
+      executed: false,
+      action: plan.args.domAction,
+      output: `Prepared ${plan.summary}${evaluation.needsApproval ? ` (${evaluation.reason})` : ''}.`,
+      plan,
+      evaluation,
+    };
+  }
+  const output = await runBrowserDomActionPlan(plan, evaluation);
+  appendAudit('browser_dom.completed', {
+    action: plan.args.domAction,
+    riskLevel: plan.riskLevel,
+    dryRun: evaluation.dryRun,
+  });
+  return {
+    ok: true,
+    executed: !evaluation.dryRun,
+    action: plan.args.domAction,
+    output,
+    plan,
+  };
 }
 
 const BROWSER_CONTROL_ACTIONS = new Set([
@@ -8012,6 +8552,7 @@ async function doctorReportSnapshot() {
     codex: routeTaskDecision('修复这个 React bug 并跑测试'),
   };
   const localCommandPreview = await routeTask({ message: '状态', execute: true });
+  const browserJavaScriptPreview = await browserJavaScriptStatusSnapshot();
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
   const setupGuidePreview = setupGuideSnapshot();
@@ -8060,6 +8601,23 @@ async function doctorReportSnapshot() {
     const item = readinessById(id);
     if (item) checks.push(doctorCheck(id, item.label, item.status, item.summary, {}, item.next));
   }
+
+  checks.push(doctorCheck(
+    'browser_javascript_events',
+    'Browser DOM bridge',
+    browserJavaScriptPreview.available && browserJavaScriptPreview.supported
+      ? browserJavaScriptPreview.enabled ? 'ready' : 'warning'
+      : 'ready',
+    browserJavaScriptPreview.available && browserJavaScriptPreview.supported
+      ? browserJavaScriptPreview.enabled
+        ? `Browser DOM JavaScript bridge is enabled for ${browserJavaScriptPreview.app}.`
+        : `Browser DOM JavaScript bridge is disabled for ${browserJavaScriptPreview.app}: ${browserJavaScriptPreview.error}.`
+      : 'No supported frontmost browser page is available; DOM bridge check skipped.',
+    browserJavaScriptPreview,
+    browserJavaScriptPreview.available && browserJavaScriptPreview.supported && !browserJavaScriptPreview.enabled
+      ? 'In Chrome, open 显示 > 开发者 > 允许 Apple 事件中的 JavaScript, then retry /api/browser/dom.'
+      : '',
+  ));
 
   checks.push(doctorCheck(
     'resident_launch_agent',
@@ -9620,6 +10178,27 @@ async function executeTool(name, args) {
     return { ok: page.available, output: JSON.stringify(page) };
   }
 
+  if (name === 'read_browser_dom') {
+    const dom = await browserDomSnapshot({ app: args?.app, limit: args?.limit });
+    return { ok: dom.available, output: JSON.stringify(dom) };
+  }
+
+  if (name === 'control_browser_dom') {
+    try {
+      const result = await executeBrowserDomAction({ ...(args || {}), source: 'voice' });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      if (error instanceof ActionApprovalRequired) {
+        return {
+          ok: false,
+          approval: error.approval,
+          output: `Approval required before I can ${error.approval.summary}.`,
+        };
+      }
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'run_browser_workflow') {
     const result = await runBrowserWorkflow(args || {});
     return { ok: result.ok, output: JSON.stringify(result) };
@@ -9743,6 +10322,8 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_mac_context before acting on the current app, active window, clipboard, or local runtime state.',
       'Use get_browser_context before summarizing, comparing, or acting on a webpage open in the browser.',
       'Use control_browser when the user explicitly asks for browser navigation such as back, forward, reload, new tab, close tab, focus address bar, open a URL, or search.',
+      'Use read_browser_dom before choosing a clickable or fillable element inside the current webpage.',
+      'Use control_browser_dom only when the user explicitly asks to click, fill, or select an element inside the current webpage. Do not use it for submits, purchases, sends, logins, deletes, or account changes without confirmation.',
       'Use get_config_check when setup, permission, resident mode, or local worker readiness is unclear.',
       'Use get_setup_guide when the user asks what setup remains. Use run_setup_next only when the user asks to fix, open, or do the next setup step.',
       'Use read_accessibility_tree before planning control of a visible Mac app through its UI structure.',
@@ -9768,6 +10349,8 @@ function createRealtimeSessionConfig(options = {}) {
       'Use continue_workflow when the user says to continue, resume, or do the next step from a previous workflow.',
       'Use copy_workflow_result when the user asks to copy a prior workflow result, draft, summary, or next step to the clipboard.',
       'Use read_browser_page when the user asks to summarize or use the content of the current webpage.',
+      'Use read_browser_dom when the user asks what controls are visible on the current webpage or when a browser DOM target is needed.',
+      'Use control_browser_dom for guarded webpage element click/fill/select actions after the target is clear.',
       'Use run_browser_workflow for webpage summarization, action extraction, drafting, or page-specific questions; use background mode for longer work.',
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, or safe folder organization planning.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
@@ -9852,6 +10435,41 @@ function createRealtimeSessionConfig(options = {}) {
             url: { type: 'string' },
             query: { type: 'string' },
             value: { type: 'string' },
+          },
+          required: ['action'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'read_browser_dom',
+        description: 'Read visible clickable and fillable DOM controls from the current supported browser page. Returns element labels, selectors, tags, and bounding boxes.',
+        parameters: {
+          type: 'object',
+          properties: {
+            app: { type: 'string' },
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'control_browser_dom',
+        description: 'Execute one guarded DOM action inside the current supported browser page: click an element, fill an input/textarea/contenteditable, or select an option.',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['click', 'fill', 'select'] },
+            domAction: { type: 'string', enum: ['click', 'fill', 'select'] },
+            app: { type: 'string' },
+            selector: { type: 'string' },
+            query: { type: 'string' },
+            label: { type: 'string' },
+            text: { type: 'string' },
+            value: { type: 'string' },
+            content: { type: 'string' },
+            execute: { type: 'boolean' },
           },
           required: ['action'],
           additionalProperties: false,
@@ -9971,7 +10589,7 @@ function createRealtimeSessionConfig(options = {}) {
                 properties: {
                   type: {
                     type: 'string',
-                    enum: ['open_app', 'open_url', 'wait', 'control_current_app', 'hotkey', 'type_text', 'mac_action', 'file_action'],
+                    enum: ['open_app', 'open_url', 'wait', 'control_current_app', 'browser_dom', 'hotkey', 'type_text', 'mac_action', 'file_action'],
                   },
                   label: { type: 'string' },
                   app: { type: 'string' },
@@ -9979,11 +10597,13 @@ function createRealtimeSessionConfig(options = {}) {
                   ms: { type: 'number' },
                   instruction: { type: 'string' },
                   action: { type: 'string' },
+                  domAction: { type: 'string', enum: ['click', 'fill', 'select'] },
                   controlAction: { type: 'string', enum: ['press', 'set_value'] },
                   content: { type: 'string' },
                   value: { type: 'string' },
                   keys: { type: 'string' },
                   text: { type: 'string' },
+                  selector: { type: 'string' },
                   path: { type: 'string' },
                   sourcePath: { type: 'string' },
                   destinationPath: { type: 'string' },
@@ -11182,6 +11802,27 @@ function startApiServer() {
     }
   });
 
+  api.get('/api/browser/javascript', async (req, res) => {
+    try {
+      const javascript = await browserJavaScriptStatusSnapshot({ app: req.query.app });
+      res.json({ javascript });
+    } catch (error) {
+      jsonError(res, 500, 'Browser JavaScript status failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/browser/dom', async (req, res) => {
+    try {
+      const dom = await browserDomSnapshot({
+        app: req.query.app,
+        limit: req.query.limit,
+      });
+      res.json({ dom });
+    } catch (error) {
+      jsonError(res, 500, 'Browser DOM read failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.post('/api/browser/control', express.json({ limit: '1mb' }), async (req, res) => {
     try {
       const result = await executeBrowserControl(req.body || {});
@@ -11196,6 +11837,23 @@ function startApiServer() {
         return;
       }
       jsonError(res, 400, 'Browser control failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/browser/dom-action', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await executeBrowserDomAction({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.approval ? 202 : 200).json(result);
+    } catch (error) {
+      if (error instanceof ActionApprovalRequired) {
+        res.status(202).json({
+          ok: false,
+          approval: error.approval,
+          output: `Approval required before I can ${error.approval.summary}.`,
+        });
+        return;
+      }
+      jsonError(res, 400, 'Browser DOM action failed', error instanceof Error ? error.message : String(error));
     }
   });
 

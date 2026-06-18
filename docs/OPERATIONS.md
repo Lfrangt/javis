@@ -415,6 +415,11 @@ curl 'http://127.0.0.1:3417/api/browser/page?maxChars=12000'
 curl -X POST http://127.0.0.1:3417/api/browser/control \
   -H 'Content-Type: application/json' \
   -d '{"action":"reload"}'
+curl http://127.0.0.1:3417/api/browser/javascript
+curl 'http://127.0.0.1:3417/api/browser/dom?limit=40'
+curl -X POST http://127.0.0.1:3417/api/browser/dom-action \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"click","query":"Search","execute":false}'
 curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -H 'Content-Type: application/json' \
   -d '{"intent":"summarize","mode":"quick","maxChars":12000}'
@@ -556,6 +561,19 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
 ```
 
 Supported intents: `summarize`, `extract_actions`, `draft`, and `ask`.
+
+For webpage controls:
+
+```bash
+curl 'http://127.0.0.1:3417/api/browser/dom?limit=40'
+curl -X POST http://127.0.0.1:3417/api/browser/dom-action \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"fill","query":"Search","value":"Jarvis agent","execute":false}'
+```
+
+`/api/browser/dom` is read-only and returns visible clickable/fillable controls with selectors. `/api/browser/dom-action` runs one guarded `click`, `fill`, or `select`. Use `execute:false` to preview; real execution still uses local execution, policy, approvals, and audit logs.
+
+Chrome requires `显示 > 开发者 > 允许 Apple 事件中的 JavaScript` before `/api/browser/dom` and `/api/browser/dom-action` can inspect or operate page DOM. `/api/browser/javascript` reports that bridge status.
 
 ## Accessibility UI Tree
 

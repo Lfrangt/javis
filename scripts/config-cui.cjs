@@ -128,9 +128,10 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor] = await Promise.all([
+    const [status, doctor, browserJs] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
+      request('/api/browser/javascript').catch((error) => ({ javascript: { enabled: false, error: error instanceof Error ? error.message : String(error) } })),
     ]);
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
@@ -151,6 +152,9 @@ async function printStatus() {
     if (status.learning) {
       const profile = status.learning.profile || {};
       console.log(`Learning: ${status.learning.enabled ? 'on' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${profile.summary || 'no profile yet'}`);
+    }
+    if (browserJs.javascript?.supported && browserJs.javascript?.available) {
+      console.log(`Browser DOM: ${browserJs.javascript.enabled ? 'ready' : 'needs Chrome setting'}${browserJs.javascript.error ? ` · ${browserJs.javascript.error}` : ''}`);
     }
     console.log(`Doctor: ${doctor.doctor?.counts?.ready || 0}/${doctor.doctor?.counts?.total || 0} ready · ${doctor.doctor?.overall || 'unknown'}`);
     const issues = issueLines(doctor.doctor);
