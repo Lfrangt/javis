@@ -23,10 +23,10 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 - No-model typing workflows are intentionally narrow: they require an explicit text-oriented app target, currently Notes, TextEdit, or Obsidian, and short typed content. They are rejected when the request includes sends, submissions, deletes, logins, payments, passwords, secrets, or a close-window follow-up.
 - Inbox triage is read-only. It sorts open captures and suggests lanes, but does not execute, route, mark done, or mutate items.
 - Inbox process-next requires an explicit user command, CUI action, API request, or voice tool call. It processes only the highest-priority open item and reuses the normal Inbox router, queue, worker, and completion rules.
-- Browser page reading is read-only, policy-limited by character count, and should only be used when the user asks about the active page or page content is clearly needed.
+- Browser page reading is read-only, policy-limited by character count, and should only be used when the user asks about the active page or page content is clearly needed. It may return visible links and search-result candidates, but reading those links does not click or open them.
 - Browser control is limited to navigation actions: back, forward, reload, new tab, close tab, focus address bar, open URL, and search. It does not click page content, submit forms, or enter credentials.
 - Browser DOM reading is read-only and returns visible controls with labels/selectors, not raw HTML. It can use browser Apple Events or the local Chrome DevTools bridge on `JAVIS_CHROME_DEBUG_PORT`. Browser DOM actions execute one guarded `click`, `fill`, or `select`; password fields are blocked, and submit/send/buy/delete/login/account-change style targets are Level 4 confirmation actions.
-- Browser workflows reuse the read-only page reader and route output to quick/background lanes. `search` and `compare` workflows may navigate the browser to Google result pages through the guarded browser-control lane, then read those result pages; they do not click result links, type into arbitrary fields, submit forms, or make account changes by themselves.
+- Browser workflows reuse the read-only page reader and route output to quick/background lanes. `search` and `compare` workflows may navigate the browser to Google result pages through the guarded browser-control lane, then read those result pages and extract candidate result links; they do not click result links, type into arbitrary fields, submit forms, or make account changes by themselves.
 - CLI tool runs are explicit background jobs. They require local execution, follow `allow.cli_command`, stream output to job logs, and can be cancelled from the jobs API/CUI.
 - Accessibility tree reading is read-only, policy-limited by node count and depth, and should be used before planning control of non-browser Mac apps.
 - UI action planning is dry-run only. It identifies candidate UI targets and next steps, but does not click, type, submit, or execute.
@@ -101,7 +101,7 @@ Policy knobs:
 - `allow.code_agent.maxTimeoutMs`: maximum runtime for one code agent job before JAVIS stops it.
 - `allow.cli_command.allowedCommands`: CLI command names JAVIS may launch as background jobs. `*` means trusted local mode.
 - `allow.cli_command.maxTimeoutMs`: maximum runtime for one CLI job before JAVIS stops it.
-- `allow.read_browser_page.maxChars`: maximum active-tab page text JAVIS may return.
+- `allow.read_browser_page.maxChars`: maximum active-tab page text JAVIS may return; visible links are capped separately by `JAVIS_MAX_BROWSER_PAGE_LINKS`.
 - `allow.list_directory.allowedRoots`: directories where JAVIS may list files.
 - `allow.read_file.allowedRoots`: directories where JAVIS may read files.
 - `allow.search_files.allowedRoots`: directories where JAVIS may search files.

@@ -574,6 +574,9 @@ type BrowserWorkflowResult = {
     textLength: number
     fallback: string
     error: string
+    linkCount?: number
+    links?: Array<{ index: number; text: string; href: string; host: string; sameHost: boolean }>
+    searchResults?: Array<{ index: number; text: string; href: string; host: string; sameHost: boolean }>
   }
 }
 

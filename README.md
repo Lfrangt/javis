@@ -18,10 +18,10 @@ Local Mac-first realtime desktop buddy.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
-- Browser page reader: read selected text, headings, and visible page text from supported active tabs.
+- Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
-- Browser workflows: summarize, extract actions, draft, or ask about the current page through quick or background lanes.
+- Browser workflows: summarize, extract actions, draft, ask about the current page, or search/compare result pages with structured candidate links through quick or background lanes.
 - File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
 - Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
@@ -154,12 +154,12 @@ Local Express service on 127.0.0.1:3417
   /api/app/plan        -> observe current state, plan steps, and optionally execute
   /api/app/workflow    -> preview or execute a short multi-step local app workflow
   /api/browser/context  -> supported browser tab title and URL
-  /api/browser/page     -> read-only current browser page text extraction
+  /api/browser/page     -> read-only current browser page text and link extraction
   /api/browser/control  -> guarded current-browser navigation actions
   /api/browser/javascript -> browser JavaScript bridge status
   /api/browser/dom      -> read visible clickable/fillable page controls
   /api/browser/dom-action -> guarded webpage element click/fill/select
-  /api/browser/workflow -> summarize, extract actions, draft, or ask about the current page
+  /api/browser/workflow -> summarize, extract actions, draft, ask, act, search, or compare browser pages
   /api/cli/run          -> queue an explicit local CLI command as a background job
   /api/files/execute    -> local file tool execution
   /api/files/plan       -> preview a policy-aware folder organization plan

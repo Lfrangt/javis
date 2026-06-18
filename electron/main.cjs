@@ -88,6 +88,7 @@ const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS |
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PARALLEL_TASKS = Math.max(2, Math.min(12, Number(process.env.JAVIS_MAX_PARALLEL_TASKS || 6)));
 const MAX_BROWSER_SEARCH_QUERIES = Math.max(1, Math.min(6, Number(process.env.JAVIS_MAX_BROWSER_SEARCH_QUERIES || 4)));
+const MAX_BROWSER_PAGE_LINKS = Math.max(5, Math.min(120, Number(process.env.JAVIS_MAX_BROWSER_PAGE_LINKS || 40)));
 const MAX_RECOVERY_JOB_ATTEMPTS = Math.max(0, Math.min(5, Number(process.env.JAVIS_MAX_RECOVERY_JOB_ATTEMPTS || 2)));
 const MAX_LEARNING_SOURCE_EVENTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_LEARNING_SOURCE_EVENTS || 200)));
 const startedAt = Date.now();
@@ -4899,7 +4900,126 @@ function htmlAttributeValue(tag, name) {
   return match ? decodeHtmlEntities(match[1]) : '';
 }
 
-function extractHtmlPage(html, maxChars) {
+function normalizeBrowserHref(rawHref, baseUrl = '') {
+  const raw = String(rawHref || '').trim();
+  if (!raw || /^(?:javascript|mailto|tel|sms|data|blob):/i.test(raw)) return '';
+  try {
+    const url = new URL(raw, baseUrl || undefined);
+    if (!['http:', 'https:'].includes(url.protocol)) return '';
+    const googleTarget = (url.hostname === 'www.google.com' || url.hostname === 'google.com')
+      && (url.pathname === '/url' || url.pathname === '/interstitial')
+      ? url.searchParams.get('q') || url.searchParams.get('url')
+      : '';
+    if (googleTarget && /^https?:\/\//i.test(googleTarget)) return new URL(googleTarget).href;
+    return url.href;
+  } catch {
+    return '';
+  }
+}
+
+function normalizeBrowserLinks(rawLinks = [], pageUrl = '', maxLinks = MAX_BROWSER_PAGE_LINKS) {
+  const pageHost = (() => {
+    try {
+      return pageUrl ? new URL(pageUrl).hostname.replace(/^www\./i, '') : '';
+    } catch {
+      return '';
+    }
+  })();
+  const seen = new Set();
+  const links = [];
+  for (const item of Array.isArray(rawLinks) ? rawLinks : []) {
+    const href = normalizeBrowserHref(item?.href || item?.url, pageUrl);
+    if (!href) continue;
+    const key = href.replace(/#.*$/, '');
+    if (seen.has(key)) continue;
+    let host = '';
+    try {
+      host = new URL(href).hostname.replace(/^www\./i, '');
+    } catch {
+      continue;
+    }
+    const text = compactRecordText(
+      String(item?.text || item?.label || item?.title || item?.ariaLabel || host)
+        .replace(/\s+/g, ' ')
+        .trim(),
+      180,
+    ) || host;
+    seen.add(key);
+    links.push({
+      index: links.length + 1,
+      text,
+      href,
+      host,
+      sameHost: Boolean(pageHost && host === pageHost),
+    });
+    if (links.length >= maxLinks) break;
+  }
+  return links;
+}
+
+function extractHtmlLinks(html, pageUrl = '') {
+  const rawLinks = [];
+  const source = String(html || '');
+  for (const match of source.matchAll(/<a\b([^>]*)>([\s\S]*?)<\/a>/gi)) {
+    const href = htmlAttributeValue(match[1] || '', 'href');
+    if (!href) continue;
+    const text = decodeHtmlEntities(String(match[2] || '').replace(/<[^>]+>/g, ' '))
+      .replace(/\s+/g, ' ')
+      .trim();
+    rawLinks.push({ href, text });
+    if (rawLinks.length >= MAX_BROWSER_PAGE_LINKS * 4) break;
+  }
+  return normalizeBrowserLinks(rawLinks, pageUrl);
+}
+
+function browserSearchResultLinks(page = {}, maxLinks = 10) {
+  const links = Array.isArray(page.links) ? page.links : [];
+  const pageHost = (() => {
+    try {
+      return page.url ? new URL(page.url).hostname.replace(/^www\./i, '') : '';
+    } catch {
+      return '';
+    }
+  })();
+  const isSearchUtilityHost = (host = '') => {
+    const normalized = String(host || '').replace(/^www\./i, '');
+    return /^google\.[a-z.]+$/i.test(normalized)
+      || ['accounts.google.com', 'policies.google.com', 'support.google.com', 'maps.google.com', 'news.google.com', 'translate.google.com', 'webcache.googleusercontent.com'].includes(normalized)
+      || /^bing\.[a-z.]+$/i.test(normalized)
+      || /^duckduckgo\.[a-z.]+$/i.test(normalized)
+      || normalized === 'search.yahoo.com';
+  };
+  const searchUtilityHosts = new Set([
+    'google.com',
+    'accounts.google.com',
+    'policies.google.com',
+    'support.google.com',
+    'maps.google.com',
+    'news.google.com',
+    'webcache.googleusercontent.com',
+    'bing.com',
+    'duckduckgo.com',
+    'search.yahoo.com',
+  ]);
+  return links
+    .filter((link) => {
+      if (!link?.href || !link.host) return false;
+      if (pageHost && link.host === pageHost) return false;
+      if (searchUtilityHosts.has(link.host) || isSearchUtilityHost(link.host)) return false;
+      if (/^(Images|Videos|News|Shopping|Maps|Books|Tools|Settings|Privacy|Terms|Google 应用|Google Apps|登录|Sign in|设置|工具|翻译此页|Translate this page)$/i.test(link.text || '')) return false;
+      return true;
+    })
+    .slice(0, maxLinks)
+    .map((link, index) => ({ ...link, index: index + 1 }));
+}
+
+function browserWorkflowLinksBlock(page = {}, maxLinks = 12) {
+  const links = Array.isArray(page.links) ? page.links.slice(0, maxLinks) : [];
+  if (!links.length) return '';
+  return links.map((link) => `${link.index}. ${link.text} · ${link.href}`).join('\n');
+}
+
+function extractHtmlPage(html, maxChars, pageUrl = '') {
   const source = String(html || '');
   const title = decodeHtmlEntities(source.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1] || '').trim();
   const metaTag = source.match(/<meta[^>]+(?:name|property)\s*=\s*["'](?:description|og:description)["'][^>]*>/i)?.[0] || '';
@@ -4926,6 +5046,7 @@ function extractHtmlPage(html, maxChars) {
     truncated: text.length > maxChars,
     headings,
     metaDescription,
+    links: extractHtmlLinks(source, pageUrl),
   };
 }
 
@@ -4935,7 +5056,7 @@ function browserPageFromFileUrl(browser, maxChars, previousError) {
     if (url.protocol !== 'file:') return null;
     const filePath = fileURLToPath(url);
     const html = readUtf8File(filePath, Math.max(maxChars * 4, 1000000));
-    const extracted = extractHtmlPage(html, maxChars);
+    const extracted = extractHtmlPage(html, maxChars, browser.url);
     return {
       available: true,
       supported: true,
@@ -4948,6 +5069,7 @@ function browserPageFromFileUrl(browser, maxChars, previousError) {
       truncated: extracted.truncated,
       headings: extracted.headings,
       metaDescription: extracted.metaDescription,
+      links: extracted.links,
       fallback: 'file_url',
       error: previousError ? `${previousError}; used file_url fallback` : '',
     };
@@ -5006,7 +5128,7 @@ async function browserPageFromHttpUrl(browser, maxChars, previousError) {
     if (url.protocol !== 'http:' && url.protocol !== 'https:') return null;
     const maxBytes = Math.min(2500000, Math.max(1000000, maxChars * 8));
     const html = await fetchTextWithLimit(url.toString(), maxBytes);
-    const extracted = extractHtmlPage(html, maxChars);
+    const extracted = extractHtmlPage(html, maxChars, browser.url);
     const fallbackText = [extracted.metaDescription, ...(extracted.headings || [])].filter(Boolean).join('\n');
     const text = extracted.text || fallbackText.slice(0, maxChars);
     return {
@@ -5021,6 +5143,7 @@ async function browserPageFromHttpUrl(browser, maxChars, previousError) {
       truncated: extracted.truncated || fallbackText.length > maxChars,
       headings: extracted.headings,
       metaDescription: extracted.metaDescription,
+      links: extracted.links,
       fallback: 'url_fetch',
       error: previousError ? `${previousError}; used url_fetch fallback` : '',
     };
@@ -5043,6 +5166,7 @@ function browserPageFromMetadata(browser, previousError) {
     truncated: false,
     headings: [],
     metaDescription: '',
+    links: [],
     fallback: 'metadata_only',
     error: previousError ? 'browser_text_unavailable; using title and URL only' : '',
   };
@@ -5063,6 +5187,7 @@ async function browserPageSnapshot(options = {}) {
       truncated: false,
       headings: [],
       metaDescription: '',
+      links: [],
       error: 'read_browser_page_disabled_by_policy',
     };
   }
@@ -5078,13 +5203,23 @@ async function browserPageSnapshot(options = {}) {
       truncated: false,
       headings: [],
       metaDescription: '',
+      links: [],
     };
   }
 
   const js = `
 (() => {
   const max = ${JSON.stringify(maxChars)};
+  const maxLinks = ${JSON.stringify(MAX_BROWSER_PAGE_LINKS)};
   const clean = (value) => String(value || '').replace(/[\\t\\r ]+/g, ' ').replace(/\\n{3,}/g, '\\n\\n').trim();
+  const visible = (node) => {
+    try {
+      const style = window.getComputedStyle(node);
+      return style && style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0' && node.getClientRects().length > 0;
+    } catch (_) {
+      return false;
+    }
+  };
   const selectedText = clean(window.getSelection ? window.getSelection().toString() : '');
   const bodyText = clean(document.body ? document.body.innerText : '');
   const text = selectedText || bodyText;
@@ -5093,6 +5228,16 @@ async function browserPageSnapshot(options = {}) {
     .map((node) => clean(node.innerText))
     .filter(Boolean)
     .slice(0, 40);
+  const links = Array.from(document.querySelectorAll('a[href]'))
+    .filter(visible)
+    .map((node) => ({
+      text: clean(node.innerText || node.getAttribute('aria-label') || node.getAttribute('title') || ''),
+      href: node.href || node.getAttribute('href') || '',
+      title: clean(node.getAttribute('title') || ''),
+      ariaLabel: clean(node.getAttribute('aria-label') || '')
+    }))
+    .filter((link) => link.href)
+    .slice(0, maxLinks * 4);
   return JSON.stringify({
     title: document.title || '',
     url: location.href,
@@ -5101,7 +5246,8 @@ async function browserPageSnapshot(options = {}) {
     textLength: text.length,
     truncated: text.length > max,
     headings,
-    metaDescription: meta ? clean(meta.getAttribute('content') || '') : ''
+    metaDescription: meta ? clean(meta.getAttribute('content') || '') : '',
+    links
   });
 })()
   `.trim();
@@ -5122,6 +5268,7 @@ async function browserPageSnapshot(options = {}) {
       truncated: Boolean(parsed.truncated),
       headings: Array.isArray(parsed.headings) ? parsed.headings.map(String) : [],
       metaDescription: String(parsed.metaDescription || ''),
+      links: normalizeBrowserLinks(parsed.links, parsed.url || browser.url),
       error: '',
     };
     appendAudit('browser_page.read', {
@@ -5130,6 +5277,7 @@ async function browserPageSnapshot(options = {}) {
       textLength: result.textLength,
       returnedLength: result.text.length,
       truncated: result.truncated,
+      linkCount: result.links.length,
       bridge: result.bridge,
     });
     return result;
@@ -5143,6 +5291,7 @@ async function browserPageSnapshot(options = {}) {
         textLength: fileFallback.textLength,
         returnedLength: fileFallback.text.length,
         truncated: fileFallback.truncated,
+        linkCount: fileFallback.links?.length || 0,
         fallback: fileFallback.fallback,
       });
       return fileFallback;
@@ -5155,6 +5304,7 @@ async function browserPageSnapshot(options = {}) {
         textLength: httpFallback.textLength,
         returnedLength: httpFallback.text.length,
         truncated: httpFallback.truncated,
+        linkCount: httpFallback.links?.length || 0,
         fallback: httpFallback.fallback,
       });
       return httpFallback;
@@ -5166,6 +5316,7 @@ async function browserPageSnapshot(options = {}) {
       textLength: metadataFallback.textLength,
       returnedLength: metadataFallback.text.length,
       truncated: metadataFallback.truncated,
+      linkCount: 0,
       fallback: metadataFallback.fallback,
     });
     return metadataFallback;
@@ -6137,6 +6288,9 @@ function browserWorkflowPageSummary(page) {
     fallback: page.fallback || '',
     error: page.error || '',
     headings: Array.isArray(page.headings) ? page.headings.slice(0, 10) : [],
+    linkCount: Array.isArray(page.links) ? page.links.length : 0,
+    links: Array.isArray(page.links) ? page.links.slice(0, 12) : [],
+    searchResults: browserSearchResultLinks(page, 8),
   };
 }
 
@@ -6161,6 +6315,7 @@ function browserWorkflowPrompt(page, intent, instruction) {
     `URL: ${page.url || ''}`,
     page.metaDescription ? `Description: ${page.metaDescription}` : '',
     page.headings?.length ? `Headings: ${page.headings.slice(0, 16).join(' / ')}` : '',
+    browserWorkflowLinksBlock(page) ? `Links:\n${browserWorkflowLinksBlock(page)}` : '',
     '',
     'Page text:',
     pageText,
@@ -6193,6 +6348,8 @@ function browserSearchWorkflowPrompt(searches = [], intent = 'search', instructi
     title: item.page?.title || '',
     url: item.page?.url || '',
     headings: item.page?.headings?.slice(0, 12) || [],
+    links: Array.isArray(item.page?.links) ? item.page.links.slice(0, 12) : [],
+    candidateResultLinks: browserSearchResultLinks(item.page, 8),
     text: compactRecordText(item.page?.selectedText || item.page?.text || '', 5000),
     error: item.page?.error || '',
   }));
