@@ -41,6 +41,7 @@ const APP_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support'
 const DATA_DIR = process.env.JAVIS_DATA_DIR || path.join(APP_SUPPORT_DIR, 'Runtime');
 const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
+const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
 const ACTION_POLICY_FILE = path.join(DATA_DIR, 'action-policy.json');
 const APPROVALS_FILE = path.join(DATA_DIR, 'approvals.json');
@@ -71,6 +72,7 @@ const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.en
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
+const MAX_PERSISTED_ROUTING = Number(process.env.JAVIS_MAX_PERSISTED_ROUTING || 500);
 const MAX_PERSISTED_APPROVALS = Number(process.env.JAVIS_MAX_PERSISTED_APPROVALS || 200);
 const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES || 500);
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
@@ -174,6 +176,7 @@ const models = {
 
 const jobs = new Map();
 const workflows = new Map();
+const routingRecords = new Map();
 const approvals = new Map();
 const memories = new Map();
 const inboxItems = new Map();
@@ -240,6 +243,7 @@ actionPolicy = loadActionPolicy();
 screenPrivacy = loadScreenPrivacy();
 loadPersistedJobs();
 loadPersistedWorkflows();
+loadPersistedRouting();
 loadPersistedApprovals();
 loadPersistedMemories();
 loadPersistedInbox();
@@ -1159,6 +1163,59 @@ function normalizePersistedWorkflow(workflow, fromDisk = false) {
   };
 }
 
+function normalizeRoutingStatus(value) {
+  const status = String(value || '').trim();
+  return ['preview', 'queued', 'running', 'done', 'failed', 'cancelled', 'blocked', 'approval_required'].includes(status)
+    ? status
+    : 'preview';
+}
+
+function normalizeRoutingLane(value) {
+  const lane = String(value || '').trim().toLowerCase();
+  return ['quick', 'background', 'codex', 'claude', 'local'].includes(lane) ? lane : 'quick';
+}
+
+function ownerForRoutingLane(lane) {
+  if (lane === 'background') return 'background';
+  if (lane === 'codex') return 'codex';
+  if (lane === 'claude') return 'claude';
+  if (lane === 'local') return 'local';
+  return 'realtime';
+}
+
+function normalizePersistedRoutingRecord(record) {
+  if (!record || typeof record !== 'object' || !record.id) return null;
+  const lane = normalizeRoutingLane(record.lane);
+  const status = normalizeRoutingStatus(record.status);
+  const completedAt = ['done', 'failed', 'cancelled', 'blocked'].includes(status)
+    ? Number(record.completedAt || Date.now())
+    : Number(record.completedAt || 0);
+  return {
+    id: String(record.id),
+    taskTitle: compactRecordText(record.taskTitle || record.title || 'Untitled routed task', 180),
+    lane,
+    label: String(record.label || (lane === 'background' ? 'Deep' : lane === 'local' ? 'Local' : lane)).slice(0, 80),
+    owner: String(record.owner || ownerForRoutingLane(lane)).slice(0, 80),
+    scope: compactRecordText(record.scope || '', 220),
+    parallelGroup: String(record.parallelGroup || lane).slice(0, 120),
+    approvalRequirement: String(record.approvalRequirement || 'none').slice(0, 120),
+    status,
+    source: String(record.source || 'router').slice(0, 80),
+    execute: Boolean(record.execute),
+    confidence: Number(record.confidence || 0),
+    reason: compactRecordText(record.reason || '', 240),
+    jobId: String(record.jobId || '').slice(0, 120),
+    workflowId: String(record.workflowId || '').slice(0, 120),
+    localCommand: String(record.localCommand || '').slice(0, 80),
+    resultLink: String(record.resultLink || '').slice(0, 500),
+    resultSummary: compactRecordText(record.resultSummary || '', 500),
+    memoryMatches: Math.max(0, Number(record.memoryMatches || 0)),
+    createdAt: Number(record.createdAt || Date.now()),
+    updatedAt: Number(record.updatedAt || Date.now()),
+    completedAt,
+  };
+}
+
 function normalizePersistedApproval(approval) {
   if (!approval || typeof approval !== 'object' || !approval.id) return null;
   const status = ['pending', 'approved', 'rejected', 'executed', 'failed'].includes(approval.status)
@@ -1403,6 +1460,23 @@ function loadPersistedWorkflows() {
   }
 }
 
+function loadPersistedRouting() {
+  if (!fs.existsSync(ROUTING_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ROUTING_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.records) ? parsed.records : [];
+    for (const rawRecord of list) {
+      const record = normalizePersistedRoutingRecord(rawRecord);
+      if (record) routingRecords.set(record.id, record);
+    }
+    reconcileRoutingRecords();
+    persistRouting();
+    appendAudit('routing.loaded', { count: routingRecords.size });
+  } catch (error) {
+    appendAudit('routing.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function loadPersistedApprovals() {
   if (!fs.existsSync(APPROVALS_FILE)) return;
   try {
@@ -1518,6 +1592,17 @@ function persistWorkflows() {
     version: 1,
     updatedAt: new Date().toISOString(),
     workflows: workflowsForStorage,
+  });
+}
+
+function persistRouting() {
+  const recordsForStorage = Array.from(routingRecords.values())
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, Math.max(1, MAX_PERSISTED_ROUTING));
+  writeJsonAtomic(ROUTING_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    records: recordsForStorage,
   });
 }
 
@@ -6183,6 +6268,12 @@ function routeTaskDecision(message, options = {}) {
 async function routeTask(options = {}) {
   const task = String(options.message || options.task || '').trim();
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const routingContext = {
+    task,
+    source: String(options.source || 'router').slice(0, 80),
+    parallelGroup: options.parallelGroup || options.group || '',
+    scope: options.scope || '',
+  };
   const localCommand = localCommandDecision(task);
   if (localCommand) {
     const decision = localCommandDecisionPayload(localCommand, execute);
@@ -6194,7 +6285,7 @@ async function routeTask(options = {}) {
     if (!execute) {
       if (localCommand.intent === 'app_workflow') {
         const result = await runLocalCommand(localCommand, { execute: false });
-        return {
+        return finalizeRouteResult({
           ok: Boolean(result.ok),
           executed: false,
           queued: false,
@@ -6204,9 +6295,9 @@ async function routeTask(options = {}) {
           memory: { matches: [], count: 0 },
           output: result.output,
           data: result.data,
-        };
+        }, { ...routingContext, decision, localCommand });
       }
-      return {
+      return finalizeRouteResult({
         ok: true,
         executed: false,
         queued: false,
@@ -6214,7 +6305,7 @@ async function routeTask(options = {}) {
         localCommand,
         memory: { matches: [], count: 0 },
         output: `Local: ${localCommand.label}`,
-      };
+      }, { ...routingContext, decision, localCommand });
     }
     const result = await runLocalCommand(localCommand, { execute: true });
     appendAudit('local_command.completed', {
@@ -6222,7 +6313,7 @@ async function routeTask(options = {}) {
       ok: result.ok,
       outputLength: result.output ? String(result.output).length : 0,
     });
-    return {
+    return finalizeRouteResult({
       ok: Boolean(result.ok),
       executed: true,
       queued: false,
@@ -6232,7 +6323,7 @@ async function routeTask(options = {}) {
       memory: { matches: [], count: 0 },
       output: result.output,
       data: result.data,
-    };
+    }, { ...routingContext, decision, localCommand });
   }
   const memoryContext = memoryContextForTask(task, {
     useMemory: options.useMemory !== false,
@@ -6254,7 +6345,7 @@ async function routeTask(options = {}) {
   });
 
   if (!execute) {
-    return {
+    return finalizeRouteResult({
       ok: true,
       executed: false,
       queued: false,
@@ -6264,34 +6355,48 @@ async function routeTask(options = {}) {
         count: memoryContext.matches.length,
       },
       output: `Route: ${decision.label} · ${decision.reason}`,
-    };
+    }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
   }
 
   if (decision.lane === 'quick') {
-    const output = await callOpenAIResponses({
-      model: models.fast,
-      instructions:
-        'You are the fast lane inside JAVIS. Answer simple questions quickly in Chinese. If the task is complex, say it should be routed to the background lane.',
-      input: [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n'),
-      imageDataUrl: options.includeScreen ? latestScreen?.imageDataUrl : undefined,
-      maxOutputTokens: 500,
-    });
-    return {
-      ok: Boolean(OPENAI_API_KEY),
-      executed: true,
-      queued: false,
-      decision,
-      memory: {
-        matches: memoryContext.matches,
-        count: memoryContext.matches.length,
-      },
-      output,
-    };
+    try {
+      const output = await callOpenAIResponses({
+        model: models.fast,
+        instructions:
+          'You are the fast lane inside JAVIS. Answer simple questions quickly in Chinese. If the task is complex, say it should be routed to the background lane.',
+        input: [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n'),
+        imageDataUrl: options.includeScreen ? latestScreen?.imageDataUrl : undefined,
+        maxOutputTokens: 500,
+      });
+      return finalizeRouteResult({
+        ok: Boolean(OPENAI_API_KEY),
+        executed: true,
+        queued: false,
+        decision,
+        memory: {
+          matches: memoryContext.matches,
+          count: memoryContext.matches.length,
+        },
+        output,
+      }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
+    } catch (error) {
+      return finalizeRouteResult({
+        ok: false,
+        executed: true,
+        queued: false,
+        decision,
+        memory: {
+          matches: memoryContext.matches,
+          count: memoryContext.matches.length,
+        },
+        output: error instanceof Error ? error.message : String(error),
+      }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
+    }
   }
 
   const jobTask = [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n');
   const job = createJob(jobTask, decision.lane === 'background' ? 'background' : decision.lane, 'router', { title: task });
-  return {
+  return finalizeRouteResult({
     ok: true,
     executed: true,
     queued: true,
@@ -6302,7 +6407,7 @@ async function routeTask(options = {}) {
     },
     job,
     output: `Routed to ${decision.label}: ${job.title}`,
-  };
+  }, { ...routingContext, decision, memoryMatches: memoryContext.matches.length });
 }
 
 function formatFileEntries(entries = []) {
@@ -7862,6 +7967,206 @@ function compactRecordText(value, maxLength = 220) {
   return `${text.slice(0, maxLength - 1)}…`;
 }
 
+function routeResultLink(record) {
+  if (record.jobId) return `/api/jobs/${encodeURIComponent(record.jobId)}`;
+  if (record.workflowId) return `/api/workflows/${encodeURIComponent(record.workflowId)}`;
+  return `/api/tasks/routing/${encodeURIComponent(record.id)}`;
+}
+
+function approvalRequirementForRoute(decision = {}, result = {}) {
+  if (result.approval) return `approval:${result.approval.action || 'local_action'}`;
+  if (decision.requiresLocalExecution) return LOCAL_EXEC_ENABLED ? 'local_execution_enabled' : 'local_execution_required';
+  if (decision.requiresOpenAiKey && !OPENAI_API_KEY) return 'openai_key_required';
+  return 'none';
+}
+
+function routingStatusForResult(result = {}) {
+  const job = result.job || result.data?.job || null;
+  const workflow = result.workflow || result.data?.workflow || result.data?.result?.workflow || null;
+  if (result.approval) return 'approval_required';
+  if (job?.status) return normalizeRoutingStatus(job.status);
+  if (workflow?.status) return normalizeRoutingStatus(workflow.status);
+  if (!result.executed) return 'preview';
+  if (result.queued) return 'queued';
+  if (result.ok === false) return 'blocked';
+  return 'done';
+}
+
+function routingScopeForDecision(decision = {}, options = {}) {
+  const explicit = String(options.scope || '').trim();
+  if (explicit) return explicit;
+  if (decision.localCommand) return `local command: ${decision.localCommand}`;
+  if (decision.lane === 'background') return 'durable background worker';
+  if (decision.lane === 'codex') return 'codebase or repository work';
+  if (decision.lane === 'claude') return 'Claude Code delegation';
+  return 'realtime voice / fast answer';
+}
+
+function createRoutingRecord(options = {}) {
+  const decision = options.decision || {};
+  const lane = normalizeRoutingLane(decision.localCommand ? 'local' : decision.lane);
+  const id = crypto.randomUUID();
+  const now = Date.now();
+  const draft = {
+    id,
+    taskTitle: compactRecordText(options.task || options.title || 'Untitled routed task', 180),
+    lane,
+    label: decision.label || (lane === 'background' ? 'Deep' : lane === 'local' ? 'Local' : lane),
+    owner: options.owner || ownerForRoutingLane(lane),
+    scope: routingScopeForDecision(decision, options),
+    parallelGroup: String(options.parallelGroup || options.group || lane).slice(0, 120),
+    approvalRequirement: options.approvalRequirement || approvalRequirementForRoute(decision, options.result || {}),
+    status: normalizeRoutingStatus(options.status || 'preview'),
+    source: options.source || 'router',
+    execute: Boolean(options.execute),
+    confidence: Number(decision.confidence || 0),
+    reason: decision.reason || '',
+    jobId: options.jobId || '',
+    workflowId: options.workflowId || '',
+    localCommand: decision.localCommand || options.localCommand?.intent || '',
+    resultLink: options.resultLink || '',
+    resultSummary: options.resultSummary || '',
+    memoryMatches: options.memoryMatches || 0,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: ['done', 'failed', 'cancelled', 'blocked'].includes(options.status) ? now : 0,
+  };
+  const record = normalizePersistedRoutingRecord(draft);
+  record.resultLink = record.resultLink || routeResultLink(record);
+  routingRecords.set(record.id, record);
+  persistRouting();
+  appendAudit('task_route.recorded', {
+    id: record.id,
+    lane: record.lane,
+    owner: record.owner,
+    status: record.status,
+    jobId: record.jobId,
+    workflowId: record.workflowId,
+    source: record.source,
+  });
+  return record;
+}
+
+function setRoutingRecord(id, patch = {}) {
+  const existing = routingRecords.get(String(id || ''));
+  if (!existing) return null;
+  const completedStatus = ['done', 'failed', 'cancelled', 'blocked'].includes(patch.status);
+  const next = normalizePersistedRoutingRecord({
+    ...existing,
+    ...patch,
+    updatedAt: Date.now(),
+    completedAt: completedStatus ? Date.now() : patch.completedAt === undefined ? existing.completedAt : patch.completedAt,
+  });
+  next.resultLink = next.resultLink || routeResultLink(next);
+  routingRecords.set(next.id, next);
+  persistRouting();
+  if (patch.status && patch.status !== existing.status) {
+    appendAudit('task_route.status', {
+      id: next.id,
+      lane: next.lane,
+      owner: next.owner,
+      status: next.status,
+      jobId: next.jobId,
+      workflowId: next.workflowId,
+    });
+  }
+  return next;
+}
+
+function updateRoutingRecordsForJob(job) {
+  if (!job?.id) return;
+  for (const record of routingRecords.values()) {
+    if (record.jobId !== job.id) continue;
+    setRoutingRecord(record.id, {
+      status: normalizeRoutingStatus(job.status),
+      resultSummary: compactRecordText(job.result || job.log || record.resultSummary, 500),
+      resultLink: routeResultLink(record),
+    });
+  }
+}
+
+function updateRoutingRecordsForWorkflow(workflow) {
+  if (!workflow?.id) return;
+  for (const record of routingRecords.values()) {
+    if (record.workflowId !== workflow.id) continue;
+    setRoutingRecord(record.id, {
+      status: normalizeRoutingStatus(workflow.status),
+      resultSummary: compactRecordText(workflow.result || record.resultSummary, 500),
+      resultLink: routeResultLink(record),
+    });
+  }
+}
+
+function reconcileRoutingRecords() {
+  for (const record of routingRecords.values()) {
+    const job = record.jobId ? jobs.get(record.jobId) : null;
+    const workflow = record.workflowId ? workflows.get(record.workflowId) : null;
+    if (job) updateRoutingRecordsForJob(job);
+    if (workflow) updateRoutingRecordsForWorkflow(workflow);
+  }
+}
+
+function routingSnapshot(limit = 20, status = '') {
+  const wantedStatus = String(status || '').trim();
+  return Array.from(routingRecords.values())
+    .filter((record) => !wantedStatus || record.status === wantedStatus)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
+}
+
+function routingCounts() {
+  return Array.from(routingRecords.values()).reduce(
+    (counts, record) => {
+      counts[record.status] = (counts[record.status] || 0) + 1;
+      counts[record.lane] = (counts[record.lane] || 0) + 1;
+      counts.total += 1;
+      return counts;
+    },
+    {
+      total: 0,
+      preview: 0,
+      queued: 0,
+      running: 0,
+      done: 0,
+      failed: 0,
+      cancelled: 0,
+      blocked: 0,
+      approval_required: 0,
+      quick: 0,
+      background: 0,
+      codex: 0,
+      claude: 0,
+      local: 0,
+    },
+  );
+}
+
+function finalizeRouteResult(result, context = {}) {
+  const job = result.job || result.data?.job || null;
+  const workflow = result.workflow || result.data?.workflow || result.data?.result?.workflow || null;
+  const status = routingStatusForResult(result);
+  const record = createRoutingRecord({
+    task: context.task,
+    decision: result.decision || context.decision,
+    source: context.source,
+    execute: result.executed || result.decision?.execute,
+    localCommand: result.localCommand || context.localCommand,
+    memoryMatches: result.memory?.count || context.memoryMatches || 0,
+    status,
+    jobId: job?.id || '',
+    workflowId: workflow?.id || '',
+    resultSummary: result.output || '',
+    parallelGroup: context.parallelGroup,
+    scope: context.scope,
+    result,
+  });
+  return {
+    ...result,
+    routing: record,
+    routeRecord: record,
+  };
+}
+
 function workflowBriefing(options = {}) {
   const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 6)));
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
@@ -7871,6 +8176,8 @@ function workflowBriefing(options = {}) {
   const openInbox = inboxSnapshot(6, 'open');
   const activeSession = activeSessionSnapshot();
   const pendingApprovals = pendingApprovalSnapshot(10);
+  const recentRoutes = routingSnapshot(6);
+  const activeRoutes = recentRoutes.filter((record) => ['queued', 'running', 'approval_required', 'blocked'].includes(record.status));
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const blockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
   const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
@@ -7931,6 +8238,18 @@ function workflowBriefing(options = {}) {
     });
   }
 
+  if (activeRoutes.length) {
+    const first = activeRoutes[0];
+    nextActions.push({
+      id: `route:${first.id}`,
+      priority: 2,
+      label: 'Check routed work',
+      summary: `${activeRoutes.length} routed task(s) active. ${first.owner} owns ${first.lane}: ${first.taskTitle}.`,
+      source: 'routing',
+      routeId: first.id,
+    });
+  }
+
   if (blockedWorkflows.length) {
     const first = blockedWorkflows[0];
     nextActions.push({
@@ -7967,6 +8286,7 @@ function workflowBriefing(options = {}) {
   const summary = [
     readiness.overall === 'blocked' ? `Setup blocked: ${readiness.summary}` : readiness.overall === 'degraded' ? `Needs attention: ${readiness.summary}` : 'Resident is ready.',
     `${workflowCounts().total} workflow(s), ${queueCounts().total} job(s), ${memories.size} memory record(s).`,
+    activeRoutes.length ? `${activeRoutes.length} routed task(s) active.` : '',
     learning.enabled && learning.profile.sourceEventCount ? `Learning: ${learning.profile.summary}` : '',
     activeSession ? `Active session: ${activeSession.title}.` : '',
     openInbox.length ? `${openInbox.length} open inbox item(s).` : '',
@@ -7993,7 +8313,9 @@ function workflowBriefing(options = {}) {
       learnedProfileEvents: learning.profile.sourceEventCount,
       inbox: inboxCounts(),
       sessions: sessionCounts(),
+      routing: routingCounts(),
       activeJobs: activeJobs.length,
+      activeRoutes: activeRoutes.length,
       blockedWorkflows: blockedWorkflows.length,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
@@ -8020,6 +8342,7 @@ function workflowBriefing(options = {}) {
       learnedProfile: learning.profile,
       inbox: openInbox.slice(0, 3),
       sessions: sessionSnapshot(3),
+      routing: recentRoutes,
     },
     latestDone: {
       workflow: latestDoneWorkflow,
@@ -8052,6 +8375,11 @@ function formatWorkflowProgressLine(workflow) {
   return `${workflow.kind}/${workflow.status} · ${compactRecordText(workflow.title, 90)} · ${progressAgeLabel(workflow.updatedAt)}${suffix}`;
 }
 
+function formatRoutingProgressLine(record) {
+  const detail = record.resultSummary ? ` · ${compactRecordText(record.resultSummary, 120)}` : '';
+  return `${record.lane}/${record.status} · ${record.owner} · ${compactRecordText(record.taskTitle, 90)} · ${progressAgeLabel(record.updatedAt)} · ${record.resultLink}${detail}`;
+}
+
 function uniqueProgressRecords(list, keyForRecord) {
   const seen = new Set();
   return list.filter((item) => {
@@ -8067,6 +8395,7 @@ function workProgressCheckIn(options = {}) {
   const workflowLimit = Math.max(1, Math.min(12, Number(options.workflowLimit || 5)));
   const recentJobs = jobSnapshot().slice(0, jobLimit);
   const recentWorkflows = workflowSnapshot(workflowLimit);
+  const recentRoutes = routingSnapshot(Math.max(jobLimit, workflowLimit, 5));
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const activeWorkflows = uniqueProgressRecords(
     recentWorkflows.filter((workflow) => workflow.status === 'queued' || workflow.status === 'running'),
@@ -8076,12 +8405,20 @@ function workProgressCheckIn(options = {}) {
     recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed'),
     (workflow) => `${workflow.status}:${workflow.title}:${compactRecordText(workflow.result || workflow.request, 90)}`,
   );
+  const activeRoutes = uniqueProgressRecords(
+    recentRoutes.filter((record) => ['queued', 'running', 'approval_required', 'blocked'].includes(record.status)),
+    (record) => `${record.lane}:${record.owner}:${record.taskTitle}:${record.jobId}:${record.workflowId}`,
+  );
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
   const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
+  const latestDoneRoute = recentRoutes.find((record) => record.status === 'done') || null;
   const briefing = workflowBriefing({ workflowLimit, jobLimit });
   const nextActions = (briefing.nextActions || []).slice(0, 3);
 
   const lines = [
+    activeRoutes.length
+      ? `分流中的工作:\n${activeRoutes.map((record, index) => `${index + 1}. ${formatRoutingProgressLine(record)}`).join('\n')}`
+      : '',
     activeJobs.length
       ? `现在有 ${activeJobs.length} 个后台任务正在排队或运行。`
       : '当前没有正在运行的后台任务。',
@@ -8094,6 +8431,7 @@ function workProgressCheckIn(options = {}) {
       : '',
     !activeJobs.length && latestDoneJob ? `最近完成任务: ${formatJobProgressLine(latestDoneJob)}` : '',
     latestDoneWorkflow ? `最近完成工作流: ${formatWorkflowProgressLine(latestDoneWorkflow)}` : '',
+    latestDoneRoute ? `最近完成分流任务: ${formatRoutingProgressLine(latestDoneRoute)}` : '',
     nextActions.length
       ? `下一步:\n${nextActions.map((action, index) => `${index + 1}. ${action.label}: ${compactRecordText(action.summary, 150)}`).join('\n')}`
       : '',
@@ -8105,8 +8443,10 @@ function workProgressCheckIn(options = {}) {
     activeJobs: activeJobs.length,
     activeWorkflows: activeWorkflows.length,
     blockedWorkflows: blockedWorkflows.length,
+    activeRoutes: activeRoutes.length,
     recentJobs: recentJobs.length,
     recentWorkflows: recentWorkflows.length,
+    recentRoutes: recentRoutes.length,
     source: String(options.source || 'api').slice(0, 80),
   });
 
@@ -8119,7 +8459,11 @@ function workProgressCheckIn(options = {}) {
       activeJobs: activeJobs.length,
       activeWorkflows: activeWorkflows.length,
       blockedWorkflows: blockedWorkflows.length,
+      activeRoutes: activeRoutes.length,
+      routing: routingCounts(),
     },
+    activeRoutes,
+    recentRoutes,
     activeJobs,
     recentJobs,
     activeWorkflows,
@@ -8128,6 +8472,7 @@ function workProgressCheckIn(options = {}) {
     latestDone: {
       job: latestDoneJob,
       workflow: latestDoneWorkflow,
+      route: latestDoneRoute,
     },
     nextActions,
   };
@@ -8184,6 +8529,12 @@ async function workNextAction(options = {}) {
       workflowLimit: options.workflowLimit,
     });
     output = result.output;
+  } else if (action.source === 'routing') {
+    const record = action.routeId ? routingRecords.get(action.routeId) || null : routingSnapshot(1)[0] || null;
+    result = { route: record, counts: routingCounts() };
+    output = record
+      ? `分流任务: ${formatRoutingProgressLine(record)}`
+      : '当前没有可查看的分流任务。';
   } else if (action.source === 'approvals') {
     const pending = pendingApprovalSnapshot(10);
     result = { pending };
@@ -8261,6 +8612,7 @@ function setWorkflow(id, patch) {
   });
   workflows.set(id, next);
   persistWorkflows();
+  updateRoutingRecordsForWorkflow(next);
   if (patch.status) {
     appendAudit('workflow.status', {
       id,
@@ -8493,6 +8845,7 @@ function setJob(id, patch) {
   };
   jobs.set(id, next);
   persistJobs();
+  updateRoutingRecordsForJob(next);
   if (patch.status) {
     appendAudit('job.status', {
       id,
@@ -8996,6 +9349,7 @@ function healthSnapshot() {
       dataDir: DATA_DIR,
       jobsFile: JOBS_FILE,
       workflowsFile: WORKFLOWS_FILE,
+      routingFile: ROUTING_FILE,
       auditFile: AUDIT_FILE,
       actionPolicyFile: ACTION_POLICY_FILE,
       approvalsFile: APPROVALS_FILE,
@@ -9007,6 +9361,7 @@ function healthSnapshot() {
       learningFile: LEARNING_FILE,
       persistedJobs: jobs.size,
       persistedWorkflows: workflows.size,
+      persistedRoutingRecords: routingRecords.size,
       persistedApprovals: approvals.size,
       persistedMemories: memories.size,
       persistedInboxItems: inboxItems.size,
@@ -9015,6 +9370,7 @@ function healthSnapshot() {
       persistedLearningEvents: learningStateSnapshot().profile.sourceEventCount,
       maxPersistedJobs: MAX_PERSISTED_JOBS,
       maxPersistedWorkflows: MAX_PERSISTED_WORKFLOWS,
+      maxPersistedRouting: MAX_PERSISTED_ROUTING,
       maxPersistedMemories: MAX_PERSISTED_MEMORIES,
       maxPersistedInboxItems: MAX_PERSISTED_INBOX,
       maxPersistedSessions: MAX_PERSISTED_SESSIONS,
@@ -9040,6 +9396,7 @@ function healthSnapshot() {
     },
     queue: counts,
     workflows: workflowCounts(),
+    routing: routingCounts(),
     activeJobs: Array.from(activeJobRuns.keys()),
     readiness: {
       overall: readiness.overall,
@@ -12238,6 +12595,10 @@ function startApiServer() {
       activeJobs: Array.from(activeJobRuns.keys()),
       workflows: workflowSnapshot(8),
       workflowCounts: workflowCounts(),
+      routing: {
+        counts: routingCounts(),
+        recent: routingSnapshot(8),
+      },
       memory: {
         total: memories.size,
         recent: memorySnapshot(3),
@@ -12800,6 +13161,24 @@ function startApiServer() {
     }
   });
 
+  api.get('/api/tasks/routing', (req, res) => {
+    const limit = Number(req.query.limit || 50);
+    res.json({
+      records: routingSnapshot(limit, req.query.status || ''),
+      counts: routingCounts(),
+      routingFile: ROUTING_FILE,
+    });
+  });
+
+  api.get('/api/tasks/routing/:id', (req, res) => {
+    const record = routingRecords.get(String(req.params.id || ''));
+    if (!record) {
+      jsonError(res, 404, 'Routing record not found');
+      return;
+    }
+    res.json({ record });
+  });
+
   api.post('/api/tasks', (req, res) => {
     const task = String(req.body?.task || '').trim();
     const requestedMode = String(req.body?.mode || 'background');
@@ -12814,8 +13193,31 @@ function startApiServer() {
     });
     const jobTask = [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n');
     const job = createJob(jobTask, mode, 'api', { title: task });
+    const decision = {
+      lane: mode,
+      mode,
+      label: mode === 'background' ? 'Deep' : mode === 'codex' ? 'Codex' : 'Claude',
+      confidence: 1,
+      reason: 'user selected task mode',
+      execute: true,
+      requiresOpenAiKey: mode === 'background',
+      requiresLocalExecution: mode === 'codex' || mode === 'claude',
+    };
+    const routing = createRoutingRecord({
+      task,
+      decision,
+      source: 'api',
+      execute: true,
+      status: job.status,
+      jobId: job.id,
+      memoryMatches: memoryContext.matches.length,
+      resultSummary: job.log,
+      parallelGroup: req.body?.parallelGroup || req.body?.group || mode,
+      scope: req.body?.scope || '',
+    });
     res.json({
       job,
+      routing,
       memory: {
         matches: memoryContext.matches,
         count: memoryContext.matches.length,

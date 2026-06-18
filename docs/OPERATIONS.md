@@ -123,12 +123,18 @@ For a local work briefing:
 curl http://127.0.0.1:3417/api/briefing
 curl http://127.0.0.1:3417/api/work/progress
 curl http://127.0.0.1:3417/api/work/next
+curl http://127.0.0.1:3417/api/tasks/routing
 curl -X POST http://127.0.0.1:3417/api/work/next \
   -H 'Content-Type: application/json' \
   -d '{"execute":true}'
+curl -X POST http://127.0.0.1:3417/api/tasks/route \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"Check this repo with Codex","execute":false}'
 ```
 
-The briefing combines readiness, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for background jobs and workflows, including active work, recent completions, blockers, and next actions.
+The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, and workflows, including active work, recent completions, blockers, and next actions.
+
+`/api/tasks/route` persists a routing record for each previewed or executed task. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, and result link. Use `/api/tasks/routing` or `/api/tasks/routing/<route-id>` to inspect the ledger.
 
 `/api/work/next` turns the top briefing action into one safe step. GET previews the selected action; POST runs exactly one step, such as opening the next setup target, showing approvals, checking session/progress state, or processing the next Inbox item. It does not approve actions or batch-run tasks.
 
