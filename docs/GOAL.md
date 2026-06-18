@@ -25,6 +25,38 @@ The OpenClaw ideas worth adopting are:
 - Parallelism only when scopes are independent, with conflict serialization when files, accounts, approvals, secrets, or irreversible actions are shared.
 - Local-first trust: user-owned API keys, local runtime state, explicit memories, optional inferred learning, and clear permission boundaries.
 
+## External Advantages To Absorb
+
+JAVIS should learn from the current local-agent ecosystem, but adapt those strengths into its own Mac-first, voice-first shape.
+
+- Samuel-style realtime companionship: wake-word or tap-to-talk voice, fast voice replies, permitted screen context, optional system-audio context, smart per-turn context decisions, and consent popups before continuous perception.
+- Fazm-style Mac usefulness: native-feeling macOS setup, voice-driven control of browser/apps/documents, workflow learning, and a path toward local speech recognition so basic voice input can work without sending raw audio away when the user chooses local mode.
+- OpenClaw-style gateway architecture: one resident control plane for sessions, tools, skills, channels, logs, routing, daemon status, allowlists, and security checks.
+- Hermes-style shared core across surfaces: the same agent state must be reachable from the pet, CUI, local API, future richer desktop panels, and optional remote/mobile control, instead of each surface becoming a separate product.
+- Maestro-style orchestration: long-running Codex/Claude/deep tasks, worktree-aware isolation, playbooks, event triggers, progress check-ins, and phone-friendly monitoring for unattended work.
+- Goodable/Skales/OpenYak-style desktop workspace: low-friction install, BYOK provider choice, optional local models, MCP and skill integrations, artifact-first outputs, file/workspace awareness, and no requirement that the user live in a terminal.
+- OpenPets-style shared companion state: the desktop buddy should be able to show status from JAVIS, Codex, Claude Code, browser/file/app workers, and future local tools without becoming a dashboard.
+- agent-desktop/browser-use/CUA/UI-TARS-style control reliability: prefer structured Accessibility trees, DOM/CDP bridges, stable element refs, screenshots only when useful, recovery hints, self-verification loops, and benchmarks for real computer-use tasks.
+- Security lessons from OpenClaw-class systems: third-party skills, inbound messages, browser sessions, shell commands, and local file actions are untrusted until policy, sandboxing, approvals, and audit logs say otherwise.
+- Product lesson from all of them: the user should get finished work, visible ownership, and recoverable history, not just an impressive chat transcript.
+
+## Implementation Commitments
+
+These are not marketing comparisons. They are goals JAVIS should implement.
+
+- Smart context assembly: classify each turn before capturing screen, Accessibility trees, browser text, clipboard, files, memory, or audio, so realtime voice stays fast and private by default.
+- Perception consent model: screen watching, background listening, browser reading, clipboard access, and app control each need clear status, toggles, first-use approval, and audit trails.
+- Control modes: support observe-only, ask-before-action, trusted local low-risk action, and takeover-style supervised execution, with hard stops for sends, deletes, purchases, account changes, and private data exposure.
+- Native setup path: provide signed/notarized Mac builds, LaunchAgent resident mode, guided permission setup, self-checks, one-step fixes, and update/recovery flows that do not require manual debugging.
+- Local and BYOK model paths: keep OpenAI Realtime as the premium voice lane, while leaving room for local STT/TTS/LLM, Ollama/Rapid-MLX-compatible providers, OpenRouter-style BYOK routing, and offline-capable narrow commands.
+- Skill and tool ecosystem: support curated local skills, MCP servers, browser/file/app tools, validation hooks, versioning, permissions, and safe repair suggestions without silently enabling untrusted code.
+- Multi-agent workbench: queue and resume long tasks, spawn isolated workers when scopes are independent, serialize conflicting write scopes, expose logs/results, and let the user continue, cancel, approve, or copy outcomes.
+- Reliable desktop automation: use Accessibility/DOM refs before coordinates, attach actions to observed targets, re-observe after stale refs, verify results, and return actionable recovery when an app, page, or permission blocks progress.
+- Artifact-first workflows: produce useful files, reports, tables, plans, screenshots, summaries, PRs, folder changes, and clipboard-ready results as first-class outputs linked from workflow history.
+- Learning loop with control: turn repeated successful workflows into suggested memories, skills, shortcuts, or playbooks only with user visibility, deletion controls, and evidence of how the learned signal changed routing.
+- Remote and mobile observability: eventually allow phone or remote panel check-ins through an authenticated user-owned gateway, while keeping local state, secrets, and approvals under the user's control.
+- Evaluation harness: maintain repeatable checks for voice latency, screen-context usefulness, browser workflow success, app-control safety, file-action policy, worker recovery, and skill sandbox behavior.
+
 ## Operating Principles
 
 - Voice smoothness comes first. The realtime lane keeps conversation flowing with short spoken responses, lightweight screen awareness, and immediate status updates.
@@ -33,6 +65,9 @@ The OpenClaw ideas worth adopting are:
 - Workers should be adversarial and persistent. When a task is possible, the worker should search, inspect evidence, retry, try alternate tools, and produce a useful result instead of giving up early.
 - Escalation is reserved for real boundaries: missing user intent, missing credentials, private/irreversible actions, external account blocks, or conflicts that cannot be resolved safely.
 - The user should see ownership, not noise. Progress check-ins should say who owns the work, what is running, what is blocked, and what the next safe action is.
+- Finished artifacts matter more than conversation volume. A successful workflow should leave behind an inspectable result, log, decision, file, or next action.
+- Privacy and speed are product features. JAVIS should avoid expensive context gathering when the current request does not need it.
+- Permission UX is part of reliability. A blocked microphone, screen, accessibility, browser, file, or automation permission should produce a clear next action instead of a vague failure.
 
 ## Local User Distillation
 
@@ -60,22 +95,30 @@ This learning system is part of the product, not a hidden analytics feature:
 ## Scope
 
 - Voice-first interaction.
-- Mac screen awareness with explicit permission.
+- Mac screen and optional system-audio awareness with explicit permission.
 - Fast lane for lightweight conversation.
 - Deep lane for slow, high-quality work.
 - Delegation to Codex and Claude Code for code-heavy tasks.
-- Safe local automation for reversible actions first.
+- Safe local automation for reversible actions first, then richer supervised app/browser/file workflows.
 - Browser, file, current-app, and CLI automation through scoped worker lanes.
 - Creative software workflows for video editing, subtitles, color, music composition, DAW arranging, mixing, and export preparation, starting with stage action packs and guarded app control.
 - OpenClaw-inspired gateway, agent loop, specialist lane, and delegate architecture adapted for realtime voice on macOS.
+- Hermes/Maestro-inspired multi-surface and multi-agent management, with the pet, CUI, local API, worker logs, and future panels sharing one core state.
+- Skill, MCP, and local tool extension with explicit trust, validation, permissions, versioning, and auditability.
+- Native Mac setup, resident operation, self-checks, updates, and recovery flows that make JAVIS usable without hand-editing internals.
+- Local/BYOK model support where practical, including local voice and narrow offline commands as lower-risk fallback paths.
+- Artifact-first workflows that return files, reports, tables, PRs, workflow records, copied results, or clear next actions.
+- Optional remote/mobile observability through a user-owned authenticated gateway after local reliability and safety are solid.
 - Local long-term user-distillation that makes JAVIS more personally adapted over time while keeping learned data on this Mac.
 - Human confirmation before irreversible, private, or high-impact actions.
 
 ## Non-Goals For Now
 
 - Copying OpenClaw's interface or becoming a noisy dashboard.
+- Copying any one external project wholesale; JAVIS should absorb the useful patterns while staying a quiet Mac companion.
 - Fully autonomous purchases, messages, deletes, or account changes.
-- Cross-device sync.
+- Cloud-owned cross-device sync or remote control before the local Mac gateway is reliable, authenticated, and permissioned.
 - Cloud-hosted personal memory.
 - Hidden analytics or cloud behavior profiling.
 - Replacing the operating system permission model.
+- Always-on raw recording without an explicit user-controlled mode, visible status, and retention policy.
