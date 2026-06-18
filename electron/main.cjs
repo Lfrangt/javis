@@ -20603,6 +20603,76 @@ function createRealtimeSessionConfig(options = {}) {
   };
 }
 
+const REALTIME_REQUIRED_TOOLS = [
+  'plan_context',
+  'observe_now',
+  'get_mac_context',
+  'get_browser_context',
+  'get_config_check',
+  'get_control_mode',
+  'get_work_progress',
+  'get_collaboration_state',
+  'read_browser_page',
+  'run_browser_workflow',
+  'route_task',
+  'route_parallel_tasks',
+  'delegate_task',
+  'run_cli_tool',
+  'run_mac_action',
+  'run_file_action',
+];
+
+function realtimeInstructionChecks(instructions = '') {
+  const text = String(instructions || '');
+  return {
+    standbyWakeGate: /standby behavior|wake word/i.test(text),
+    contextPlanner: /plan_context/i.test(text),
+    screenGrounding: /describe_screen/i.test(text),
+    controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
+    collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
+    backgroundRouting: /route_task|delegate_task|background/i.test(text),
+    localExecution: /run_cli_tool|run_mac_action|run_file_action/i.test(text),
+    confirmationStops: /purchases|logins|deletes|sends|irreversible|confirmation/i.test(text),
+    defaultChinese: /Speak Chinese by default/i.test(text),
+  };
+}
+
+function realtimeConfigSnapshot(options = {}) {
+  const config = createRealtimeSessionConfig({ micMode: options.micMode });
+  const toolNames = Array.isArray(config.tools)
+    ? config.tools.map((tool) => tool?.name).filter(Boolean).sort()
+    : [];
+  const toolNameSet = new Set(toolNames);
+  const missingRequiredTools = REALTIME_REQUIRED_TOOLS.filter((name) => !toolNameSet.has(name));
+  const instructionChecks = realtimeInstructionChecks(config.instructions);
+  const failedInstructionChecks = Object.entries(instructionChecks)
+    .filter(([, passed]) => !passed)
+    .map(([name]) => name);
+
+  return {
+    ok: missingRequiredTools.length === 0 && failedInstructionChecks.length === 0,
+    generatedAt: new Date().toISOString(),
+    model: config.model,
+    voice: config.audio?.output?.voice || '',
+    micMode: options.micMode === 'open' ? 'open' : 'push',
+    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    preflightContextEnabled: REALTIME_PREFLIGHT_CONTEXT_ENABLED,
+    wakeWords: WAKE_WORDS,
+    audio: config.audio,
+    screenPrivacy: screenPrivacySnapshot(),
+    conversation: conversationStateSnapshot(),
+    wake: wakeStatusSnapshot(),
+    toolCount: toolNames.length,
+    toolNames,
+    requiredTools: {
+      names: REALTIME_REQUIRED_TOOLS,
+      missing: missingRequiredTools,
+    },
+    instructionChecks,
+    failedInstructionChecks,
+  };
+}
+
 function startApiServer() {
   const api = express();
   api.use((req, res, next) => {
@@ -21216,6 +21286,14 @@ function startApiServer() {
 
   api.post('/api/conversation/state', express.json({ limit: '64kb' }), (req, res) => {
     res.json({ ok: true, conversation: updateConversationState(req.body || {}), presence: presenceStateSnapshot({ limit: 5 }) });
+  });
+
+  api.get('/api/realtime/config', (req, res) => {
+    try {
+      res.json({ realtime: realtimeConfigSnapshot({ micMode: req.query.micMode }) });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime config snapshot failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/realtime/context', async (req, res) => {

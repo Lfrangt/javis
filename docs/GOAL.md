@@ -55,7 +55,7 @@ These are not marketing comparisons. They are goals JAVIS should implement.
 - Artifact-first workflows: produce useful files, reports, tables, plans, screenshots, summaries, PRs, folder changes, and clipboard-ready results as first-class outputs linked from workflow history.
 - Learning loop with control: turn repeated successful workflows into suggested memories, skills, shortcuts, or playbooks only with user visibility, deletion controls, and evidence of how the learned signal changed routing.
 - Remote and mobile observability: eventually allow phone or remote panel check-ins through an authenticated user-owned gateway, while keeping local state, secrets, and approvals under the user's control.
-- Evaluation harness: maintain repeatable checks for voice latency, screen-context usefulness, browser workflow success, app-control safety, file-action policy, worker recovery, and skill sandbox behavior.
+- Evaluation harness: maintain repeatable checks for Realtime voice configuration, voice latency, screen-context usefulness, browser workflow success, app-control safety, file-action policy, worker recovery, and skill sandbox behavior.
 
 ## Operating Principles
 

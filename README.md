@@ -63,7 +63,7 @@ Local Mac-first realtime desktop buddy.
 - Resident system notifications for approvals and background task completion.
 - Voice mode defaults to open mic from the pet, with push-to-talk plumbing still available internally.
 - Setup/config diagnostics for `.env`, permissions, resident mode, policy, and local workers.
-- Local evaluation harness for product-lane regression checks across health, briefing, memory, Inbox, routing, collaboration, browser, file, control, worker, Accessibility, and learning surfaces.
+- Local evaluation harness for product-lane regression checks across health, Realtime voice configuration, briefing, memory, Inbox, routing, collaboration, browser, file, control, worker, Accessibility, and learning surfaces.
 - Shared AX targeting verifier for Chromium/Gemini side-pane input regressions.
 - Setup guide and one-step fix action for opening the current most important blocker.
 - Local setup actions for preparing `.env` and opening macOS permission/runtime locations.

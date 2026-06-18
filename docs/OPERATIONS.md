@@ -79,12 +79,12 @@ The evaluation harness is broader than doctor. Doctor checks setup and safety re
 ```bash
 npm run eval
 npm run eval -- --list
-npm run eval -- --only=health,routing,collaboration
+npm run eval -- --only=health,realtime,routing,collaboration
 npm run eval:json
 npm run eval:routing
 ```
 
-Current eval lanes cover resident health, work briefing, explicit memory, Inbox, routing/parallel ownership, collaboration claims, control-mode gates, browser snapshots, file read/search/plan previews, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
+Current eval lanes cover resident health, Realtime voice configuration and preflight context, work briefing, explicit memory, Inbox, routing/parallel ownership, collaboration claims, control-mode gates, browser snapshots, file read/search/plan previews, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
 
 Routine maintenance lives in the terminal CUI instead of the desktop pet:
 

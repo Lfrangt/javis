@@ -8,8 +8,8 @@ way as `scripts/doctor.mjs` (`JAVIS_API_TOKEN[_FILE]`, `Runtime/api-token`,
 | Command | What it checks | Side effects |
 |---------|----------------|--------------|
 | `npm run doctor` | Resident readiness, permissions, policy, runtime state | read-only |
-| `npm run eval` | Full lane scorecard (health, briefing, routing, learning, safety, workers, AX, …) | read-only previews + temporary collaboration claim + temporary control-mode restore |
-| `npm run eval -- --only=safety,workers` | Run specific lanes (`--list` to see them) | — |
+| `npm run eval` | Full lane scorecard (health, Realtime, briefing, routing, learning, safety, workers, AX, ...) | read-only previews + temporary collaboration claim + temporary control-mode restore |
+| `npm run eval -- --only=realtime,safety,workers` | Run specific lanes (`--list` to see them) | — |
 | `npm run eval:json` | Machine-readable scorecard | — |
 | `npm run eval:routing` | Lane-classifier accuracy over a labeled corpus | preview routes; appends local routing records |
 | `npm run verify:ax` | Accessibility targeting smoke (web-content editables) | read-only |
