@@ -181,6 +181,16 @@ curl -X POST http://127.0.0.1:3417/api/tasks/route \
 curl -X POST http://127.0.0.1:3417/api/tasks/parallel \
   -H 'Content-Type: application/json' \
   -d '{"execute":true,"parallelGroup":"research-batch","tasks":[{"task":"Inspect docs for stale setup notes","mode":"background","owner":"background","scope":"docs read-only"},{"task":"Review code owner boundaries","mode":"codex","owner":"codex","scope":"repo read-only"}]}'
+curl http://127.0.0.1:3417/api/collaboration
+curl -X POST http://127.0.0.1:3417/api/collaboration/claims \
+  -H 'Content-Type: application/json' \
+  -d '{"agent":"claude-code","owner":"Claude Code","lane":"claude","scope":"docs/OPERATIONS.md","access":"write","task":"Update operations docs","ttlMs":1800000}'
+curl -X POST http://127.0.0.1:3417/api/collaboration/claims/<claim-id>/heartbeat \
+  -H 'Content-Type: application/json' \
+  -d '{"ttlMs":1800000}'
+curl -X POST http://127.0.0.1:3417/api/collaboration/claims/<claim-id>/release \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"done"}'
 curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -H 'Content-Type: application/json' \
   -d '{"intent":"search","query":"OpenAI Realtime API docs","mode":"quick"}'
@@ -202,6 +212,8 @@ The briefing combines readiness, routing records, jobs, workflows, approvals, me
 `/api/tasks/route` persists a routing record for each previewed or executed task. Direct quick chat, voice delegation, explicit CLI runs, browser workflows, file workflows, and continuation workflows also write routing records. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, blocker/next-action context, and result link. Use `/api/tasks/routing` or `/api/tasks/routing/<route-id>` to inspect the ledger.
 
 `/api/tasks/parallel` accepts up to `JAVIS_MAX_PARALLEL_TASKS` independent task items and assigns them to one `parallelGroup`. Each item can specify its own `mode`, `owner`, `scope`, `access`, and `ownershipKey`; explicit `command` items queue through the guarded local CLI lane. The parallel router records an `ownership` block on each route and serializes overlapping write scopes instead of launching competing Codex/Claude/local workers against the same file or folder. This is the API surface for splitting work across background, Codex, Claude, and local workers while keeping progress check-ins coherent.
+
+`/api/collaboration` is for external workers that are not launched by JAVIS, such as a separate Claude Code session. A worker should create a claim before editing, heartbeat it during long work, and release it when finished. Claims expire automatically after `JAVIS_COLLABORATION_CLAIM_TTL_MS` if the worker disappears. Active write claims seed `/api/tasks/parallel`, so a later Codex/Claude/local task that overlaps the claimed scope is serialized instead of started in parallel.
 
 `/api/browser/workflow` supports `search`, `compare`, `review_result`, and `research` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages and capture those result pages. `review_result` opens one explicit URL or selected result link through the guarded `open_url` path, then reads the target page. `research` opens several explicit URLs or selected result links in sequence and synthesizes their read-only page snapshots. Browser workflows do not click page controls, type into arbitrary fields, submit forms, or make account changes by themselves.
 

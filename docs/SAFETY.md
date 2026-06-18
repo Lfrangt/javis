@@ -24,6 +24,7 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 - No-model typing workflows are intentionally narrow: they require an explicit text-oriented app target, currently Notes, TextEdit, or Obsidian, and short typed content. They are rejected when the request includes sends, submissions, deletes, logins, payments, passwords, secrets, or a close-window follow-up.
 - Inbox triage is read-only. It sorts open captures and suggests lanes, but does not execute, route, mark done, or mutate items.
 - Inbox process-next requires an explicit user command, CUI action, API request, or voice tool call. It processes only the highest-priority open item and reuses the normal Inbox router, queue, worker, and completion rules.
+- Agent collaboration claims are coordination metadata only. `/api/collaboration` can say that Claude Code, Codex, or a local CLI worker is editing a scope, and the parallel router uses active write claims to avoid overlapping workers, but claims do not grant file permissions, bypass action policy, approve Level 3/4 actions, or replace git review.
 - Browser page reading is read-only, policy-limited by character count, and should only be used when the user asks about the active page or page content is clearly needed. It may return visible links and search-result candidates, but reading those links does not click or open them.
 - Browser control is limited to navigation actions: back, forward, reload, new tab, close tab, focus address bar, open URL, and search. It does not click page content, submit forms, or enter credentials.
 - Browser DOM reading is read-only and returns visible controls with labels/selectors, not raw HTML. It can use browser Apple Events or the local Chrome DevTools bridge on `JAVIS_CHROME_DEBUG_PORT`. Browser DOM actions execute one guarded `click`, `fill`, or `select`; password fields are blocked, and submit/send/buy/delete/login/account-change style targets are Level 4 confirmation actions.
@@ -122,6 +123,7 @@ Default file policy:
 - Failed jobs keep `attempts`, `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot so JAVIS can diagnose and continue instead of returning a bare failure.
 - Work-next recovery jobs are capped by `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` per failed parent job and keep Level 3 code-agent policy checks.
 - Autopilot ticks are limited to low-risk recovery diagnostics and safe-planner app workflow retries; they skip during live voice sessions or active background jobs.
+- Collaboration claims expire after `JAVIS_COLLABORATION_CLAIM_TTL_MS` when a worker stops heartbeating. Expiration only releases the coordination claim; it does not revert files or decide whether the worker's changes are correct.
 - Read/list/search default roots are the current project, Desktop, Documents, and Downloads.
 - Write/create/copy/move default roots are the current project only in guarded mode.
 - In trusted local mode, project-only write roots are upgraded to the current project, Desktop, Documents, and Downloads unless `JAVIS_ALLOWED_WRITE_ROOTS` or a custom action policy says otherwise.

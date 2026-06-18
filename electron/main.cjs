@@ -42,6 +42,7 @@ const DATA_DIR = process.env.JAVIS_DATA_DIR || path.join(APP_SUPPORT_DIR, 'Runti
 const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
+const COLLABORATION_FILE = path.join(DATA_DIR, 'collaboration.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
 const ACTION_POLICY_FILE = path.join(DATA_DIR, 'action-policy.json');
 const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, 'api-token');
@@ -90,6 +91,8 @@ const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES |
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
+const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
+const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
 const MAX_PARALLEL_TASKS = Math.max(2, Math.min(12, Number(process.env.JAVIS_MAX_PARALLEL_TASKS || 6)));
 const MAX_BROWSER_SEARCH_QUERIES = Math.max(1, Math.min(6, Number(process.env.JAVIS_MAX_BROWSER_SEARCH_QUERIES || 4)));
 const MAX_BROWSER_PAGE_LINKS = Math.max(5, Math.min(120, Number(process.env.JAVIS_MAX_BROWSER_PAGE_LINKS || 40)));
@@ -503,6 +506,7 @@ const LANE_CONTRACTS = [
 const jobs = new Map();
 const workflows = new Map();
 const routingRecords = new Map();
+const collaborationClaims = new Map();
 const approvals = new Map();
 const memories = new Map();
 const inboxItems = new Map();
@@ -589,6 +593,7 @@ screenPrivacy = loadScreenPrivacy();
 loadPersistedJobs();
 loadPersistedWorkflows();
 loadPersistedRouting();
+loadPersistedCollaboration();
 loadPersistedApprovals();
 loadPersistedMemories();
 loadPersistedInbox();
@@ -2399,6 +2404,291 @@ function loadPersistedRouting() {
   }
 }
 
+function collaborationTimestamp(value, fallback = Date.now()) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
+}
+
+function normalizeCollaborationStatus(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['released', 'done', 'blocked', 'expired', 'cancelled'].includes(normalized)) return normalized;
+  return 'active';
+}
+
+function normalizeCollaborationLane(value, agent = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'app', 'external'].includes(normalized)) {
+    return normalized;
+  }
+  const agentText = String(agent || '').toLowerCase();
+  if (agentText.includes('claude')) return 'claude';
+  if (agentText.includes('codex')) return 'codex';
+  return 'external';
+}
+
+function normalizeCollaborationClaim(raw = {}) {
+  if (!raw || typeof raw !== 'object') return null;
+  const now = Date.now();
+  const id = String(raw.id || crypto.randomUUID()).trim();
+  const agent = compactRecordText(raw.agent || raw.worker || raw.owner || 'external-agent', 80);
+  const owner = compactRecordText(raw.owner || raw.name || agent, 80);
+  const task = compactRecordText(raw.task || raw.title || raw.goal || raw.summary || '', 220);
+  const scope = compactRecordText(raw.scope || raw.path || raw.file || raw.directory || raw.key || task, 220);
+  const key = normalizeOwnershipKey(raw.key || raw.ownershipKey || raw.ownerKey || raw.path || raw.file || scope || task || owner);
+  if (!id || (!key && !scope && !task)) return null;
+
+  const createdAt = collaborationTimestamp(raw.createdAt, now);
+  const updatedAt = collaborationTimestamp(raw.updatedAt, now);
+  const heartbeatAt = collaborationTimestamp(raw.heartbeatAt || raw.lastSeenAt, updatedAt || now);
+  const ttlMs = Math.max(
+    60000,
+    Math.min(86400000, Number(raw.ttlMs || raw.expiresInMs || COLLABORATION_CLAIM_TTL_MS)),
+  );
+  const expiresAt = collaborationTimestamp(raw.expiresAt, heartbeatAt + ttlMs);
+
+  return {
+    id,
+    agent,
+    owner,
+    lane: normalizeCollaborationLane(raw.lane || raw.mode, agent),
+    task,
+    scope,
+    key,
+    access: normalizeOwnershipAccess(raw.access) || 'write',
+    status: normalizeCollaborationStatus(raw.status),
+    source: compactRecordText(raw.source || 'api', 80),
+    createdAt,
+    updatedAt,
+    heartbeatAt,
+    expiresAt,
+    ttlMs,
+  };
+}
+
+function collaborationClaimIsActive(claim, now = Date.now()) {
+  return Boolean(claim)
+    && claim.status === 'active'
+    && Number(claim.expiresAt || 0) > now;
+}
+
+function expireCollaborationClaims(now = Date.now()) {
+  let expired = 0;
+  for (const claim of collaborationClaims.values()) {
+    if (claim.status === 'active' && Number(claim.expiresAt || 0) <= now) {
+      collaborationClaims.set(claim.id, {
+        ...claim,
+        status: 'expired',
+        updatedAt: now,
+      });
+      expired += 1;
+    }
+  }
+  if (expired) {
+    persistCollaboration();
+    appendAudit('collaboration.expired', { count: expired });
+  }
+  return expired;
+}
+
+function activeCollaborationClaims(now = Date.now()) {
+  return Array.from(collaborationClaims.values())
+    .filter((claim) => collaborationClaimIsActive(claim, now))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function collaborationConflictsForClaim(candidate) {
+  if (!candidate?.key) return [];
+  const now = Date.now();
+  return activeCollaborationClaims(now)
+    .filter((claim) => claim.id !== candidate.id)
+    .filter((claim) => claim.key && ownershipKeysOverlap(candidate.key, claim.key))
+    .filter((claim) => candidate.access === 'write' || claim.access === 'write')
+    .map((claim) => ({
+      id: claim.id,
+      agent: claim.agent,
+      owner: claim.owner,
+      lane: claim.lane,
+      access: claim.access,
+      key: claim.key,
+      scope: claim.scope,
+      task: claim.task,
+      expiresAt: claim.expiresAt,
+    }));
+}
+
+function collaborationConflictCount(claims = activeCollaborationClaims()) {
+  let count = 0;
+  for (let index = 0; index < claims.length; index += 1) {
+    for (let otherIndex = index + 1; otherIndex < claims.length; otherIndex += 1) {
+      const left = claims[index];
+      const right = claims[otherIndex];
+      if (!left.key || !right.key) continue;
+      if ((left.access === 'write' || right.access === 'write') && ownershipKeysOverlap(left.key, right.key)) {
+        count += 1;
+      }
+    }
+  }
+  return count;
+}
+
+function collaborationSnapshot(limit = 50) {
+  expireCollaborationClaims();
+  const maxItems = Math.max(1, Math.min(200, Number(limit || 50)));
+  const all = Array.from(collaborationClaims.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+  const active = all.filter((claim) => collaborationClaimIsActive(claim));
+  const inactive = all.filter((claim) => !collaborationClaimIsActive(claim));
+  return {
+    counts: {
+      total: all.length,
+      active: active.length,
+      inactive: inactive.length,
+      expired: all.filter((claim) => claim.status === 'expired').length,
+      conflicts: collaborationConflictCount(active),
+    },
+    active: active.slice(0, maxItems),
+    recent: all.slice(0, maxItems),
+    inactive: inactive.slice(0, Math.min(maxItems, 20)),
+    ttlMs: COLLABORATION_CLAIM_TTL_MS,
+    file: COLLABORATION_FILE,
+  };
+}
+
+function claimCollaborationScope(options = {}) {
+  const now = Date.now();
+  const ttlMs = Math.max(
+    60000,
+    Math.min(86400000, Number(options.ttlMs || options.expiresInMs || COLLABORATION_CLAIM_TTL_MS)),
+  );
+  const candidate = normalizeCollaborationClaim({
+    ...options,
+    id: options.id || crypto.randomUUID(),
+    status: 'active',
+    createdAt: options.createdAt || now,
+    updatedAt: now,
+    heartbeatAt: now,
+    expiresAt: options.expiresAt || now + ttlMs,
+    ttlMs,
+    source: options.source || 'api',
+  });
+  if (!candidate) throw new Error('Missing collaboration scope, key, path, or task.');
+
+  expireCollaborationClaims(now);
+  const conflicts = collaborationConflictsForClaim(candidate);
+  const force = options.force === true || String(options.force || '').toLowerCase() === 'true';
+  if (conflicts.length && !force) {
+    appendAudit('collaboration.claim_blocked', {
+      id: candidate.id,
+      agent: candidate.agent,
+      owner: candidate.owner,
+      key: candidate.key,
+      conflicts: conflicts.length,
+    });
+    return {
+      ok: false,
+      status: 409,
+      claim: candidate,
+      conflicts,
+      collaboration: collaborationSnapshot(20),
+      output: `Collaboration claim blocked: ${candidate.key} overlaps ${conflicts[0].owner || conflicts[0].agent}.`,
+    };
+  }
+
+  collaborationClaims.set(candidate.id, candidate);
+  persistCollaboration();
+  appendAudit('collaboration.claimed', {
+    id: candidate.id,
+    agent: candidate.agent,
+    owner: candidate.owner,
+    lane: candidate.lane,
+    access: candidate.access,
+    key: candidate.key,
+    forced: force,
+    conflicts: conflicts.length,
+  });
+  return {
+    ok: true,
+    claim: candidate,
+    conflicts,
+    collaboration: collaborationSnapshot(20),
+    output: `Collaboration claim active: ${candidate.owner} ${candidate.access}:${candidate.key}.`,
+  };
+}
+
+function heartbeatCollaborationClaim(id, options = {}) {
+  const claimId = String(id || options.id || '').trim();
+  const existing = collaborationClaims.get(claimId);
+  if (!existing) {
+    return { ok: false, status: 404, output: 'Collaboration claim not found.' };
+  }
+  const now = Date.now();
+  const ttlMs = Math.max(
+    60000,
+    Math.min(86400000, Number(options.ttlMs || options.expiresInMs || existing.ttlMs || COLLABORATION_CLAIM_TTL_MS)),
+  );
+  const next = {
+    ...existing,
+    status: 'active',
+    updatedAt: now,
+    heartbeatAt: now,
+    expiresAt: options.expiresAt ? collaborationTimestamp(options.expiresAt, now + ttlMs) : now + ttlMs,
+    ttlMs,
+  };
+  collaborationClaims.set(next.id, next);
+  persistCollaboration();
+  appendAudit('collaboration.heartbeat', { id: next.id, agent: next.agent, key: next.key, expiresAt: next.expiresAt });
+  return {
+    ok: true,
+    claim: next,
+    collaboration: collaborationSnapshot(20),
+    output: `Collaboration claim refreshed: ${next.owner} ${next.key}.`,
+  };
+}
+
+function releaseCollaborationClaim(id, options = {}) {
+  const claimId = String(id || options.id || '').trim();
+  const existing = collaborationClaims.get(claimId);
+  if (!existing) {
+    return { ok: false, status: 404, output: 'Collaboration claim not found.' };
+  }
+  const now = Date.now();
+  const requestedStatus = normalizeCollaborationStatus(options.status || 'released');
+  const status = requestedStatus === 'active' ? 'released' : requestedStatus;
+  const next = {
+    ...existing,
+    status,
+    updatedAt: now,
+    completedAt: now,
+    result: compactRecordText(options.result || options.summary || '', 500),
+  };
+  collaborationClaims.set(next.id, next);
+  persistCollaboration();
+  appendAudit('collaboration.released', { id: next.id, agent: next.agent, key: next.key, status });
+  return {
+    ok: true,
+    claim: next,
+    collaboration: collaborationSnapshot(20),
+    output: `Collaboration claim ${status}: ${next.owner} ${next.key}.`,
+  };
+}
+
+function loadPersistedCollaboration() {
+  if (!fs.existsSync(COLLABORATION_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(COLLABORATION_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.claims) ? parsed.claims : [];
+    collaborationClaims.clear();
+    for (const rawClaim of list) {
+      const claim = normalizeCollaborationClaim(rawClaim);
+      if (claim) collaborationClaims.set(claim.id, claim);
+    }
+    expireCollaborationClaims();
+    persistCollaboration();
+    appendAudit('collaboration.loaded', { count: collaborationClaims.size });
+  } catch (error) {
+    appendAudit('collaboration.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function loadPersistedApprovals() {
   if (!fs.existsSync(APPROVALS_FILE)) return;
   try {
@@ -2525,6 +2815,17 @@ function persistRouting() {
     version: 1,
     updatedAt: new Date().toISOString(),
     records: recordsForStorage,
+  });
+}
+
+function persistCollaboration() {
+  const claimsForStorage = Array.from(collaborationClaims.values())
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(1, MAX_PERSISTED_COLLABORATION_CLAIMS));
+  writeJsonAtomic(COLLABORATION_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    claims: claimsForStorage,
   });
 }
 
@@ -11396,7 +11697,16 @@ function ownershipKeysOverlap(a, b) {
 }
 
 function applyParallelOwnership(tasks = []) {
-  const priorWriteScopes = [];
+  const priorWriteScopes = activeCollaborationClaims()
+    .filter((claim) => claim.access === 'write')
+    .map((claim, index) => ({
+      index: -1 - index,
+      owner: claim.owner || claim.agent,
+      key: claim.key,
+      task: claim.task || claim.scope,
+      claimId: claim.id,
+      source: 'collaboration',
+    }));
   return tasks.map((item, index) => {
     const access = inferParallelOwnershipAccess(item);
     const key = ownershipKeyForParallelTask(item);
@@ -11420,6 +11730,8 @@ function applyParallelOwnership(tasks = []) {
         owner: conflict.owner,
         key: conflict.key,
         task: conflict.task,
+        claimId: conflict.claimId || '',
+        source: conflict.source || 'parallel_group',
       })),
     };
     if (access === 'write') {
@@ -14007,6 +14319,7 @@ function workflowBriefing(options = {}) {
   const recentRoutes = routingSnapshot(6);
   const activeRoutes = activeRoutingSnapshot(12);
   const routingLedger = activeRoutes.map(routingLedgerEntry).filter(Boolean);
+  const collaboration = collaborationSnapshot(6);
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const recoveryActions = recoveryActionCandidates(recentJobs);
   const recentBlockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
@@ -14087,6 +14400,16 @@ function workflowBriefing(options = {}) {
     });
   }
 
+  if (collaboration.counts.conflicts) {
+    nextActions.push({
+      id: 'collaboration_conflicts',
+      priority: 1,
+      label: 'Resolve agent overlap',
+      summary: `${collaboration.counts.conflicts} active collaboration conflict pair(s) are present.`,
+      source: 'collaboration',
+    });
+  }
+
   for (const action of recoveryActions) {
     nextActions.push(action);
   }
@@ -14133,6 +14456,7 @@ function workflowBriefing(options = {}) {
     readiness.overall === 'blocked' ? `Setup blocked: ${readiness.summary}` : readiness.overall === 'degraded' ? `Needs attention: ${readiness.summary}` : 'Resident is ready.',
     `${workflowCounts().total} workflow(s), ${queueCounts().total} job(s), ${memories.size} memory record(s).`,
     activeRoutes.length ? `${activeRoutes.length} routed task(s) active.` : '',
+    collaboration.counts.active ? `${collaboration.counts.active} agent collaboration claim(s) active.` : '',
     learning.enabled && learning.profile.sourceEventCount ? `Learning: ${learning.profile.summary}` : '',
     activeSession ? `Active session: ${activeSession.title}.` : '',
     openInbox.length ? `${openInbox.length} open inbox item(s).` : '',
@@ -14160,6 +14484,7 @@ function workflowBriefing(options = {}) {
       inbox: inboxCounts(),
       sessions: sessionCounts(),
       routing: routingCounts(),
+      collaboration: collaboration.counts,
       activeJobs: activeJobs.length,
       activeRoutes: routingLedger.length,
       recoveryActions: recoveryActions.length,
@@ -14168,6 +14493,7 @@ function workflowBriefing(options = {}) {
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
     routingLedger,
+    collaboration,
     laneContracts: laneContractSnapshot(),
     recent: {
       workflows: recentWorkflows.map((workflow) => ({
@@ -14270,9 +14596,13 @@ function workProgressCheckIn(options = {}) {
   const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
   const latestDoneRoute = recentRoutes.find((record) => record.status === 'done') || null;
   const briefing = workflowBriefing({ workflowLimit, jobLimit });
+  const collaboration = collaborationSnapshot(5);
   const nextActions = (briefing.nextActions || []).slice(0, 3);
 
   const lines = [
+    collaboration.counts.active
+      ? `协作中的 agent:\n${collaboration.active.map((claim, index) => `${index + 1}. ${claim.owner || claim.agent} · ${claim.access}:${compactRecordText(claim.key || claim.scope, 90)} · ${progressAgeLabel(claim.updatedAt)}`).join('\n')}`
+      : '',
     activeRoutes.length
       ? `分流中的工作:\n${activeRoutes.map((record, index) => `${index + 1}. ${formatRoutingProgressLine(record)}`).join('\n')}`
       : '',
@@ -14301,6 +14631,7 @@ function workProgressCheckIn(options = {}) {
     activeWorkflows: activeWorkflows.length,
     blockedWorkflows: blockedWorkflows.length,
     activeRoutes: activeRoutes.length,
+    activeCollaborationClaims: collaboration.counts.active,
     recentJobs: recentJobs.length,
     recentWorkflows: recentWorkflows.length,
     recentRoutes: recentRoutes.length,
@@ -14318,8 +14649,10 @@ function workProgressCheckIn(options = {}) {
       blockedWorkflows: blockedWorkflows.length,
       activeRoutes: activeRoutes.length,
       routing: routingCounts(),
+      collaboration: collaboration.counts,
     },
     routingLedger,
+    collaboration,
     laneContracts: laneContractSnapshot(),
     activeRoutes,
     recentRoutes,
@@ -14536,6 +14869,15 @@ async function workNextAction(options = {}) {
         entry?.nextAction ? `下一步: ${entry.nextAction}` : '',
       ].filter(Boolean).join('\n')
       : '当前没有可查看的分流任务。';
+  } else if (action.source === 'collaboration') {
+    const collaboration = collaborationSnapshot(20);
+    result = { collaboration };
+    output = collaboration.active.length
+      ? [
+        `协作声明: ${collaboration.counts.active} active, ${collaboration.counts.conflicts} conflict pair(s).`,
+        collaboration.active.map((claim, index) => `${index + 1}. ${claim.owner || claim.agent} · ${claim.access}:${claim.key || claim.scope} · ${compactRecordText(claim.task || claim.scope, 120)}`).join('\n'),
+      ].join('\n')
+      : '当前没有 active agent collaboration claim。';
   } else if (action.source === 'approvals') {
     const pending = pendingApprovalSnapshot(10);
     result = { pending };
@@ -15479,6 +15821,7 @@ function configCheckSnapshot() {
       learningFile: LEARNING_FILE,
       jobsFile: JOBS_FILE,
       workflowsFile: WORKFLOWS_FILE,
+      collaborationFile: COLLABORATION_FILE,
       auditFile: AUDIT_FILE,
       launchAgentFile: LAUNCH_AGENT_FILE,
     },
@@ -15544,6 +15887,7 @@ function healthSnapshot() {
       jobsFile: JOBS_FILE,
       workflowsFile: WORKFLOWS_FILE,
       routingFile: ROUTING_FILE,
+      collaborationFile: COLLABORATION_FILE,
       auditFile: AUDIT_FILE,
       actionPolicyFile: ACTION_POLICY_FILE,
       approvalsFile: APPROVALS_FILE,
@@ -15556,6 +15900,7 @@ function healthSnapshot() {
       persistedJobs: jobs.size,
       persistedWorkflows: workflows.size,
       persistedRoutingRecords: routingRecords.size,
+      persistedCollaborationClaims: collaborationClaims.size,
       persistedApprovals: approvals.size,
       persistedMemories: memories.size,
       persistedInboxItems: inboxItems.size,
@@ -15565,6 +15910,7 @@ function healthSnapshot() {
       maxPersistedJobs: MAX_PERSISTED_JOBS,
       maxPersistedWorkflows: MAX_PERSISTED_WORKFLOWS,
       maxPersistedRouting: MAX_PERSISTED_ROUTING,
+      maxPersistedCollaborationClaims: MAX_PERSISTED_COLLABORATION_CLAIMS,
       maxPersistedMemories: MAX_PERSISTED_MEMORIES,
       maxPersistedInboxItems: MAX_PERSISTED_INBOX,
       maxPersistedSessions: MAX_PERSISTED_SESSIONS,
@@ -15711,6 +16057,16 @@ async function doctorReportSnapshot() {
       { task: 'Update docs roadmap wording.', mode: 'codex', scope: 'docs/ROADMAP.md', owner: 'codex' },
       { task: 'Fix another docs roadmap section.', mode: 'claude', scope: 'docs/ROADMAP.md', owner: 'claude' },
     ],
+  });
+  const collaborationPreview = collaborationSnapshot(5);
+  const collaborationClaimPreview = normalizeCollaborationClaim({
+    agent: 'Claude Code',
+    owner: 'claude',
+    lane: 'claude',
+    scope: 'docs/ROADMAP.md',
+    access: 'write',
+    task: 'Doctor collaboration preview',
+    source: 'doctor',
   });
   const browserJavaScriptPreview = await browserJavaScriptStatusSnapshot();
   const realtimeBrowserToolPreview = realtimeBrowserWorkflowToolSnapshot();
@@ -15984,7 +16340,7 @@ async function doctorReportSnapshot() {
   const conflictRecord = parallelConflictPreview.results?.[1]?.routing || null;
   const conflictReady =
     parallelConflictPreview.ok === true &&
-    parallelConflictPreview.ownership?.conflicts === 1 &&
+    parallelConflictPreview.ownership?.conflicts >= 1 &&
     conflictRecord?.ownership?.serialized === true &&
     conflictRecord.ownership.parallelSafe === false;
   checks.push(doctorCheck(
@@ -16000,6 +16356,27 @@ async function doctorReportSnapshot() {
       routingLedger: parallelConflictPreview.routingLedger,
     },
     conflictReady ? '' : 'Review applyParallelOwnership() and routeParallelTasks().',
+  ));
+
+  const collaborationReady =
+    Boolean(collaborationPreview.counts) &&
+    collaborationClaimPreview?.key === 'docs/roadmap.md' &&
+    collaborationClaimPreview.access === 'write' &&
+    collaborationPreview.file === COLLABORATION_FILE;
+  checks.push(doctorCheck(
+    'collaboration_ledger',
+    'Agent collaboration ledger',
+    collaborationReady ? 'ready' : 'warning',
+    collaborationReady
+      ? `Collaboration ledger tracks ${collaborationPreview.counts.active} active claim(s) and ${collaborationPreview.counts.conflicts} conflict pair(s).`
+      : 'Collaboration ledger snapshot or claim normalization is incomplete.',
+    {
+      file: COLLABORATION_FILE,
+      counts: collaborationPreview.counts,
+      active: collaborationPreview.active,
+      claimPreview: collaborationClaimPreview,
+    },
+    collaborationReady ? '' : 'Review collaborationSnapshot() and claimCollaborationScope().',
   ));
 
   const localCommandReady =
@@ -16290,6 +16667,10 @@ async function doctorReportSnapshot() {
         name: skillDraftPreview.skill?.name || '',
         suggestedUserPath: skillDraftPreview.skill?.suggestedUserPath || '',
         sourceEventCount: skillDraftPreview.evidence?.learning?.profile?.sourceEventCount || 0,
+      },
+      collaboration: {
+        counts: collaborationPreview.counts,
+        active: collaborationPreview.active,
       },
       axPress: axPressPreview,
     },
@@ -17906,6 +18287,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(progress) };
   }
 
+  if (name === 'get_collaboration_state') {
+    return { ok: true, output: JSON.stringify(collaborationSnapshot(args?.limit || 20)) };
+  }
+
   if (name === 'get_work_next') {
     const result = await workNextAction({ ...(args || {}), execute: false, source: 'voice' });
     return { ok: true, output: JSON.stringify(result) };
@@ -18333,6 +18718,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. Executed actions verify the screen/UI state and return recovery hints unless verify:false is passed. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
+      'Use get_collaboration_state when the user asks which agents are working, what Claude Code or Codex owns, or whether parallel agent work has conflicts.',
       'Use get_work_session when the user asks about the current work session.',
       'Use start_work_session when the user asks to start focusing on a task or begin a work session.',
       'Use add_work_session_event when the user asks to note, log, or remember something only inside the current session.',
@@ -18748,6 +19134,18 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             jobLimit: { type: 'number' },
             workflowLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_collaboration_state',
+        description: 'Get local multi-agent collaboration claims: active Codex/Claude/local owners, write scopes, expirations, and conflict counts. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -19989,6 +20387,7 @@ function startApiServer() {
         ledger: activeRoutingSnapshot(8).map(routingLedgerEntry).filter(Boolean),
         recent: routingSnapshot(8),
       },
+      collaboration: collaborationSnapshot(8),
       memory: {
         total: memories.size,
         recent: memorySnapshot(3),
@@ -20776,6 +21175,37 @@ function startApiServer() {
       return;
     }
     res.json({ record });
+  });
+
+  api.get('/api/collaboration', (req, res) => {
+    res.json({
+      collaboration: collaborationSnapshot(req.query.limit || 50),
+      collaborationFile: COLLABORATION_FILE,
+    });
+  });
+
+  api.post('/api/collaboration/claims', express.json({ limit: '256kb' }), (req, res) => {
+    try {
+      const result = claimCollaborationScope({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : result.status || 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Collaboration claim failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/collaboration/claims/:id/heartbeat', express.json({ limit: '128kb' }), (req, res) => {
+    const result = heartbeatCollaborationClaim(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' });
+    res.status(result.ok ? 200 : result.status || 404).json(result);
+  });
+
+  api.post('/api/collaboration/claims/:id/release', express.json({ limit: '128kb' }), (req, res) => {
+    const result = releaseCollaborationClaim(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' });
+    res.status(result.ok ? 200 : result.status || 404).json(result);
+  });
+
+  api.delete('/api/collaboration/claims/:id', express.json({ limit: '128kb' }), (req, res) => {
+    const result = releaseCollaborationClaim(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api', status: req.body?.status || 'released' });
+    res.status(result.ok ? 200 : result.status || 404).json(result);
   });
 
   api.post('/api/tasks', (req, res) => {

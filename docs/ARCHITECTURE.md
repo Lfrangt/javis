@@ -20,6 +20,7 @@ Electron process
   Local work briefing
   Unified work-next dispatcher
   Local work session store
+  Local agent collaboration ledger
   Local explicit memory store
   Local Inbox store
   Structured audit log
@@ -52,6 +53,7 @@ Renderer
 - Lane contract registry lane: deterministic OpenClaw-inspired contracts for realtime/background/Codex/Claude/local/browser/file/app ownership, non-goals, handoff tools, tool posture, and risk boundaries, exposed to API, Realtime tools, briefing, status, and doctor checks.
 - Task routing ledger lane: persists each quick/background/Codex/Claude/local routing decision with owner, scope, parallel group, approval requirement, status, and result link.
 - Parallel task group lane: routes a bounded set of independent tasks under one `parallelGroup`, preserving per-task owner, scope, lane, status, and result link for progress check-ins.
+- Agent collaboration ledger lane: persists short-lived scope claims from external Claude Code, Codex, or local CLI workers, with heartbeat/release APIs and conflict counts used by briefing, CUI, voice, doctor, and the parallel ownership guard.
 - Push-to-talk lane: keeps resident voice from becoming an always-open microphone.
 - Global hotkey lane: brings the desktop pet back without requiring app focus.
 - Tap-to-summon hotkey lane: global `JAVIS_SUMMON_HOTKEY`/`JAVIS_TAP_HOTKEY` wakes JAVIS, parks the capsule at the notch, and starts the same pending wake path used by local wake engines.
@@ -89,7 +91,7 @@ Renderer
 - File organization lane: deterministic by-type folder plans with per-step policy preview, explicit apply confirmation, and the same approval/local-execution gates before any move/copy/create action.
 - Workflow history lane: user-level workflow records linked to jobs, targets, status, and results.
 - Work briefing lane: deterministic status summary over readiness, jobs, workflows, approvals, memories, blockers, and suggested next actions.
-- Work progress lane: deterministic spoken-style progress over active jobs, recent job results, active/blocked workflows, latest completions, and next actions.
+- Work progress lane: deterministic spoken-style progress over active collaboration claims, active jobs, recent job results, active/blocked workflows, latest completions, and next actions.
 - Work next lane: chooses and optionally runs exactly one safe next action across setup, approvals, sessions, Inbox, jobs, and workflows.
 - Work session lane: local focus sessions with a goal, append-only notes/events, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, active-session status, spoken check-ins, and deterministic end summaries.
 - Inbox lane: persistent local capture queue for clipboard/manual follow-ups that feeds the menu bar, CUI, work briefing, and task routing.
@@ -113,6 +115,7 @@ By default, local runtime state lives in:
     jobs.json
     workflows.json
     routing.json
+    collaboration.json
     sessions.json
     memories.json
     learned-profile.json
@@ -127,6 +130,8 @@ By default, local runtime state lives in:
 `workflows.json` preserves recent user-level workflows, such as current-page summaries or background browser tasks. Workflow records store target app/page metadata, status, linked job id, parent workflow id, request text, and result summary so JAVIS can explain, continue, or copy recent work back to the clipboard.
 
 `routing.json` preserves user-level lane decisions across quick, background, Codex, Claude, local CLI, browser workflow, file workflow, and continuation paths. Records store lane, owner, scope, parallel group, approval requirement, status, result link, job/workflow ids, and compact result summaries so progress check-ins can explain who owns active work and what the next step is.
+
+`collaboration.json` preserves short-lived agent scope claims across resident restarts. External workers can claim an owner/scope/access pair, heartbeat it while editing, and release it when done. Active write claims seed the parallel router's ownership guard so JAVIS avoids launching overlapping Codex/Claude/local workers against the same file or folder.
 
 `sessions.json` preserves local work sessions. Session records store a goal, active/done/cancelled status, local events, source, tags, timestamps, and deterministic summaries. Only one active session is allowed at a time, and the active session is surfaced in status, menu bar, briefing, and the buddy panel.
 

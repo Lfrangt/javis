@@ -197,6 +197,10 @@ async function printStatus() {
       const exclusions = (controls.excludedApps?.length || 0) + (controls.excludedHosts?.length || 0) + (controls.excludedFolders?.length || 0);
       console.log(`Learning: ${status.learning.enabled ? 'on' : status.learning.paused ? 'paused' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${exclusions} exclusion(s) · ${profile.summary || 'no profile yet'}`);
     }
+    if (status.collaboration) {
+      const counts = status.collaboration.counts || {};
+      console.log(`Collab: ${counts.active || 0} active claim(s) · ${counts.conflicts || 0} conflict pair(s)`);
+    }
     if (status.presence) {
       const observing = status.presence.observing?.latest || {};
       const where = [observing.app, observing.browser?.host || observing.browser?.title || observing.windowTitle].filter(Boolean).join(' · ');
@@ -249,7 +253,8 @@ async function printStatus() {
   console.log('22. Delete inferred learning data');
   console.log('23. Preview learning skill draft');
   console.log('24. Export learning skill');
-  console.log('25. Quit');
+  console.log('25. Show collaboration claims');
+  console.log('26. Quit');
 }
 
 async function setupAction(action) {
@@ -611,6 +616,27 @@ async function exportLearningSkillDraft(rl) {
   console.log(`\n${result.output || 'Skill exported.'}`);
 }
 
+function printCollaborationClaims(collaboration) {
+  const counts = collaboration?.counts || {};
+  console.log(`Collaboration: ${counts.active || 0} active · ${counts.conflicts || 0} conflict pair(s) · ${counts.total || 0} total`);
+  const active = collaboration?.active || [];
+  if (!active.length) {
+    console.log('Active claims: none');
+    return;
+  }
+  console.log('\nActive claims:');
+  for (const claim of active) {
+    const expires = claim.expiresAt ? ` · expires ${formatTime(claim.expiresAt)}` : '';
+    console.log(`- ${claim.owner || claim.agent || 'agent'} · ${claim.access}:${claim.key || claim.scope || '-'} · ${compact(claim.task || claim.scope || '', 120)}${expires}`);
+  }
+}
+
+async function showCollaborationClaims() {
+  const result = await request('/api/collaboration?limit=20');
+  console.log('');
+  printCollaborationClaims(result.collaboration || {});
+}
+
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
   const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'notch';
@@ -706,7 +732,9 @@ async function main() {
         await previewLearningSkillDraft();
       } else if (answer === '24') {
         await exportLearningSkillDraft(rl);
-      } else if (answer === '25' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '25') {
+        await showCollaborationClaims();
+      } else if (answer === '26' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');
