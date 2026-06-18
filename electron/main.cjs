@@ -57,6 +57,8 @@ const LAUNCH_AGENT_FILE = path.join(os.homedir(), 'Library', 'LaunchAgents', `${
 const RESIDENT_OUT_LOG = path.join(process.cwd(), 'logs', 'resident.out.log');
 const RESIDENT_ERR_LOG = path.join(process.cwd(), 'logs', 'resident.err.log');
 const TOGGLE_HOTKEY = process.env.JAVIS_TOGGLE_HOTKEY || 'Control+Shift+Space';
+const SUMMON_HOTKEY_DISABLED = process.env.JAVIS_SUMMON_HOTKEY === 'false' || process.env.JAVIS_TAP_HOTKEY === 'false';
+const SUMMON_HOTKEY = SUMMON_HOTKEY_DISABLED ? '' : (process.env.JAVIS_SUMMON_HOTKEY || process.env.JAVIS_TAP_HOTKEY || 'Alt+Space');
 const CAPTURE_HOTKEY = process.env.JAVIS_CAPTURE_HOTKEY === 'false' ? '' : (process.env.JAVIS_CAPTURE_HOTKEY || 'Control+Shift+I');
 const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER || 'notch');
 const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
@@ -207,6 +209,223 @@ const models = {
   vision: process.env.OPENAI_VISION_MODEL || process.env.OPENAI_FAST_MODEL || 'gpt-5.4-mini',
 };
 
+const LANE_CONTRACTS = [
+  {
+    id: 'realtime',
+    aliases: ['quick', 'voice', 'fast'],
+    label: 'Realtime voice lane',
+    owner: 'realtime',
+    owns: [
+      'low-latency spoken replies',
+      'wake/follow-up turn handling',
+      'screen-aware clarification',
+      'spoken progress check-ins',
+      'small reversible local actions after clear intent',
+    ],
+    nonGoals: [
+      'deep research',
+      'repo edits',
+      'batch file organization',
+      'long-running synthesis',
+      'irreversible private actions',
+    ],
+    handoff: {
+      defaultLane: 'background',
+      tools: ['route_task', 'delegate_task', 'run_browser_workflow', 'run_file_workflow', 'run_work_next'],
+      rule: 'Keep the conversation flowing, then hand durable work to a background or specialist lane.',
+    },
+    toolPosture: 'Prefer observe/status tools and short deterministic actions; do not block speech on slow work.',
+    riskBoundary: 'Can run low-risk read/status actions and small reversible actions; asks or delegates for Level 3+ work.',
+    progressStyle: 'short spoken status',
+  },
+  {
+    id: 'background',
+    aliases: ['deep', 'slow', 'research'],
+    label: 'Background deep lane',
+    owner: 'background',
+    owns: [
+      'durable non-blocking work',
+      'deep research and synthesis',
+      'file/workflow plans',
+      'long status checks',
+      'model fallback recovery for failed tasks',
+    ],
+    nonGoals: [
+      'live voice turn-taking',
+      'direct repo mutation',
+      'unguarded browser submissions',
+      'local private account actions',
+    ],
+    handoff: {
+      defaultLane: 'codex',
+      tools: ['delegate_task', 'route_parallel_tasks', 'run_browser_workflow', 'run_file_workflow'],
+      rule: 'Use a specialist lane when work becomes code-bound, browser-bound, file-bound, or local-app-bound.',
+    },
+    toolPosture: 'Can call stronger model work and create jobs/workflows with evidence and recovery plans.',
+    riskBoundary: 'Read and synthesize by default; local actions still pass through policy and approvals.',
+    progressStyle: 'background job result with recovery plan',
+  },
+  {
+    id: 'codex',
+    aliases: ['code', 'repo'],
+    label: 'Codex code lane',
+    owner: 'codex',
+    owns: [
+      'repo-scoped implementation',
+      'tests and build fixes',
+      'code review',
+      'documentation edits tied to code changes',
+      'issue investigation with file ownership',
+    ],
+    nonGoals: [
+      'broad personal computer automation',
+      'browser account actions',
+      'shared-file races with other workers',
+      'unscoped shell commands',
+    ],
+    handoff: {
+      defaultLane: 'claude',
+      tools: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool'],
+      rule: 'Use explicit owner/scope/parallelGroup; serialize overlapping write scopes.',
+    },
+    toolPosture: 'Runs through code_agent policy, process-group cancellation, logs, and recovery attempts.',
+    riskBoundary: 'Requires local execution and policy permission; high-impact commands need approval per action policy.',
+    progressStyle: 'job log plus result link',
+  },
+  {
+    id: 'claude',
+    aliases: ['claude_code', 'alt_code'],
+    label: 'Claude Code lane',
+    owner: 'claude',
+    owns: [
+      'alternative code worker execution',
+      'long reasoning over scoped code/docs work',
+      'design/review passes',
+      'recovery when Codex is unavailable or fails',
+    ],
+    nonGoals: [
+      'unbounded local machine control',
+      'overlapping repo writes without serialization',
+      'silent private account operations',
+    ],
+    handoff: {
+      defaultLane: 'codex',
+      tools: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool'],
+      rule: 'Use as a scoped code/design worker or fallback, with the same owner/scope rules as Codex.',
+    },
+    toolPosture: 'Runs through code_agent policy, process-group cancellation, logs, and recovery attempts.',
+    riskBoundary: 'Requires local execution and policy permission; high-impact commands need approval per action policy.',
+    progressStyle: 'job log plus result link',
+  },
+  {
+    id: 'local',
+    aliases: ['cli', 'deterministic', 'mac_action'],
+    label: 'Local deterministic lane',
+    owner: 'local',
+    owns: [
+      'no-model resident status',
+      'safe CLI queueing',
+      'clipboard and app/url helpers',
+      'policy previews',
+      'deterministic setup actions',
+    ],
+    nonGoals: [
+      'creative reasoning',
+      'web synthesis',
+      'unguarded file mutations',
+      'private irreversible actions',
+    ],
+    handoff: {
+      defaultLane: 'realtime',
+      tools: ['run_cli_tool', 'run_mac_action', 'run_file_action', 'get_setup_guide'],
+      rule: 'Run deterministic actions through allowlists, risk levels, dry-run, approval, and audit logging.',
+    },
+    toolPosture: 'Smallest useful tool surface first; every action is policy-evaluated.',
+    riskBoundary: 'Level 3 actions require local execution; Level 4/private/irreversible actions require confirmation.',
+    progressStyle: 'immediate local output',
+  },
+  {
+    id: 'browser',
+    aliases: ['web', 'page', 'dom'],
+    label: 'Browser specialist lane',
+    owner: 'browser',
+    owns: [
+      'current page reading',
+      'search-result capture',
+      'multi-page read-only research',
+      'guarded DOM click/fill/select when explicit',
+      'browser navigation commands',
+    ],
+    nonGoals: [
+      'submitting forms without confirmation',
+      'purchases',
+      'logins',
+      'deletes',
+      'account changes',
+    ],
+    handoff: {
+      defaultLane: 'background',
+      tools: ['get_browser_context', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
+      rule: 'Read first, then act only on clear explicit browser intent; synthesize longer research in background.',
+    },
+    toolPosture: 'Read-only by default; guarded DOM actions are one-step and auditable.',
+    riskBoundary: 'No submits, sends, purchases, logins, deletes, or account changes without explicit confirmation.',
+    progressStyle: 'workflow record with page evidence',
+  },
+  {
+    id: 'file',
+    aliases: ['filesystem', 'folder'],
+    label: 'File specialist lane',
+    owner: 'file',
+    owns: [
+      'allowed-root list/read/search',
+      'file and folder Q&A',
+      'safe organization plans',
+      'guarded write/create/copy/move actions after confirmation',
+    ],
+    nonGoals: [
+      'unscoped disk mutation',
+      'secret exfiltration',
+      'bulk moves without preview',
+      'protected-folder access beyond policy',
+    ],
+    handoff: {
+      defaultLane: 'background',
+      tools: ['run_file_workflow', 'plan_file_organization', 'apply_file_plan', 'run_file_action'],
+      rule: 'Preview before mutation; apply only after explicit confirmation and policy approval.',
+    },
+    toolPosture: 'Allowed roots, max bytes/results, dry-run, approvals, and audit logs are always enforced.',
+    riskBoundary: 'Read actions are low risk; writes/moves are Level 3 and may require local execution or approval.',
+    progressStyle: 'file workflow record with plan/result',
+  },
+  {
+    id: 'app',
+    aliases: ['current_app', 'accessibility', 'ui'],
+    label: 'Mac app specialist lane',
+    owner: 'app',
+    owns: [
+      'frontmost app observation',
+      'Accessibility tree reading',
+      'dry-run UI target planning',
+      'small multi-step local app workflows',
+      'guarded AX press/value actions',
+    ],
+    nonGoals: [
+      'hidden UI guessing',
+      'destructive app actions without confirmation',
+      'private messages or sends without explicit approval',
+    ],
+    handoff: {
+      defaultLane: 'realtime',
+      tools: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow'],
+      rule: 'Observe and plan first; execute only with clear target and action-policy permission.',
+    },
+    toolPosture: 'Dry-run planning by default; execution goes through local action policy and approvals.',
+    riskBoundary: 'AX/type/hotkey actions are Level 3 and require local execution; private/irreversible actions require confirmation.',
+    progressStyle: 'workflow step output',
+  },
+];
+
 const jobs = new Map();
 const workflows = new Map();
 const routingRecords = new Map();
@@ -232,6 +451,7 @@ let screenPrivacy;
 let currentWindowMode = 'pet';
 let currentParkCorner = WINDOW_PARK_CORNER;
 let toggleHotkeyRegistered = false;
+let summonHotkeyRegistered = false;
 let captureHotkeyRegistered = false;
 let lastInboxCapture = null;
 let menuBarTray = null;
@@ -476,6 +696,8 @@ function windowStateSnapshot() {
     mode: currentWindowMode,
     hotkey: TOGGLE_HOTKEY,
     hotkeyRegistered: toggleHotkeyRegistered,
+    summonHotkey: SUMMON_HOTKEY,
+    summonHotkeyRegistered,
     captureHotkey: CAPTURE_HOTKEY,
     captureHotkeyRegistered,
     lastInboxCapture,
@@ -585,6 +807,27 @@ function toggleWindowMode(source = 'hotkey') {
   return applyWindowMode('pet', { source, focus: false });
 }
 
+function summonJavis(source = 'hotkey') {
+  const windowState = applyWindowMode('pet', { source, focus: false, park: true, corner: currentParkCorner });
+  const wake = triggerWake({
+    source,
+    phrase: source === 'hotkey' ? `hotkey:${SUMMON_HOTKEY}` : source,
+  });
+  appendAudit('summon.triggered', {
+    source,
+    hotkey: SUMMON_HOTKEY,
+    wakePending: wake.pending,
+    triggerCount: wake.triggerCount,
+  });
+  return {
+    ok: true,
+    output: 'JAVIS summoned.',
+    window: windowState,
+    wake,
+    hotkey: SUMMON_HOTKEY,
+  };
+}
+
 function captureClipboardToInbox(source = 'hotkey') {
   const item = createInboxItem({ fromClipboard: true, source });
   lastInboxCapture = {
@@ -618,6 +861,20 @@ function registerGlobalHotkeys() {
     });
   }
 
+  if (SUMMON_HOTKEY && !summonHotkeyRegistered) try {
+    summonHotkeyRegistered = globalShortcut.register(SUMMON_HOTKEY, () => {
+      summonJavis('hotkey');
+    });
+    appendAudit('hotkey.register', { hotkey: SUMMON_HOTKEY, purpose: 'summon', registered: summonHotkeyRegistered });
+  } catch (error) {
+    summonHotkeyRegistered = false;
+    appendAudit('hotkey.register_failed', {
+      hotkey: SUMMON_HOTKEY,
+      purpose: 'summon',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
   if (CAPTURE_HOTKEY && !captureHotkeyRegistered) try {
     captureHotkeyRegistered = globalShortcut.register(CAPTURE_HOTKEY, () => {
       try {
@@ -640,7 +897,7 @@ function registerGlobalHotkeys() {
     });
   }
 
-  return toggleHotkeyRegistered || captureHotkeyRegistered;
+  return toggleHotkeyRegistered || summonHotkeyRegistered || captureHotkeyRegistered;
 }
 
 function createMenuBarImage() {
@@ -1479,6 +1736,31 @@ function normalizeRoutingLane(value) {
   return ['quick', 'background', 'codex', 'claude', 'local'].includes(lane) ? lane : 'quick';
 }
 
+function laneContractForLane(value) {
+  const lane = String(value || '').trim().toLowerCase();
+  if (!lane) return null;
+  return LANE_CONTRACTS.find((contract) => (
+    contract.id === lane ||
+    (Array.isArray(contract.aliases) && contract.aliases.includes(lane))
+  )) || null;
+}
+
+function laneContractIdForLane(value) {
+  return laneContractForLane(value)?.id || '';
+}
+
+function laneContractReference(value) {
+  const contract = laneContractForLane(value);
+  if (!contract) return null;
+  return {
+    id: contract.id,
+    label: contract.label,
+    owner: contract.owner,
+    riskBoundary: contract.riskBoundary,
+    defaultHandoffLane: contract.handoff?.defaultLane || '',
+  };
+}
+
 function ownerForRoutingLane(lane) {
   if (lane === 'background') return 'background';
   if (lane === 'codex') return 'codex';
@@ -1519,6 +1801,7 @@ function normalizePersistedRoutingRecord(record) {
     id: String(record.id),
     taskTitle: compactRecordText(record.taskTitle || record.title || 'Untitled routed task', 180),
     lane,
+    contractId: String(record.contractId || laneContractIdForLane(lane) || lane).slice(0, 80),
     label: String(record.label || (lane === 'background' ? 'Deep' : lane === 'local' ? 'Local' : lane)).slice(0, 80),
     owner: String(record.owner || ownerForRoutingLane(lane)).slice(0, 80),
     scope: compactRecordText(record.scope || '', 220),
@@ -1551,6 +1834,69 @@ function cloneJsonObject(value, fallback = {}) {
   } catch {
     return fallback;
   }
+}
+
+function laneContractSnapshot(options = {}) {
+  const requested = String(options.lane || options.id || '').trim().toLowerCase();
+  const contracts = requested
+    ? LANE_CONTRACTS.filter((contract) => contract.id === requested || contract.aliases?.includes(requested))
+    : LANE_CONTRACTS;
+  return {
+    ok: contracts.length > 0,
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    summary: 'Lane contracts define owner, scope, non-goals, handoff path, tool posture, and risk boundary before model choice.',
+    contracts: cloneJsonObject(contracts, []),
+    aliases: Object.fromEntries(
+      LANE_CONTRACTS.flatMap((contract) => [
+        [contract.id, contract.id],
+        ...(contract.aliases || []).map((alias) => [alias, contract.id]),
+      ]),
+    ),
+  };
+}
+
+const LANE_CONTRACT_REQUIRED_IDS = ['realtime', 'background', 'codex', 'claude', 'local', 'browser', 'file', 'app'];
+const LANE_CONTRACT_REQUIRED_FIELDS = ['id', 'label', 'owner', 'owns', 'nonGoals', 'handoff', 'toolPosture', 'riskBoundary'];
+
+function laneContractValidationSnapshot() {
+  const contracts = laneContractSnapshot().contracts;
+  const ids = contracts.map((contract) => contract.id);
+  const missingIds = LANE_CONTRACT_REQUIRED_IDS.filter((id) => !ids.includes(id));
+  const incomplete = contracts
+    .map((contract) => {
+      const missingFields = LANE_CONTRACT_REQUIRED_FIELDS.filter((field) => {
+        const value = contract[field];
+        if (Array.isArray(value)) return value.length === 0;
+        if (value && typeof value === 'object') return Object.keys(value).length === 0;
+        return !String(value || '').trim();
+      });
+      const handoffMissing = !contract.handoff?.defaultLane || !Array.isArray(contract.handoff?.tools) || contract.handoff.tools.length === 0;
+      return {
+        id: contract.id,
+        missingFields: handoffMissing ? Array.from(new Set([...missingFields, 'handoff.tools'])) : missingFields,
+      };
+    })
+    .filter((item) => item.missingFields.length);
+  const aliases = {
+    quick: laneContractIdForLane('quick'),
+    cli: laneContractIdForLane('cli'),
+    dom: laneContractIdForLane('dom'),
+    accessibility: laneContractIdForLane('accessibility'),
+  };
+  const aliasReady =
+    aliases.quick === 'realtime' &&
+    aliases.cli === 'local' &&
+    aliases.dom === 'browser' &&
+    aliases.accessibility === 'app';
+  return {
+    ok: missingIds.length === 0 && incomplete.length === 0 && aliasReady,
+    count: contracts.length,
+    ids,
+    missingIds,
+    incomplete,
+    aliases,
+  };
 }
 
 function normalizeApprovalContinuation(value) {
@@ -8400,6 +8746,7 @@ function localCommandDecisionPayload(command, execute) {
   return {
     lane: 'quick',
     mode: 'quick',
+    contract: laneContractReference('local'),
     label: command.label,
     confidence: 0.98,
     reason: `matched local command: ${command.intent}`,
@@ -8812,6 +9159,7 @@ function routeTaskDecision(message, options = {}) {
   return {
     lane,
     mode,
+    contract: laneContractReference(lane),
     label: lane === 'quick' ? 'Quick' : lane === 'background' ? 'Deep' : lane === 'codex' ? 'Codex' : 'Claude',
     confidence,
     reason: reasons.join('; ') || 'default fast lane',
@@ -10220,6 +10568,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
   const source = String(options.source || 'api').slice(0, 80);
   const presence = presenceStateSnapshot({ limit: 3 });
   const briefing = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
+  const laneContracts = laneContractSnapshot();
   const mac = await macContextSnapshot({ includeClipboardText: false }).catch((error) => ({
     frontmost: { available: false, app: '', windowTitle: '', error: error instanceof Error ? error.message : String(error) },
     browser: { available: false, supported: false, app: '', title: '', url: '', source: '', error: '' },
@@ -10252,6 +10601,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
         learningSummary ? `Local inferred profile: ${compactRecordText(learningSummary, 360)}` : '',
         activeJobs.length ? `Background work: ${activeJobs.map((job) => `${job.mode}/${job.status} ${compactRecordText(job.title, 80)}`).join('; ')}` : 'Background work: none active.',
         activeRoutes.length ? `Routed work: ${activeRoutes.map((route) => `${route.lane}/${route.status} ${route.owner} ${compactRecordText(route.taskTitle, 80)} next=${compactRecordText(route.nextAction || 'check progress', 80)}`).join('; ')}` : 'Routed work: none active.',
+        `Lane contracts: quick/realtime keeps speech fluid; background handles durable work; Codex/Claude own scoped code; browser/file/app/local own their guarded tool surfaces. Use get_lane_contracts if routing boundaries are unclear.`,
         pendingApprovals.length ? `Approvals waiting: ${pendingApprovals.map((approval) => compactRecordText(approval.summary, 120)).join('; ')}` : 'Approvals waiting: none.',
         presence.work?.autopilot?.enabled ? `Autopilot: ${presence.work.autopilot.running ? 'running' : 'idle'}, executed ${presence.work.autopilot.executedCount || 0}, last ${compactRecordText(presence.work.autopilot.lastResult || 'none', 180)}.` : 'Autopilot: disabled.',
         nextActions.length ? `Likely next actions:\n${nextActions.map(formatRealtimeContextAction).join('\n')}` : '',
@@ -10284,6 +10634,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
       summary: briefing.summary,
       nextActions,
       routingLedger: briefing.routingLedger || [],
+      laneContracts,
       counts: briefing.counts,
     },
   };
@@ -11224,6 +11575,7 @@ function createRoutingRecord(options = {}) {
     id,
     taskTitle: compactRecordText(options.task || options.title || 'Untitled routed task', 180),
     lane,
+    contractId: laneContractIdForLane(lane) || lane,
     label: decision.label || (lane === 'background' ? 'Deep' : lane === 'local' ? 'Local' : lane),
     owner: options.owner || ownerForRoutingLane(lane),
     scope: routingScopeForDecision(decision, options),
@@ -11420,6 +11772,8 @@ function routingLedgerEntry(record) {
     id: record.id,
     taskTitle: record.taskTitle,
     lane: record.lane,
+    contractId: record.contractId || laneContractIdForLane(record.lane),
+    contract: laneContractReference(record.contractId || record.lane),
     owner: record.owner,
     scope: record.scope,
     parallelGroup: record.parallelGroup,
@@ -11469,6 +11823,7 @@ function routingDecisionForWorkflow(mode, source = 'workflow') {
   return {
     lane,
     mode: lane,
+    contract: laneContractReference(lane),
     label: lane === 'quick' ? 'Quick' : lane === 'background' ? 'Deep' : lane === 'codex' ? 'Codex' : lane === 'claude' ? 'Claude' : 'Local',
     confidence: 1,
     reason: `${source} workflow selected ${lane} lane`,
@@ -11843,6 +12198,7 @@ function workflowBriefing(options = {}) {
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
     routingLedger,
+    laneContracts: laneContractSnapshot(),
     recent: {
       workflows: recentWorkflows.map((workflow) => ({
         id: workflow.id,
@@ -11994,6 +12350,7 @@ function workProgressCheckIn(options = {}) {
       routing: routingCounts(),
     },
     routingLedger,
+    laneContracts: laneContractSnapshot(),
     activeRoutes,
     recentRoutes,
     activeJobs,
@@ -12889,6 +13246,17 @@ function readinessSnapshot() {
       toggleHotkeyRegistered ? '' : 'Choose a different JAVIS_TOGGLE_HOTKEY or free the shortcut in macOS.',
     ),
     readinessItem(
+      'summon_hotkey',
+      'Summon hotkey',
+      !SUMMON_HOTKEY || summonHotkeyRegistered ? 'ready' : 'warning',
+      SUMMON_HOTKEY
+        ? summonHotkeyRegistered
+          ? `Tap-to-summon hotkey is registered: ${SUMMON_HOTKEY}.`
+          : `Tap-to-summon hotkey is not registered: ${SUMMON_HOTKEY}.`
+        : 'Tap-to-summon hotkey is disabled.',
+      !SUMMON_HOTKEY || summonHotkeyRegistered ? '' : 'Choose a different JAVIS_SUMMON_HOTKEY/JAVIS_TAP_HOTKEY or free the shortcut in macOS.',
+    ),
+    readinessItem(
       'capture_hotkey',
       'Capture hotkey',
       !CAPTURE_HOTKEY || captureHotkeyRegistered ? 'ready' : 'warning',
@@ -13196,6 +13564,11 @@ function healthSnapshot() {
       trustedLocalMode: TRUSTED_LOCAL_MODE,
     },
     models,
+    laneContracts: {
+      count: LANE_CONTRACTS.length,
+      ids: LANE_CONTRACTS.map((contract) => contract.id),
+      validation: laneContractValidationSnapshot(),
+    },
     storage: {
       dataDir: DATA_DIR,
       jobsFile: JOBS_FILE,
@@ -13406,6 +13779,7 @@ async function doctorReportSnapshot() {
     'local_execution',
     'api_auth',
     'global_hotkey',
+    'summon_hotkey',
     'capture_hotkey',
     'menu_bar',
     'notifications',
@@ -13539,6 +13913,17 @@ async function doctorReportSnapshot() {
     routerPreview.quick.lane === 'quick' &&
     routerPreview.background.lane === 'background' &&
     routerPreview.codex.lane === 'codex';
+  const laneContractPreview = laneContractValidationSnapshot();
+  checks.push(doctorCheck(
+    'lane_contracts',
+    'Lane contracts',
+    laneContractPreview.ok ? 'ready' : 'warning',
+    laneContractPreview.ok
+      ? `Lane contract registry exposes ${laneContractPreview.count} lane contract(s) with aliases for quick, cli, DOM, and Accessibility work.`
+      : `Lane contract registry is incomplete: missing ids ${laneContractPreview.missingIds.join(', ') || 'none'}; incomplete ${laneContractPreview.incomplete.map((item) => item.id).join(', ') || 'none'}.`,
+    laneContractPreview,
+    laneContractPreview.ok ? '' : 'Review LANE_CONTRACTS and laneContractValidationSnapshot().',
+  ));
   checks.push(doctorCheck(
     'task_router',
     'Task router',
@@ -13785,6 +14170,7 @@ async function doctorReportSnapshot() {
       fileMutation: fileMutationPreview,
       clipboard: clipboardPreview,
       router: routerPreview,
+      laneContracts: laneContractPreview,
       briefing: {
         summary: briefingPreview.summary,
         counts: briefingPreview.counts,
@@ -15391,6 +15777,10 @@ async function executeTool(name, args) {
     return { ok: briefing.ok, output: JSON.stringify(briefing) };
   }
 
+  if (name === 'get_lane_contracts') {
+    return { ok: true, output: JSON.stringify(laneContractSnapshot(args || {})) };
+  }
+
   if (name === 'get_work_progress') {
     const progress = workProgressCheckIn({ ...(args || {}), source: 'voice' });
     return { ok: true, output: JSON.stringify(progress) };
@@ -15795,6 +16185,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, or safe folder organization planning.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use apply_file_plan only after the user explicitly confirms a specific file organization plan; it still goes through policy, approval, and local-execution gates.',
+      'Use get_lane_contracts when routing, ownership, scope, handoff, or worker boundaries are unclear.',
       'Use route_task when the user asks for something that might be quick or might need background/Codex/Claude work; it keeps the voice lane responsive.',
       'Only request full clipboard text when the user asks about clipboard content or it is clearly needed for the task.',
       'Use delegate_task for code, research, long planning, or multi-step work.',
@@ -16097,6 +16488,25 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             jobLimit: { type: 'number' },
             workflowLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_lane_contracts',
+        description: 'Get the deterministic JAVIS lane contracts: each lane owner, scope, non-goals, handoff path, tool posture, and risk boundary. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            lane: {
+              type: 'string',
+              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'app'],
+            },
+            id: {
+              type: 'string',
+              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'app'],
+            },
           },
           additionalProperties: false,
         },
@@ -16759,6 +17169,16 @@ function startApiServer() {
     }
   });
 
+  api.get('/api/lanes/contracts', (req, res) => {
+    const snapshot = laneContractSnapshot({ lane: req.query.lane || req.query.id });
+    res.status(snapshot.ok ? 200 : 404).json({ laneContracts: snapshot });
+  });
+
+  api.get('/api/lanes/contracts/:id', (req, res) => {
+    const snapshot = laneContractSnapshot({ id: req.params.id });
+    res.status(snapshot.ok ? 200 : 404).json({ laneContracts: snapshot });
+  });
+
   api.get('/api/work/progress', (req, res) => {
     try {
       res.json({
@@ -17233,6 +17653,7 @@ function startApiServer() {
       notifications: notificationSnapshot(),
       approvals: pendingApprovalSnapshot(20),
       models,
+      laneContracts: laneContractSnapshot(),
       readiness: {
         overall: readiness.overall,
         label: readiness.label,
@@ -18018,6 +18439,10 @@ function startApiServer() {
   api.post('/api/window/park', express.json({ limit: '64kb' }), (req, res) => {
     const windowState = parkWindow('api', { corner: req.body?.corner, display: req.body?.display });
     res.json({ ok: true, window: windowState });
+  });
+
+  api.post('/api/window/summon', express.json({ limit: '64kb' }), (req, res) => {
+    res.json(summonJavis(req.body?.source || 'api'));
   });
 
   api.post('/api/window/move', express.json({ limit: '64kb' }), (req, res) => {

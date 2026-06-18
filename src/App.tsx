@@ -49,6 +49,8 @@ type WindowState = {
   mode: WindowMode
   hotkey: string
   hotkeyRegistered: boolean
+  summonHotkey: string
+  summonHotkeyRegistered: boolean
   captureHotkey: string
   captureHotkeyRegistered: boolean
   lastInboxCapture: null | {

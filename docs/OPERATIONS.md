@@ -131,6 +131,8 @@ Right-click the capsule to open the terminal CUI. Keep setup, policy, and diagno
 
 The resident app registers a global pet park hotkey, defaulting to `Control+Shift+Space`. Change it with `JAVIS_TOGGLE_HOTKEY` if macOS or another app already owns that shortcut.
 
+It also registers a tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Space` on Mac). Pressing it wakes JAVIS, parks the capsule at the notch/Dynamic Island position, and lets the renderer start the voice session through the same `/api/wake/status` path used by a local wake engine. Change it with `JAVIS_SUMMON_HOTKEY` or `JAVIS_TAP_HOTKEY`, or set either value to `false` to disable it.
+
 It also registers a clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`. Copy text anywhere, press the capture hotkey, and JAVIS saves the clipboard into local Inbox. Change it with `JAVIS_CAPTURE_HOTKEY`, or set `JAVIS_CAPTURE_HOTKEY=false` to disable it.
 
 The desktop buddy parks itself at the Mac notch by default, using a Dynamic Island-style capsule. Use CUI option `6. Move pet position`, or set `JAVIS_WINDOW_PARK_CORNER=notch`, `JAVIS_WINDOW_PARK_DISPLAY=primary`, and `JAVIS_WINDOW_NOTCH_TOP_OFFSET=5` to control the notch placement. Supported positions are `notch`, `top-left`, `top-right`, `bottom-left`, and `bottom-right`; corner placement still uses `JAVIS_WINDOW_PARK_MARGIN`.
@@ -148,6 +150,9 @@ curl -X POST http://127.0.0.1:3417/api/window/mode \
 curl -X POST http://127.0.0.1:3417/api/window/park \
   -H 'Content-Type: application/json' \
   -d '{"corner":"notch"}'
+curl -X POST http://127.0.0.1:3417/api/window/summon \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 curl -X POST http://127.0.0.1:3417/api/notifications/test \
   -H 'Content-Type: application/json' \
   -d '{"body":"JAVIS notification check"}'
@@ -161,6 +166,7 @@ For a local work briefing:
 curl http://127.0.0.1:3417/api/briefing
 curl http://127.0.0.1:3417/api/work/progress
 curl http://127.0.0.1:3417/api/work/next
+curl http://127.0.0.1:3417/api/lanes/contracts
 curl http://127.0.0.1:3417/api/tasks/routing
 curl -X POST http://127.0.0.1:3417/api/work/next \
   -H 'Content-Type: application/json' \
@@ -186,6 +192,8 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
 ```
 
 The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, and workflows, including active work, recent completions, blockers, and next actions.
+
+`/api/lanes/contracts` exposes the runtime owner/scope/handoff/risk contract for each lane. The Realtime tool `get_lane_contracts` uses the same registry, so the voice model can check boundaries before deciding whether to answer quickly, delegate to background, call Codex/Claude, or use browser/file/app/local tool surfaces.
 
 `/api/tasks/route` persists a routing record for each previewed or executed task. Direct quick chat, voice delegation, explicit CLI runs, browser workflows, file workflows, and continuation workflows also write routing records. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, blocker/next-action context, and result link. Use `/api/tasks/routing` or `/api/tasks/routing/<route-id>` to inspect the ledger.
 

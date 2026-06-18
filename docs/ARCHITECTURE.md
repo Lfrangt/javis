@@ -48,10 +48,12 @@ Renderer
 - Conversation state lane: renderer-reported connecting/live/idle/error voice lifecycle with heartbeats so the resident can expose whether it is truly listening.
 - Realtime preflight lane: one silent text context pushed into each new voice session with presence, current app/browser, screen freshness, active work, next actions, and guardrails.
 - Realtime work-progress lane: while voice is live, sends deduplicated silent `/api/work/progress` updates when background jobs or workflows change.
+- Lane contract registry lane: deterministic OpenClaw-inspired contracts for realtime/background/Codex/Claude/local/browser/file/app ownership, non-goals, handoff tools, tool posture, and risk boundaries, exposed to API, Realtime tools, briefing, status, and doctor checks.
 - Task routing ledger lane: persists each quick/background/Codex/Claude/local routing decision with owner, scope, parallel group, approval requirement, status, and result link.
 - Parallel task group lane: routes a bounded set of independent tasks under one `parallelGroup`, preserving per-task owner, scope, lane, status, and result link for progress check-ins.
 - Push-to-talk lane: keeps resident voice from becoming an always-open microphone.
 - Global hotkey lane: brings the desktop pet back without requiring app focus.
+- Tap-to-summon hotkey lane: global `JAVIS_SUMMON_HOTKEY`/`JAVIS_TAP_HOTKEY` wakes JAVIS, parks the capsule at the notch, and starts the same pending wake path used by local wake engines.
 - Capture hotkey lane: saves current clipboard text into local Inbox without opening desktop UI.
 - Menu bar lane: resident macOS status item for opening the terminal CUI, parking the pet, seeing current blockers, and jumping to setup locations.
 - Config CUI lane: terminal-first setup surface for `.env`, permissions, doctor output, and parking the pet.

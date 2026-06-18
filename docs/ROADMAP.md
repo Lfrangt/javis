@@ -17,6 +17,7 @@
 - Visible resident LaunchAgent status and install helper.
 - macOS menu bar resident controls.
 - Global pet hotkey.
+- Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch.
 - Global clipboard-to-Inbox capture hotkey.
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.
@@ -33,6 +34,7 @@
 - Persist background task history.
 - Persist user-level workflow history with linked jobs and results.
 - Add deterministic work briefing over status, blockers, recent work, and next actions.
+- Add deterministic lane contract registry for owner/scope/handoff/risk boundaries before model choice.
 - Add deterministic spoken progress check-ins for background jobs and workflows.
 - Add unified work-next execution for one safe next action across the local workbench.
 - Add local work sessions for focus goals, notes/events, resume handoffs, automatic evidence capture, spoken check-ins, and end-of-session summaries.
@@ -45,7 +47,7 @@
 - Route Inbox captures into quick/background/Codex/Claude work from CUI/API or voice tools.
 - Copy workflow results back to the clipboard from CUI/API or voice tools.
 - Add cancellable background workers with visible logs.
-- Add a multi-agent lane decision record for every routed task: realtime voice, background, Codex, Claude, owner, write scope, parallel group, approval requirement, status, and result link.
+- Add a multi-agent lane decision record for every routed task: realtime voice, background, Codex, Claude, owner, lane contract, write scope, parallel group, approval requirement, status, and result link.
 - Add resident status views and spoken check-ins that report active parallel work by lane, owner, blocker, and next action.
 - Add a local config validator with terminal CUI diagnostics.
 - Add a setup guide that maps blockers to the next safe local setup action.
