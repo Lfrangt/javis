@@ -127,6 +127,79 @@ const DEFAULT_SCREEN_PRIVACY = {
   updatedAt: Date.now(),
 };
 
+const CREATIVE_APP_CATALOG = [
+  {
+    id: 'final_cut_pro',
+    name: 'Final Cut Pro',
+    domain: 'video',
+    aliases: ['final cut pro', 'final cut', 'finalcutpro', 'finalcut', 'fcp', 'fcpx'],
+    bundleNames: ['Final Cut Pro.app'],
+  },
+  {
+    id: 'davinci_resolve',
+    name: 'DaVinci Resolve',
+    domain: 'video',
+    aliases: ['davinci resolve', 'davinci', 'resolve', '达芬奇'],
+    bundleNames: ['DaVinci Resolve.app', 'DaVinci Resolve/DaVinci Resolve.app'],
+  },
+  {
+    id: 'adobe_premiere_pro',
+    name: 'Adobe Premiere Pro',
+    domain: 'video',
+    aliases: ['adobe premiere pro', 'premiere pro', 'premiere', 'premierepro', 'pr'],
+    bundleNames: ['Adobe Premiere Pro.app', 'Adobe Premiere Pro/Adobe Premiere Pro.app'],
+  },
+  {
+    id: 'imovie',
+    name: 'iMovie',
+    domain: 'video',
+    aliases: ['imovie', 'i movie', '苹果剪辑'],
+    bundleNames: ['iMovie.app'],
+  },
+  {
+    id: 'capcut',
+    name: 'CapCut',
+    domain: 'video',
+    aliases: ['capcut', '剪映'],
+    bundleNames: ['CapCut.app'],
+  },
+  {
+    id: 'logic_pro',
+    name: 'Logic Pro',
+    domain: 'music',
+    aliases: ['logic pro', 'logic', 'logicpro'],
+    bundleNames: ['Logic Pro.app'],
+  },
+  {
+    id: 'garageband',
+    name: 'GarageBand',
+    domain: 'music',
+    aliases: ['garageband', 'garage band', '库乐队'],
+    bundleNames: ['GarageBand.app'],
+  },
+  {
+    id: 'ableton_live',
+    name: 'Ableton Live',
+    domain: 'music',
+    aliases: ['ableton live', 'ableton'],
+    bundleNames: ['Ableton Live.app'],
+  },
+  {
+    id: 'fl_studio',
+    name: 'FL Studio',
+    domain: 'music',
+    aliases: ['fl studio', 'flstudio', '水果'],
+    bundleNames: ['FL Studio.app'],
+  },
+  {
+    id: 'pro_tools',
+    name: 'Pro Tools',
+    domain: 'music',
+    aliases: ['pro tools', 'protools'],
+    bundleNames: ['Pro Tools.app'],
+  },
+];
+
 const DEFAULT_ACTION_POLICY = {
   version: 1,
   dryRun: process.env.JAVIS_ACTION_DRY_RUN === 'true',
@@ -4741,6 +4814,296 @@ function extractJsonObject(text) {
   }
 }
 
+function normalizedCreativeMatchText(value) {
+  return String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function creativeAliasMatches(text, alias) {
+  const lower = normalizedCreativeMatchText(text);
+  const needle = normalizedCreativeMatchText(alias);
+  if (!lower || !needle) return false;
+  const compactLower = lower.replace(/\s+/g, '');
+  const compactNeedle = needle.replace(/\s+/g, '');
+  if (/^[a-z0-9]+$/.test(needle) && needle.length <= 3) {
+    return new RegExp(`(^|[^a-z0-9])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`, 'i').test(lower);
+  }
+  return lower.includes(needle) || compactLower.includes(compactNeedle);
+}
+
+function creativeAppMatchesText(appInfo, text) {
+  return [appInfo.name, ...(appInfo.aliases || [])].some((alias) => creativeAliasMatches(text, alias));
+}
+
+function creativeWorkflowIntentFromInstruction(instruction) {
+  const text = String(instruction || '');
+  if (!text.trim()) return '';
+  const explicitApp = CREATIVE_APP_CATALOG.find((item) => creativeAppMatchesText(item, text));
+  if (explicitApp?.domain === 'video') return 'video_edit';
+  if (explicitApp?.domain === 'music') return 'music_compose';
+  const videoSignal = /剪辑|剪片|剪视频|短视频|成片|字幕|转场|调色|视频素材|时间线|导出视频|video edit|edit video|editing video|\bnle\b|b-roll|timeline/i.test(text);
+  const musicSignal = /编曲|作曲|做歌|音乐制作|配乐|伴奏|旋律|和弦|音色|混音|母带|midi|\bdaw\b|compose music|music production|beat making|make a beat/i.test(text);
+  if (videoSignal && !musicSignal) return 'video_edit';
+  if (musicSignal && !videoSignal) return 'music_compose';
+  if (videoSignal || musicSignal) return 'creative_app';
+  return '';
+}
+
+function normalizeCreativeWorkflowIntent(value, instruction = '') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (['video', 'video_edit', 'edit_video', 'nle'].includes(raw)) return 'video_edit';
+  if (['music', 'music_compose', 'compose_music', 'daw'].includes(raw)) return 'music_compose';
+  if (['creative', 'creative_app'].includes(raw)) return 'creative_app';
+  return creativeWorkflowIntentFromInstruction(instruction) || 'creative_app';
+}
+
+function creativeWorkflowDomain(intent) {
+  if (intent === 'video_edit') return 'video';
+  if (intent === 'music_compose') return 'music';
+  return '';
+}
+
+function creativeAppByName(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return CREATIVE_APP_CATALOG.find((item) => creativeAppMatchesText(item, text)) || {
+    id: `custom_${crypto.createHash('sha1').update(text).digest('hex').slice(0, 10)}`,
+    name: text,
+    domain: '',
+    aliases: [text],
+    bundleNames: [`${text}.app`],
+    custom: true,
+  };
+}
+
+function findApplicationBundlePath(appInfo) {
+  const roots = ['/Applications', path.join(os.homedir(), 'Applications')];
+  const bundleNames = Array.from(new Set(
+    (appInfo.bundleNames?.length ? appInfo.bundleNames : [`${appInfo.name}.app`]).filter(Boolean),
+  ));
+  for (const root of roots) {
+    for (const bundleName of bundleNames) {
+      const directPath = path.join(root, bundleName);
+      if (fs.existsSync(directPath)) return directPath;
+    }
+    let entries = [];
+    try {
+      entries = fs.readdirSync(root, { withFileTypes: true });
+    } catch {
+      entries = [];
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const entryPath = path.join(root, entry.name);
+      if (/\.app$/i.test(entry.name) && creativeAppMatchesText(appInfo, entry.name.replace(/\.app$/i, ''))) {
+        return entryPath;
+      }
+      for (const bundleName of bundleNames) {
+        const nestedPath = path.join(entryPath, bundleName);
+        if (fs.existsSync(nestedPath)) return nestedPath;
+      }
+      let nestedEntries = [];
+      try {
+        nestedEntries = fs.readdirSync(entryPath, { withFileTypes: true });
+      } catch {
+        nestedEntries = [];
+      }
+      for (const nestedEntry of nestedEntries) {
+        if (!nestedEntry.isDirectory() || !/\.app$/i.test(nestedEntry.name)) continue;
+        if (creativeAppMatchesText(appInfo, nestedEntry.name.replace(/\.app$/i, ''))) {
+          return path.join(entryPath, nestedEntry.name);
+        }
+      }
+    }
+  }
+  return '';
+}
+
+function publicCreativeAppRecord(appInfo, flags = {}) {
+  const appPath = findApplicationBundlePath(appInfo);
+  return {
+    id: appInfo.id,
+    name: appInfo.name,
+    domain: appInfo.domain || '',
+    installed: Boolean(appPath),
+    appPath,
+    explicit: Boolean(flags.explicit),
+    requested: Boolean(flags.requested),
+    custom: Boolean(appInfo.custom),
+  };
+}
+
+function creativeAppCandidates(instruction, intent, requestedAppName = '') {
+  const requestedApp = creativeAppByName(requestedAppName);
+  const explicitHits = CREATIVE_APP_CATALOG.filter((item) => creativeAppMatchesText(item, instruction));
+  const domain = creativeWorkflowDomain(intent);
+  const domainHits = domain
+    ? CREATIVE_APP_CATALOG.filter((item) => item.domain === domain)
+    : CREATIVE_APP_CATALOG;
+  const seen = new Set();
+  const merged = [requestedApp, ...explicitHits, ...domainHits, ...CREATIVE_APP_CATALOG]
+    .filter(Boolean)
+    .filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    });
+  const explicitIds = new Set(explicitHits.map((item) => item.id));
+  const requestedId = requestedApp?.id || '';
+  return merged
+    .map((item) => publicCreativeAppRecord(item, {
+      explicit: explicitIds.has(item.id),
+      requested: requestedId === item.id,
+    }))
+    .sort((a, b) => {
+      if (a.requested !== b.requested) return a.requested ? -1 : 1;
+      if (a.explicit !== b.explicit) return a.explicit ? -1 : 1;
+      if (a.installed !== b.installed) return a.installed ? -1 : 1;
+      return 0;
+    });
+}
+
+function creativeWorkflowStages(intent) {
+  if (intent === 'music_compose') {
+    return [
+      { id: 'brief', label: '设定风格/速度/调性', summary: '先确认参考曲、BPM、key、时长和目标情绪。' },
+      { id: 'sound', label: '选音色和乐器', summary: '建立鼓组、贝斯、和声、主旋律或采样轨。' },
+      { id: 'sketch', label: '写 MIDI/录音草稿', summary: '先做 8 到 16 小节 loop，保证律动成立。' },
+      { id: 'arrange', label: '编排结构', summary: '扩展 intro、verse、hook、bridge、outro。' },
+      { id: 'mix', label: '粗混', summary: '调整电平、EQ、压缩、空间和自动化。' },
+      { id: 'export', label: '导出', summary: '按目标格式导出 demo、伴奏或 stems。' },
+    ];
+  }
+  if (intent === 'video_edit') {
+    return [
+      { id: 'brief', label: '明确成片目标', summary: '确认平台、时长、比例、节奏、素材路径和导出格式。' },
+      { id: 'import', label: '导入/整理素材', summary: '把视频、音频、字幕、图片和参考文件放进工程。' },
+      { id: 'rough_cut', label: '粗剪', summary: '先按叙事或节奏排出主时间线。' },
+      { id: 'polish', label: '精剪/转场/字幕', summary: '处理节奏、B-roll、转场、字幕和音频清理。' },
+      { id: 'grade', label: '调色/声音', summary: '统一色彩，平衡音量和背景音乐。' },
+      { id: 'export', label: '导出交付', summary: '按平台或客户规格导出并复查。' },
+    ];
+  }
+  return [
+    { id: 'brief', label: '确认创作目标', summary: '明确成品、素材、软件和交付格式。' },
+    { id: 'open', label: '打开创作软件', summary: '先进入正确工程，再观察界面状态。' },
+    { id: 'plan', label: '拆成可执行步骤', summary: '把复杂创作拆成可观察、可回退的小动作。' },
+    { id: 'execute', label: '逐步执行', summary: '每一步通过屏幕/Accessibility 反馈确认结果。' },
+    { id: 'export', label: '导出/保存', summary: '高影响保存、导出、覆盖动作需要明确确认。' },
+  ];
+}
+
+function formatCreativeWorkflowOutput(result) {
+  const appLabel = result.selectedApp?.name || '未选择';
+  const installedLabel = result.selectedApp?.installed
+    ? `已检测到 ${result.selectedApp.appPath}`
+    : '未在常见位置检测到；仍可尝试用 macOS 打开应用名。';
+  const stageLines = result.stages.map((stage, index) => `${index + 1}. ${stage.label}: ${stage.summary}`);
+  return [
+    `创作工作流: ${result.intent} · ${appLabel}`,
+    `软件: ${installedLabel}`,
+    `阶段:\n${stageLines.join('\n')}`,
+    result.appRun?.output ? `本地操作:\n${result.appRun.output}` : '',
+    `下一步: ${result.nextActions[0] || '确认要使用的软件和素材位置。'}`,
+  ].filter(Boolean).join('\n');
+}
+
+async function planCreativeWorkflow(options = {}) {
+  const instruction = String(options.instruction || options.goal || options.task || '').trim();
+  if (!instruction) throw new Error('Creative workflow requires instruction.');
+  const intent = normalizeCreativeWorkflowIntent(options.intent, instruction);
+  const candidates = creativeAppCandidates(instruction, intent, options.app || options.application || '');
+  const selectedApp =
+    candidates.find((item) => item.requested) ||
+    candidates.find((item) => item.explicit && item.installed) ||
+    candidates.find((item) => item.explicit) ||
+    candidates.find((item) => item.installed) ||
+    candidates[0] ||
+    null;
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const stages = creativeWorkflowStages(intent);
+  const nextActions = [
+    selectedApp
+      ? `打开/聚焦 ${selectedApp.name} 后先观察工程窗口，再把下一步拆成可审批的小动作。`
+      : '先指定要使用的剪辑或编曲软件。',
+    '确认素材、工程位置、成品规格和是否允许保存/导出。',
+    '复杂编辑不盲点界面；每次点击、输入、导出都通过现有本地动作策略执行。',
+  ];
+  let appRun = null;
+
+  if (execute && selectedApp?.name) {
+    appRun = await runAppWorkflow({
+      title: `Open creative app · ${selectedApp.name}`,
+      instruction,
+      execute: true,
+      source: 'creative_workflow',
+      steps: [
+        { type: 'open_app', app: selectedApp.name, label: `Open ${selectedApp.name}` },
+        { type: 'wait', ms: Math.max(500, Math.min(5000, Number(options.waitMs || 1400))), label: 'Wait for creative app' },
+      ],
+      continueOnError: false,
+    });
+  }
+
+  const draft = {
+    ok: Boolean(selectedApp) && (!execute || Boolean(appRun?.ok)),
+    executed: execute,
+    intent,
+    selectedApp,
+    candidates,
+    stages,
+    nextActions,
+    appRun,
+  };
+  const output = formatCreativeWorkflowOutput(draft);
+  const workflowDraft = {
+    kind: 'creative',
+    source: 'creative_workflow',
+    status: execute && appRun && !appRun.ok ? 'blocked' : 'done',
+    title: `Creative workflow · ${selectedApp?.name || intent}`,
+    intent,
+    mode: execute ? 'local' : 'preview',
+    request: instruction,
+    result: output,
+    target: {
+      app: selectedApp?.name || '',
+      appId: selectedApp?.id || '',
+      appDomain: selectedApp?.domain || creativeWorkflowDomain(intent),
+      appInstalled: Boolean(selectedApp?.installed),
+      appPath: selectedApp?.appPath || '',
+      candidateCount: candidates.length,
+      stageCount: stages.length,
+      appWorkflowId: appRun?.workflow?.id || '',
+    },
+  };
+  const workflow = options.recordWorkflow === false
+    ? {
+        id: '',
+        ...workflowDraft,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+      }
+    : createWorkflowRecord(workflowDraft);
+  const routing = options.recordRouting === false || !workflow.id
+    ? null
+    : createRoutingRecordForWorkflow({
+        workflow,
+        mode: 'local',
+        source: options.source || 'creative_workflow',
+        owner: 'app',
+        scope: `creative:${intent}`,
+        parallelGroup: options.parallelGroup || options.group || `creative:${selectedApp?.domain || intent}`,
+        resultSummary: output,
+      });
+
+  return {
+    ...draft,
+    workflow,
+    routing,
+    output,
+  };
+}
+
 function appNameFromInstruction(instruction) {
   const text = String(instruction || '').trim();
   const explicit = text.match(/(?:open|launch|打开|启动)\s+([A-Za-z][A-Za-z0-9 ._-]{1,40})/i);
@@ -4754,6 +5117,7 @@ function appNameFromInstruction(instruction) {
     ['TextEdit', ['textedit', 'text edit', '文本编辑']],
     ['Obsidian', ['obsidian']],
     ['System Settings', ['system settings', '系统设置']],
+    ...CREATIVE_APP_CATALOG.map((item) => [item.name, item.aliases]),
   ];
   const lower = text.toLowerCase();
   const hit = knownApps.find(([_app, aliases]) => aliases.some((alias) => lower.includes(alias.toLowerCase())));
@@ -8650,6 +9014,21 @@ function localCommandDecision(task) {
     return { intent: 'web_search', label: 'Web search', args: { query: searchMatch[1].trim() } };
   }
 
+  const creativeIntent = creativeWorkflowIntentFromInstruction(text);
+  if (creativeIntent) {
+    const selectedApp = CREATIVE_APP_CATALOG.find((item) => creativeAppMatchesText(item, text));
+    return {
+      intent: 'creative_workflow',
+      label: creativeIntent === 'music_compose' ? 'Music workflow' : creativeIntent === 'video_edit' ? 'Video workflow' : 'Creative workflow',
+      requiresLocalExecution: true,
+      args: {
+        instruction: text,
+        intent: creativeIntent,
+        app: selectedApp?.name || '',
+      },
+    };
+  }
+
   const localAppWorkflow = safeLocalAppWorkflowPlan(text);
   if (localAppWorkflow) {
     return {
@@ -8742,7 +9121,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search']);
   return {
     lane: 'quick',
     mode: 'quick',
@@ -9076,6 +9455,24 @@ async function runLocalCommand(command, options = {}) {
       };
     }
 
+    if (command.intent === 'creative_workflow') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const result = await planCreativeWorkflow({
+        instruction: command.args.instruction,
+        intent: command.args.intent,
+        app: command.args.app,
+        execute,
+        recordRouting: false,
+        source: 'local_command',
+      });
+      return {
+        ok: result.ok,
+        localCommand: command,
+        output: result.output,
+        data: { result },
+      };
+    }
+
     if (command.intent === 'cli_command') {
       const result = queueCliCommand({
         command: command.args.command,
@@ -9224,7 +9621,7 @@ async function routeTask(options = {}) {
       chars: task.length,
     });
     if (!execute) {
-      if (localCommand.intent === 'app_workflow') {
+      if (localCommand.intent === 'app_workflow' || localCommand.intent === 'creative_workflow') {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -13744,6 +14141,14 @@ async function doctorReportSnapshot() {
   });
   const browserJavaScriptPreview = await browserJavaScriptStatusSnapshot();
   const realtimeBrowserToolPreview = realtimeBrowserWorkflowToolSnapshot();
+  const creativeWorkflowPreview = await planCreativeWorkflow({
+    instruction: '帮我剪辑一个短视频，先规划流程',
+    intent: 'video_edit',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: 'doctor',
+  });
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
   const setupGuidePreview = setupGuideSnapshot();
@@ -14012,6 +14417,27 @@ async function doctorReportSnapshot() {
     localCommandReady ? '' : 'Review localCommandDecision() and runLocalCommand().',
   ));
 
+  const creativeWorkflowReady =
+    creativeWorkflowPreview.ok &&
+    creativeWorkflowPreview.intent === 'video_edit' &&
+    Boolean(creativeWorkflowPreview.selectedApp?.name) &&
+    creativeWorkflowPreview.stages.length >= 5;
+  checks.push(doctorCheck(
+    'creative_workflow',
+    'Creative workflow',
+    creativeWorkflowReady ? 'ready' : 'warning',
+    creativeWorkflowReady
+      ? `Creative workflow planner selected ${creativeWorkflowPreview.selectedApp.name} with ${creativeWorkflowPreview.stages.length} staged step(s).`
+      : 'Creative workflow planner did not produce a usable video-editing plan.',
+    {
+      intent: creativeWorkflowPreview.intent,
+      selectedApp: creativeWorkflowPreview.selectedApp,
+      stageCount: creativeWorkflowPreview.stages.length,
+      candidateCount: creativeWorkflowPreview.candidates.length,
+    },
+    creativeWorkflowReady ? '' : 'Review planCreativeWorkflow() and creativeWorkflowIntentFromInstruction().',
+  ));
+
   const briefingReady = Boolean(briefingPreview.summary && Array.isArray(briefingPreview.nextActions) && briefingPreview.nextActions.length);
   checks.push(doctorCheck(
     'work_briefing',
@@ -14171,6 +14597,11 @@ async function doctorReportSnapshot() {
       clipboard: clipboardPreview,
       router: routerPreview,
       laneContracts: laneContractPreview,
+      creativeWorkflow: {
+        intent: creativeWorkflowPreview.intent,
+        selectedApp: creativeWorkflowPreview.selectedApp,
+        stageCount: creativeWorkflowPreview.stages.length,
+      },
       briefing: {
         summary: briefingPreview.summary,
         counts: briefingPreview.counts,
@@ -15759,6 +16190,14 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'plan_creative_workflow' || name === 'run_creative_workflow') {
+    const execute = name === 'run_creative_workflow'
+      ? args?.execute !== false
+      : args?.execute === true;
+    const result = await planCreativeWorkflow({ ...(args || {}), execute, source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_recent_workflows') {
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 8)));
     const workflowItems = workflowSnapshot(limit);
@@ -16161,6 +16600,8 @@ function createRealtimeSessionConfig(options = {}) {
       'Use control_current_app when the user explicitly asks you to click, choose, press, toggle, or fill something in the current Mac app. It plans the target and executes through the guarded local action policy.',
       'Use plan_app_workflow when the user gives a natural multi-step computer operation and you need JAVIS to observe the current Mac state, create steps, and optionally execute them.',
       'Use run_app_workflow when the user explicitly asks for a small multi-step local computer operation, such as open an app, wait, press a UI target, type text, use a hotkey, or run a file action. Preview with execute:false when the target is ambiguous.',
+      'Use plan_creative_workflow for video editing, short-form editing, subtitles, color, music composition, DAW, MIDI, beat-making, arranging, mixing, or other creative app work. It chooses a likely creative app and staged workflow without blindly editing.',
+      'Use run_creative_workflow only when the user asks to start/open the creative task. It opens or focuses the selected app and returns the staged plan; saves, exports, uploads, and destructive edits still require explicit confirmation.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
       'Use get_work_session when the user asks about the current work session.',
@@ -16451,6 +16892,46 @@ function createRealtimeSessionConfig(options = {}) {
             },
           },
           required: ['steps', 'execute'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'plan_creative_workflow',
+        description: 'Plan a practical creative-app workflow for video editing or music composition. Chooses likely NLE/DAW apps and staged next steps without executing UI edits.',
+        parameters: {
+          type: 'object',
+          properties: {
+            instruction: { type: 'string' },
+            goal: { type: 'string' },
+            intent: { type: 'string', enum: ['video_edit', 'music_compose', 'creative_app'] },
+            app: { type: 'string' },
+            application: { type: 'string' },
+            execute: { type: 'boolean' },
+            waitMs: { type: 'number' },
+            parallelGroup: { type: 'string' },
+          },
+          required: ['instruction'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'run_creative_workflow',
+        description: 'Start a creative-app workflow by opening/focusing the selected video editor or music app, then return the staged plan. Does not save, export, upload, or edit blindly.',
+        parameters: {
+          type: 'object',
+          properties: {
+            instruction: { type: 'string' },
+            goal: { type: 'string' },
+            intent: { type: 'string', enum: ['video_edit', 'music_compose', 'creative_app'] },
+            app: { type: 'string' },
+            application: { type: 'string' },
+            execute: { type: 'boolean' },
+            waitMs: { type: 'number' },
+            parallelGroup: { type: 'string' },
+          },
+          required: ['instruction'],
           additionalProperties: false,
         },
       },
@@ -17853,6 +18334,15 @@ function startApiServer() {
       res.status(result.ok ? 200 : 202).json(result);
     } catch (error) {
       jsonError(res, 400, 'App workflow plan failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/creative/workflow', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await planCreativeWorkflow({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : 202).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Creative workflow failed', error instanceof Error ? error.message : String(error));
     }
   });
 

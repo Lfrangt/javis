@@ -350,6 +350,19 @@ If a workflow pauses for an action approval, the pending approval stores a conti
 remaining workflow steps. Approving that action executes the approved step and then continues the
 remaining steps until the workflow finishes, blocks, or hits another approval.
 
+For creative software work:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/creative/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"instruction":"帮我剪辑一个短视频，先用 Final Cut Pro 规划流程","intent":"video_edit","execute":false}'
+curl -X POST http://127.0.0.1:3417/api/creative/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"instruction":"用 GarageBand 做一个 30 秒 demo，先规划编曲步骤","intent":"music_compose","execute":false}'
+```
+
+`/api/creative/workflow` recognizes video editing and music composition requests, ranks common creative apps, records a staged workflow, and can open/focus the selected app with `execute:true`. It does not save, export, upload, or blindly edit the timeline/session; those steps should be handled through observe/current-app control with explicit confirmation.
+
 For explicit local memory:
 
 ```bash

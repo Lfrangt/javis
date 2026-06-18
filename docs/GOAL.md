@@ -66,6 +66,7 @@ This learning system is part of the product, not a hidden analytics feature:
 - Delegation to Codex and Claude Code for code-heavy tasks.
 - Safe local automation for reversible actions first.
 - Browser, file, current-app, and CLI automation through scoped worker lanes.
+- Creative software workflows for video editing, subtitles, color, music composition, DAW arranging, mixing, and export preparation, starting with staged plans and guarded app control.
 - OpenClaw-inspired gateway, agent loop, specialist lane, and delegate architecture adapted for realtime voice on macOS.
 - Local long-term user-distillation that makes JAVIS more personally adapted over time while keeping learned data on this Mac.
 - Human confirmation before irreversible, private, or high-impact actions.
