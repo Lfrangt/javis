@@ -1625,10 +1625,56 @@ function loadPersistedJobs() {
       if (job) jobs.set(job.id, job);
     }
     persistJobs();
+    reconcileFailedJobsWithRecoveryPlans();
     appendAudit('jobs.loaded', { count: jobs.size });
   } catch (error) {
     appendAudit('jobs.load_failed', { message: error instanceof Error ? error.message : String(error) });
   }
+}
+
+function failedJobRecoveryError(job) {
+  const evidence = [
+    job?.result,
+    job?.log,
+  ].filter(Boolean).join('\n').trim();
+  const error = new Error(evidence || 'JAVIS job failed without a recovery plan.');
+  if (job?.failureKind) error.failureKind = job.failureKind;
+  return error;
+}
+
+function shouldBackfillRecoveryPlan(job) {
+  if (!job || job.status !== 'failed') return false;
+  if (job.recoveryPlan?.nextActions?.length) return false;
+  if (!originalTaskForJob(job)) return false;
+  return true;
+}
+
+function recoveryPlanResultText(job, recoveryPlan) {
+  return [
+    job.result || 'Job failed before a recovery plan was recorded.',
+    recoveryPlan?.summary ? `Recovery: ${recoveryPlan.summary}` : '',
+    recoveryPlan?.nextActions?.length
+      ? `Next actions:\n${recoveryPlan.nextActions.map((action, index) => `${index + 1}. ${action.label}: ${action.reason}`).join('\n')}`
+      : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+function reconcileFailedJobsWithRecoveryPlans() {
+  let updated = 0;
+  for (const job of Array.from(jobs.values())) {
+    if (!shouldBackfillRecoveryPlan(job)) continue;
+    const error = failedJobRecoveryError(job);
+    const recoveryPlan = buildRecoveryPlanForJob(job, error);
+    const failureKind = recoveryPlan?.failureKind || classifyJobFailure(error, job);
+    setJob(job.id, {
+      failureKind,
+      recoveryPlan,
+      result: recoveryPlanResultText(job, recoveryPlan),
+      log: `${job.log || ''}\nRecovery plan backfilled after startup: ${failureKind}.`,
+    });
+    updated += 1;
+  }
+  if (updated) appendAudit('jobs.recovery_backfilled', { count: updated });
 }
 
 function loadPersistedWorkflows() {
@@ -7688,6 +7734,9 @@ function autopilotStateSnapshot() {
 function isAutopilotExecutableAction(action) {
   if (!action || typeof action !== 'object') return false;
   if (action.source === 'recovery') {
+    if (action.trustedAutoEligible && Number(action.recoveryAttempts || 0) < Number(action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS)) {
+      return true;
+    }
     return Boolean(action.autoEligible && Number(action.riskLevel || 0) <= 1);
   }
   if (action.source === 'workflows' && action.workflowAction === 'retry_app_workflow') {
@@ -7746,6 +7795,7 @@ async function autopilotTick(options = {}) {
     const result = await workNextAction({
       execute: true,
       actionId: action.id,
+      autopilot: true,
       source: `autopilot:${source}`,
       workflowLimit: options.workflowLimit || 6,
       jobLimit: options.jobLimit || 6,
@@ -8679,6 +8729,7 @@ function finalizeRouteResult(result, context = {}) {
 
 function recoveryActionPriority(job, action) {
   const riskLevel = Number(action?.riskLevel || 0);
+  if (trustedRecoveryAutoEligible(job, action)) return riskLevel <= 1 ? 0 : 2;
   if (action?.autoEligible && riskLevel <= 1) return 0;
   if (job.failureKind === 'approval_required') return 1;
   if (riskLevel <= 1) return 2;
@@ -8695,6 +8746,23 @@ function recoveryChildJobs(jobId) {
 
 function activeRecoveryChildJob(jobId) {
   return recoveryChildJobs(jobId).find((job) => job.status === 'queued' || job.status === 'running') || null;
+}
+
+function completedRecoveryChildJob(jobId) {
+  return recoveryChildJobs(jobId).find((job) => job.status === 'done') || null;
+}
+
+function trustedRecoveryAutoEligible(job, action, childCount = null) {
+  if (!job || !action) return false;
+  const type = action.type || action.recoveryType || 'manual';
+  if (!['retry', 'alternative_worker'].includes(type)) return false;
+  if (!LOCAL_EXEC_ENABLED || !TRUSTED_LOCAL_MODE) return false;
+  if (actionPolicy?.dryRun) return false;
+  if (completedRecoveryChildJob(job.id)) return false;
+  const attempts = childCount === null ? recoveryChildJobs(job.id).length : Number(childCount || 0);
+  if (attempts >= MAX_RECOVERY_JOB_ATTEMPTS) return false;
+  const riskLevel = Math.max(0, Math.min(4, Number(action.riskLevel || 0)));
+  return riskLevel <= Math.max(0, Math.min(4, Number(actionPolicy?.maxAutoRiskLevel || 0)));
 }
 
 function reviewedRecoveryTypes(job) {
@@ -8717,6 +8785,7 @@ function recoveryActionCandidates(recentJobs, limit = 4) {
         .filter((action) => {
           const type = action.type || 'manual';
           if (['diagnose', 'policy', 'approval'].includes(type) && reviewed.has(type)) return false;
+          if (['retry', 'alternative_worker'].includes(type) && completedRecoveryChildJob(job.id)) return false;
           if (['retry', 'alternative_worker'].includes(type) && childCount >= MAX_RECOVERY_JOB_ATTEMPTS) return false;
           return true;
         })
@@ -8734,6 +8803,7 @@ function recoveryActionCandidates(recentJobs, limit = 4) {
           failureKind: job.failureKind || job.recoveryPlan.failureKind || '',
           recoveryType: action.type || 'manual',
           autoEligible: Boolean(action.autoEligible),
+          trustedAutoEligible: trustedRecoveryAutoEligible(job, action, childCount),
           riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
           command: action.command || '',
           recoveryAttempts: childCount,
@@ -8777,11 +8847,52 @@ function isDeliverableWorkflow(workflow) {
   return Boolean(workflow?.result && workflow.status === 'done' && !isInternalWorkflow(workflow));
 }
 
+function workflowResolutionTime(workflow) {
+  return Math.max(
+    Number(workflow?.completedAt || 0),
+    Number(workflow?.updatedAt || 0),
+    Number(workflow?.createdAt || 0),
+  );
+}
+
+function normalizeWorkflowResolutionText(value) {
+  return String(value || '')
+    .replace(/^(retry|continue)\s*[·:：-]\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function workflowResolutionKey(workflow) {
+  if (!workflow) return '';
+  const kind = String(workflow.kind || '').trim().toLowerCase();
+  const intent = String(workflow.intent || '').trim().toLowerCase();
+  if (!kind || !intent || intent === 'continue') return '';
+  const request = normalizeWorkflowResolutionText(workflow.request || workflow.title);
+  if (!request) return '';
+  return `${kind}:${intent}:${request}`;
+}
+
+function isWorkflowResolvedByLaterDone(workflow, candidates = []) {
+  if (!workflow || !['blocked', 'failed'].includes(workflow.status)) return false;
+  const key = workflowResolutionKey(workflow);
+  if (!key) return false;
+  const blockedAt = workflowResolutionTime(workflow);
+  return candidates.some((candidate) => (
+    candidate?.id !== workflow.id
+    && candidate?.status === 'done'
+    && !isInternalWorkflow(candidate)
+    && workflowResolutionKey(candidate) === key
+    && workflowResolutionTime(candidate) > blockedAt
+  ));
+}
+
 function workflowBriefing(options = {}) {
   const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 6)));
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
   const readiness = readinessSnapshot();
-  const recentWorkflows = workflowSnapshot(workflowLimit);
+  const workflowContext = workflowSnapshot(Math.max(workflowLimit, 50));
+  const recentWorkflows = workflowContext.slice(0, workflowLimit);
   const recentJobs = jobSnapshot().slice(0, jobLimit);
   const openInbox = inboxSnapshot(6, 'open');
   const activeSession = activeSessionSnapshot();
@@ -8790,9 +8901,15 @@ function workflowBriefing(options = {}) {
   const activeRoutes = recentRoutes.filter((record) => ['queued', 'running', 'approval_required', 'blocked'].includes(record.status));
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const recoveryActions = recoveryActionCandidates(recentJobs);
-  const blockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
-  const latestDoneWorkflow = recentWorkflows.find((workflow) => workflow.status === 'done') || null;
-  const latestDeliverableWorkflow = recentWorkflows.find(isDeliverableWorkflow) || null;
+  const recentBlockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
+  const resolvedBlockedWorkflows = recentBlockedWorkflows.filter((workflow) => (
+    isWorkflowResolvedByLaterDone(workflow, workflowContext)
+  ));
+  const blockedWorkflows = recentBlockedWorkflows.filter((workflow) => (
+    !isWorkflowResolvedByLaterDone(workflow, workflowContext)
+  ));
+  const latestDoneWorkflow = workflowContext.find((workflow) => workflow.status === 'done') || null;
+  const latestDeliverableWorkflow = workflowContext.find(isDeliverableWorkflow) || null;
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
   const learning = learningStateSnapshot();
   const nextActions = [];
@@ -8939,6 +9056,7 @@ function workflowBriefing(options = {}) {
       activeRoutes: activeRoutes.length,
       recoveryActions: recoveryActions.length,
       blockedWorkflows: blockedWorkflows.length,
+      resolvedBlockedWorkflows: resolvedBlockedWorkflows.length,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
     recent: {
@@ -9165,7 +9283,8 @@ async function workNextAction(options = {}) {
       job
       && execute
       && ['retry', 'alternative_worker'].includes(action.recoveryType)
-      && ['worker_failed', 'command_failed', 'timeout', 'worker_command_missing'].includes(job.failureKind || job.recoveryPlan?.failureKind || action.failureKind),
+      && (action.trustedAutoEligible || !options.autopilot)
+      && ['worker_failed', 'command_failed', 'timeout', 'interrupted', 'worker_command_missing'].includes(job.failureKind || job.recoveryPlan?.failureKind || action.failureKind),
     );
     if (canQueueRecovery) {
       result = queueRecoveryJob(job, action, { source: options.source || 'work_next' });
@@ -9184,7 +9303,7 @@ async function workNextAction(options = {}) {
         diagnostics?.runtime ? `权限: localExec=${diagnostics.runtime.localExecutionEnabled ? 'on' : 'off'}, trusted=${diagnostics.runtime.trustedLocalMode ? 'on' : 'off'}, autoLevel=${diagnostics.runtime.maxAutoRiskLevel}, approvalAt=${diagnostics.runtime.requireApprovalAtRiskLevel}` : '',
         diagnostics?.workers ? `Worker: Codex ${diagnostics.workers.codex?.available ? 'ready' : 'missing'}, Claude ${diagnostics.workers.claude?.available ? 'ready' : 'missing'}` : '',
         ['retry', 'alternative_worker'].includes(action.recoveryType)
-          ? `可恢复: 手动执行会排一个缩小范围的 ${recoveryJobModeFor(job, action)} recovery job (${action.recoveryAttempts || 0}/${action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS}).`
+          ? `可恢复: ${action.trustedAutoEligible ? '自动驾驶可排' : '手动执行会排'}一个缩小范围的 ${recoveryJobModeFor(job, action)} recovery job (${action.recoveryAttempts || 0}/${action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS}).`
           : '',
         safeToExecute
           ? '已完成低风险恢复检查；下一步可以按诊断继续修复。'
@@ -10848,6 +10967,7 @@ function classifyJobFailure(error, job = {}) {
   if (/local execution|javis_enable_local_exec|level 3 local actions are disabled/.test(text)) return 'local_execution_disabled';
   if (/not found on path|command not found|not available|enoent|could not identify/.test(text)) return 'worker_command_missing';
   if (/not allowed by policy|disabled by policy|allowlist/.test(text)) return 'policy_blocked';
+  if (/interrupted by javis shutdown|not completed before the previous process exited|previous javis shutdown/.test(text)) return 'interrupted';
   if (/timed out|timeout|stopped by sigterm/.test(text) || error instanceof JobCancelled) return 'timeout';
   if (/openai api key|missing openai|api key is not configured/.test(text)) return 'openai_key_missing';
   if (job.mode === 'cli') return 'command_failed';
@@ -10972,7 +11092,7 @@ function buildRecoveryPlanForJob(job, error, options = {}) {
       reason: 'The requested command/action is blocked by local policy and should be surfaced with exact policy evidence.',
     });
   }
-  if (['command_failed', 'worker_failed', 'timeout'].includes(failureKind)) {
+  if (['command_failed', 'worker_failed', 'timeout', 'interrupted'].includes(failureKind)) {
     nextActions.push({
       type: 'retry',
       label: 'Retry with narrower scope',
