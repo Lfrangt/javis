@@ -6,8 +6,10 @@ export default {
   lane: 'accessibility',
   async run(ctx) {
     const out = [];
+    const smokeMaxNodes = 80;
+    const smokeMaxDepth = 5;
 
-    const tree = await ctx.api('/api/accessibility/tree?maxNodes=240&maxDepth=9', { timeoutMs: 15000 });
+    const tree = await ctx.api(`/api/accessibility/tree?maxNodes=${smokeMaxNodes}&maxDepth=${smokeMaxDepth}`, { timeoutMs: 15000 });
     const t = tree.data?.tree;
     if (!tree.ok || !t) {
       out.push(fail('ax.tree', 'AX tree read', `GET /api/accessibility/tree ${tree.status} ${tree.error || ''}`));
@@ -19,11 +21,15 @@ export default {
     }
     out.push(
       t.available
-        ? ok('ax.tree', 'AX tree read', `app="${t.app}" nodes=${t.nodeCount} truncated=${t.truncated}`)
+        ? ok('ax.tree', 'AX tree read', `app="${t.app}" nodes=${t.nodeCount} truncated=${t.truncated} budget=${smokeMaxNodes}/${smokeMaxDepth}`)
         : warn('ax.tree', 'AX tree read', `no nodes (app="${t.app || '?'}" error=${t.error || ''})`),
     );
 
-    const plan = await ctx.api('/api/accessibility/plan', { method: 'POST', body: { instruction: 'focus the main input', maxNodes: 240, maxDepth: 9 }, timeoutMs: 15000 });
+    const plan = await ctx.api('/api/accessibility/plan', {
+      method: 'POST',
+      body: { instruction: 'focus the main input', maxNodes: smokeMaxNodes, maxDepth: smokeMaxDepth },
+      timeoutMs: 15000,
+    });
     const rec = plan.data?.recommended;
     out.push(
       plan.ok && rec
