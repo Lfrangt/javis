@@ -220,7 +220,18 @@ The briefing combines readiness, routing records, jobs, workflows, approvals, me
 
 `/api/lanes/contracts` exposes the runtime owner/scope/handoff/risk contract for each lane. The Realtime tool `get_lane_contracts` uses the same registry, so the voice model can check boundaries before deciding whether to answer quickly, delegate to background, call Codex/Claude, or use browser/file/app/local tool surfaces.
 
-`/api/tasks/route` persists a routing record for each previewed or executed task. Direct quick chat, voice delegation, explicit CLI runs, browser workflows, file workflows, and continuation workflows also write routing records. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, blocker/next-action context, and result link. Use `/api/tasks/routing` or `/api/tasks/routing/<route-id>` to inspect the ledger.
+`/api/context/plan` creates a smart context assembly plan for a request before JAVIS captures expensive or sensitive context. It explains whether the task needs resident state, Mac context, screen/vision, Accessibility, browser page/DOM, clipboard text, files, memory, learning, delegated-worker context, or local execution. Use it when tuning voice latency and privacy:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/context/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"总结当前网页并提取关键链接","useMemory":false}'
+curl -X POST http://127.0.0.1:3417/api/context/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"点击当前应用里的搜索框并输入 JAVIS","useMemory":false}'
+```
+
+`/api/tasks/route` persists a routing record for each previewed or executed task. Direct quick chat, voice delegation, explicit CLI runs, browser workflows, file workflows, and continuation workflows also write routing records. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, blocker/next-action context, result link, and `contextPlan` evidence showing which context was used or skipped for speed/privacy. Use `/api/tasks/routing` or `/api/tasks/routing/<route-id>` to inspect the ledger.
 
 `/api/tasks/parallel` accepts up to `JAVIS_MAX_PARALLEL_TASKS` independent task items and assigns them to one `parallelGroup`. Each item can specify its own `mode`, `owner`, `scope`, `access`, and `ownershipKey`; explicit `command` items queue through the guarded local CLI lane. The parallel router records an `ownership` block on each route and serializes overlapping write scopes instead of launching competing Codex/Claude/local workers against the same file or folder. This is the API surface for splitting work across background, Codex, Claude, and local workers while keeping progress check-ins coherent.
 

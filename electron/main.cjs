@@ -309,7 +309,7 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'background',
-      tools: ['route_task', 'delegate_task', 'run_browser_workflow', 'run_file_workflow', 'run_work_next'],
+      tools: ['plan_context', 'route_task', 'delegate_task', 'run_browser_workflow', 'run_file_workflow', 'run_work_next'],
       rule: 'Keep the conversation flowing, then hand durable work to a background or specialist lane.',
     },
     toolPosture: 'Prefer observe/status tools and short deterministic actions; do not block speech on slow work.',
@@ -495,7 +495,7 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'realtime',
-      tools: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow'],
+      tools: ['plan_context', 'observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow'],
       rule: 'Observe and plan first; execute only with clear target and action-policy permission.',
     },
     toolPosture: 'Dry-run planning by default; execution goes through local action policy and approvals.',
@@ -1892,6 +1892,63 @@ function normalizeRoutingOwnership(value) {
   };
 }
 
+function normalizeContextPlan(value) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const rawNeeds = raw.needs && typeof raw.needs === 'object' ? raw.needs : {};
+  const needs = {
+    residentState: Boolean(rawNeeds.residentState),
+    macContext: Boolean(rawNeeds.macContext),
+    screen: Boolean(rawNeeds.screen),
+    vision: Boolean(rawNeeds.vision),
+    accessibility: Boolean(rawNeeds.accessibility),
+    browserContext: Boolean(rawNeeds.browserContext),
+    browserPage: Boolean(rawNeeds.browserPage),
+    browserDom: Boolean(rawNeeds.browserDom),
+    clipboard: Boolean(rawNeeds.clipboard),
+    clipboardText: Boolean(rawNeeds.clipboardText),
+    files: Boolean(rawNeeds.files),
+    memory: Boolean(rawNeeds.memory),
+    learning: Boolean(rawNeeds.learning),
+    delegatedWorkerContext: Boolean(rawNeeds.delegatedWorkerContext),
+    localExecution: Boolean(rawNeeds.localExecution),
+  };
+  const rawObserve = raw.observeOptions && typeof raw.observeOptions === 'object' ? raw.observeOptions : {};
+  return {
+    version: 1,
+    mode: ['minimal', 'resident', 'screen', 'browser', 'file', 'app', 'worker', 'full'].includes(String(raw.mode || ''))
+      ? String(raw.mode)
+      : 'minimal',
+    summary: compactRecordText(raw.summary || '', 220),
+    needs,
+    reasons: Array.isArray(raw.reasons)
+      ? raw.reasons.map((item) => compactRecordText(item, 160)).filter(Boolean).slice(0, 8)
+      : [],
+    recommendedTools: Array.isArray(raw.recommendedTools)
+      ? Array.from(new Set(raw.recommendedTools.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 10)
+      : [],
+    observeOptions: {
+      captureScreen: rawObserve.captureScreen === true,
+      includeAccessibility: rawObserve.includeAccessibility === true,
+      describeScreen: rawObserve.describeScreen === true,
+      includeClipboardText: rawObserve.includeClipboardText === true,
+      maxNodes: Math.max(10, Math.min(500, Number(rawObserve.maxNodes || 80))),
+      maxDepth: Math.max(1, Math.min(12, Number(rawObserve.maxDepth || 5))),
+    },
+    browser: {
+      maxChars: Math.max(1000, Math.min(30000, Number(raw.browser?.maxChars || 12000))),
+      domLimit: Math.max(5, Math.min(100, Number(raw.browser?.domLimit || 40))),
+    },
+    privacy: {
+      screenMode: String(raw.privacy?.screenMode || 'private').slice(0, 40),
+      rationale: compactRecordText(raw.privacy?.rationale || '', 180),
+    },
+    skipped: Array.isArray(raw.skipped)
+      ? raw.skipped.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 12)
+      : [],
+    generatedAt: raw.generatedAt || new Date().toISOString(),
+  };
+}
+
 function normalizePersistedRoutingRecord(record) {
   if (!record || typeof record !== 'object' || !record.id) return null;
   const lane = normalizeRoutingLane(record.lane);
@@ -1925,6 +1982,7 @@ function normalizePersistedRoutingRecord(record) {
     ownership: normalizeRoutingOwnership(record.ownership),
     memoryMatches: Math.max(0, Number(record.memoryMatches || 0)),
     learningEvidence: normalizeLearningEvidence(record.learningEvidence),
+    contextPlan: normalizeContextPlan(record.contextPlan),
     createdAt: Number(record.createdAt || Date.now()),
     updatedAt: Number(record.updatedAt || Date.now()),
     completedAt,
@@ -11124,6 +11182,215 @@ function localCommandDecisionPayload(command, execute) {
   };
 }
 
+function contextPlanPushReason(reasons, reason) {
+  const text = compactRecordText(reason, 160);
+  if (text && !reasons.includes(text)) reasons.push(text);
+}
+
+function contextPlanRecommendedTools(needs) {
+  const tools = [];
+  if (needs.residentState) tools.push('get_work_briefing');
+  if (needs.macContext || needs.clipboard) tools.push('get_mac_context');
+  if (needs.screen || needs.vision || needs.accessibility) tools.push('observe_now');
+  if (needs.vision) tools.push('describe_screen');
+  if (needs.accessibility) tools.push('read_accessibility_tree', 'plan_ui_action');
+  if (needs.browserContext) tools.push('get_browser_context');
+  if (needs.browserPage) tools.push('read_browser_page', 'run_browser_workflow');
+  if (needs.browserDom) tools.push('read_browser_dom');
+  if (needs.files) tools.push('run_file_workflow');
+  if (needs.memory) tools.push('search_memory');
+  if (needs.delegatedWorkerContext) tools.push('delegate_task');
+  return Array.from(new Set(tools));
+}
+
+function contextPlanMode(needs) {
+  const heavyCount = [
+    needs.screen,
+    needs.vision,
+    needs.accessibility,
+    needs.browserPage,
+    needs.browserDom,
+    needs.files,
+  ].filter(Boolean).length;
+  if (heavyCount >= 3) return 'full';
+  if (needs.accessibility || needs.localExecution) return 'app';
+  if (needs.screen || needs.vision) return 'screen';
+  if (needs.browserPage || needs.browserDom || needs.browserContext) return 'browser';
+  if (needs.files) return 'file';
+  if (needs.delegatedWorkerContext) return 'worker';
+  if (needs.residentState || needs.macContext || needs.clipboard) return 'resident';
+  return 'minimal';
+}
+
+function buildContextPlan(message, options = {}) {
+  const task = String(message || options.message || options.task || '').trim();
+  const text = task.replace(/\s+/g, ' ').trim().toLowerCase();
+  const localCommand = String(options.localCommand || '').trim();
+  const lane = normalizeRoutingLane(options.lane || options.mode || '');
+  const reasons = [];
+  const needs = {
+    residentState: false,
+    macContext: false,
+    screen: false,
+    vision: false,
+    accessibility: false,
+    browserContext: false,
+    browserPage: false,
+    browserDom: false,
+    clipboard: false,
+    clipboardText: false,
+    files: false,
+    memory: options.useMemory !== false && !localCommand,
+    learning: options.useMemory !== false && !localCommand && learningRuntimeEnabled() && currentLearningControls().includeInPrompts !== false,
+    delegatedWorkerContext: false,
+    localExecution: false,
+  };
+
+  if (!text && !localCommand) {
+    return normalizeContextPlan({
+      mode: 'minimal',
+      summary: 'No task text; keep context minimal.',
+      needs,
+      reasons: ['missing task text'],
+      recommendedTools: [],
+      observeOptions: { maxNodes: 80, maxDepth: 5 },
+      privacy: { screenMode: screenPrivacy?.mode || 'private', rationale: 'No screen context requested.' },
+    });
+  }
+
+  const screenSignal = /screen|screenshot|visible|look at|what do you see|describe.*screen|current view|屏幕|截屏|截图|看屏幕|看看|看一下|当前界面|现在界面|界面|看到/.test(text);
+  const visionSignal = /describe|what.*see|read.*screen|ocr|vision|看图|描述|识别|屏幕上有什么|读一下/.test(text);
+  const browserSignal = /browser|webpage|web page|current page|tab|url|link|website|site|google|search result|网页|页面|浏览器|标签页|链接|网站|搜索结果/.test(text);
+  const browserPageSignal = /summari[sz]e|extract|read|compare|research|review|answer.*page|当前网页|总结.*网页|阅读.*网页|提取|比较|调研|研究|看.*页面/.test(text);
+  const browserDomSignal = /click|fill|select|button|form|input|submit|点击|填写|填入|选择|按钮|表单|输入框/.test(text);
+  const fileSignal = /file|folder|directory|path|repo|codebase|readme|\.md\b|\.json\b|\.ts\b|\.tsx\b|\.js\b|\.py\b|文件|目录|文件夹|仓库|代码库|路径/.test(text);
+  const appControlSignal = /click|press|toggle|choose|fill|type into|hotkey|current app|window|ui|按钮|点击|按下|切换|选择|填写|输入|窗口|当前应用|控制/.test(text);
+  const clipboardSignal = /clipboard|pasteboard|copy|paste|剪贴板|粘贴板|复制|粘贴/.test(text);
+  const clipboardTextSignal = /read.*clipboard|clipboard.*content|what.*clipboard|剪贴板.*内容|读.*剪贴板|看看剪贴板/.test(text);
+  const statusSignal = /status|briefing|progress|next action|jobs|approvals|session|inbox|状态|简报|进度|下一步|任务|审批|会话|收件箱|待办/.test(text);
+  const codeWorkerSignal = /codex|claude|code agent|implement|fix|refactor|debug|test|lint|build|commit|pr\b|实现|修复|重构|调试|跑测试|提交/.test(text);
+
+  if (options.includeScreen === true || screenSignal) {
+    needs.screen = true;
+    needs.macContext = true;
+    contextPlanPushReason(reasons, options.includeScreen === true ? 'caller requested screen context' : 'task refers to the visible screen/UI');
+  }
+  if (visionSignal && needs.screen) {
+    needs.vision = true;
+    contextPlanPushReason(reasons, 'task asks for visual interpretation, not only screen metadata');
+  }
+  if (browserSignal) {
+    needs.browserContext = true;
+    contextPlanPushReason(reasons, 'task refers to browser/page context');
+  }
+  if (browserSignal && browserPageSignal) {
+    needs.browserPage = true;
+    contextPlanPushReason(reasons, 'task needs current page text or multiple page evidence');
+  }
+  if (browserSignal && browserDomSignal) {
+    needs.browserDom = true;
+    needs.localExecution = /click|fill|select|submit|点击|填写|选择/.test(text);
+    contextPlanPushReason(reasons, 'task may need visible browser controls');
+  }
+  if (fileSignal) {
+    needs.files = true;
+    contextPlanPushReason(reasons, 'task refers to local files, folders, repo, or code paths');
+  }
+  if (appControlSignal) {
+    needs.macContext = true;
+    needs.accessibility = true;
+    needs.localExecution = needs.localExecution || /click|press|toggle|choose|fill|type into|hotkey|点击|按下|切换|选择|填写|输入/.test(text);
+    contextPlanPushReason(reasons, 'task may need current-app UI structure before action');
+  }
+  if (clipboardSignal) {
+    needs.clipboard = true;
+    needs.macContext = true;
+    needs.clipboardText = clipboardTextSignal;
+    contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
+  }
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox'].includes(localCommand)) {
+    needs.residentState = true;
+    contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
+  }
+  if (codeWorkerSignal && ['codex', 'claude', 'background'].includes(lane)) {
+    needs.delegatedWorkerContext = true;
+    contextPlanPushReason(reasons, 'deeper worker should gather task-specific evidence in its own lane');
+  }
+
+  if (localCommand) {
+    needs.memory = false;
+    needs.learning = false;
+    contextPlanPushReason(reasons, `deterministic local command matched first: ${localCommand}`);
+    if (['observe_now', 'describe_screen'].includes(localCommand)) {
+      needs.macContext = true;
+      needs.screen = true;
+      needs.accessibility = true;
+      needs.vision = localCommand === 'describe_screen';
+    } else if (['browser_control', 'web_search', 'open_url'].includes(localCommand)) {
+      needs.browserContext = true;
+      needs.localExecution = true;
+    } else if (['app_workflow', 'creative_workflow', 'open_app'].includes(localCommand)) {
+      needs.macContext = true;
+      needs.accessibility = localCommand !== 'open_app';
+      needs.screen = localCommand !== 'open_app';
+      needs.localExecution = true;
+    } else if (['capture_clipboard'].includes(localCommand)) {
+      needs.clipboard = true;
+      needs.clipboardText = true;
+    } else if (['cli_command'].includes(localCommand)) {
+      needs.delegatedWorkerContext = true;
+      needs.localExecution = true;
+    }
+  }
+
+  if (needs.browserPage || needs.browserDom || needs.accessibility) needs.macContext = true;
+  if (needs.vision || needs.accessibility) needs.screen = needs.screen || screenSignal || localCommand === 'describe_screen';
+
+  const recommendedTools = contextPlanRecommendedTools(needs);
+  const skipped = Object.entries({
+    screen: needs.screen,
+    vision: needs.vision,
+    accessibility: needs.accessibility,
+    browserPage: needs.browserPage,
+    browserDom: needs.browserDom,
+    files: needs.files,
+    clipboardText: needs.clipboardText,
+  })
+    .filter(([, value]) => !value)
+    .map(([key]) => key);
+  const mode = contextPlanMode(needs);
+  const summary = mode === 'minimal'
+    ? 'Use minimal context for speed; no heavy screen/browser/file capture needed.'
+    : `Use ${mode} context: ${recommendedTools.join(', ') || 'resident state'}.`;
+
+  return normalizeContextPlan({
+    mode,
+    summary,
+    needs,
+    reasons: reasons.length ? reasons : ['default minimal context for fast/private routing'],
+    recommendedTools,
+    observeOptions: {
+      captureScreen: needs.screen,
+      includeAccessibility: needs.accessibility,
+      describeScreen: needs.vision,
+      includeClipboardText: needs.clipboardText,
+      maxNodes: needs.localExecution || needs.accessibility ? 160 : 80,
+      maxDepth: needs.localExecution || needs.accessibility ? 8 : 5,
+    },
+    browser: {
+      maxChars: needs.browserPage ? 30000 : 12000,
+      domLimit: needs.browserDom ? 80 : 40,
+    },
+    privacy: {
+      screenMode: screenPrivacy?.mode || 'private',
+      rationale: needs.screen
+        ? 'Use current configured screen privacy before model context.'
+        : 'Do not capture screen unless the task asks for visible context.',
+    },
+    skipped,
+  });
+}
+
 function formatBriefingForLocalCommand(briefing) {
   const actions = (briefing.nextActions || [])
     .slice(0, 4)
@@ -11535,6 +11802,11 @@ function routeTaskDecision(message, options = {}) {
   }
 
   const mode = lane === 'quick' ? 'quick' : lane;
+  const contextPlan = buildContextPlan(task, {
+    ...options,
+    lane,
+    mode,
+  });
   return {
     lane,
     mode,
@@ -11545,6 +11817,7 @@ function routeTaskDecision(message, options = {}) {
     execute: Boolean(options.execute),
     requiresOpenAiKey: lane === 'quick' || lane === 'background',
     requiresLocalExecution: lane === 'codex' || lane === 'claude',
+    contextPlan,
     features: {
       chars: task.length,
       words: wordCount,
@@ -11598,10 +11871,19 @@ async function routeTask(options = {}) {
   const localCommand = localCommandDecision(task);
   if (localCommand) {
     const decision = localCommandDecisionPayload(localCommand, execute);
+    decision.contextPlan = buildContextPlan(task, {
+      execute,
+      includeScreen: Boolean(options.includeScreen),
+      useMemory: false,
+      localCommand: localCommand.intent,
+      lane: decision.lane,
+      mode: decision.mode,
+    });
     appendAudit('task_route.local_command', {
       intent: localCommand.intent,
       execute,
       chars: task.length,
+      contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
       if (localCommand.intent === 'app_workflow' || localCommand.intent === 'creative_workflow') {
@@ -11618,9 +11900,10 @@ async function routeTask(options = {}) {
             ...routeLearningEvidence,
             decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
           },
+          contextPlan: decision.contextPlan,
           output: result.output,
           data: result.data,
-        }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence });
+        }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence, contextPlan: decision.contextPlan });
       }
       return finalizeRouteResult({
         ok: true,
@@ -11633,8 +11916,9 @@ async function routeTask(options = {}) {
           ...routeLearningEvidence,
           decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
         },
+        contextPlan: decision.contextPlan,
         output: `Local: ${localCommand.label}`,
-      }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence });
+      }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence, contextPlan: decision.contextPlan });
     }
     const result = await runLocalCommand(localCommand, { execute: true });
     appendAudit('local_command.completed', {
@@ -11654,9 +11938,10 @@ async function routeTask(options = {}) {
         ...routeLearningEvidence,
         decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
       },
+      contextPlan: decision.contextPlan,
       output: result.output,
       data: result.data,
-    }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence });
+    }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence, contextPlan: decision.contextPlan });
   }
   const memoryContext = memoryContextForTask(task, {
     useMemory: options.useMemory !== false,
@@ -11666,6 +11951,7 @@ async function routeTask(options = {}) {
     execute,
     includeScreen: Boolean(options.includeScreen),
     mode: options.mode || options.lane,
+    useMemory: options.useMemory !== false,
   });
 
   appendAudit('task_route.decided', {
@@ -11676,6 +11962,7 @@ async function routeTask(options = {}) {
     chars: decision.features.chars,
     memoryMatches: memoryContext.matches.length,
     learningEffect: memoryContext.learningEvidence.decisionEffect,
+    contextMode: decision.contextPlan.mode,
   });
 
   if (!execute) {
@@ -11690,12 +11977,14 @@ async function routeTask(options = {}) {
         learningEvidence: memoryContext.learningEvidence,
       },
       learningEvidence: memoryContext.learningEvidence,
+      contextPlan: decision.contextPlan,
       output: `Route: ${decision.label} · ${decision.reason}`,
     }, {
       ...routingContext,
       decision,
       memoryMatches: memoryContext.matches.length,
       learningEvidence: memoryContext.learningEvidence,
+      contextPlan: decision.contextPlan,
     });
   }
 
@@ -11718,12 +12007,14 @@ async function routeTask(options = {}) {
           learningEvidence: memoryContext.learningEvidence,
         },
         learningEvidence: memoryContext.learningEvidence,
+        contextPlan: decision.contextPlan,
         output,
       }, {
         ...routingContext,
         decision,
         memoryMatches: memoryContext.matches.length,
         learningEvidence: memoryContext.learningEvidence,
+        contextPlan: decision.contextPlan,
       });
     } catch (error) {
       return finalizeRouteResult({
@@ -11737,12 +12028,14 @@ async function routeTask(options = {}) {
           learningEvidence: memoryContext.learningEvidence,
         },
         learningEvidence: memoryContext.learningEvidence,
+        contextPlan: decision.contextPlan,
         output: error instanceof Error ? error.message : String(error),
       }, {
         ...routingContext,
         decision,
         memoryMatches: memoryContext.matches.length,
         learningEvidence: memoryContext.learningEvidence,
+        contextPlan: decision.contextPlan,
       });
     }
   }
@@ -11760,6 +12053,7 @@ async function routeTask(options = {}) {
       learningEvidence: memoryContext.learningEvidence,
     },
     learningEvidence: memoryContext.learningEvidence,
+    contextPlan: decision.contextPlan,
     job,
     output: `Routed to ${decision.label}: ${job.title}`,
   }, {
@@ -11767,6 +12061,7 @@ async function routeTask(options = {}) {
     decision,
     memoryMatches: memoryContext.matches.length,
     learningEvidence: memoryContext.learningEvidence,
+    contextPlan: decision.contextPlan,
   });
 }
 
@@ -14039,6 +14334,7 @@ function createRoutingRecord(options = {}) {
     ownership: options.ownership || {},
     memoryMatches: options.memoryMatches || 0,
     learningEvidence: normalizeLearningEvidence(options.learningEvidence),
+    contextPlan: normalizeContextPlan(options.contextPlan || decision.contextPlan || options.result?.contextPlan),
     createdAt: now,
     updatedAt: now,
     completedAt: ['done', 'failed', 'cancelled', 'blocked'].includes(options.status) ? now : 0,
@@ -14231,6 +14527,7 @@ function routingLedgerEntry(record) {
     ownership: record.ownership,
     memoryMatches: record.memoryMatches,
     learningEvidence: record.learningEvidence,
+    contextPlan: record.contextPlan,
     updatedAt: record.updatedAt,
   };
 }
@@ -14239,6 +14536,7 @@ function finalizeRouteResult(result, context = {}) {
   const job = result.job || result.data?.job || null;
   const workflow = result.workflow || result.data?.workflow || result.data?.result?.workflow || null;
   const status = routingStatusForResult(result);
+  const contextPlan = normalizeContextPlan(result.contextPlan || result.decision?.contextPlan || context.contextPlan);
   const record = createRoutingRecord({
     task: context.task,
     decision: result.decision || context.decision,
@@ -14255,10 +14553,12 @@ function finalizeRouteResult(result, context = {}) {
     parallelGroup: context.parallelGroup,
     scope: context.scope,
     ownership: context.ownership,
+    contextPlan,
     result,
   });
   return {
     ...result,
+    contextPlan,
     routing: record,
     routeRecord: record,
   };
@@ -14299,6 +14599,7 @@ function createRoutingRecordForWorkflow(options = {}) {
     parallelGroup: options.parallelGroup || options.group || decision.lane,
     resultSummary: options.resultSummary || workflow.result || '',
     ownership: options.ownership,
+    contextPlan: options.contextPlan || decision.contextPlan,
   });
 }
 
@@ -18363,6 +18664,17 @@ async function executeTool(name, args) {
     return { ok: observation.ok, output: JSON.stringify(observation) };
   }
 
+  if (name === 'plan_context') {
+    const contextPlan = buildContextPlan(args?.message || args?.task || args?.instruction || '', {
+      ...(args || {}),
+      includeScreen: args?.includeScreen === true,
+      useMemory: args?.useMemory !== false,
+      mode: args?.mode || args?.lane,
+      localCommand: args?.localCommand,
+    });
+    return { ok: true, output: JSON.stringify({ contextPlan }) };
+  }
+
   if (name === 'get_mac_context') {
     const context = await macContextSnapshot({ includeClipboardText: Boolean(args?.includeClipboardText) });
     return { ok: true, output: JSON.stringify(context) };
@@ -18878,7 +19190,8 @@ function createRealtimeSessionConfig(options = {}) {
       `Wake words: ${WAKE_WORDS.join(', ')}.`,
       'Default to standby behavior: when the user has not addressed you with a wake word and has not given an explicit follow-up command, stay silent and do not call tools.',
       'After a wake word, answer normally for that turn and carry short follow-up context while the user is clearly continuing the same task.',
-      'Use observe_now first when you need a fast combined snapshot of screen, current app, accessibility tree, clipboard summary, jobs, and approvals.',
+      'Use plan_context before expensive context gathering when the user request is ambiguous; follow its minimal recommended tools so voice stays fast and private.',
+      'Use observe_now only when the context plan or user request needs a fast combined snapshot of screen, current app, accessibility tree, clipboard summary, jobs, and approvals.',
       'Use describe_screen before claiming what the user is seeing.',
       'Use capture_screen when the user asks what is currently on the Mac screen and no recent screen frame is available.',
       'Use get_mac_context before acting on the current app, active window, clipboard, or local runtime state.',
@@ -18945,6 +19258,25 @@ function createRealtimeSessionConfig(options = {}) {
       },
     },
     tools: [
+      {
+        type: 'function',
+        name: 'plan_context',
+        description: 'Create a deterministic smart context assembly plan for a user request before capturing screen, browser page, Accessibility tree, clipboard text, files, memory, or delegated-worker context. Read-only and model-free.',
+        parameters: {
+          type: 'object',
+          properties: {
+            message: { type: 'string' },
+            task: { type: 'string' },
+            instruction: { type: 'string' },
+            includeScreen: { type: 'boolean' },
+            useMemory: { type: 'boolean' },
+            mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            localCommand: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
       {
         type: 'function',
         name: 'observe_now',
@@ -21258,6 +21590,33 @@ function startApiServer() {
     } catch (error) {
       jsonError(res, 500, 'Screen analysis failed', error instanceof Error ? error.message : String(error));
     }
+  });
+
+  api.get('/api/context/plan', (req, res) => {
+    const message = String(req.query.message || req.query.task || '').trim();
+    res.json({
+      ok: true,
+      contextPlan: buildContextPlan(message, {
+        includeScreen: req.query.includeScreen === 'true',
+        useMemory: req.query.useMemory !== 'false',
+        mode: req.query.mode || req.query.lane,
+        localCommand: req.query.localCommand,
+      }),
+    });
+  });
+
+  api.post('/api/context/plan', express.json({ limit: '1mb' }), (req, res) => {
+    const message = String(req.body?.message || req.body?.task || '').trim();
+    res.json({
+      ok: true,
+      contextPlan: buildContextPlan(message, {
+        ...(req.body || {}),
+        includeScreen: req.body?.includeScreen === true,
+        useMemory: req.body?.useMemory !== false,
+        mode: req.body?.mode || req.body?.lane,
+        localCommand: req.body?.localCommand,
+      }),
+    });
   });
 
   api.post('/api/chat/quick', async (req, res) => {

@@ -64,11 +64,12 @@ Renderer
 - Vision lane: analyzes the latest permitted screen frame.
 - Screen privacy lane: stores the resident screen privacy mode and makes the renderer downscale/blur frames before posting them to the API or Realtime.
 - Live screen-context lane: sends periodic screen image messages into the active Realtime conversation without triggering standalone replies.
+- Smart context assembly lane: creates a deterministic per-request context plan before expensive capture, deciding whether to gather resident state, Mac context, screen/vision, Accessibility, browser page/DOM, clipboard text, files, memory, learning, or delegated-worker context.
 - Observe lane: combined low-latency voice snapshot over Mac context, optional resident screen capture, optional vision summary, Accessibility outline, jobs, and approvals.
 - Presence lane: read-only standby/watch/work/attention state that packages ambient context, wake status, local learning, active work, and intervention guardrails for CUI/API/voice use.
 - Fast text lane: lightweight Q&A.
 - No-model local command lane: deterministic status, Inbox, open-app/open-URL, and web-search commands that run before model routing.
-- Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories attached to task context when model lanes are used.
+- Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories and a persisted `contextPlan` attached when model lanes are used.
 - Background lane: slower higher-quality model work.
 - Delegation lane: hands code or long tasks to Codex or Claude Code with streamed logs, PID tracking, and cancellation.
 - Action lane: small local Mac actions, guarded by allowlists and confirmation.
@@ -130,6 +131,7 @@ By default, local runtime state lives in:
 `workflows.json` preserves recent user-level workflows, such as current-page summaries or background browser tasks. Workflow records store target app/page metadata, status, linked job id, parent workflow id, request text, and result summary so JAVIS can explain, continue, or copy recent work back to the clipboard.
 
 `routing.json` preserves user-level lane decisions across quick, background, Codex, Claude, local CLI, browser workflow, file workflow, and continuation paths. Records store lane, owner, scope, parallel group, approval requirement, status, result link, job/workflow ids, and compact result summaries so progress check-ins can explain who owns active work and what the next step is.
+Each routing record also stores `contextPlan`, which explains the planned context budget and why screen, vision, Accessibility, browser page/DOM, clipboard text, file, memory, learning, or delegated-worker context was included or skipped.
 
 `collaboration.json` preserves short-lived agent scope claims across resident restarts. External workers can claim an owner/scope/access pair, heartbeat it while editing, and release it when done. Active write claims seed the parallel router's ownership guard so JAVIS avoids launching overlapping Codex/Claude/local workers against the same file or folder.
 
