@@ -152,12 +152,17 @@ export default {
         autopilotStatusTool.data?.ok === true &&
         autopilotStatusOutput?.ok === true &&
         typeof autopilotStatusOutput.spokenSummary === 'string' &&
+        typeof autopilotStatusOutput.skipSummary === 'string' &&
         typeof autopilotStatusOutput.nextWait === 'string' &&
         typeof autopilotStatusOutput.canActNow === 'boolean' &&
+        autopilotStatusOutput.candidateCounts &&
+        typeof autopilotStatusOutput.candidateCounts.total === 'number' &&
+        typeof autopilotStatusOutput.candidateCounts.autoExecutable === 'number' &&
+        Array.isArray(autopilotStatusOutput.waitingFor) &&
         autopilotStatusOutput.decisionPreview &&
         Array.isArray(autopilotStatusOutput.candidates) &&
         autopilotStatusOutput.candidates.every((candidate) => candidate.id && candidate.decision && typeof candidate.decision.reason === 'string')
-        ? ok('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `${autopilotStatusOutput.canActNow ? 'ready' : 'waiting'} · ${autopilotStatusOutput.reason || autopilotStatusOutput.nextWait}`)
+        ? ok('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `${autopilotStatusOutput.canActNow ? 'ready' : 'waiting'} · ${autopilotStatusOutput.reason || autopilotStatusOutput.nextWait} · ${autopilotStatusOutput.candidateCounts.autoExecutable} auto/${autopilotStatusOutput.candidateCounts.total}`)
         : fail('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `tool execute ${autopilotStatusTool.status}`, autopilotStatusTool.data),
     );
 
@@ -165,9 +170,9 @@ export default {
     const autopilotToolEvidence = autopilotEvidence.data?.evidence?.autopilotTools;
     const autopilotToolEvents = Array.isArray(autopilotToolEvidence?.recent) ? autopilotToolEvidence.recent : [];
     out.push(
-      autopilotEvidence.ok &&
+        autopilotEvidence.ok &&
         autopilotToolEvidence?.hasStatus === true &&
-        autopilotToolEvents.some((event) => event.name === 'get_autopilot_status' && event.source === 'eval' && event.autopilot?.spokenSummary)
+        autopilotToolEvents.some((event) => event.name === 'get_autopilot_status' && event.source === 'eval' && event.autopilot?.spokenSummary && typeof event.autopilot.firstWaitingFor === 'string' && typeof event.autopilot.autoExecutableCount === 'number')
         ? ok('realtime.autopilot_tool_evidence', 'Realtime autopilot tool evidence', `${autopilotToolEvidence.count || 0} autopilot status call(s) visible`)
         : fail('realtime.autopilot_tool_evidence', 'Realtime autopilot tool evidence', 'expected get_autopilot_status calls to be visible in realtime evidence', autopilotToolEvidence),
     );

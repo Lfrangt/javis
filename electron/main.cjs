@@ -15486,6 +15486,158 @@ function autopilotNextWaitReason(reason, selectedAction = null, firstAction = nu
   return 'Review work-next for the safest next action.';
 }
 
+function autopilotWaitDurationLabel(ms) {
+  const value = Math.max(0, Number(ms || 0));
+  if (!value) return '';
+  const seconds = Math.ceil(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.ceil(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.ceil(hours / 24)}d`;
+}
+
+function autopilotCandidateCounts(candidates = []) {
+  const counts = {
+    total: candidates.length,
+    autoExecutable: 0,
+    manualOnly: 0,
+    requiresUserPresence: 0,
+    trustedRecovery: 0,
+    maintenance: 0,
+    blocked: 0,
+  };
+  for (const candidate of candidates) {
+    if (candidate.decision?.executable) counts.autoExecutable += 1;
+    if (candidate.manualOnly) counts.manualOnly += 1;
+    if (candidate.requiresUserPresence) counts.requiresUserPresence += 1;
+    if (candidate.trustedAutoEligible) counts.trustedRecovery += 1;
+    if (candidate.source === 'maintenance') counts.maintenance += 1;
+  }
+  counts.blocked = Math.max(0, counts.total - counts.autoExecutable);
+  return counts;
+}
+
+function pushAutopilotWaitingCondition(list, item) {
+  if (!item?.id || list.some((existing) => existing.id === item.id)) return;
+  list.push({
+    id: item.id,
+    label: compactRecordText(item.label || item.id, 120),
+    summary: compactRecordText(item.summary || '', 280),
+    status: compactRecordText(item.status || 'waiting', 40),
+    actionId: compactRecordText(item.actionId || '', 180),
+    actionSource: compactRecordText(item.actionSource || '', 80),
+    waitMs: Math.max(0, Number(item.waitMs || 0)),
+    waitLabel: compactRecordText(item.waitLabel || '', 40),
+  });
+}
+
+function autopilotWaitingConditions({ reason = '', candidates = [], selectedAction = null, firstAction = null, maintenance = null } = {}) {
+  if (selectedAction?.decision?.executable && !reason) return [];
+  const waiting = [];
+  if (!AUTOPILOT_ENABLED) {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'enable_autopilot',
+      label: 'Enable overnight autopilot',
+      summary: 'JAVIS_AUTOPILOT_ENABLED is off, so unattended ticks only preview decisions.',
+      status: 'blocked',
+    });
+  }
+  if (reason === 'preview_only') {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'execute_tick',
+      label: 'Run an executing tick',
+      summary: 'This was only a preview; execute=true is required before autopilot can act.',
+      status: 'waiting',
+    });
+  }
+  if (reason === 'conversation_active') {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'voice_idle',
+      label: 'Wait for voice to go idle',
+      summary: 'A live voice session is active, so unattended work will not take over.',
+      status: 'waiting',
+    });
+  }
+  if (reason === 'active_job_running') {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'jobs_idle',
+      label: 'Wait for active jobs',
+      summary: `${activeJobRuns.size} background job(s) are still running or queued.`,
+      status: 'waiting',
+    });
+  }
+
+  const manual = candidates.find((candidate) => candidate.manualOnly || candidate.requiresUserPresence);
+  if (manual) {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'manual_user_action',
+      label: 'Needs user presence',
+      summary: `${manual.label || manual.id} requires explicit user action and will be skipped by unattended autopilot.`,
+      status: 'manual',
+      actionId: manual.id,
+      actionSource: manual.source,
+    });
+  }
+
+  const noExecutableCandidate = candidates.length && !candidates.some((candidate) => candidate.decision?.executable);
+  if (noExecutableCandidate) {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'eligible_safe_action',
+      label: 'Wait for low-risk work',
+      summary: 'No current work-next candidate is a bounded low-risk recovery, maintenance, or trusted retry action.',
+      status: 'waiting',
+    });
+  }
+
+  if (maintenance && maintenance.due === false) {
+    const waitMs = Math.max(0, Number(maintenance.minIntervalMs || 0) - Number(maintenance.ageMs || 0));
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'maintenance_cooldown',
+      label: 'Maintenance cooldown',
+      summary: waitMs
+        ? `Read-only maintenance snapshot can run after the cooldown, in about ${autopilotWaitDurationLabel(waitMs)}.`
+        : 'Read-only maintenance snapshot is still cooling down.',
+      status: 'cooldown',
+      waitMs,
+      waitLabel: autopilotWaitDurationLabel(waitMs),
+    });
+  }
+
+  if (!candidates.length) {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'new_evidence',
+      label: 'Wait for new work',
+      summary: 'No queued work is available; JAVIS is standing by for user intent or new local evidence.',
+      status: 'waiting',
+    });
+  }
+
+  if (!waiting.length && firstAction) {
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'review_work_next',
+      label: 'Review work-next',
+      summary: `Current first action is not autopilot executable: ${firstAction.label || firstAction.id}.`,
+      status: 'waiting',
+      actionId: firstAction.id,
+      actionSource: firstAction.source,
+    });
+  }
+
+  return waiting;
+}
+
+function autopilotSkipSummary(reason = '', waitingFor = [], selectedAction = null) {
+  if (!reason && selectedAction) {
+    return `Ready to run ${selectedAction.label || selectedAction.id || 'the selected safe action'}.`;
+  }
+  if (waitingFor.length) {
+    return waitingFor.slice(0, 3).map((item) => item.summary || item.label).filter(Boolean).join(' ');
+  }
+  return autopilotNextWaitReason(reason, selectedAction, null);
+}
+
 function autopilotSkipReason({ execute, selectedAction, firstAction, conversation } = {}) {
   const firstActionManualOnly = Boolean(firstAction?.manualOnly || firstAction?.autopilotEligible === false);
   if (!AUTOPILOT_ENABLED) return 'autopilot_disabled';
@@ -15502,6 +15654,16 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
   const candidates = actions.slice(0, 6).map(autopilotActionDecision).filter(Boolean);
   const selected = selectedAction ? autopilotActionDecision(selectedAction, actions.indexOf(selectedAction)) : null;
   const first = firstAction ? autopilotActionDecision(firstAction, actions.indexOf(firstAction)) : null;
+  const maintenance = briefing?.maintenance || maintenanceStateSnapshot();
+  const candidateCounts = autopilotCandidateCounts(candidates);
+  const waitingFor = autopilotWaitingConditions({
+    reason,
+    candidates,
+    selectedAction: selected,
+    firstAction: first,
+    maintenance,
+  });
+  const skipSummary = autopilotSkipSummary(reason, waitingFor, selected);
   return {
     generatedAt: new Date().toISOString(),
     source: String(source || 'api').slice(0, 80),
@@ -15516,6 +15678,10 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
     selectedAction: selected,
     firstAction: first,
     candidates,
+    candidateCounts,
+    waitingFor,
+    skipSummary: compactRecordText(skipSummary || '', 500),
+    maintenance,
     nextWait: autopilotNextWaitReason(reason, selectedAction, firstAction),
   };
 }
@@ -15560,7 +15726,7 @@ function autopilotVoiceStatusSnapshot(options = {}) {
   const spokenSummary = canActNow
     ? `Autopilot 可以自己执行下一步: ${compactRecordText(selected.label || selected.id, 90)}。`
     : reason
-      ? `Autopilot 当前没有自动执行: ${reason}。${compactRecordText(preview.nextWait || '', 160)}`
+      ? `Autopilot 当前没有自动执行: ${compactRecordText(preview.skipSummary || preview.nextWait || reason, 220)}`
       : 'Autopilot 当前没有需要自动执行的动作。';
   return {
     ok: true,
@@ -15580,6 +15746,9 @@ function autopilotVoiceStatusSnapshot(options = {}) {
     reason,
     nextWait: preview.nextWait,
     spokenSummary,
+    skipSummary: preview.skipSummary,
+    candidateCounts: preview.candidateCounts,
+    waitingFor: preview.waitingFor,
     selectedAction: selected,
     firstAction: first,
     candidates: preview.candidates,
@@ -16159,6 +16328,7 @@ function realtimeAutopilotToolSummary(name, args = {}, result = {}) {
   const selected = output.selectedAction || output.decisionPreview?.selectedAction || null;
   return {
     spokenSummary: compactRecordText(output.spokenSummary || output.output || '', 420),
+    skipSummary: compactRecordText(output.skipSummary || output.decisionPreview?.skipSummary || '', 420),
     source: compactRecordText(output.source || args?.source || '', 80),
     canActNow: Boolean(output.canActNow),
     enabled: Boolean(output.enabled),
@@ -16168,6 +16338,9 @@ function realtimeAutopilotToolSummary(name, args = {}, result = {}) {
     selectedAction: compactRecordText(selected?.label || selected?.id || '', 140),
     selectedSource: compactRecordText(selected?.source || '', 80),
     candidateCount: Array.isArray(output.candidates) ? output.candidates.length : 0,
+    autoExecutableCount: boundedCount(output.candidateCounts?.autoExecutable || output.decisionPreview?.candidateCounts?.autoExecutable, 1000),
+    waitingForCount: Array.isArray(output.waitingFor) ? output.waitingFor.length : Array.isArray(output.decisionPreview?.waitingFor) ? output.decisionPreview.waitingFor.length : 0,
+    firstWaitingFor: compactRecordText((output.waitingFor?.[0] || output.decisionPreview?.waitingFor?.[0])?.summary || '', 220),
     tickCount: boundedCount(output.tickCount, 1000000000),
     executedCount: boundedCount(output.executedCount, 1000000000),
     skippedCount: boundedCount(output.skippedCount, 1000000000),
@@ -16210,8 +16383,11 @@ function recordRealtimeToolCall(options = {}) {
     handoffSummary: handoff?.spokenSummary || '',
     handoffNextActions: handoff?.nextActionCount || 0,
     autopilotSummary: autopilot?.spokenSummary || '',
+    autopilotSkipSummary: autopilot?.skipSummary || '',
     autopilotReason: autopilot?.reason || '',
     autopilotCanActNow: Boolean(autopilot?.canActNow),
+    autopilotWaitingFor: autopilot?.firstWaitingFor || '',
+    autopilotAutoExecutableCount: autopilot?.autoExecutableCount || 0,
     error: event.error,
   });
   return event;
@@ -18832,6 +19008,7 @@ function workflowBriefing(options = {}) {
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
   const learning = learningStateSnapshot();
   const realtimeWorkbench = realtimeVoiceWorkbenchSnapshot();
+  const maintenance = maintenanceStateSnapshot(workflowContext);
   const nextActions = [];
 
   if (readiness.primaryIssue) {
@@ -19028,6 +19205,7 @@ function workflowBriefing(options = {}) {
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
     followUps,
     realtimeVoice: realtimeWorkbench,
+    maintenance,
     routingLedger,
     collaboration,
     laneContracts: laneContractSnapshot(),

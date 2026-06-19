@@ -248,7 +248,7 @@ async function printStatus() {
       const maintenanceText = maintenance.minIntervalMs
         ? ` · maintenance ${maintenance.due ? 'due' : 'cooldown'}${maintenance.lastSnapshotAt ? ` last ${formatTime(maintenance.lastSnapshotAt)}` : ''}`
         : '';
-      const decisionText = decision?.reason || decision?.selectedAction?.decision?.reason || decision?.outcome || 'none';
+      const decisionText = decision?.skipSummary || decision?.reason || decision?.selectedAction?.decision?.reason || decision?.outcome || 'none';
       console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · every ${formatInterval(autopilot.intervalMs)} · ticks ${autopilot.tickCount || 0} · ran ${autopilot.executedCount || 0} · decision ${compact(decisionText, 60)} · last ${compact(autopilot.lastResult || 'none', 80)}${maintenanceText}`);
     }
     if (browserJs.javascript?.supported && browserJs.javascript?.available) {
@@ -458,7 +458,20 @@ function printAutopilotDecision(decision, label = 'Decision') {
   const targetText = target ? `${target.label || target.id || 'action'} (${target.source || 'unknown'})` : 'none';
   const reason = decision.reason ? ` · reason ${decision.reason}` : '';
   console.log(`${label}: ${decision.outcome || 'preview'}${reason} · target ${targetText}`);
+  if (decision.skipSummary) console.log(`Why waiting: ${compact(decision.skipSummary, 260)}`);
   if (decision.nextWait) console.log(`Wait: ${compact(decision.nextWait, 220)}`);
+  if (decision.candidateCounts) {
+    const counts = decision.candidateCounts;
+    console.log(`Candidate counts: ${counts.autoExecutable || 0} auto / ${counts.manualOnly || 0} manual / ${counts.blocked || 0} blocked / ${counts.total || 0} total`);
+  }
+  const waitingFor = Array.isArray(decision.waitingFor) ? decision.waitingFor : [];
+  if (waitingFor.length) {
+    const waits = waitingFor.slice(0, 4).map((item, index) => {
+      const wait = item.waitLabel ? ` · ${item.waitLabel}` : '';
+      return `${index + 1}. ${item.label || item.id} · ${item.status || 'waiting'}${wait}: ${compact(item.summary || '', 140)}`;
+    });
+    console.log(`Waiting for: ${waits.join(' | ')}`);
+  }
   const candidates = Array.isArray(decision.candidates) ? decision.candidates : [];
   if (candidates.length) {
     const lines = candidates.slice(0, 3).map((candidate, index) => {
@@ -1044,9 +1057,11 @@ function printRealtimeEvidence(result) {
       autopilot.canActNow ? 'can-act' : 'waiting',
       autopilot.reason ? `reason=${autopilot.reason}` : '',
       autopilot.candidateCount ? `candidates=${autopilot.candidateCount}` : '',
+      autopilot.autoExecutableCount ? `auto=${autopilot.autoExecutableCount}` : '',
     ].filter(Boolean);
+    const waiting = autopilot.firstWaitingFor ? ` · waiting=${compact(autopilot.firstWaitingFor, 120)}` : '';
     const summary = autopilot.spokenSummary ? ` · ${compact(autopilot.spokenSummary, 140)}` : '';
-    console.log(`- ${event.name || 'get_autopilot_status'} · ${bits.join(' · ')}${summary}`);
+    console.log(`- ${event.name || 'get_autopilot_status'} · ${bits.join(' · ')}${waiting}${summary}`);
   }
   console.log('\nRecent realtime tool calls:');
   if (toolCalls.length) {
@@ -1192,6 +1207,11 @@ async function main() {
 
   if (process.argv.includes('--print-browser-activity') || process.argv.includes('--browser-activity')) {
     await showBrowserActivity();
+    return;
+  }
+
+  if (process.argv.includes('--print-autopilot') || process.argv.includes('--autopilot')) {
+    await showAutopilotStatus();
     return;
   }
 

@@ -135,8 +135,8 @@ typing `RUN`. This is the manual path for recovering blocked jobs, processing th
 checking progress, summoning a real Realtime voice dogfood session, or delivering a completed workflow result without memorizing HTTP calls. Realtime voice actions print a small guide with the pet/hotkey start path, CUI monitor, the prompts `后台现在怎么样` and `现在做到哪了？接下来做什么？`, and the expected `get_work_handoff` evidence. Internal
 smoke/verification workflows are not offered as deliverable results.
 
-Use option `16. Show autopilot status` to see the resident overnight loop, last tick, last result,
-the current decision preview, candidate auto-run reasons, and the next workbench action without opening a separate UI.
+Use option `16. Show autopilot status`, or `npm run config -- --print-autopilot`, to see the resident overnight loop, last tick, last result,
+the current decision preview, candidate auto-run counts, explicit waiting conditions, and the next workbench action without opening a separate UI.
 
 Use option `17. Run one autopilot tick` to preview and then manually advance the resident loop once.
 It calls `/api/autopilot/tick` and requires typing `RUN` before executing.
@@ -148,7 +148,7 @@ and blocked app workflows that the local safe planner can re-plan; it skips whil
 another background job is running. When multiple work-next actions exist, autopilot skips manual-only
 items, including Realtime voice dogfood, and executes the first action that passes its auto-executable guard.
 `/api/autopilot` exposes the same structured decision preview so unattended runs leave evidence for
-why an action ran, why it skipped, and what condition JAVIS is waiting on.
+why an action ran, why it skipped, which candidates were auto-executable, and what condition JAVIS is waiting on.
 If no user-visible action is auto-executable, it can run a cooldown-gated read-only maintenance snapshot
 that records resident health, doctor/readiness state, worker progress, learning status, Realtime status,
 and collaboration state as an internal workflow. Tune the cooldown with `JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS`.

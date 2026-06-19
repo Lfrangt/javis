@@ -1,5 +1,9 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { ok, warn, fail } from '../_client.mjs';
 
+const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function waitForJob(ctx, id, timeoutMs = 10000) {
@@ -55,11 +59,32 @@ export default {
         autopilotDecision &&
         typeof autopilotDecision.outcome === 'string' &&
         typeof autopilotDecision.nextWait === 'string' &&
+        typeof autopilotDecision.skipSummary === 'string' &&
+        autopilotDecision.candidateCounts &&
+        typeof autopilotDecision.candidateCounts.total === 'number' &&
+        typeof autopilotDecision.candidateCounts.autoExecutable === 'number' &&
+        Array.isArray(autopilotDecision.waitingFor) &&
         Array.isArray(autopilotDecision.candidates) &&
         autopilotDecision.candidates.every((candidate) => candidate.id && candidate.decision && typeof candidate.decision.reason === 'string')
-        ? ok('workers.autopilot_decision_evidence', 'Autopilot decision evidence', `${autopilotDecision.outcome}${autopilotDecision.reason ? `/${autopilotDecision.reason}` : ''} · ${autopilotDecision.candidates.length} candidate(s)`)
-        : fail('workers.autopilot_decision_evidence', 'Autopilot decision evidence', 'autopilot did not expose structured decision preview/candidates', autopilot.data),
+        ? ok('workers.autopilot_decision_evidence', 'Autopilot decision evidence', `${autopilotDecision.outcome}${autopilotDecision.reason ? `/${autopilotDecision.reason}` : ''} · ${autopilotDecision.candidateCounts.autoExecutable} auto / ${autopilotDecision.candidateCounts.total} candidate(s) · waiting=${autopilotDecision.waitingFor.length}`)
+        : fail('workers.autopilot_decision_evidence', 'Autopilot decision evidence', 'autopilot did not expose structured decision preview/candidates/waiting conditions', autopilot.data),
     );
+    try {
+      const { stdout } = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-autopilot'], {
+        cwd: process.cwd(),
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('Candidate counts:') &&
+          stdout.includes('Waiting for:') &&
+          stdout.includes('Why waiting:')
+          ? ok('workers.autopilot_cui_waiting', 'Autopilot CUI waiting conditions', 'config CUI prints candidate counts and waiting conditions')
+          : fail('workers.autopilot_cui_waiting', 'Autopilot CUI waiting conditions', 'expected --print-autopilot to show candidate counts and waiting conditions', { output: stdout.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('workers.autopilot_cui_waiting', 'Autopilot CUI waiting conditions', error instanceof Error ? error.message : String(error)));
+    }
     out.push(
       autopilot.ok && ap?.maintenance && typeof ap.maintenance.minIntervalMs === 'number'
         ? ok('workers.autopilot_maintenance_state', 'Autopilot maintenance state', `due=${ap.maintenance.due} last=${ap.maintenance.lastSnapshotAt || 0}`)
