@@ -63,8 +63,8 @@
 - Calendar, email, notes, and reminders through explicit connectors or local apps.
 - Obsidian/MCP bridge for notes and knowledge work.
 - Creative app bridge: current build recognizes video editing and music composition tasks, chooses common NLE/DAW apps, records stage action packs for imports, timeline edits, subtitles, MIDI sketches, mix/export previews, executes one guarded action at a time, and performs post-action screen/UI verification with recovery hints; next, add app-specific result checks for Final Cut Pro, Resolve, Logic, GarageBand, and Ableton.
-- Coding workflows through Codex and Claude Code with clear owner/scope boundaries, progress updates, and parallel routing for independent work. Current build records per-task ownership metadata and serializes overlapping write scopes instead of launching competing agents against the same files; next, dogfood it on real mixed read/write code batches.
-- Verifiable next task: route two read-only investigations plus two overlapping scoped documentation edits through `/api/tasks/parallel`, then confirm independent work stays parallel while the later overlapping write is serialized and every route records owner, scope, ownership, status, and result link.
+- Coding workflows through Codex and Claude Code with clear owner/scope boundaries, progress updates, and parallel routing for independent work. Current build records per-task ownership metadata and serializes overlapping write scopes instead of launching competing agents against the same files; `npm run eval -- --only=parallel` dogfoods two read-only investigations plus two overlapping scoped documentation edits and verifies owner/scope/status/result-link metadata.
+- Verifiable next task: execute a real mixed Codex/Claude/local read-only batch with independent scopes, then confirm worker logs, job links, and spoken progress check-ins stay coherent from `/api/work/progress`.
 
 ## Phase 3: Natural Collaboration
 
