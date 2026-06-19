@@ -1342,6 +1342,46 @@ export default {
         : fail('realtime.dogfood_archive_tool', 'Realtime dogfood archive voice tool', `tool execute ${archiveTool.status}`, archiveTool.data),
     );
 
+    const rendererDogfoodPreview = await ctx.api('/api/realtime/dogfood/renderer/start', {
+      method: 'POST',
+      timeoutMs: 30000,
+      body: {
+        execute: false,
+        source: 'eval',
+      },
+    });
+    out.push(
+      rendererDogfoodPreview.ok &&
+        rendererDogfoodPreview.data?.executed === false &&
+        rendererDogfoodPreview.data?.startsMicrophone === true &&
+        rendererDogfoodPreview.data?.requiresMicConfirmation === true &&
+        rendererDogfoodPreview.data?.detail?.action === 'start' &&
+        Array.isArray(rendererDogfoodPreview.data?.detail?.prompts) &&
+        rendererDogfoodPreview.data.detail.prompts.length > 0
+        ? ok('realtime.renderer_dogfood_preview', 'Realtime renderer dogfood preview', 'renderer dogfood trigger previews without starting microphone')
+        : fail('realtime.renderer_dogfood_preview', 'Realtime renderer dogfood preview', `POST /api/realtime/dogfood/renderer/start ${rendererDogfoodPreview.status}`, rendererDogfoodPreview.data),
+    );
+
+    const rendererDogfoodGuard = await ctx.api('/api/realtime/dogfood/renderer/start', {
+      method: 'POST',
+      timeoutMs: 30000,
+      body: {
+        execute: true,
+        confirmMic: false,
+        source: 'eval',
+      },
+      retries: 0,
+    });
+    out.push(
+      rendererDogfoodGuard.status === 409 &&
+        rendererDogfoodGuard.data?.ok === false &&
+        rendererDogfoodGuard.data?.startsMicrophone === true &&
+        rendererDogfoodGuard.data?.requiresMicConfirmation === true &&
+        /confirmMic:true/.test(rendererDogfoodGuard.data?.output || '')
+        ? ok('realtime.renderer_dogfood_mic_gate', 'Realtime renderer dogfood mic gate', 'execute:true is rejected unless confirmMic:true is present')
+        : fail('realtime.renderer_dogfood_mic_gate', 'Realtime renderer dogfood mic gate', `expected 409 confirmation gate, got ${rendererDogfoodGuard.status}`, rendererDogfoodGuard.data),
+    );
+
     try {
       const archiveCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-archive'], {
         cwd: process.cwd(),

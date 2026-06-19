@@ -29,6 +29,7 @@
     "eval": "node scripts/eval/run.mjs",
     "eval:json": "node scripts/eval/run.mjs --json",
     "eval:routing": "node scripts/eval-routing.mjs",
+    "dogfood:realtime-renderer": "node scripts/realtime-dogfood-renderer.mjs",
     "verify:ax": "node scripts/verify-ax-targeting.mjs",
     "config": "node scripts/config-cui.cjs",
     "config:cui": "node scripts/config-cui.cjs",

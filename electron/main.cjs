@@ -93,6 +93,7 @@ const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.en
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
+const RENDERER_DOGFOOD_EVENT_NAME = 'javis:realtime-dogfood';
 const API_AUTH_ENABLED = process.env.JAVIS_API_AUTH !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
@@ -681,6 +682,20 @@ let realtimeDogfoodStartState = {
   progressQueuedAt: 0,
   progressResult: null,
   error: '',
+};
+let realtimeRendererDogfoodState = {
+  active: false,
+  runId: '',
+  status: 'idle',
+  source: '',
+  startsMicrophone: false,
+  confirmMic: false,
+  prompts: [],
+  createdAt: 0,
+  updatedAt: 0,
+  completedAt: 0,
+  error: '',
+  events: [],
 };
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
@@ -19786,6 +19801,185 @@ function formatRealtimeDogfoodGuideLines(guide = {}) {
   ].filter(Boolean);
 }
 
+function realtimeRendererDogfoodSnapshot() {
+  return {
+    ok: true,
+    eventName: RENDERER_DOGFOOD_EVENT_NAME,
+    rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    ...realtimeRendererDogfoodState,
+    active: Boolean(realtimeRendererDogfoodState.active),
+    startsMicrophone: Boolean(realtimeRendererDogfoodState.startsMicrophone),
+    confirmMic: Boolean(realtimeRendererDogfoodState.confirmMic),
+    events: (realtimeRendererDogfoodState.events || []).slice(-30),
+  };
+}
+
+function normalizeRendererDogfoodPrompts(value, fallback = '') {
+  const raw = Array.isArray(value) ? value : String(value || '').split(/\n|;;/);
+  const prompts = raw
+    .map((item) => compactRecordText(item, 400))
+    .filter(Boolean)
+    .slice(0, 8);
+  if (!prompts.length && fallback) prompts.push(compactRecordText(fallback, 400));
+  return prompts;
+}
+
+function boundedRendererDogfoodMs(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return fallback;
+  return Math.max(min, Math.min(max, Math.round(number)));
+}
+
+function recordRealtimeRendererDogfoodEvent(options = {}) {
+  const now = Date.now();
+  const runId = String(options.runId || realtimeRendererDogfoodState.runId || '').slice(0, 120);
+  const event = {
+    runId,
+    type: compactRecordText(options.type || options.event || 'event', 80),
+    status: compactRecordText(options.status || '', 80),
+    detail: compactRecordText(options.detail || options.message || '', 300),
+    prompt: compactRecordText(options.prompt || '', 180),
+    sessionId: String(options.sessionId || '').slice(0, 120),
+    createdAt: now,
+    createdAtIso: new Date(now).toISOString(),
+  };
+  const events = [...(realtimeRendererDogfoodState.events || []), event].slice(-60);
+  const terminal = ['stopped', 'done', 'error', 'timeout'].includes(event.type) || ['stopped', 'done', 'error', 'timeout'].includes(event.status);
+  realtimeRendererDogfoodState = {
+    ...realtimeRendererDogfoodState,
+    runId: runId || realtimeRendererDogfoodState.runId,
+    status: event.status || event.type || realtimeRendererDogfoodState.status,
+    active: terminal ? false : realtimeRendererDogfoodState.active,
+    completedAt: terminal ? now : realtimeRendererDogfoodState.completedAt,
+    error: event.type === 'error' || event.status === 'error' ? event.detail : realtimeRendererDogfoodState.error,
+    updatedAt: now,
+    events,
+  };
+  appendAudit('realtime.renderer_dogfood_event', {
+    runId: event.runId,
+    type: event.type,
+    status: event.status,
+    sessionId: event.sessionId,
+    prompt: event.prompt,
+    detail: event.detail,
+  });
+  return realtimeRendererDogfoodSnapshot();
+}
+
+async function dispatchRendererDogfoodCommand(detail = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return { ok: false, status: 409, error: 'Renderer window is not available.' };
+  }
+  const payload = JSON.stringify(detail).replace(/</g, '\\u003c');
+  await mainWindow.webContents.executeJavaScript(
+    `window.dispatchEvent(new CustomEvent(${JSON.stringify(RENDERER_DOGFOOD_EVENT_NAME)}, { detail: ${payload} })); true;`,
+    true,
+  );
+  return { ok: true };
+}
+
+async function startRealtimeRendererDogfood(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const confirmMic = options.confirmMic === true || String(options.confirmMic || '').toLowerCase() === 'true';
+  const nextPrompt = realtimeDogfoodNextPromptSnapshot();
+  const prompts = normalizeRendererDogfoodPrompts(options.prompts || options.prompt, nextPrompt.copyText || nextPrompt.prompt);
+  const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
+  const detail = {
+    action: 'start',
+    runId,
+    screenLive: options.screenLive !== false,
+    prompts,
+    promptDelayMs: boundedRendererDogfoodMs(options.promptDelayMs, 35000, 0, 180000),
+    betweenPromptsMs: boundedRendererDogfoodMs(options.betweenPromptsMs, 9000, 1000, 60000),
+    stopAfterMs: boundedRendererDogfoodMs(options.stopAfterMs, 0, 0, 300000),
+    createdAt: Date.now(),
+    source: String(options.source || 'api').slice(0, 80),
+  };
+  const preview = {
+    ok: true,
+    executed: false,
+    runId,
+    startsMicrophone: true,
+    requiresMicConfirmation: true,
+    manualOnly: true,
+    requiresUserPresence: true,
+    rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    detail,
+    dogfoodStart: realtimeDogfoodStartStateSnapshot(),
+    output: [
+      'Preview renderer Realtime dogfood trigger.',
+      'This path starts the renderer WebRTC voice session only when execute:true and confirmMic:true are both provided.',
+      prompts.length ? `Prompt(s): ${prompts.join(' | ')}` : '',
+    ].filter(Boolean).join('\n'),
+  };
+  if (!execute) return preview;
+  if (!confirmMic) {
+    return {
+      ...preview,
+      ok: false,
+      status: 409,
+      output: 'Refusing to start renderer Realtime dogfood without confirmMic:true because this starts microphone capture.',
+    };
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return {
+      ...preview,
+      ok: false,
+      status: 409,
+      output: 'Renderer window is not available.',
+    };
+  }
+
+  realtimeRendererDogfoodState = {
+    active: true,
+    runId,
+    status: 'dispatching',
+    source: String(options.source || 'api').slice(0, 80),
+    startsMicrophone: true,
+    confirmMic: true,
+    prompts,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    completedAt: 0,
+    error: '',
+    events: [],
+  };
+  recordRealtimeRendererDogfoodEvent({ runId, type: 'created', status: 'dispatching', detail: 'Renderer dogfood trigger created.' });
+  const drill = await startRealtimeDogfoodDrill({
+    execute: true,
+    prepareProgress: options.prepareProgress !== false,
+    prepareWhenLive: true,
+    durationMs: options.durationMs || 45000,
+    source: 'renderer_dogfood_trigger',
+  });
+  const dispatch = await dispatchRendererDogfoodCommand(detail);
+  if (!dispatch.ok) {
+    recordRealtimeRendererDogfoodEvent({ runId, type: 'error', status: 'error', detail: dispatch.error || 'Renderer dispatch failed.' });
+    return {
+      ...preview,
+      ok: false,
+      status: dispatch.status || 409,
+      executed: true,
+      drill,
+      rendererDogfood: realtimeRendererDogfoodSnapshot(),
+      output: dispatch.error || 'Renderer dispatch failed.',
+    };
+  }
+  recordRealtimeRendererDogfoodEvent({ runId, type: 'dispatched', status: 'waiting_for_renderer', detail: 'Renderer dogfood trigger dispatched.' });
+  return {
+    ...preview,
+    ok: true,
+    executed: true,
+    drill,
+    rendererDogfood: realtimeRendererDogfoodSnapshot(),
+    output: [
+      'Renderer Realtime dogfood trigger dispatched.',
+      'The renderer will start a real WebRTC voice session, wait for the data channel, send configured prompts, and report evidence events.',
+      drill?.progressSample?.output || '',
+    ].filter(Boolean).join('\n'),
+  };
+}
+
 async function prepareRealtimeDogfoodProgressSample(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const { durationMs, command } = realtimeDogfoodProgressSampleCommand(options.durationMs);
@@ -29944,6 +30138,34 @@ function startApiServer() {
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'Realtime dogfood drill start failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/renderer', (_req, res) => {
+    try {
+      res.json({ rendererDogfood: realtimeRendererDogfoodSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime renderer dogfood snapshot failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/renderer/start', express.json({ limit: '128kb' }), async (req, res) => {
+    try {
+      const result = await startRealtimeRendererDogfood({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_renderer_dogfood_start',
+      });
+      res.status(result.ok === false ? (result.status || 409) : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime renderer dogfood start failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/renderer/event', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      res.json({ rendererDogfood: recordRealtimeRendererDogfoodEvent(req.body || {}) });
+    } catch (error) {
+      jsonError(res, 400, 'Realtime renderer dogfood event failed', error instanceof Error ? error.message : String(error));
     }
   });
 

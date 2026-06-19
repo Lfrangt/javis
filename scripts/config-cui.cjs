@@ -297,6 +297,7 @@ async function printStatus() {
   console.log('13. Test wake trigger');
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
+  console.log('R. Run renderer Realtime dogfood (starts mic)');
   console.log('B. Show Realtime dogfood brief');
   console.log('A. Save Realtime dogfood archive');
   console.log('P. Copy next Realtime dogfood prompt');
@@ -1384,6 +1385,53 @@ async function startRealtimeDogfoodDrillFromCui(rl) {
   console.log('Open CUI option V to watch the drill evidence update.');
 }
 
+function printRendererDogfood(result) {
+  const state = result?.rendererDogfood || result?.rendererDogfoodState || result || {};
+  console.log('JAVIS Renderer Realtime Dogfood');
+  console.log('===============================');
+  console.log(`Run: ${state.runId || result?.runId || '-'}`);
+  console.log(`Status: ${state.status || (result?.executed ? 'dispatched' : 'preview')} · renderer=${result?.rendererAvailable ?? state.rendererAvailable ? 'ready' : 'unknown'} · starts microphone=${result?.startsMicrophone || state.startsMicrophone ? 'yes' : 'no'}`);
+  if (result?.output) console.log(`\n${compact(result.output, 1200)}`);
+  const events = Array.isArray(state.events) ? state.events : [];
+  if (events.length) {
+    console.log('\nRecent events:');
+    for (const event of events.slice(-8)) {
+      console.log(`- ${event.createdAtIso || event.createdAt || '-'} · ${event.type || '-'} · ${event.status || '-'}${event.prompt ? ` · ${compact(event.prompt, 120)}` : ''}${event.detail ? ` · ${compact(event.detail, 160)}` : ''}`);
+    }
+  }
+}
+
+async function startRendererRealtimeDogfoodFromCui(rl) {
+  console.log('\nPreviewing renderer Realtime dogfood trigger...');
+  const preview = await request('/api/realtime/dogfood/renderer/start', {
+    method: 'POST',
+    body: { execute: false, source: 'cui' },
+  });
+  printRendererDogfood(preview);
+  console.log('\nThis starts the renderer WebRTC voice session and microphone capture.');
+  const answer = (await rl.question('Type START MIC to run it now, send the next dogfood prompt, and save evidence later: ')).trim();
+  if (answer !== 'START MIC') {
+    console.log('\nNo renderer dogfood started.');
+    return;
+  }
+  const result = await request('/api/realtime/dogfood/renderer/start', {
+    method: 'POST',
+    body: {
+      execute: true,
+      confirmMic: true,
+      prepareProgress: true,
+      prepareWhenLive: true,
+      durationMs: 45000,
+      promptDelayMs: 35000,
+      betweenPromptsMs: 9000,
+      stopAfterMs: 0,
+      source: 'cui',
+    },
+  });
+  printRendererDogfood(result);
+  console.log('\nOpen CUI option V to watch evidence, then option A to save the dogfood archive.');
+}
+
 function printRealtimeDogfoodPrompt(result) {
   const prompt = result?.prompt || result || {};
   console.log('JAVIS Realtime Dogfood Prompt');
@@ -1622,6 +1670,31 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-renderer-realtime-dogfood') || process.argv.includes('--renderer-realtime-dogfood')) {
+    const result = await request('/api/realtime/dogfood/renderer');
+    printRendererDogfood(result);
+    return;
+  }
+
+  if (process.argv.includes('--start-renderer-realtime-dogfood')) {
+    const confirmMic = process.argv.includes('--confirm-mic');
+    const result = await request('/api/realtime/dogfood/renderer/start', {
+      method: 'POST',
+      body: {
+        execute: true,
+        confirmMic,
+        prepareProgress: true,
+        prepareWhenLive: true,
+        durationMs: 45000,
+        promptDelayMs: 35000,
+        betweenPromptsMs: 9000,
+        source: 'cui_cli',
+      },
+    });
+    printRendererDogfood(result);
+    return;
+  }
+
   if (process.argv.includes('--copy-realtime-dogfood-prompt')) {
     await showRealtimeDogfoodPrompt({ copy: true });
     return;
@@ -1715,6 +1788,8 @@ async function main() {
         await watchRealtimeEvidence(rl);
       } else if (answer === 'd' || answer === 'dogfood' || answer === 'drill') {
         await startRealtimeDogfoodDrillFromCui(rl);
+      } else if (answer === 'r' || answer === 'renderer dogfood' || answer === 'realtime renderer') {
+        await startRendererRealtimeDogfoodFromCui(rl);
       } else if (answer === 'b' || answer === 'brief' || answer === 'dogfood brief') {
         await showRealtimeDogfoodBrief();
       } else if (answer === 'a' || answer === 'archive' || answer === 'dogfood archive') {

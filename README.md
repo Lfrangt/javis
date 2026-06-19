@@ -25,6 +25,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime voice dogfood-session tools, so the live voice model can inspect, start, mark, and end the same operator drill record while CUI/API evidence proves it did not start microphone capture.
 - Realtime dogfood session auto-sync, so evidence-proven drill steps are persisted as sticky progress even after the live voice session disconnects.
 - Realtime dogfood archive export from CUI/API/voice tools, saving the current brief, evidence, session tracker, and related audit trail as a local JSON packet without starting microphone capture or storing raw audio.
+- Renderer Realtime dogfood trigger for opt-in live WebRTC verification: `npm run dogfood:realtime-renderer -- --execute --confirm-mic` starts the renderer voice path only after explicit mic confirmation, sends dogfood prompts through the live data channel, and saves local evidence.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
@@ -205,6 +206,7 @@ Local Express service on 127.0.0.1:3417
   /api/realtime/dogfood/session -> manual operator session tracker for real live-voice dogfood
   /api/realtime/dogfood/archive -> preview or save a local dogfood evidence archive
   /api/realtime/dogfood/archives -> list saved local dogfood evidence archives
+  /api/realtime/dogfood/renderer/start -> opt-in renderer/WebRTC dogfood trigger, requires execute:true and confirmMic:true before microphone starts
   /api/realtime/dogfood/start -> manual dogfood drill starter: summon pet and optionally prepare progress after voice is live
   /api/context/plan    -> smart context assembly plan for a user request
   /api/wake/status      -> soft/local wake-word trigger state

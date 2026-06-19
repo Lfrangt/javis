@@ -70,6 +70,17 @@ type RealtimeLatencyReceipt = RealtimeLatencyTimeline & {
   createdAt: number
 }
 
+type RealtimeRendererDogfoodCommand = {
+  action?: string
+  runId?: string
+  screenLive?: boolean
+  prompts?: string[]
+  promptDelayMs?: number
+  betweenPromptsMs?: number
+  stopAfterMs?: number
+  source?: string
+}
+
 const emptyRealtimeLatencyTimeline = (): RealtimeLatencyTimeline => ({
   startedAt: 0,
   micReadyAt: 0,
@@ -937,6 +948,10 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, Math.max(0, ms)))
+}
+
 function utf8Bytes(value = '') {
   return new TextEncoder().encode(value).length
 }
@@ -1139,6 +1154,45 @@ function App() {
       return event ? sendRealtimeEvent(event) : false
     },
     [sendRealtimeEvent],
+  )
+
+  const postRendererDogfoodEvent = useCallback(async (payload: Record<string, unknown>) => {
+    try {
+      await apiJson('/api/realtime/dogfood/renderer/event', {
+        method: 'POST',
+        body: JSON.stringify({
+          source: 'renderer',
+          ...payload,
+        }),
+      })
+    } catch {
+      // Dogfood event telemetry should not interrupt the voice path.
+    }
+  }, [])
+
+  const sendRealtimeUserText = useCallback(
+    (text: string) => {
+      const prompt = text.trim()
+      if (!prompt) return false
+      const sent = sendRealtimeEvent({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: prompt,
+            },
+          ],
+        },
+      })
+      if (!sent) return false
+      sendRealtimeEvent({ type: 'response.create' })
+      addMessage('user', prompt)
+      return true
+    },
+    [addMessage, sendRealtimeEvent],
   )
 
   const pushRealtimeScreenContext = useCallback(
@@ -2014,6 +2068,124 @@ function App() {
     }
     await startVoice({ screenLive: true })
   }, [screenLive, startScreen, startVoice, voiceStatus])
+
+  useEffect(() => {
+    let disposed = false
+
+    const waitForDataChannel = async (timeoutMs: number) => {
+      const deadline = Date.now() + Math.max(1000, timeoutMs)
+      while (!disposed && Date.now() < deadline) {
+        if (dataChannelRef.current?.readyState === 'open') return true
+        await sleep(500)
+      }
+      return false
+    }
+
+    const handleRendererDogfood = (rawEvent: Event) => {
+      const event = rawEvent as CustomEvent<RealtimeRendererDogfoodCommand>
+      const detail = event.detail || {}
+      if (detail.action !== 'start') return
+      const runId = detail.runId || crypto.randomUUID()
+      const prompts = Array.isArray(detail.prompts) ? detail.prompts.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 8) : []
+      const promptDelayMs = Math.max(0, Math.min(180000, Number(detail.promptDelayMs || 35000)))
+      const betweenPromptsMs = Math.max(1000, Math.min(60000, Number(detail.betweenPromptsMs || 9000)))
+      const stopAfterMs = Math.max(0, Math.min(300000, Number(detail.stopAfterMs || 0)))
+
+      void (async () => {
+        await postRendererDogfoodEvent({
+          runId,
+          type: 'received',
+          status: 'starting',
+          detail: 'Renderer received Realtime dogfood start command.',
+          sessionId: voiceSessionIdRef.current,
+        })
+        try {
+          if (voiceStatus !== 'live' && voiceStatus !== 'connecting') {
+            await beginAssistantSession()
+          }
+
+          const live = await waitForDataChannel(90000)
+          if (!live) {
+            await postRendererDogfoodEvent({
+              runId,
+              type: 'timeout',
+              status: 'timeout',
+              detail: 'Timed out waiting for Realtime data channel to open.',
+              sessionId: voiceSessionIdRef.current,
+            })
+            return
+          }
+
+          await postRendererDogfoodEvent({
+            runId,
+            type: 'live',
+            status: 'live',
+            detail: 'Realtime data channel is open.',
+            sessionId: voiceSessionIdRef.current,
+          })
+
+          if (promptDelayMs) await sleep(promptDelayMs)
+          for (const prompt of prompts) {
+            if (disposed || dataChannelRef.current?.readyState !== 'open') break
+            const sent = sendRealtimeUserText(prompt)
+            await postRendererDogfoodEvent({
+              runId,
+              type: sent ? 'prompt_sent' : 'prompt_failed',
+              status: sent ? 'prompt_sent' : 'error',
+              prompt,
+              detail: sent ? 'Prompt sent into live Realtime session.' : 'Realtime data channel was not open for prompt.',
+              sessionId: voiceSessionIdRef.current,
+            })
+            if (!sent) return
+            await sleep(betweenPromptsMs)
+          }
+
+          await postRendererDogfoodEvent({
+            runId,
+            type: 'prompts_complete',
+            status: 'prompts_complete',
+            detail: `${prompts.length} prompt(s) processed.`,
+            sessionId: voiceSessionIdRef.current,
+          })
+
+          if (stopAfterMs) {
+            await sleep(stopAfterMs)
+            if (!disposed && dataChannelRef.current?.readyState === 'open') {
+              await postRendererDogfoodEvent({
+                runId,
+                type: 'stopping',
+                status: 'stopping',
+                detail: 'Stopping Realtime dogfood session after requested delay.',
+                sessionId: voiceSessionIdRef.current,
+              })
+              stopVoice()
+              await postRendererDogfoodEvent({
+                runId,
+                type: 'stopped',
+                status: 'stopped',
+                detail: 'Realtime dogfood session stopped.',
+                sessionId: voiceSessionIdRef.current,
+              })
+            }
+          }
+        } catch (error) {
+          await postRendererDogfoodEvent({
+            runId,
+            type: 'error',
+            status: 'error',
+            detail: error instanceof Error ? error.message : String(error),
+            sessionId: voiceSessionIdRef.current,
+          })
+        }
+      })()
+    }
+
+    window.addEventListener('javis:realtime-dogfood', handleRendererDogfood as EventListener)
+    return () => {
+      disposed = true
+      window.removeEventListener('javis:realtime-dogfood', handleRendererDogfood as EventListener)
+    }
+  }, [beginAssistantSession, postRendererDogfoodEvent, sendRealtimeUserText, stopVoice, voiceStatus])
 
   const startAssistantSession = useCallback(async () => {
     if (voiceStatus === 'connecting') return
