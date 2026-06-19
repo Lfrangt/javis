@@ -291,6 +291,7 @@ async function printStatus() {
   console.log('13. Test wake trigger');
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
+  console.log('P. Copy next Realtime dogfood prompt');
   console.log('H. Show spoken work handoff');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
@@ -1275,6 +1276,40 @@ async function startRealtimeDogfoodDrillFromCui(rl) {
   console.log('Open CUI option V to watch the drill evidence update.');
 }
 
+function printRealtimeDogfoodPrompt(result) {
+  const prompt = result?.prompt || result || {};
+  console.log('JAVIS Realtime Dogfood Prompt');
+  console.log('=============================');
+  console.log(`Status: ${prompt.status || 'pending'} · phase ${prompt.phase || '-'}`);
+  if (prompt.drillSummary) console.log(`Drill: ${compact(prompt.drillSummary, 240)}`);
+  console.log(`Step: ${prompt.step?.status || 'pending'} ${prompt.step?.label || prompt.step?.id || '-'}`);
+  console.log(`Type: ${prompt.promptType || 'spoken'} · manual only=${prompt.manualOnly ? 'yes' : 'no'} · starts microphone=${prompt.startsMicrophone ? 'yes' : 'no'}`);
+  console.log(`Next: ${prompt.prompt || '-'}`);
+  if (prompt.copyText && prompt.copyText !== prompt.prompt) {
+    console.log(`Copy text: ${prompt.copyText}`);
+  }
+  if (Array.isArray(prompt.followUpPrompts) && prompt.followUpPrompts.length) {
+    console.log(`Follow-up: ${prompt.followUpPrompts.join(' | ')}`);
+  }
+  if (prompt.reason) console.log(`Reason: ${compact(prompt.reason, 220)}`);
+  console.log(`Monitor: ${prompt.monitor?.cui || 'npm run config -> V. Watch Realtime voice evidence'}`);
+  console.log(`Endpoint: ${prompt.monitor?.endpoint || '/api/realtime/evidence'}`);
+}
+
+async function showRealtimeDogfoodPrompt(options = {}) {
+  if (options.copy) {
+    const result = await request('/api/realtime/dogfood/prompt/copy', {
+      method: 'POST',
+      body: { source: 'cui', dryRun: options.dryRun === true },
+    });
+    printRealtimeDogfoodPrompt(result);
+    console.log(`\n${result.copied ? 'Copied' : result.wouldCopy ? 'Would copy' : 'Copy ready'}: ${compact(result.text || result.prompt?.copyText || '', 260)}`);
+    return;
+  }
+  const result = await request('/api/realtime/dogfood/prompt');
+  printRealtimeDogfoodPrompt(result);
+}
+
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
   const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'notch';
@@ -1306,6 +1341,16 @@ async function main() {
   if (process.argv.includes('--print-realtime-evidence') || process.argv.includes('--realtime-evidence')) {
     const result = await request('/api/realtime/evidence');
     printRealtimeEvidence(result);
+    return;
+  }
+
+  if (process.argv.includes('--print-realtime-dogfood-prompt') || process.argv.includes('--realtime-dogfood-prompt')) {
+    await showRealtimeDogfoodPrompt();
+    return;
+  }
+
+  if (process.argv.includes('--copy-realtime-dogfood-prompt')) {
+    await showRealtimeDogfoodPrompt({ copy: true });
     return;
   }
 
@@ -1382,6 +1427,8 @@ async function main() {
         await watchRealtimeEvidence(rl);
       } else if (answer === 'd' || answer === 'dogfood' || answer === 'drill') {
         await startRealtimeDogfoodDrillFromCui(rl);
+      } else if (answer === 'p' || answer === 'prompt' || answer === 'dogfood prompt') {
+        await showRealtimeDogfoodPrompt({ copy: true });
       } else if (answer === 'h' || answer === 'handoff' || answer === 'work handoff') {
         await showWorkHandoff();
       } else if (answer === '14') {

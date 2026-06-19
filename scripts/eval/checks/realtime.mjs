@@ -491,6 +491,26 @@ export default {
     }
 
     try {
+      const promptCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-prompt'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${promptCui.stdout || ''}\n${promptCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Realtime Dogfood Prompt') &&
+          output.includes('starts microphone=no') &&
+          output.includes('/api/realtime/evidence') &&
+          output.includes('Next:')
+          ? ok('realtime.cui_dogfood_prompt', 'Realtime CUI dogfood prompt', 'config CUI prints the next manual dogfood prompt without starting voice')
+          : fail('realtime.cui_dogfood_prompt', 'Realtime CUI dogfood prompt', 'expected config CUI to print the next dogfood prompt and evidence endpoint', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_dogfood_prompt', 'Realtime CUI dogfood prompt', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
       const handoff = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-handoff'], {
         cwd: process.cwd(),
         env: process.env,
@@ -707,6 +727,45 @@ export default {
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
         ? ok('realtime.dogfood_drill', 'Realtime dogfood drill', `${drillData.status || 'pending'} · ${drillData.summary || ''}`)
         : fail('realtime.dogfood_drill', 'Realtime dogfood drill', `GET /api/realtime/dogfood/drill ${drill.status}`, drill.data),
+    );
+
+    const dogfoodPrompt = await ctx.api('/api/realtime/dogfood/prompt');
+    const dogfoodPromptData = dogfoodPrompt.data?.prompt;
+    out.push(
+      dogfoodPrompt.ok &&
+        dogfoodPromptData?.manualOnly === true &&
+        dogfoodPromptData?.requiresUserPresence === true &&
+        dogfoodPromptData?.startsMicrophone === false &&
+        dogfoodPromptData?.monitor?.endpoint === '/api/realtime/evidence' &&
+        typeof dogfoodPromptData.prompt === 'string' &&
+        dogfoodPromptData.prompt.length > 0 &&
+        typeof dogfoodPromptData.copyText === 'string' &&
+        dogfoodPromptData.copyText.length > 0 &&
+        dogfoodPromptData.step?.id &&
+        Array.isArray(dogfoodPromptData.allPrompts)
+        ? ok('realtime.dogfood_prompt', 'Realtime dogfood next prompt', `${dogfoodPromptData.step.label || dogfoodPromptData.step.id}: ${dogfoodPromptData.copyText}`)
+        : fail('realtime.dogfood_prompt', 'Realtime dogfood next prompt', `GET /api/realtime/dogfood/prompt ${dogfoodPrompt.status}`, dogfoodPrompt.data),
+    );
+
+    const dogfoodPromptCopy = await ctx.api('/api/realtime/dogfood/prompt/copy', {
+      method: 'POST',
+      body: {
+        dryRun: true,
+        source: 'eval',
+      },
+    });
+    out.push(
+      dogfoodPromptCopy.ok &&
+        dogfoodPromptCopy.data?.ok === true &&
+        dogfoodPromptCopy.data?.dryRun === true &&
+        dogfoodPromptCopy.data?.copied === false &&
+        dogfoodPromptCopy.data?.wouldCopy === true &&
+        dogfoodPromptCopy.data?.startsMicrophone === false &&
+        dogfoodPromptCopy.data?.prompt?.manualOnly === true &&
+        typeof dogfoodPromptCopy.data?.text === 'string' &&
+        dogfoodPromptCopy.data.text.length > 0
+        ? ok('realtime.dogfood_prompt_copy_dry_run', 'Realtime dogfood prompt copy dry-run', dogfoodPromptCopy.data.text)
+        : fail('realtime.dogfood_prompt_copy_dry_run', 'Realtime dogfood prompt copy dry-run', `POST /api/realtime/dogfood/prompt/copy ${dogfoodPromptCopy.status}`, dogfoodPromptCopy.data),
     );
 
     const startPreview = await ctx.api('/api/realtime/dogfood/start', {

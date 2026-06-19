@@ -17781,6 +17781,160 @@ function realtimeDogfoodRunbookSnapshot() {
   return realtimeDogfoodRunbookFromEvidence(evidence);
 }
 
+function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
+  const prompts = Array.isArray(drill.prompts) ? drill.prompts : [];
+  const askWhenReady = prompts[0] || '后台现在怎么样';
+  const promptByStep = {
+    open_monitor: {
+      promptType: 'manual_action',
+      prompt: '打开 CUI 的 V 监控，或访问 /api/realtime/evidence。',
+      copyText: askWhenReady,
+      reason: 'Realtime dogfood should be watched from the operator console before speaking.',
+    },
+    start_live_voice: {
+      promptType: 'manual_action',
+      prompt: `按 ${SUMMON_HOTKEY || 'Option+Space'} 或点击桌面宠物，启动 Realtime 语音。`,
+      copyText: askWhenReady,
+      reason: 'Starting microphone/live voice still requires explicit user action.',
+    },
+    inject_worker_progress: {
+      promptType: 'manual_action',
+      prompt: '在 CUI 选择 D，或调用 POST /api/realtime/dogfood/start，等语音 live 后注入后台进度。',
+      copyText: askWhenReady,
+      reason: 'The next spoken check needs a live session with fresh passive worker progress.',
+    },
+    sync_latest_progress: {
+      promptType: 'manual_action',
+      prompt: '保持 Realtime 语音打开，等待最新 work progress sequence 同步进去。',
+      copyText: askWhenReady,
+      reason: 'The voice answer should come from the current passive progress sequence.',
+    },
+    ask_progress: {
+      promptType: 'spoken',
+      prompt: '后台现在怎么样',
+      copyText: '后台现在怎么样',
+      reason: 'This verifies the live voice can answer from passive worker progress.',
+    },
+    ask_work_handoff: {
+      promptType: 'spoken',
+      prompt: '现在做到哪了？接下来做什么？',
+      copyText: '现在做到哪了？接下来做什么？',
+      reason: 'This verifies the Realtime session calls get_work_handoff.',
+    },
+    ask_autopilot_status: {
+      promptType: 'spoken',
+      prompt: 'autopilot 为什么没自己继续跑？',
+      copyText: 'autopilot 为什么没自己继续跑？',
+      reason: 'This verifies the Realtime session calls get_autopilot_status.',
+    },
+    ask_attention_explanation: {
+      promptType: 'spoken',
+      prompt: '为什么你现在是绿色？为什么刚才没提醒我？',
+      copyText: '为什么你现在是绿色？为什么刚才没提醒我？',
+      reason: 'This verifies the Realtime session calls get_attention_explanation.',
+    },
+    list_shortcuts: {
+      promptType: 'spoken',
+      prompt: '有哪些快捷短语?',
+      copyText: '有哪些快捷短语?',
+      reason: 'This verifies the shortcut list tool from live voice.',
+    },
+    save_shortcut_with_confirmation: {
+      promptType: 'spoken',
+      prompt: '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
+      copyText: '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
+      followUpPrompts: ['确认保存「测试贾维斯快捷短语」'],
+      reason: 'This verifies the shortcut save confirmation gate and confirmed save path.',
+    },
+    route_recalled_shortcut: {
+      promptType: 'spoken',
+      prompt: '用「测试贾维斯快捷短语」继续',
+      copyText: '用「测试贾维斯快捷短语」继续',
+      reason: 'This verifies routing can recall a shortcut-backed plan.',
+    },
+    forget_shortcut: {
+      promptType: 'spoken',
+      prompt: '忘记「测试贾维斯快捷短语」',
+      copyText: '忘记「测试贾维斯快捷短语」',
+      reason: 'This verifies the shortcut cleanup path from live voice.',
+    },
+  };
+  if (promptByStep[step.id]) return promptByStep[step.id];
+  const nextAction = String(step.nextAction || '').trim();
+  const askMatch = nextAction.match(/Ask:\s*(.+)$/i);
+  const prompt = askMatch?.[1]?.trim() || nextAction || step.label || askWhenReady;
+  return {
+    promptType: askMatch ? 'spoken' : 'manual_action',
+    prompt,
+    copyText: askMatch ? prompt : askWhenReady,
+    reason: step.detail || 'Follow the next pending Realtime dogfood step.',
+  };
+}
+
+function realtimeDogfoodNextPromptSnapshot(options = {}) {
+  const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
+  const dogfood = evidence.dogfood || {};
+  const drill = evidence.drill || dogfood.drill || {};
+  const pending = Array.isArray(drill.pending) ? drill.pending : [];
+  const allPrompts = Array.isArray(drill.prompts)
+    ? drill.prompts
+    : Array.isArray(dogfood.dogfoodGuide?.prompts)
+      ? dogfood.dogfoodGuide.prompts
+      : [];
+  const step = pending[0] || null;
+  const instruction = step
+    ? realtimeDogfoodPromptInstructionForStep(step, drill)
+    : {
+      promptType: 'spoken',
+      prompt: allPrompts[0] || '后台现在怎么样',
+      copyText: allPrompts[0] || '后台现在怎么样',
+      reason: 'Realtime voice dogfood drill has no pending step; this is the default progress check prompt.',
+    };
+  const copyText = compactRecordText(instruction.copyText || instruction.prompt || allPrompts[0] || '', 400);
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    manualOnly: true,
+    requiresUserPresence: true,
+    startsMicrophone: false,
+    status: drill.status || dogfood.status || evidence.status || 'pending',
+    phase: evidence.phase || dogfood.phase || '',
+    drillSummary: drill.summary || '',
+    promptType: instruction.promptType || 'spoken',
+    prompt: compactRecordText(instruction.prompt || copyText, 400),
+    copyText,
+    copyable: Boolean(copyText),
+    followUpPrompts: Array.isArray(instruction.followUpPrompts) ? instruction.followUpPrompts : [],
+    reason: compactRecordText(instruction.reason || '', 260),
+    step: step
+      ? {
+        id: step.id || '',
+        label: step.label || step.id || '',
+        status: step.status || (step.ok ? 'ready' : 'pending'),
+        ok: Boolean(step.ok),
+        nextAction: compactRecordText(step.nextAction || '', 240),
+      }
+      : {
+        id: 'complete',
+        label: 'Realtime voice dogfood drill has no pending step',
+        status: 'ready',
+        ok: true,
+        nextAction: 'Start a new manual drill if you want fresh evidence.',
+      },
+    monitor: {
+      cui: 'npm run config -> V. Watch Realtime voice evidence',
+      oneShot: 'npm run config -- --print-realtime-evidence',
+      prompt: 'npm run config -- --print-realtime-dogfood-prompt',
+      endpoint: '/api/realtime/evidence',
+    },
+    start: {
+      hotkey: SUMMON_HOTKEY || 'Option+Space',
+      petAction: 'Click the desktop pet or press the summon hotkey to start live Realtime voice.',
+    },
+    allPrompts,
+  };
+}
+
 function realtimeDogfoodProgressSampleCommand(durationMs) {
   const safeDurationMs = Math.max(5000, Math.min(120000, Number(durationMs || 45000)));
   const script = [
@@ -27387,6 +27541,49 @@ function startApiServer() {
       res.json({ drill: evidence.drill, evidence });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood drill failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/prompt', (_req, res) => {
+    try {
+      res.json({ prompt: realtimeDogfoodNextPromptSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood prompt failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/prompt/copy', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const prompt = realtimeDogfoodNextPromptSnapshot();
+      if (!prompt.copyable || !prompt.copyText) {
+        res.status(409).json({
+          ok: false,
+          error: 'No Realtime dogfood prompt is copyable right now.',
+          startsMicrophone: false,
+          prompt,
+        });
+        return;
+      }
+      const dryRun = req.body?.dryRun === true || String(req.body?.dryRun || '').toLowerCase() === 'true';
+      if (!dryRun) clipboard.writeText(prompt.copyText);
+      appendAudit('realtime.dogfood_prompt_copied', {
+        dryRun,
+        source: String(req.body?.source || 'api').slice(0, 80),
+        stepId: prompt.step?.id || '',
+        promptType: prompt.promptType,
+        bytes: Buffer.byteLength(prompt.copyText, 'utf8'),
+      });
+      res.json({
+        ok: true,
+        copied: !dryRun,
+        dryRun,
+        wouldCopy: dryRun,
+        startsMicrophone: false,
+        text: prompt.copyText,
+        prompt,
+      });
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood prompt copy failed', error instanceof Error ? error.message : String(error));
     }
   });
 
