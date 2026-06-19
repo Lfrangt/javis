@@ -424,6 +424,7 @@ export default {
     const dogfood = await ctx.api('/api/realtime/dogfood');
     const d = dogfood.data?.dogfood;
     const dogfoodStepIds = new Set((Array.isArray(d?.steps) ? d.steps : []).map((step) => step.id));
+    const dogfoodGuide = d?.dogfoodGuide || {};
     const dogfoodRequiredSteps = [
       'provider_ready',
       'session_negotiated',
@@ -448,6 +449,12 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_progress') &&
         d.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         d.handoffTools?.hasHandoff === true &&
+        dogfoodGuide.start?.endpoint?.path === '/api/realtime/dogfood/start' &&
+        dogfoodGuide.monitor?.endpoint === '/api/realtime/evidence' &&
+        Array.isArray(dogfoodGuide.prompts) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
+        Array.isArray(dogfoodGuide.expectedEvidence) &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
         typeof d.promptWhenReady === 'string' &&
@@ -470,11 +477,15 @@ export default {
       'route_recalled_shortcut',
       'forget_shortcut',
     ];
+    const drillGuide = drill.data?.evidence?.dogfood?.dogfoodGuide || {};
     out.push(
       drill.ok &&
         drillData?.manualOnly === true &&
         drillData?.autoEligible === false &&
         drillRequired.every((id) => drillIds.has(id)) &&
+        drillGuide.monitor?.endpoint === '/api/realtime/evidence' &&
+        Array.isArray(drillGuide.prompts) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         Array.isArray(drillData.prompts) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
@@ -495,6 +506,10 @@ export default {
         startPreview.data?.executed === false &&
         startPreview.data?.autoEligible === false &&
         startPreview.data?.prepareWhenLive === true &&
+        startPreview.data?.dogfoodGuide?.monitor?.endpoint === '/api/realtime/evidence' &&
+        Array.isArray(startPreview.data?.dogfoodGuide?.prompts) &&
+        startPreview.data.dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
+        String(startPreview.data?.output || '').includes('get_work_handoff') &&
         startPreview.data?.drill?.manualOnly === true &&
         startPreview.data?.start?.hotkey &&
         typeof startPreview.data?.output === 'string' &&

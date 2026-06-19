@@ -16147,7 +16147,7 @@ function realtimeVoiceWorkbenchSnapshot() {
       ? 'blocked'
       : 'pending';
   const blockerStep = checklist.find((step) => !step.ok) || null;
-  return {
+  const snapshot = {
     ok: true,
     status,
     phase,
@@ -16172,12 +16172,70 @@ function realtimeVoiceWorkbenchSnapshot() {
     },
     voiceHealth,
   };
+  snapshot.dogfoodGuide = realtimeDogfoodGuideFromEvidence(snapshot);
+  return snapshot;
+}
+
+function realtimeDogfoodGuideFromEvidence(evidence = {}) {
+  const blocker = evidence.blocker || null;
+  const handoffTools = evidence.handoffTools || {};
+  const progressSync = evidence.progressSync || evidence.progress?.sync || {};
+  return {
+    goal: 'Prove a real Realtime voice session can speak current progress, call get_work_handoff, and leave evidence.',
+    manualOnly: true,
+    requiresUserPresence: true,
+    current: {
+      status: evidence.status || 'pending',
+      phase: evidence.phase || '',
+      readyForVoiceProgressQuestion: Boolean(evidence.readyForVoiceProgressQuestion || evidence.ready),
+      blocker,
+    },
+    start: {
+      hotkey: SUMMON_HOTKEY || 'Option+Space',
+      petAction: 'Click the desktop pet or press the summon hotkey to start live Realtime voice.',
+      endpoint: {
+        method: 'POST',
+        path: '/api/realtime/dogfood/start',
+        body: { execute: true, prepareProgress: true, prepareWhenLive: true, durationMs: 45000 },
+      },
+    },
+    monitor: {
+      cui: 'npm run config -> V. Watch Realtime voice evidence',
+      oneShot: 'npm run config -- --print-realtime-evidence',
+      endpoint: '/api/realtime/evidence',
+      handoff: 'npm run config -- --print-work-handoff',
+    },
+    prompts: [
+      '后台现在怎么样',
+      '现在做到哪了？接下来做什么？',
+    ],
+    expectedEvidence: [
+      {
+        id: 'session_negotiated',
+        label: 'Renderer WebRTC session negotiated',
+        ok: Boolean(evidence.checks?.sessionNegotiated),
+      },
+      {
+        id: 'progress_synced',
+        label: 'Latest work progress sequence reached voice',
+        ok: Boolean(evidence.checks?.progressVersionSynced || progressSync.ok),
+      },
+      {
+        id: 'handoff_tool',
+        label: 'Realtime called get_work_handoff',
+        ok: Boolean(handoffTools.hasHandoff),
+        tool: REALTIME_HANDOFF_TOOL_NAME,
+      },
+    ],
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the two prompts.',
+  };
 }
 
 function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const shortcutTools = evidence.shortcutTools || {};
   const handoffTools = evidence.handoffTools || {};
+  const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
   const stepIds = [
     'provider_ready',
@@ -16215,6 +16273,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       passiveProgressContextOnly: true,
       desktopPetDiagnostics: false,
     },
+    dogfoodGuide,
     start: {
       hotkey: SUMMON_HOTKEY || 'Option+Space',
       petAction: 'Click the desktop pet to start the live Realtime voice session.',
@@ -16439,6 +16498,20 @@ function realtimeDogfoodProgressSampleCommand(durationMs) {
   };
 }
 
+function formatRealtimeDogfoodGuideLines(guide = {}) {
+  const prompts = Array.isArray(guide.prompts) ? guide.prompts : [];
+  const expected = Array.isArray(guide.expectedEvidence) ? guide.expectedEvidence : [];
+  return [
+    guide.goal ? `Goal: ${compactRecordText(guide.goal, 220)}` : '',
+    `Start: ${guide.start?.petAction || 'Click the desktop pet or press the summon hotkey.'}`,
+    guide.start?.hotkey ? `Hotkey: ${guide.start.hotkey}` : '',
+    guide.monitor?.cui ? `Monitor: ${guide.monitor.cui}` : '',
+    prompts.length ? `Ask: ${prompts.join(' / ')}` : '',
+    expected.length ? `Evidence: ${expected.map((item) => `${item.ok ? 'ok' : 'pending'} ${item.tool || item.id}`).join(', ')}` : '',
+    guide.nextAction ? `Next: ${compactRecordText(guide.nextAction, 220)}` : '',
+  ].filter(Boolean);
+}
+
 async function prepareRealtimeDogfoodProgressSample(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const { durationMs, command } = realtimeDogfoodProgressSampleCommand(options.durationMs);
@@ -16552,6 +16625,7 @@ async function startRealtimeDogfoodDrill(options = {}) {
   const prepareWhenLive = options.prepareWhenLive !== false;
   const durationMs = Math.max(5000, Math.min(120000, Number(options.durationMs || 45000)));
   const before = realtimeVoiceEvidenceSnapshot();
+  const guide = realtimeDogfoodGuideFromEvidence(before);
   const startInfo = {
     hotkey: SUMMON_HOTKEY || 'Option+Space',
     petAction: 'Click the desktop pet to start the live Realtime voice session.',
@@ -16568,14 +16642,14 @@ async function startRealtimeDogfoodDrill(options = {}) {
       requiresUserPresence: true,
       prepareWhenLive,
       start: startInfo,
+      dogfoodGuide: guide,
       dogfoodStart: realtimeDogfoodStartStateSnapshot(),
       drill: before.drill,
       evidence: before,
       output: [
         'Preview Realtime voice dogfood drill.',
         before.drill?.summary || '',
-        `Start: ${startInfo.petAction}`,
-        `Monitor: ${startInfo.monitor}`,
+        ...formatRealtimeDogfoodGuideLines(guide),
       ].filter(Boolean).join('\n'),
     };
   }
@@ -16622,6 +16696,7 @@ async function startRealtimeDogfoodDrill(options = {}) {
     }
   }
   const after = realtimeVoiceEvidenceSnapshot();
+  const afterGuide = realtimeDogfoodGuideFromEvidence(after);
   appendAudit('realtime.dogfood_start', {
     source: String(options.source || 'api').slice(0, 80),
     prepareProgress,
@@ -16638,6 +16713,7 @@ async function startRealtimeDogfoodDrill(options = {}) {
     autopilotEligible: false,
     requiresUserPresence: true,
     start: startInfo,
+    dogfoodGuide: afterGuide,
     summon,
     progressSample,
     dogfoodStart: realtimeDogfoodStartStateSnapshot(),
@@ -16649,6 +16725,7 @@ async function startRealtimeDogfoodDrill(options = {}) {
       '已唤起 JAVIS 实时语音入口，并把宠物停回 notch。',
       prepareProgress && progressSample?.output ? progressSample.output : '',
       `当前 drill: ${after.drill?.summary || `${after.status}/${after.phase}`}`,
+      ...formatRealtimeDogfoodGuideLines(afterGuide),
       after.drill?.pending?.[0]?.nextAction ? `下一步: ${after.drill.pending[0].nextAction}` : '',
     ].filter(Boolean).join('\n'),
   };
@@ -18276,6 +18353,7 @@ function workflowBriefing(options = {}) {
       phase: realtimeWorkbench.phase,
       status: realtimeWorkbench.status,
       blocker: realtimeWorkbench.blocker,
+      dogfoodGuide: realtimeWorkbench.dogfoodGuide,
       executable: realtimeWorkbench.phase === 'needs_live_session',
       autoEligible: false,
       autopilotEligible: false,

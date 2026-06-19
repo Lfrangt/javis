@@ -473,6 +473,15 @@ function printNextAction(next) {
   console.log(`Next action: ${action.label || action.id || 'unnamed'} (${action.source || 'unknown'}, ${auto})`);
   if (action.summary) console.log(`Summary: ${compact(action.summary, 260)}`);
   if (action.manualOnlyReason) console.log(`Manual reason: ${compact(action.manualOnlyReason, 220)}`);
+  const guide = action.dogfoodGuide || action.guide || {};
+  if (guide.goal) {
+    const prompts = Array.isArray(guide.prompts) ? guide.prompts : [];
+    console.log(`Guide: ${compact(guide.goal, 260)}`);
+    if (guide.start?.petAction) console.log(`Start: ${compact(guide.start.petAction, 220)}`);
+    if (guide.start?.hotkey) console.log(`Hotkey: ${guide.start.hotkey}`);
+    if (guide.monitor?.cui) console.log(`Monitor: ${guide.monitor.cui}`);
+    if (prompts.length) console.log(`Ask: ${prompts.join(' / ')}`);
+  }
 }
 
 async function showWorkbenchNext() {
@@ -1097,6 +1106,11 @@ async function main() {
   if (process.argv.includes('--print-work-handoff') || process.argv.includes('--work-handoff')) {
     const result = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
     printWorkHandoff(result);
+    return;
+  }
+
+  if (process.argv.includes('--print-work-next') || process.argv.includes('--work-next')) {
+    await showWorkbenchNext();
     return;
   }
 

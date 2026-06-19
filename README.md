@@ -43,7 +43,7 @@ Local Mac-first realtime desktop buddy.
 - Local work briefing for recent progress, blockers, active work, and next actions.
 - Local work progress check-ins for background jobs, workflows, and grouped Codex/Claude/local worker batches.
 - Voice-ready work handoff that compresses readiness, progress, session, collaboration, next actions, and workflow continuation suggestions into one short spoken summary.
-- Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, and workflows.
+- Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, workflows, and Realtime dogfood; Realtime blockers include a guided handoff dogfood pack with start, monitor, prompt, and evidence instructions.
 - Local work sessions for focus goals, session notes, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, spoken check-ins, and deterministic end-of-session summaries.
 - Local memory for user-approved preferences, project facts, and durable notes.
 - Local Inbox for clipboard/manual captures and pending follow-up items.

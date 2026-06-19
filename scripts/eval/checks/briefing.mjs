@@ -1,4 +1,9 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { ok, warn, fail } from '../_client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 export default {
   lane: 'briefing',
@@ -41,10 +46,26 @@ export default {
     const realtimeVoice = b.realtimeVoice || {};
     const realtimeAction = next.find((action) => action.source === 'realtime_voice') || null;
     const realtimePending = realtimeVoice.status && realtimeVoice.status !== 'ready';
+    const realtimeGuide = realtimeAction?.dogfoodGuide || {};
+    const realtimeGuideReady = Boolean(
+      !realtimeAction ||
+        (
+          realtimeGuide.manualOnly === true &&
+          realtimeGuide.requiresUserPresence === true &&
+          realtimeGuide.start?.endpoint?.path === '/api/realtime/dogfood/start' &&
+          realtimeGuide.monitor?.endpoint === '/api/realtime/evidence' &&
+          Array.isArray(realtimeGuide.prompts) &&
+          realtimeGuide.prompts.includes('后台现在怎么样') &&
+          realtimeGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
+          Array.isArray(realtimeGuide.expectedEvidence) &&
+          realtimeGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff')
+        ),
+    );
     out.push(
       !realtimeVoice.status ||
         (['ready', 'pending', 'blocked'].includes(realtimeVoice.status) &&
           typeof realtimeVoice.phase === 'string' &&
+          realtimeGuideReady &&
           (!realtimePending || (
             realtimeAction &&
             realtimeAction.phase === realtimeVoice.phase &&
@@ -78,11 +99,18 @@ export default {
     const workNextActions = Array.isArray(workNext?.briefing?.nextActions)
       ? workNext.briefing.nextActions
       : [];
+    const selectedGuide = selectedAction?.dogfoodGuide || {};
     const matchesBriefing = !selectedAction ||
       (next.length === 0 && workNextActions.length === 0) ||
       workNextActions.some((item) => item?.id && item.id === selectedAction.id);
+    const workNextGuideOk = selectedAction?.source !== 'realtime_voice' || Boolean(
+      selectedGuide.monitor?.cui &&
+        Array.isArray(selectedGuide.prompts) &&
+        selectedGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
+        String(workNext.output).includes('get_work_handoff'),
+    );
     out.push(
-      workNextReady && matchesBriefing
+      workNextReady && matchesBriefing && workNextGuideOk
         ? ok('briefing.worknext', 'Work-next', `${selectedAction?.label || 'No next action'} (preview) · ${String(workNext.output).slice(0, 140)}`, {
           action: selectedAction,
           output: workNext.output,
@@ -90,6 +118,27 @@ export default {
         })
         : fail('briefing.worknext', 'Work-next', `GET /api/work/next did not return a coherent preview envelope (${wn.status})`, wn.data),
     );
+
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-next'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      out.push(
+        output.includes('Next action:') &&
+          output.includes('Guide:') &&
+          output.includes('Monitor: npm run config -> V. Watch Realtime voice evidence') &&
+          output.includes('现在做到哪了') &&
+          output.includes('get_work_handoff')
+          ? ok('briefing.cui_worknext', 'CUI work-next guide', 'config CUI prints the guided Realtime work-next path')
+          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print the Realtime guide', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('briefing.cui_worknext', 'CUI work-next guide', error instanceof Error ? error.message : String(error)));
+    }
 
     const handoffResponse = await ctx.api('/api/work/handoff?maxChars=760&nextLimit=2&followUpLimit=2');
     const handoff = handoffResponse.data?.handoff;
