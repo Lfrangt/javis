@@ -245,6 +245,31 @@ export default {
           ? ok('workers.recovery_voice_tool', 'Worker recovery voice tool', 'run_worker_recovery can target a specific failed job without executing by default')
           : fail('workers.recovery_voice_tool', 'Worker recovery voice tool', 'run_worker_recovery did not preview the selected failed-job recovery action', recoveryVoiceTool.data),
       );
+
+      const routedRecoveryId = queuedRecoveryFixture.data?.routing?.id || '';
+      const routedRecoveryWorkNext = routedRecoveryId
+        ? await ctx.api(`/api/work/next?actionId=${encodeURIComponent(`route:${routedRecoveryId}`)}`, { retries: 0 })
+        : null;
+      const routedNext = routedRecoveryWorkNext?.data?.next || {};
+      out.push(
+        routedRecoveryId &&
+          routedRecoveryWorkNext?.ok &&
+          routedNext.ok === true &&
+          routedNext.executed === false &&
+          routedNext.action?.source === 'routing' &&
+          routedNext.action?.routeId === routedRecoveryId &&
+          routedNext.action?.autopilotEligible === true &&
+          routedNext.action?.trustedAutoEligible === true &&
+          routedNext.autopilotDecision?.executable === true &&
+          routedNext.autopilotDecision?.reason === 'eligible_trusted_routed_recovery' &&
+          routedNext.result?.routeRecovery?.recommended?.type === 'job_recovery' &&
+          routedNext.result?.routeRecovery?.recommended?.trustedAutoEligible === true
+          ? ok('workers.routed_recovery_autopilot_candidate', 'Routed recovery autopilot candidate', `${routedNext.action.id} -> ${routedNext.autopilotDecision.reason}`)
+          : fail('workers.routed_recovery_autopilot_candidate', 'Routed recovery autopilot candidate', 'explicit routed failed-job recovery did not expose an autopilot-eligible route action', {
+            routedRecoveryId,
+            routedRecoveryWorkNext: routedRecoveryWorkNext?.data,
+          }),
+      );
     } finally {
       if (recoveryJobId) {
         await ctx.api(`/api/jobs/${encodeURIComponent(recoveryJobId)}`, {

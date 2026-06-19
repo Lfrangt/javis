@@ -134,7 +134,7 @@ surfaced there too: when `/api/realtime/evidence` is stuck at `needs_live_sessio
 uses the same summon/wake path as `Option+Space` and parks the pet at the notch for the live session.
 This Realtime voice action is marked manual-only because starting microphone/live voice requires an
 explicit user action; overnight autopilot must skip it.
-Blocked route records now return a structured route recovery envelope from `/api/work/next`: linked failed jobs expose their existing recovery actions, linked workflows expose continuation/copy-result options, and routes without an executable candidate still include the exact inspect target. You can target a specific route with `GET /api/work/next?actionId=route:<route-id>`.
+Blocked route records now return a structured route recovery envelope from `/api/work/next`: linked failed jobs expose their existing recovery actions, linked workflows expose continuation/copy-result options, and routes without an executable candidate still include the exact inspect target. You can target a specific route with `GET /api/work/next?actionId=route:<route-id>`. When the recommended route candidate is an existing failed-job recovery action that is already trusted/low-risk eligible, `/api/work/next` also exposes the autopilot decision that allows the unattended loop to run that one recovery candidate.
 Retryable failed jobs can be advanced from work-next or `POST /api/jobs/:id/recovery/run` into a
 narrower recovery job with the original task, attempts, diagnostics, and log tail attached. Realtime
 voice can target the same path through `run_worker_recovery` when the user asks to recover a specific
@@ -155,8 +155,8 @@ It calls `/api/autopilot/tick` and requires typing `RUN` before executing.
 
 Use option `18. Toggle overnight autopilot` to write `JAVIS_AUTOPILOT_ENABLED` in `.env`. Enabling it
 also aligns local execution, trusted local mode, and Level 3 auto-run so the resident can keep making
-low-risk progress while unattended. The resident autopilot executes only low-risk recovery diagnostics
-and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
+low-risk progress while unattended. The resident autopilot executes only low-risk recovery diagnostics,
+trusted routed failed-job recovery candidates, and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
 another background job is running. When multiple work-next actions exist, autopilot skips manual-only
 items, including Realtime voice dogfood, and executes the first action that passes its auto-executable guard.
 `/api/autopilot` exposes the same structured decision preview so unattended runs leave evidence for

@@ -19217,6 +19217,27 @@ function autopilotEligibilityDecision(action) {
         : 'Recovery is not low-risk auto-eligible, or trusted local mode cannot queue it.',
     };
   }
+  if (action.source === 'routing' && action.routeRecovery?.recommended?.type === 'job_recovery') {
+    const candidate = action.routeRecovery.recommended;
+    if (
+      candidate.trustedAutoEligible &&
+      Number(candidate.recoveryAttempts || 0) < Number(candidate.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS)
+    ) {
+      return {
+        executable: true,
+        reason: 'eligible_trusted_routed_recovery',
+        detail: 'Trusted local mode can queue this bounded routed worker recovery.',
+      };
+    }
+    const executable = Boolean(candidate.autoEligible && Number(candidate.riskLevel || 0) <= 1);
+    return {
+      executable,
+      reason: executable ? 'eligible_low_risk_routed_recovery_review' : 'routed_recovery_needs_user_or_trust',
+      detail: executable
+        ? 'Low-risk routed recovery review can run unattended.'
+        : 'Routed recovery is not low-risk auto-eligible, or trusted local mode cannot queue it.',
+    };
+  }
   if (action.source === 'workflows' && action.workflowAction === 'retry_app_workflow') {
     const executable = Boolean(action.executable && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
     return {
@@ -19262,6 +19283,8 @@ function autopilotActionDecision(action, index = 0) {
     trustedAutoEligible: Boolean(action.trustedAutoEligible),
     recoveryAttempts: Math.max(0, Number(action.recoveryAttempts || 0)),
     maxRecoveryAttempts: Math.max(0, Number(action.maxRecoveryAttempts || 0)),
+    routeRecoveryType: compactRecordText(action.routeRecovery?.recommended?.type || '', 80),
+    routeRecoveryLabel: compactRecordText(action.routeRecovery?.recommended?.label || '', 140),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     decision: eligibility,
@@ -19307,7 +19330,7 @@ function autopilotCandidateCounts(candidates = []) {
     if (candidate.decision?.executable) counts.autoExecutable += 1;
     if (candidate.manualOnly) counts.manualOnly += 1;
     if (candidate.requiresUserPresence) counts.requiresUserPresence += 1;
-    if (candidate.trustedAutoEligible) counts.trustedRecovery += 1;
+    if (candidate.trustedAutoEligible || candidate.decision?.reason === 'eligible_trusted_routed_recovery') counts.trustedRecovery += 1;
     if (candidate.source === 'maintenance') counts.maintenance += 1;
   }
   counts.blocked = Math.max(0, counts.total - counts.autoExecutable);
@@ -24034,6 +24057,10 @@ function routeCandidateFromJobRecovery(job, action, index = 0) {
     reason: compactRecordText(action.reason || job.recoveryPlan?.summary || '', 360),
     executable: true,
     riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+    autoEligible: Boolean(action.autoEligible),
+    trustedAutoEligible: Boolean(action.trustedAutoEligible),
+    recoveryAttempts: Math.max(0, Number(action.recoveryAttempts || 0)),
+    maxRecoveryAttempts: Math.max(0, Number(action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS)),
     jobId: job.id,
     recoveryType: action.recoveryType || action.type || '',
     endpoint: {
@@ -24238,6 +24265,7 @@ async function executeRoutingRecoveryCandidate(candidate, options = {}) {
     return runRecoveryActionForJob(job, {}, {
       execute: true,
       recoveryType: candidate.recoveryType,
+      autopilot: options.autopilot,
       source: options.source || 'work_next_route_recovery',
     });
   }
@@ -24292,20 +24320,34 @@ function routingWorkNextActionForRecord(record, options = {}) {
   const entry = envelope.ledgerEntry;
   if (!record || !entry) return null;
   const activeCount = Math.max(1, Number(options.activeCount || 1));
+  const recommended = envelope.recommended || null;
+  const routedJobRecovery = recommended?.type === 'job_recovery' ? recommended : null;
+  const routeAutoEligible = Boolean(
+    routedJobRecovery &&
+    (
+      routedJobRecovery.trustedAutoEligible ||
+      (routedJobRecovery.autoEligible && Number(routedJobRecovery.riskLevel || 0) <= 1)
+    )
+  );
   return {
     id: `route:${record.id}`,
     priority: Number(options.priority || 2),
-    label: envelope.recommended?.executable ? 'Recover routed work' : 'Check routed work',
-    summary: `${activeCount} routed task(s) active/blocked. ${record.owner} owns ${record.lane}: ${record.taskTitle}. Next: ${envelope.recommended?.label || entry.nextAction || 'check progress'}`,
+    label: recommended?.executable ? 'Recover routed work' : 'Check routed work',
+    summary: `${activeCount} routed task(s) active/blocked. ${record.owner} owns ${record.lane}: ${record.taskTitle}. Next: ${recommended?.label || entry.nextAction || 'check progress'}`,
     source: 'routing',
     routeId: record.id,
-    executable: Boolean(envelope.recommended?.executable),
-    autoEligible: false,
-    autopilotEligible: false,
+    executable: Boolean(recommended?.executable),
+    autoEligible: routeAutoEligible,
+    autopilotEligible: routeAutoEligible,
+    riskLevel: routedJobRecovery ? Math.max(0, Math.min(4, Number(routedJobRecovery.riskLevel || 0))) : 2,
+    recoveryType: routedJobRecovery?.recoveryType || '',
+    trustedAutoEligible: Boolean(routedJobRecovery?.trustedAutoEligible),
+    recoveryAttempts: Math.max(0, Number(routedJobRecovery?.recoveryAttempts || 0)),
+    maxRecoveryAttempts: Math.max(0, Number(routedJobRecovery?.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS)),
     routeRecovery: {
       candidateCount: envelope.candidateCount,
       executableCandidateCount: envelope.executableCandidateCount,
-      recommended: envelope.recommended,
+      recommended,
       linked: envelope.linked,
     },
   };
@@ -25981,6 +26023,7 @@ async function workNextAction(options = {}) {
     if (execute && routeRecovery.recommended?.executable) {
       routeExecution = await executeRoutingRecoveryCandidate(routeRecovery.recommended, {
         source: options.source || 'work_next_route',
+        autopilot: options.autopilot,
         maxNodes: options.maxNodes,
         maxDepth: options.maxDepth,
       });
@@ -26037,6 +26080,7 @@ async function workNextAction(options = {}) {
     ok: true,
     executed,
     action,
+    autopilotDecision: autopilotEligibilityDecision(action),
     output,
     result,
     briefing,
