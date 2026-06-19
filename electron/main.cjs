@@ -14919,10 +14919,10 @@ async function callOpenAIResponsesWithFallback(args = {}, options = {}) {
   }
 }
 
-function jobSnapshot() {
+function jobSnapshot(limit = 30) {
   return Array.from(jobs.values())
     .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, 30);
+    .slice(0, Math.max(1, Math.min(200, Number(limit || 30))));
 }
 
 function queueCounts() {
@@ -15102,13 +15102,17 @@ function updateRoutingRecordsForWorkflow(workflow) {
 function routingRecordsForJob(jobId) {
   const id = String(jobId || '');
   if (!id) return [];
-  return routingSnapshot(200).filter((record) => record.jobId === id);
+  return Array.from(routingRecords.values())
+    .filter((record) => record.jobId === id)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 function routingRecordsForWorkflow(workflowId) {
   const id = String(workflowId || '');
   if (!id) return [];
-  return routingSnapshot(200).filter((record) => record.workflowId === id);
+  return Array.from(routingRecords.values())
+    .filter((record) => record.workflowId === id)
+    .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
 function reconcileRoutingRecords() {
@@ -15894,14 +15898,21 @@ function uniqueProgressRecords(list, keyForRecord) {
 }
 
 function workProgressCheckIn(options = {}) {
-  const jobLimit = Math.max(1, Math.min(12, Number(options.jobLimit || 5)));
+  const jobLimit = Math.max(1, Math.min(30, Number(options.jobLimit || 5)));
   const workflowLimit = Math.max(1, Math.min(12, Number(options.workflowLimit || 5)));
-  const recentJobs = jobSnapshot(Math.max(jobLimit, 50)).filter((job) => !isInternalJob(job)).slice(0, jobLimit);
-  const recentWorkflows = workflowSnapshot(Math.max(workflowLimit, 50)).filter((workflow) => !isInternalWorkflow(workflow)).slice(0, workflowLimit);
+  const includeInternal = options.includeInternal === true || String(options.includeInternal || '').toLowerCase() === 'true';
+  const recentJobs = jobSnapshot(Math.max(jobLimit, 50))
+    .filter((job) => includeInternal || !isInternalJob(job))
+    .slice(0, jobLimit);
+  const recentWorkflows = workflowSnapshot(Math.max(workflowLimit, 50))
+    .filter((workflow) => includeInternal || !isInternalWorkflow(workflow))
+    .slice(0, workflowLimit);
   const recentRoutes = routingSnapshot(Math.max(jobLimit, workflowLimit, 20))
-    .filter((record) => !isInternalRoutingRecord(record))
+    .filter((record) => includeInternal || !isInternalRoutingRecord(record))
     .slice(0, Math.max(jobLimit, workflowLimit, 5));
-  const activeRouteSnapshot = activeRoutingSnapshot(Math.max(jobLimit, workflowLimit, 5));
+  const activeRouteSnapshot = includeInternal
+    ? routingSnapshot(Math.max(jobLimit, workflowLimit, 20)).filter((record) => isRoutingAttentionStatus(record.status))
+    : activeRoutingSnapshot(Math.max(jobLimit, workflowLimit, 5));
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const activeWorkflows = uniqueProgressRecords(
     recentWorkflows.filter((workflow) => workflow.status === 'queued' || workflow.status === 'running'),
@@ -15968,6 +15979,7 @@ function workProgressCheckIn(options = {}) {
     recentJobs: recentJobs.length,
     recentWorkflows: recentWorkflows.length,
     recentRoutes: recentRoutes.length,
+    includeInternal,
     source: String(options.source || 'api').slice(0, 80),
   });
 
@@ -15984,6 +15996,7 @@ function workProgressCheckIn(options = {}) {
       routing: routingCounts(),
       collaboration: collaboration.counts,
     },
+    includeInternal,
     routingLedger,
     collaboration,
     laneContracts: laneContractSnapshot(),
@@ -21449,6 +21462,7 @@ function startApiServer() {
         progress: workProgressCheckIn({
           jobLimit: req.query.jobLimit,
           workflowLimit: req.query.workflowLimit,
+          includeInternal: req.query.includeInternal,
           source: 'api',
         }),
       });

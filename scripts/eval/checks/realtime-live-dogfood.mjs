@@ -49,7 +49,7 @@ async function waitForProgressGroup(ctx, parallelGroup, jobs, timeoutMs = 60000)
   const deadline = Date.now() + timeoutMs;
   let latest = null;
   while (Date.now() < deadline) {
-    const res = await ctx.api('/api/work/progress?jobLimit=12&workflowLimit=6', { timeoutMs: 10000 });
+    const res = await ctx.api('/api/work/progress?includeInternal=true&jobLimit=30&workflowLimit=6', { timeoutMs: 10000 });
     if (res.ok && res.data?.progress) {
       latest = res.data.progress;
       const groups = progressGroupsFor(latest, parallelGroup);

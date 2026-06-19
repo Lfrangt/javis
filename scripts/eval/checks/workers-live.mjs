@@ -118,7 +118,8 @@ export default {
     );
     if (!allModesQueued) return out;
 
-    const progressDuring = await ctx.api('/api/work/progress', { timeoutMs: 10000 });
+    const progressPath = '/api/work/progress?includeInternal=true&jobLimit=30&workflowLimit=6';
+    const progressDuring = await ctx.api(progressPath, { timeoutMs: 10000 });
     const p = progressDuring.data?.progress;
     out.push(
       progressDuring.ok && p && Array.isArray(p.activeJobs) && Array.isArray(p.recentJobs)
@@ -149,7 +150,7 @@ export default {
         : fail('workers_live.logs', 'Worker logs and attempts', 'one or more jobs are missing observable worker evidence', completed),
     );
 
-    const progressAfter = await ctx.api('/api/work/progress', { timeoutMs: 10000 });
+    const progressAfter = await ctx.api(progressPath, { timeoutMs: 10000 });
     const after = progressAfter.data?.progress;
     const recentIds = new Set((after?.recentJobs || []).map((job) => job.id));
     const progressHasJobs = completed.every((job) => recentIds.has(job.id));
