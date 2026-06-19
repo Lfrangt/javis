@@ -13948,6 +13948,52 @@ function recordRealtimeProgressInjection(options = {}) {
   return { ok: true, injection, conversation: conversationStateSnapshot() };
 }
 
+function realtimeVoiceEvidenceSnapshot() {
+  const conversation = conversationStateSnapshot();
+  const negotiation = conversation.lastRealtimeSessionNegotiation || null;
+  const injection = conversation.lastRealtimeProgressInjection || null;
+  const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
+  const checks = {
+    sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
+    progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
+    passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
+    spokenSummaryReady: Boolean(progress.spokenSummary && progress.spokenSummary.length <= 420),
+  };
+  const missing = [
+    checks.sessionNegotiated ? '' : 'start a real renderer/WebRTC voice session so lastRealtimeSessionNegotiation.ok is true',
+    checks.progressInjectedFromRenderer ? '' : 'keep voice live while background worker progress changes so renderer reports a webrtc-datachannel progress injection',
+    checks.passiveContextOnly ? '' : 'confirm progress injection is a passive conversation.item.create with forcedResponse=false',
+    checks.spokenSummaryReady ? '' : 'generate a short /api/work/progress spokenSummary',
+  ].filter(Boolean);
+  const readyForVoiceProgressQuestion = Object.values(checks).every(Boolean);
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    readyForVoiceProgressQuestion,
+    checks,
+    missing,
+    nextAction: readyForVoiceProgressQuestion
+      ? 'Ask in the live voice session: 后台现在怎么样'
+      : missing[0] || 'Start a real voice session and run a background worker batch.',
+    conversation: {
+      status: conversation.status,
+      active: conversation.active,
+      sessionId: conversation.sessionId,
+      micMode: conversation.micMode,
+      lastRealtimeSessionNegotiation: negotiation,
+      lastRealtimeProgressInjection: injection,
+    },
+    progress: {
+      spokenSummary: progress.spokenSummary,
+      workerSummary: progress.workerSummary,
+      workerGroups: progress.workerGroups,
+      activeJobs: progress.activeJobs.length,
+      blockedWorkflows: progress.blockedWorkflows.length,
+      nextActions: progress.nextActions,
+    },
+  };
+}
+
 function conversationStateSnapshot() {
   const now = Date.now();
   const activeStatus = conversationState.status === 'connecting' || conversationState.status === 'live';
@@ -21609,6 +21655,14 @@ function startApiServer() {
       res.json({ context });
     } catch (error) {
       jsonError(res, 500, 'Realtime context failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/evidence', (_req, res) => {
+    try {
+      res.json({ evidence: realtimeVoiceEvidenceSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime evidence failed', error instanceof Error ? error.message : String(error));
     }
   });
 

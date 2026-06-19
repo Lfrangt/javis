@@ -122,6 +122,20 @@ export default {
         : fail('realtime.negotiation_evidence', 'Realtime negotiation evidence', `POST /api/realtime/session-negotiation ${negotiation.status}`, negotiation.data),
     );
 
+    const evidence = await ctx.api('/api/realtime/evidence');
+    const e = evidence.data?.evidence;
+    out.push(
+      evidence.ok &&
+        e &&
+        typeof e.readyForVoiceProgressQuestion === 'boolean' &&
+        e.checks &&
+        ['sessionNegotiated', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof e.checks[key] === 'boolean') &&
+        typeof e.nextAction === 'string' &&
+        e.progress?.spokenSummary
+        ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.readyForVoiceProgressQuestion ? 'ready' : 'pending'} · ${e.nextAction}`)
+        : fail('realtime.evidence_checklist', 'Realtime evidence checklist', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),
+    );
+
     return out;
   },
 };
