@@ -105,7 +105,7 @@ Renderer
 - Inbox triage lane: deterministic read-only priority sorting and lane suggestions over open captures, available from API, local command, voice tool, and panel.
 - Inbox next-action lane: explicitly processes the highest-priority open capture by reusing the same Inbox router and marking the item done only when routing succeeds.
 - Inbox routing lane: sends captured items through the same quick, background, Codex, or Claude router used by chat and voice, then marks successful captures done with route metadata.
-- Workflow continuation lane: creates follow-up workflows from prior records, preserving parent workflow ids and target context.
+- Workflow continuation lane: previews or creates follow-up workflows from prior records, preserving parent workflow ids and target context while adding related recent workflow records, explicit memory matches, recalled local skills, and inferred learning evidence to the continuation prompt.
 - Workflow delivery lane: copies completed workflow results back to the system clipboard in result-only or Markdown format.
 - Memory lane: user-approved local memories for durable preferences, project facts, and notes, with keyword search, task-context injection, and delete.
 - Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, routing evidence, Record & Replay-inspired `SKILL.md` draft generation, and read-only local skill recall that can change the routed plan without granting action permission.

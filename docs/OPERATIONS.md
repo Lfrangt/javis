@@ -629,6 +629,9 @@ curl http://127.0.0.1:3417/api/workflows/<workflow-id>
 curl -X POST http://127.0.0.1:3417/api/workflows/continue \
   -H 'Content-Type: application/json' \
   -d '{"mode":"background","instruction":"Continue with the next useful step."}'
+curl -X POST http://127.0.0.1:3417/api/workflows/continue \
+  -H 'Content-Type: application/json' \
+  -d '{"preview":true,"execute":false,"instruction":"Show the next follow-up step before queueing it."}'
 curl -X POST http://127.0.0.1:3417/api/workflows/<workflow-id>/continue \
   -H 'Content-Type: application/json' \
   -d '{"mode":"quick","instruction":"Explain what happened and what to do next."}'
@@ -912,12 +915,24 @@ Supported modes:
 
 ## Continue From History
 
+Continuation first builds a prompt from the parent workflow, related recent workflows, explicit memory
+matches, recalled local skills, and the local inferred learning profile when prompt inclusion is enabled.
+Use `preview:true` or `execute:false` to inspect that context without queueing work.
+
 Continue the latest workflow:
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/workflows/continue \
   -H 'Content-Type: application/json' \
   -d '{"mode":"background","instruction":"Take the next useful step."}'
+```
+
+Preview the continuation prompt without queueing work:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/workflows/continue \
+  -H 'Content-Type: application/json' \
+  -d '{"preview":true,"execute":false,"instruction":"Take the next useful step."}'
 ```
 
 Continue a specific workflow:

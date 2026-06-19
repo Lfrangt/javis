@@ -82,7 +82,7 @@
 - Work sessions scoped to the local machine: current build supports start/resume/status/note/check-in/end plus automatic evidence from Inbox, jobs, workflows, and approvals; next, improve spoken handoff quality.
 - Long-running work status scoped to the local machine: current build supports deterministic progress check-ins over jobs and workflows plus a work-progress sequence that lets active Realtime voice sessions sync grouped worker updates when job/workflow/routing state changes; `/api/realtime/evidence` reports whether the voice layer has the current sequence or is stale; next, make those live updates richer and more app-specific.
 - Presence status scoped to the local machine: current build exposes standby/watch/work/listening state and maps it to the compact traffic-light pet; next, connect richer notification timing so attention states stay rare and useful.
-- Continue-from-history prompts over recent workflow records and memory-aware follow-up prompts.
+- Continue-from-history prompts: current build previews and runs workflow continuations with parent workflow context, related recent workflow records, explicit memories, local skill recall, and inferred learning evidence; next, use those continuation prompts in richer spoken handoffs and proactive follow-up suggestions.
 
 ## Phase 4: Trust And Autonomy
 

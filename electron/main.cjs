@@ -17748,6 +17748,8 @@ function createRoutingRecordForWorkflow(options = {}) {
     parallelGroup: options.parallelGroup || options.group || decision.lane,
     resultSummary: options.resultSummary || workflow.result || '',
     ownership: options.ownership,
+    memoryMatches: options.memoryMatches || 0,
+    learningEvidence: options.learningEvidence,
     contextPlan: options.contextPlan || decision.contextPlan,
     skillRecallPlan: options.skillRecallPlan || job?.skillRecallPlan || decision.skillRecallPlan,
   });
@@ -19050,7 +19052,78 @@ function normalizeContinueWorkflowMode(value) {
   return 'background';
 }
 
-function continuationWorkflowPrompt(parent, instruction) {
+function workflowContinuationQuery(parent, instruction = '') {
+  return [
+    instruction,
+    parent?.title,
+    parent?.intent,
+    parent?.kind,
+    parent?.request,
+    parent?.result,
+    parent?.target?.title,
+    parent?.target?.url,
+    parent?.target?.path,
+  ].filter(Boolean).join('\n');
+}
+
+function workflowContinuationRelatedHistory(parent, instruction = '', limit = 3) {
+  const tokens = memoryQueryTokens(workflowContinuationQuery(parent, instruction));
+  if (!tokens.length) return [];
+  const maxItems = Math.max(0, Math.min(8, Number(limit || 3)));
+  const candidates = workflowSnapshot(80)
+    .filter((workflow) => workflow.id !== parent.id && !isInternalWorkflow(workflow))
+    .map((workflow) => {
+      const haystack = [
+        workflow.title,
+        workflow.kind,
+        workflow.intent,
+        workflow.request,
+        workflow.result,
+        workflow.target?.title,
+        workflow.target?.url,
+        workflow.target?.path,
+      ].filter(Boolean).join('\n').toLowerCase();
+      const score = tokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
+      return { workflow, score };
+    });
+  const scored = candidates
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score || b.workflow.updatedAt - a.workflow.updatedAt)
+    .slice(0, maxItems);
+  const selected = scored.length ? scored : candidates
+    .sort((a, b) => b.workflow.updatedAt - a.workflow.updatedAt)
+    .slice(0, maxItems);
+  return selected
+    .map(({ workflow, score }) => ({
+      id: workflow.id,
+      title: workflow.title,
+      kind: workflow.kind,
+      intent: workflow.intent,
+      status: workflow.status,
+      score,
+      targetTitle: workflow.target?.title || '',
+      targetUrl: workflow.target?.url || '',
+      request: compactRecordText(workflow.request || '', 260),
+      result: compactRecordText(workflow.result || '', 420),
+      updatedAt: workflow.updatedAt,
+    }));
+}
+
+function formatRelatedWorkflowsForPrompt(list = []) {
+  return list.slice(0, 5).map((workflow, index) => [
+    `${index + 1}. ${workflow.title} (${workflow.status}/${workflow.kind || workflow.intent || 'workflow'}, score=${workflow.score})`,
+    workflow.targetTitle ? `Target: ${workflow.targetTitle}` : '',
+    workflow.targetUrl ? `URL: ${workflow.targetUrl}` : '',
+    workflow.request ? `Request: ${workflow.request}` : '',
+    workflow.result ? `Result: ${workflow.result}` : '',
+  ].filter(Boolean).join('\n')).join('\n');
+}
+
+function continuationWorkflowPrompt(parent, instruction, context = {}) {
+  const memoryPrompt = context.memoryContext?.prompt || '';
+  const relatedPrompt = Array.isArray(context.relatedWorkflows) && context.relatedWorkflows.length
+    ? ['Related recent workflow history:', formatRelatedWorkflowsForPrompt(context.relatedWorkflows)].join('\n')
+    : '';
   return [
     `Continue JAVIS workflow: ${parent.title}`,
     '',
@@ -19070,9 +19143,38 @@ function continuationWorkflowPrompt(parent, instruction) {
     '',
     'Previous result:',
     parent.result || '',
+    memoryPrompt ? '\nMemory and learned user context for this continuation:' : '',
+    memoryPrompt,
+    relatedPrompt ? '\nRelated workflow context:' : '',
+    relatedPrompt,
   ]
     .filter((line) => line !== '')
     .join('\n');
+}
+
+function workflowContinuationContext(parent, instruction = '', options = {}) {
+  const query = workflowContinuationQuery(parent, instruction);
+  const memoryContext = memoryContextForTask(query, {
+    useMemory: options.useMemory !== false,
+    memoryLimit: options.memoryLimit,
+    skillLimit: options.skillLimit,
+    useSkills: options.useSkills !== false,
+  });
+  const relatedWorkflows = options.includeRelatedWorkflows === false
+    ? []
+    : workflowContinuationRelatedHistory(parent, instruction, options.workflowLimit || 3);
+  const prompt = continuationWorkflowPrompt(parent, instruction, { memoryContext, relatedWorkflows });
+  return {
+    prompt,
+    memoryContext,
+    relatedWorkflows,
+    summary: [
+      `${memoryContext.matches.length} memory match(es)`,
+      `${memoryContext.skills.length} skill match(es)`,
+      `${relatedWorkflows.length} related workflow(s)`,
+      memoryContext.learningEvidence?.usedInPrompt ? 'learning attached' : memoryContext.learningEvidence?.decisionEffect || '',
+    ].filter(Boolean).join(' · '),
+  };
 }
 
 async function continueWorkflow(options = {}) {
@@ -19088,13 +19190,45 @@ async function continueWorkflow(options = {}) {
   const instruction = String(options.instruction || '').trim();
   const request = instruction || 'Continue from the previous workflow.';
   const title = `continue · ${parent.title}`.slice(0, 180);
-  const prompt = continuationWorkflowPrompt(parent, instruction);
+  const continuation = workflowContinuationContext(parent, instruction, options);
+  const prompt = continuation.prompt;
   const target = {
     ...(parent.target || {}),
     parentWorkflowId: parent.id,
+    continuation: {
+      memoryMatches: continuation.memoryContext.matches.length,
+      skillMatches: continuation.memoryContext.skills.length,
+      relatedWorkflows: continuation.relatedWorkflows.length,
+      learningEvidence: continuation.memoryContext.learningEvidence,
+    },
   };
 
   appendAudit('workflow.continue_requested', { parentWorkflowId: parent.id, mode, title });
+
+  if (options.preview === true || options.execute === false) {
+    return {
+      ok: true,
+      queued: false,
+      preview: true,
+      mode,
+      parentWorkflow: parent,
+      request,
+      title,
+      prompt,
+      continuation: {
+        summary: continuation.summary,
+        memory: {
+          matches: continuation.memoryContext.matches,
+          count: continuation.memoryContext.matches.length,
+          skills: continuation.memoryContext.skills,
+          skillCount: continuation.memoryContext.skills.length,
+          learningEvidence: continuation.memoryContext.learningEvidence,
+        },
+        relatedWorkflows: continuation.relatedWorkflows,
+      },
+      output: `Preview continuation for ${parent.title}: ${continuation.summary || 'no extra context'}.`,
+    };
+  }
 
   if (mode !== 'quick') {
     const workflow = createWorkflowRecord({
@@ -19120,6 +19254,8 @@ async function continueWorkflow(options = {}) {
       source: options.source || 'workflow_continue',
       scope: options.scope || `workflow_continue:${parent.kind || 'general'}`,
       parallelGroup: options.parallelGroup || options.group || `continue:${mode}`,
+      memoryMatches: continuation.memoryContext.matches.length,
+      learningEvidence: continuation.memoryContext.learningEvidence,
     });
     return {
       ok: true,
@@ -19129,6 +19265,10 @@ async function continueWorkflow(options = {}) {
       workflow: finalWorkflow,
       job,
       routing,
+      continuation: {
+        summary: continuation.summary,
+        relatedWorkflows: continuation.relatedWorkflows,
+      },
       output: `Queued continuation workflow ${workflow.id}.`,
     };
   }
@@ -19167,6 +19307,8 @@ async function continueWorkflow(options = {}) {
     scope: options.scope || `workflow_continue:${parent.kind || 'general'}`,
     parallelGroup: options.parallelGroup || options.group || `continue:${mode}`,
     resultSummary: output,
+    memoryMatches: continuation.memoryContext.matches.length,
+    learningEvidence: continuation.memoryContext.learningEvidence,
   });
   return {
     ok: Boolean(OPENAI_API_KEY),
@@ -19175,6 +19317,10 @@ async function continueWorkflow(options = {}) {
     parentWorkflow: parent,
     workflow: finalWorkflow,
     routing,
+    continuation: {
+      summary: continuation.summary,
+      relatedWorkflows: continuation.relatedWorkflows,
+    },
     output,
   };
 }
