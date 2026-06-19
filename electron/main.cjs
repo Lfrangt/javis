@@ -18969,6 +18969,113 @@ function realtimeDogfoodNextPromptSnapshot(options = {}) {
   };
 }
 
+function realtimeDogfoodBriefSnapshot(options = {}) {
+  const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
+  const dogfood = evidence.dogfood || realtimeDogfoodRunbookFromEvidence(evidence);
+  const drill = evidence.drill || dogfood.drill || {};
+  const prompt = realtimeDogfoodNextPromptSnapshot({ evidence });
+  const sessions = realtimeDogfoodOperatorSessionSnapshot({
+    evidence,
+    limit: options.sessionLimit || 3,
+    status: options.sessionStatus || '',
+  });
+  const steps = Array.isArray(drill.steps) ? drill.steps : [];
+  const pending = Array.isArray(drill.pending) ? drill.pending : steps.filter((step) => !step.ok);
+  const readyCount = steps.filter((step) => step.ok).length;
+  const pendingStep = pending[0] || prompt.step || null;
+  const evidenceTools = [
+    { id: 'handoff', label: 'work handoff', ok: Boolean(evidence.handoffTools?.hasHandoff), tool: REALTIME_HANDOFF_TOOL_NAME },
+    { id: 'autopilot', label: 'autopilot status', ok: Boolean(evidence.autopilotTools?.hasStatus), tool: REALTIME_AUTOPILOT_TOOL_NAME },
+    { id: 'attention', label: 'attention explanation', ok: Boolean(evidence.attentionTools?.hasExplanation), tool: REALTIME_ATTENTION_TOOL_NAME },
+    { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
+    { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
+    { id: 'shortcut', label: 'shortcut list/save/forget', ok: Boolean(evidence.shortcutTools?.hasList && evidence.shortcutTools?.hasSave && evidence.shortcutTools?.hasForget), tool: 'save_skill_shortcut' },
+  ];
+  const promptScript = [
+    prompt.copyText || prompt.prompt,
+    ...(Array.isArray(prompt.followUpPrompts) ? prompt.followUpPrompts : []),
+    ...(Array.isArray(drill.prompts) ? drill.prompts : []),
+  ]
+    .filter(Boolean)
+    .map((item) => compactRecordText(item, 220));
+  const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(20, Number(options.promptLimit || 12))));
+  const briefLines = [
+    `Realtime dogfood: ${drill.summary || `${evidence.status || 'pending'}/${evidence.phase || '-'}`}`,
+    `下一步: ${prompt.copyText || prompt.prompt || pendingStep?.nextAction || evidence.nextAction || '-'}`,
+    prompt.followUpPrompts?.length ? `跟进: ${prompt.followUpPrompts.join(' | ')}` : '',
+    `启动: ${SUMMON_HOTKEY || 'Option+Space'} 或点击桌面宠物；监控: npm run config -> V。`,
+    '不会从这个 brief 启动麦克风；它只整理现场操作和证据。',
+  ].filter(Boolean);
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    manualOnly: true,
+    startsMicrophone: false,
+    requiresUserPresence: true,
+    status: evidence.status || 'pending',
+    phase: evidence.phase || '',
+    ready: Boolean(evidence.readyForVoiceProgressQuestion || dogfood.ready),
+    summary: drill.summary || '',
+    brief: briefLines.join('\n'),
+    start: {
+      hotkey: SUMMON_HOTKEY || 'Option+Space',
+      petAction: 'Click the desktop pet or press the summon hotkey to start live Realtime voice.',
+      dogfoodStart: dogfood.startDrill || {
+        method: 'POST',
+        path: '/api/realtime/dogfood/start',
+        body: { execute: true, prepareProgress: true, prepareWhenLive: true, durationMs: 45000 },
+      },
+    },
+    monitor: {
+      cui: 'npm run config -> V. Watch Realtime voice evidence',
+      oneShot: 'npm run config -- --print-realtime-evidence',
+      prompt: 'npm run config -- --print-realtime-dogfood-prompt',
+      brief: 'npm run config -- --print-realtime-dogfood-brief',
+      endpoint: '/api/realtime/evidence',
+    },
+    currentStep: pendingStep
+      ? {
+        id: pendingStep.id || '',
+        label: pendingStep.label || pendingStep.id || '',
+        status: pendingStep.status || (pendingStep.ok ? 'ready' : 'pending'),
+        ok: Boolean(pendingStep.ok),
+        nextAction: compactRecordText(pendingStep.nextAction || '', 240),
+      }
+      : null,
+    nextPrompt: prompt,
+    prompts: uniqueScript,
+    counts: {
+      steps: steps.length,
+      ready: readyCount,
+      pending: Math.max(0, steps.length - readyCount),
+      sessionsActive: sessions.counts?.active || 0,
+      evidenceToolsReady: evidenceTools.filter((item) => item.ok).length,
+      evidenceToolsTotal: evidenceTools.length,
+    },
+    evidenceTools,
+    sessions: {
+      active: sessions.active ? {
+        id: sessions.active.id,
+        title: sessions.active.title,
+        status: sessions.active.status,
+        evidenceReady: sessions.active.counts?.evidenceReady || 0,
+        total: sessions.active.counts?.total || 0,
+        nextStep: sessions.active.nextStep || null,
+      } : null,
+      counts: sessions.counts,
+      startsMicrophone: Boolean(sessions.startsMicrophone),
+      manualOnly: sessions.manualOnly !== false,
+    },
+    safety: {
+      startsMicrophone: false,
+      copiesOnlyPromptText: true,
+      desktopPetDiagnostics: false,
+      recordReplayRequiresConfirmation: true,
+      actionsStillUsePolicyGates: true,
+    },
+  };
+}
+
 function realtimeDogfoodOperatorSessionCounts() {
   return Array.from(realtimeDogfoodOperatorSessions.values()).reduce(
     (counts, session) => {
@@ -29412,6 +29519,14 @@ function startApiServer() {
       res.json({ prompt: realtimeDogfoodNextPromptSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood prompt failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/brief', (req, res) => {
+    try {
+      res.json({ brief: realtimeDogfoodBriefSnapshot({ promptLimit: req.query.promptLimit }) });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood brief failed', error instanceof Error ? error.message : String(error));
     }
   });
 

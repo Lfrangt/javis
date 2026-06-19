@@ -297,6 +297,7 @@ async function printStatus() {
   console.log('13. Test wake trigger');
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
+  console.log('B. Show Realtime dogfood brief');
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
@@ -1402,6 +1403,44 @@ function printRealtimeDogfoodPrompt(result) {
   console.log(`Endpoint: ${prompt.monitor?.endpoint || '/api/realtime/evidence'}`);
 }
 
+function printRealtimeDogfoodBrief(result) {
+  const brief = result?.brief || result || {};
+  const counts = brief.counts || {};
+  const step = brief.currentStep || {};
+  const prompt = brief.nextPrompt || {};
+  console.log('JAVIS Realtime Dogfood Brief');
+  console.log('============================');
+  console.log(`Status: ${brief.status || 'pending'} · phase ${brief.phase || '-'} · ready ${Number(counts.ready || 0)}/${Number(counts.steps || 0)}`);
+  console.log(`Manual only=yes · starts microphone=${brief.startsMicrophone ? 'yes' : 'no'}`);
+  if (brief.brief) console.log(`\n${brief.brief}`);
+  console.log(`\nCurrent step: ${step.status || 'pending'} ${step.label || step.id || '-'}`);
+  console.log(`Next prompt: ${prompt.copyText || prompt.prompt || '-'}`);
+  if (Array.isArray(prompt.followUpPrompts) && prompt.followUpPrompts.length) {
+    console.log(`Follow-up: ${prompt.followUpPrompts.join(' | ')}`);
+  }
+  console.log('\nPrompt script:');
+  const prompts = Array.isArray(brief.prompts) ? brief.prompts : [];
+  if (prompts.length) {
+    prompts.slice(0, 12).forEach((item, index) => console.log(`${index + 1}. ${item}`));
+  } else {
+    console.log('- none');
+  }
+  console.log('\nEvidence gates:');
+  const tools = Array.isArray(brief.evidenceTools) ? brief.evidenceTools : [];
+  if (tools.length) {
+    for (const item of tools) {
+      console.log(`- ${item.ok ? 'ready' : 'pending'} ${item.label || item.id || '-'} · ${item.tool || '-'}`);
+    }
+  } else {
+    console.log('- none');
+  }
+  console.log('\nStart/monitor:');
+  console.log(`- start: ${brief.start?.hotkey || 'Option+Space'} or click pet`);
+  console.log(`- monitor: ${brief.monitor?.cui || 'npm run config -> V. Watch Realtime voice evidence'}`);
+  console.log(`- endpoint: ${brief.monitor?.endpoint || '/api/realtime/evidence'}`);
+  console.log(`- prompt helper: ${brief.monitor?.prompt || 'npm run config -- --print-realtime-dogfood-prompt'}`);
+}
+
 async function showRealtimeDogfoodPrompt(options = {}) {
   if (options.copy) {
     const result = await request('/api/realtime/dogfood/prompt/copy', {
@@ -1414,6 +1453,11 @@ async function showRealtimeDogfoodPrompt(options = {}) {
   }
   const result = await request('/api/realtime/dogfood/prompt');
   printRealtimeDogfoodPrompt(result);
+}
+
+async function showRealtimeDogfoodBrief() {
+  const result = await request('/api/realtime/dogfood/brief');
+  printRealtimeDogfoodBrief(result);
 }
 
 function printRealtimeDogfoodSession(result) {
@@ -1526,6 +1570,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-realtime-dogfood-brief') || process.argv.includes('--realtime-dogfood-brief')) {
+    await showRealtimeDogfoodBrief();
+    return;
+  }
+
   if (process.argv.includes('--copy-realtime-dogfood-prompt')) {
     await showRealtimeDogfoodPrompt({ copy: true });
     return;
@@ -1619,6 +1668,8 @@ async function main() {
         await watchRealtimeEvidence(rl);
       } else if (answer === 'd' || answer === 'dogfood' || answer === 'drill') {
         await startRealtimeDogfoodDrillFromCui(rl);
+      } else if (answer === 'b' || answer === 'brief' || answer === 'dogfood brief') {
+        await showRealtimeDogfoodBrief();
       } else if (answer === 'p' || answer === 'prompt' || answer === 'dogfood prompt') {
         await showRealtimeDogfoodPrompt({ copy: true });
       } else if (answer === 't' || answer === 'track' || answer === 'dogfood session') {

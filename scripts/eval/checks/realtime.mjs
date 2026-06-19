@@ -1226,6 +1226,48 @@ export default {
         : fail('realtime.dogfood_prompt_copy_dry_run', 'Realtime dogfood prompt copy dry-run', `POST /api/realtime/dogfood/prompt/copy ${dogfoodPromptCopy.status}`, dogfoodPromptCopy.data),
     );
 
+    const dogfoodBrief = await ctx.api('/api/realtime/dogfood/brief');
+    const dogfoodBriefData = dogfoodBrief.data?.brief;
+    out.push(
+      dogfoodBrief.ok &&
+        dogfoodBriefData?.manualOnly === true &&
+        dogfoodBriefData?.startsMicrophone === false &&
+        dogfoodBriefData?.requiresUserPresence === true &&
+        dogfoodBriefData?.monitor?.endpoint === '/api/realtime/evidence' &&
+        dogfoodBriefData?.monitor?.brief?.includes('--print-realtime-dogfood-brief') &&
+        dogfoodBriefData?.start?.hotkey &&
+        dogfoodBriefData?.counts?.steps >= 14 &&
+        dogfoodBriefData?.safety?.recordReplayRequiresConfirmation === true &&
+        Array.isArray(dogfoodBriefData.prompts) &&
+        dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
+        Array.isArray(dogfoodBriefData.evidenceTools) &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'demonstration' && item.tool === 'draft_ui_demonstration_skill')
+        ? ok('realtime.dogfood_brief', 'Realtime dogfood operator brief', `${dogfoodBriefData.counts.ready}/${dogfoodBriefData.counts.steps} ready · next=${dogfoodBriefData.nextPrompt?.copyText || dogfoodBriefData.currentStep?.label || '-'}`)
+        : fail('realtime.dogfood_brief', 'Realtime dogfood operator brief', `GET /api/realtime/dogfood/brief ${dogfoodBrief.status}`, dogfoodBrief.data),
+    );
+
+    try {
+      const briefCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-brief'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${briefCui.stdout || ''}\n${briefCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Realtime Dogfood Brief') &&
+          output.includes('starts microphone=no') &&
+          output.includes('Prompt script:') &&
+          output.includes('Evidence gates:') &&
+          output.includes('开始记录') &&
+          output.includes('/api/realtime/evidence')
+          ? ok('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', 'config CUI prints one-page live dogfood brief without starting voice')
+          : fail('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', 'expected CUI brief to print prompt script, evidence gates, and monitor endpoint', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', error instanceof Error ? error.message : String(error)));
+    }
+
     const dogfoodSessionBefore = await ctx.api('/api/realtime/dogfood/session');
     out.push(
       dogfoodSessionBefore.ok &&
