@@ -265,6 +265,7 @@ For local Claude Code/Codex sessions, prefer `npm run collab -- claim ...` over 
 
 `/api/demonstrations` is the Record & Replay-style local learning surface. It is explicit and local: start a demonstration, capture one or more current UI states, finish it into a manual-preview playbook, and delete it when no longer useful.
 Realtime voice exposes the same surface through `get_ui_demonstrations`, `start_ui_demonstration`, `capture_ui_demonstration_step`, and `finish_ui_demonstration`; say “贾维斯，开始记录这个流程”, “记录这一步”, then “结束记录” while demonstrating the workflow.
+Completed demonstrations can also become safe replay plans through `/api/demonstrations/<id>/replay/plan` or the `plan_ui_demonstration_replay` voice tool. The result is preview-only app workflow input; it never reuses coordinates and does not execute until the user separately confirms a normal app workflow run.
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/demonstrations/start \
@@ -276,6 +277,9 @@ curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/capture \
 curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/finish \
   -H 'Content-Type: application/json' \
   -d '{"status":"done"}'
+curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/replay/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"instruction":"Prepare safe replay only"}'
 curl http://127.0.0.1:3417/api/demonstrations
 ```
 

@@ -70,6 +70,13 @@ export default {
       });
       const demo = finished.data?.demonstration;
       const playbook = finished.data?.playbook || demo?.playbook;
+      const replay = demoId
+        ? await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/replay/plan`, {
+          method: 'POST',
+          body: { source: 'eval', instruction: 'Prepare safe replay only' },
+        })
+        : { ok: false, data: {} };
+      const replayPlan = replay.data || {};
       out.push(
         captured.ok &&
           finished.ok &&
@@ -79,6 +86,20 @@ export default {
           String(playbook?.markdown || '').includes('Replay mode: manual preview')
           ? ok('learning.demonstration_record', 'UI demonstration record', `${demo.steps.length} step(s) · ${playbook?.replayMode || 'manual_preview'}`)
           : fail('learning.demonstration_record', 'UI demonstration record', `capture ${captured.status} finish ${finished.status}`, { captured: captured.data, finished: finished.data }),
+      );
+      out.push(
+        replay.ok &&
+          replayPlan.ok === true &&
+          replayPlan.replayMode === 'safe_preview' &&
+          replayPlan.execute === false &&
+          replayPlan.appWorkflow?.execute === false &&
+          replayPlan.safety?.previewOnly === true &&
+          replayPlan.safety?.reobserveBeforeActing === true &&
+          replayPlan.safety?.noCoordinates === true &&
+          Array.isArray(replayPlan.steps) &&
+          replayPlan.steps.length === 1
+          ? ok('learning.demonstration_replay_plan', 'UI demonstration replay plan', `${replayPlan.steps.length} step(s) · ${replayPlan.replayMode}`)
+          : fail('learning.demonstration_replay_plan', 'UI demonstration replay plan', `plan ${replay.status} ${replay.error || ''}`, replay.data),
       );
     } finally {
       if (demoId) {

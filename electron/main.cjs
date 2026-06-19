@@ -3613,6 +3613,136 @@ function buildDemonstrationPlaybook(demo) {
   });
 }
 
+function inferDemonstrationDomAction(step = {}) {
+  const text = [step.instruction, step.note].filter(Boolean).join(' ');
+  if (/fill|type|enter|input|填写|输入|键入|录入/i.test(text)) return 'fill';
+  if (/select|choose|pick|dropdown|选择|下拉/i.test(text)) return 'select';
+  return 'click';
+}
+
+function demonstrationReplayStep(step = {}, index = 0) {
+  const observation = step.observation || {};
+  const label = compactRecordText(step.instruction || step.note || `Replay demonstrated step ${index + 1}`, 100);
+  const context = demonstrationContextLabel(step);
+  const instruction = [
+    step.instruction || step.note || `Replay demonstrated step ${index + 1}`,
+    context ? `Recorded context: ${context}.` : '',
+    'Re-observe the live UI first and match by visible role, label, text, selector, or app structure. Do not use saved coordinates.',
+  ].filter(Boolean).join(' ');
+
+  if (observation.browser?.available && observation.browser?.url) {
+    return {
+      type: 'browser_dom',
+      label,
+      app: observation.browser.app || observation.frontmost?.app || '',
+      action: inferDemonstrationDomAction(step),
+      query: compactRecordText(step.instruction || step.note || observation.browser.title || label, 240),
+      value: '',
+      sourceStepId: step.id,
+    };
+  }
+
+  return {
+    type: 'control_current_app',
+    label,
+    instruction,
+    maxNodes: 180,
+    maxDepth: 8,
+    sourceStepId: step.id,
+  };
+}
+
+function buildDemonstrationReplayPlan(demo, options = {}) {
+  const steps = (demo.steps || []).map((step, index) => demonstrationReplayStep(step, index));
+  const title = `Replay demonstration · ${demo.title || demo.goal || demo.id}`;
+  const instruction = [
+    `Replay the demonstrated workflow: ${demo.goal || demo.title || demo.id}.`,
+    options.instruction ? `User instruction: ${options.instruction}` : '',
+    'Preview only. Re-observe the live UI before every action.',
+  ].filter(Boolean).join(' ');
+  const appWorkflow = {
+    title,
+    instruction,
+    execute: false,
+    continueOnError: false,
+    steps,
+  };
+  const safety = {
+    previewOnly: true,
+    execute: false,
+    reobserveBeforeActing: true,
+    noCoordinates: true,
+    storesScreenshots: false,
+    storesClipboardText: false,
+    usesExistingAppWorkflow: true,
+    approvalBoundary: 'Normal app workflow, action policy, control mode, and approval gates still apply before execution.',
+  };
+  const output = steps.length
+    ? [
+        `Prepared safe replay plan for ${demo.title || demo.goal}.`,
+        `${steps.length} step(s), preview only.`,
+        'Next: inspect the plan, then explicitly run the app workflow only after the user confirms.',
+      ].join(' ')
+    : `No replayable steps were captured for ${demo.title || demo.goal}.`;
+  return {
+    ok: demo.status === 'done' && steps.length > 0,
+    demonstrationId: demo.id,
+    status: demo.status,
+    replayMode: 'safe_preview',
+    execute: false,
+    title,
+    instruction,
+    stepCount: steps.length,
+    steps,
+    appWorkflow,
+    safety,
+    nextActions: [
+      'Re-observe the current app or browser before executing any step.',
+      'Preview with /api/app/workflow execute:false if the live UI is uncertain.',
+      'Execute through run_app_workflow only after explicit user confirmation.',
+    ],
+    output,
+  };
+}
+
+async function planDemonstrationReplay(id, options = {}) {
+  const requestedId = String(id || options.id || options.demonstrationId || '').trim();
+  const demo = requestedId ? demonstrations.get(requestedId) : demonstrationSnapshot({ limit: 1, status: 'done' })[0];
+  if (!demo) throw new Error(requestedId ? 'Demonstration not found.' : 'No completed demonstration found.');
+  if (demo.status !== 'done') {
+    return {
+      ok: false,
+      demonstrationId: demo.id,
+      status: demo.status,
+      replayMode: 'safe_preview',
+      execute: false,
+      output: `Demonstration is ${demo.status}, not done. Finish it before planning replay.`,
+    };
+  }
+
+  const plan = buildDemonstrationReplayPlan(demo, options);
+  let workflowPreview = null;
+  if (plan.ok && (options.previewWorkflow === true || options.preview === true)) {
+    workflowPreview = await runAppWorkflow({
+      ...plan.appWorkflow,
+      source: 'demonstration_replay_preview',
+      execute: false,
+    });
+  }
+
+  appendAudit('demonstration.replay_planned', {
+    id: demo.id,
+    stepCount: plan.stepCount,
+    previewWorkflow: Boolean(workflowPreview),
+    source: String(options.source || 'api').slice(0, 80),
+  });
+
+  return {
+    ...plan,
+    workflowPreview,
+  };
+}
+
 async function startDemonstration(options = {}) {
   const existing = activeDemonstration();
   if (existing && options.force !== true) {
@@ -20630,6 +20760,19 @@ async function executeTool(name, args) {
     }
   }
 
+  if (name === 'plan_ui_demonstration_replay') {
+    try {
+      const result = await planDemonstrationReplay(args?.id || args?.demonstrationId || '', {
+        ...(args || {}),
+        previewWorkflow: args?.previewWorkflow === true,
+        source: 'voice',
+      });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_inbox') {
     const status = String(args?.status || 'open');
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 5)));
@@ -20922,6 +21065,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use start_ui_demonstration when the user explicitly asks JAVIS to watch or record a workflow they are about to demonstrate.',
       'Use capture_ui_demonstration_step when the user says this step, now, record this part, or capture the current step during an active UI demonstration.',
       'Use finish_ui_demonstration when the user says they are done recording, or wants to cancel a UI demonstration.',
+      'Use plan_ui_demonstration_replay when the user asks to replay, use, or turn a completed UI demonstration into a safe preview plan. It must not execute; actual execution requires a separate explicit run_app_workflow confirmation through normal gates.',
       'UI demonstrations are explicit local learning records; they store user notes plus sanitized app/browser/screen/accessibility summaries, never screenshots or raw clipboard text. Replay must re-observe the live UI before acting.',
       'Use get_inbox when the user asks what is waiting, what they captured, or which Inbox items are open.',
       'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory.',
@@ -21721,6 +21865,21 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'plan_ui_demonstration_replay',
+        description: 'Turn a completed explicit UI demonstration into a safe preview-only app workflow replay plan. Does not execute actions; every step must re-observe live UI and later use normal app workflow gates.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            demonstrationId: { type: 'string' },
+            instruction: { type: 'string' },
+            previewWorkflow: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_inbox',
         description: 'List local Inbox captures and counts. Defaults to open items.',
         parameters: {
@@ -22126,6 +22285,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'start_ui_demonstration',
   'capture_ui_demonstration_step',
   'finish_ui_demonstration',
+  'plan_ui_demonstration_replay',
   'read_browser_page',
   'run_browser_workflow',
   'route_task',
@@ -22144,7 +22304,7 @@ function realtimeInstructionChecks(instructions = '') {
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
-    demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|UI demonstrations/i.test(text),
+    demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
     localExecution: /run_cli_tool|run_mac_action|run_file_action/i.test(text),
     confirmationStops: /purchases|logins|deletes|sends|irreversible|confirmation/i.test(text),
@@ -23072,6 +23232,24 @@ function startApiServer() {
       res.json(finishDemonstration(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' }));
     } catch (error) {
       jsonError(res, 400, 'Demonstration finish failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/demonstrations/replay/plan', express.json({ limit: '256kb' }), async (req, res) => {
+    try {
+      const result = await planDemonstrationReplay(req.body?.id || req.body?.demonstrationId || '', { ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration replay plan failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/demonstrations/:id/replay/plan', express.json({ limit: '256kb' }), async (req, res) => {
+    try {
+      const result = await planDemonstrationReplay(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration replay plan failed', error instanceof Error ? error.message : String(error));
     }
   });
 

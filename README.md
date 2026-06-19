@@ -16,7 +16,7 @@ Local Mac-first realtime desktop buddy.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
-- Record & Replay-inspired local skill draft generation: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, then explicitly export it to `~/.agents/skills`.
+- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, and turn completed UI demonstrations into safe preview-only replay plans.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
