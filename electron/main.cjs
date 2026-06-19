@@ -16911,6 +16911,7 @@ const REALTIME_SHORTCUT_TOOL_NAMES = new Set([
 ]);
 const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
 const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
+const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 
 function realtimeToolOutputObject(result = {}) {
   if (!result || typeof result.output !== 'string') return null;
@@ -17003,6 +17004,30 @@ function realtimeAutopilotToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeAttentionToolSummary(name, args = {}, result = {}) {
+  if (name !== REALTIME_ATTENTION_TOOL_NAME) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const policy = output.policy || {};
+  const history = output.history || {};
+  return {
+    spokenSummary: compactRecordText(output.spokenSummary || '', 420),
+    statusLine: compactRecordText(output.statusLine || '', 160),
+    reasonLine: compactRecordText(output.reasonLine || '', 220),
+    actionLine: compactRecordText(output.actionLine || '', 220),
+    historyLine: compactRecordText(output.historyLine || '', 220),
+    level: compactRecordText(policy.level || '', 40),
+    petState: compactRecordText(policy.petState || '', 40),
+    shouldNotify: Boolean(policy.shouldNotify),
+    historyCount: boundedCount(history.count, 1000),
+    historyReturned: boundedCount(history.returned, 1000),
+    latestHistoryTitle: compactRecordText(history.latest?.title || '', 120),
+    operatorOnlyHistory: history.operatorOnly === true,
+    desktopPetHistory: history.desktopPet === true,
+    desktopPetStillMinimal: output.guidance?.desktopPetStillMinimal === true,
+    limit: boundedCount(args?.limit, 100),
+  };
+}
+
 function recordRealtimeToolCall(options = {}) {
   const name = compactRecordText(options.name || '', 120);
   if (!name) return null;
@@ -17011,6 +17036,7 @@ function recordRealtimeToolCall(options = {}) {
   const shortcut = realtimeShortcutToolSummary(name, options.args || {}, result);
   const handoff = realtimeHandoffToolSummary(name, options.args || {}, result);
   const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
+  const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
     name,
@@ -17024,6 +17050,7 @@ function recordRealtimeToolCall(options = {}) {
     shortcut,
     handoff,
     autopilot,
+    attention,
   };
   realtimeToolCallEvents.unshift(event);
   realtimeToolCallEvents.splice(MAX_REALTIME_TOOL_CALL_EVENTS);
@@ -17044,6 +17071,11 @@ function recordRealtimeToolCall(options = {}) {
     autopilotCanActNow: Boolean(autopilot?.canActNow),
     autopilotWaitingFor: autopilot?.firstWaitingFor || '',
     autopilotAutoExecutableCount: autopilot?.autoExecutableCount || 0,
+    attentionSummary: attention?.spokenSummary || '',
+    attentionLevel: attention?.level || '',
+    attentionPetState: attention?.petState || '',
+    attentionHistoryCount: attention?.historyCount || 0,
+    attentionOperatorOnlyHistory: Boolean(attention?.operatorOnlyHistory),
     error: event.error,
   });
   return event;
@@ -17107,6 +17139,23 @@ function realtimeAutopilotToolEvidence(limit = 8) {
     nextAction: hasStatus
       ? 'Ask live voice why autopilot skipped or what it can do next, then confirm the answer matches this evidence.'
       : 'Ask the live voice session: autopilot 为什么没自己继续跑 / why did unattended work stop?',
+  };
+}
+
+function realtimeAttentionToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => event.name === REALTIME_ATTENTION_TOOL_NAME)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasExplanation = recent.some((event) => event.ok && event.attention?.spokenSummary && event.attention?.desktopPetStillMinimal);
+  return {
+    ok: hasExplanation,
+    count: recent.length,
+    hasExplanation,
+    last: recent[0] || null,
+    recent,
+    nextAction: hasExplanation
+      ? 'Ask live voice to explain why the pet is green/yellow/red and confirm the answer matches this attention evidence.'
+      : 'Ask the live voice session: 为什么你现在是绿色？为什么刚才没提醒我？',
   };
 }
 
@@ -17371,6 +17420,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const blocker = evidence.blocker || null;
   const handoffTools = evidence.handoffTools || {};
   const autopilotTools = evidence.autopilotTools || {};
+  const attentionTools = evidence.attentionTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
     goal: 'Prove a real Realtime voice session can speak current progress, call get_work_handoff/get_autopilot_status, and leave evidence.',
@@ -17401,6 +17451,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '后台现在怎么样',
       '现在做到哪了？接下来做什么？',
       'autopilot 为什么没自己继续跑？',
+      '为什么你现在是绿色？为什么刚才没提醒我？',
     ],
     expectedEvidence: [
       {
@@ -17430,8 +17481,14 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         ok: Boolean(autopilotTools.hasStatus),
         tool: REALTIME_AUTOPILOT_TOOL_NAME,
       },
+      {
+        id: 'attention_tool',
+        label: 'Realtime called get_attention_explanation',
+        ok: Boolean(attentionTools.hasExplanation),
+        tool: REALTIME_ATTENTION_TOOL_NAME,
+      },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the two prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, and attention prompts.',
   };
 }
 
@@ -17440,6 +17497,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const shortcutTools = evidence.shortcutTools || {};
   const handoffTools = evidence.handoffTools || {};
   const autopilotTools = evidence.autopilotTools || {};
+  const attentionTools = evidence.attentionTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
   const stepIds = [
@@ -17464,7 +17522,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools });
   return {
     ok: true,
     status: ready ? 'ready' : evidence.status || 'pending',
@@ -17528,6 +17586,12 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasStatus: Boolean(autopilotTools.hasStatus),
       nextAction: autopilotTools.nextAction || 'Ask the live voice session why unattended autopilot skipped.',
     },
+    attentionTools: {
+      observed: Boolean(attentionTools.ok),
+      count: Number(attentionTools.count || 0),
+      hasExplanation: Boolean(attentionTools.hasExplanation),
+      nextAction: attentionTools.nextAction || 'Ask the live voice session why the pet is green/yellow/red.',
+    },
     drill,
     promptWhenReady: '后台现在怎么样',
     currentStep,
@@ -17557,6 +17621,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
   const handoffTools = options.handoffTools || evidence.handoffTools || {};
   const autopilotTools = options.autopilotTools || evidence.autopilotTools || {};
+  const attentionTools = options.attentionTools || evidence.attentionTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
   const steps = [
@@ -17639,6 +17704,14 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_AUTOPILOT_TOOL_NAME, count: Number(autopilotTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_attention_explanation',
+      label: 'Ask why the pet stayed quiet or changed color',
+      ok: Boolean(attentionTools.hasExplanation),
+      detail: attentionTools.hasExplanation ? 'get_attention_explanation was observed in recent Realtime tool evidence.' : 'No get_attention_explanation call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 为什么你现在是绿色？为什么刚才没提醒我？',
+      evidence: { tool: REALTIME_ATTENTION_TOOL_NAME, count: Number(attentionTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'list_shortcuts',
       label: 'Ask voice to list saved shortcut phrases',
       ok: Boolean(shortcutTools.hasList),
@@ -17689,6 +17762,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '后台现在怎么样',
       '现在做到哪了？接下来做什么？',
       'autopilot 为什么没自己继续跑？',
+      '为什么你现在是绿色？为什么刚才没提醒我？',
       '有哪些快捷短语?',
       '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
       '确认保存「测试贾维斯快捷短语」',
@@ -17964,6 +18038,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const shortcutTools = realtimeShortcutToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
   const autopilotTools = realtimeAutopilotToolEvidence(8);
+  const attentionTools = realtimeAttentionToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const liveAt = Number(conversation.liveAt || 0);
   const negotiationAt = Number(negotiation?.createdAt || 0);
@@ -18024,6 +18099,7 @@ function realtimeVoiceEvidenceSnapshot() {
     shortcutTools,
     handoffTools,
     autopilotTools,
+    attentionTools,
     progressSync,
     progress: {
       version: progress.version,
@@ -18133,6 +18209,11 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         observed: Boolean(evidence.autopilotTools?.hasStatus),
         count: Number(evidence.autopilotTools?.count || 0),
         nextAction: evidence.autopilotTools?.nextAction || '',
+      },
+      attention: {
+        observed: Boolean(evidence.attentionTools?.hasExplanation),
+        count: Number(evidence.attentionTools?.count || 0),
+        nextAction: evidence.attentionTools?.nextAction || '',
       },
     } : undefined,
   };

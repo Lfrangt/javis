@@ -201,6 +201,17 @@ export default {
         : fail('realtime.attention_explanation_tool', 'Realtime attention explanation tool', `tool execute ${attentionExplanationTool.status}`, attentionExplanationTool.data),
     );
 
+    const attentionEvidence = await ctx.api('/api/realtime/evidence');
+    const attentionToolEvidence = attentionEvidence.data?.evidence?.attentionTools;
+    const attentionToolEvents = Array.isArray(attentionToolEvidence?.recent) ? attentionToolEvidence.recent : [];
+    out.push(
+      attentionEvidence.ok &&
+        attentionToolEvidence?.hasExplanation === true &&
+        attentionToolEvents.some((event) => event.name === 'get_attention_explanation' && event.source === 'eval' && event.attention?.spokenSummary && event.attention?.desktopPetStillMinimal === true)
+        ? ok('realtime.attention_tool_evidence', 'Realtime attention tool evidence', `${attentionToolEvidence.count || 0} attention explanation call(s) visible`)
+        : fail('realtime.attention_tool_evidence', 'Realtime attention tool evidence', 'expected get_attention_explanation calls to be visible in realtime evidence', attentionToolEvidence),
+    );
+
     const autopilotStatusTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: { source: 'eval', name: 'get_autopilot_status', arguments: { workflowLimit: 6, jobLimit: 6 } },
@@ -263,7 +274,8 @@ export default {
         Array.isArray(realtimeEvidenceOutput.dogfood?.prompts) &&
         realtimeEvidenceOutput.tools?.handoff &&
         realtimeEvidenceOutput.tools?.autopilot &&
-        realtimeEvidenceOutput.tools?.shortcuts
+        realtimeEvidenceOutput.tools?.shortcuts &&
+        realtimeEvidenceOutput.tools?.attention
         ? ok('realtime.evidence_tool', 'Realtime evidence voice tool', `${realtimeEvidenceOutput.status}/${realtimeEvidenceOutput.phase} · ${realtimeEvidenceOutput.nextAction}`)
         : fail('realtime.evidence_tool', 'Realtime evidence voice tool', `tool execute ${realtimeEvidenceTool.status}`, realtimeEvidenceTool.data),
     );
@@ -457,9 +469,10 @@ export default {
       });
       const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
       out.push(
-        output.includes('Shortcut tools:') &&
+          output.includes('Shortcut tools:') &&
           output.includes('Handoff tool:') &&
           output.includes('Autopilot tool:') &&
+          output.includes('Attention explanation tool:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Recent realtime tool calls:') &&
           output.includes('- sync ') &&
@@ -468,9 +481,10 @@ export default {
           output.includes('forget') &&
           output.includes('called=yes') &&
           output.includes('get_work_handoff') &&
-          output.includes('get_autopilot_status')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, handoff, autopilot, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, handoff, autopilot, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
+          output.includes('get_autopilot_status') &&
+          output.includes('get_attention_explanation')
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, handoff, autopilot, attention, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, handoff, autopilot, attention, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -639,15 +653,19 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_progress') &&
         d.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         d.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
+        d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
         d.handoffTools?.hasHandoff === true &&
         d.autopilotTools?.hasStatus === true &&
+        d.attentionTools?.hasExplanation === true &&
         dogfoodGuide.start?.endpoint?.path === '/api/realtime/dogfood/start' &&
         dogfoodGuide.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(dogfoodGuide.prompts) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_autopilot_status') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
         typeof d.promptWhenReady === 'string' &&
@@ -666,6 +684,7 @@ export default {
       'ask_progress',
       'ask_work_handoff',
       'ask_autopilot_status',
+      'ask_attention_explanation',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
@@ -680,8 +699,10 @@ export default {
         drillGuide.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(drillGuide.prompts) &&
         drillGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         Array.isArray(drillData.prompts) &&
         drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
+        drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
         ? ok('realtime.dogfood_drill', 'Realtime dogfood drill', `${drillData.status || 'pending'} · ${drillData.summary || ''}`)
@@ -704,7 +725,9 @@ export default {
         startPreview.data?.dogfoodGuide?.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(startPreview.data?.dogfoodGuide?.prompts) &&
         startPreview.data.dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
+        startPreview.data.dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         String(startPreview.data?.output || '').includes('get_work_handoff') &&
+        String(startPreview.data?.output || '').includes('get_attention_explanation') &&
         startPreview.data?.drill?.manualOnly === true &&
         startPreview.data?.start?.hotkey &&
         typeof startPreview.data?.output === 'string' &&

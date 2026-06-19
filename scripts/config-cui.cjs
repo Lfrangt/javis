@@ -974,6 +974,8 @@ function printRealtimeEvidence(result) {
   const handoffEvents = Array.isArray(handoffTools.recent) ? handoffTools.recent : [];
   const autopilotTools = evidence.autopilotTools || {};
   const autopilotEvents = Array.isArray(autopilotTools.recent) ? autopilotTools.recent : [];
+  const attentionTools = evidence.attentionTools || {};
+  const attentionEvents = Array.isArray(attentionTools.recent) ? attentionTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
   const drill = evidence.drill || dogfood.drill || {};
   const dogfoodStart = evidence.dogfoodStart || drill.dogfoodStart || {};
@@ -1068,6 +1070,22 @@ function printRealtimeEvidence(result) {
     const waiting = autopilot.firstWaitingFor ? ` · waiting=${compact(autopilot.firstWaitingFor, 120)}` : '';
     const summary = autopilot.spokenSummary ? ` · ${compact(autopilot.spokenSummary, 140)}` : '';
     console.log(`- ${event.name || 'get_autopilot_status'} · ${bits.join(' · ')}${waiting}${summary}`);
+  }
+  console.log('\nAttention explanation tool:');
+  console.log(`- observed ${Number(attentionTools.count || 0)} recent event(s) · called=${attentionTools.hasExplanation ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(attentionTools.nextAction || dogfood.attentionTools?.nextAction || 'Ask live voice why the pet is green/yellow/red.', 220)}`);
+  for (const event of attentionEvents.slice(0, 4)) {
+    const attention = event.attention || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      attention.level ? `level=${attention.level}` : '',
+      attention.petState ? `pet=${attention.petState}` : '',
+      attention.operatorOnlyHistory ? 'operator-history' : '',
+      attention.desktopPetStillMinimal ? 'pet-minimal' : '',
+    ].filter(Boolean);
+    const summary = attention.spokenSummary ? ` · ${compact(attention.spokenSummary, 180)}` : '';
+    console.log(`- ${event.name || 'get_attention_explanation'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nRecent realtime tool calls:');
   if (toolCalls.length) {
