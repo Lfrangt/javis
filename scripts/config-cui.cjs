@@ -847,6 +847,7 @@ function printRealtimeEvidence(result) {
   const shortcutTools = evidence.shortcutTools || {};
   const shortcutEvents = Array.isArray(shortcutTools.recent) ? shortcutTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
+  const drill = evidence.drill || dogfood.drill || {};
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const checkLabels = [
     ['providerReady', 'Realtime provider'],
@@ -877,6 +878,16 @@ function printRealtimeEvidence(result) {
     console.log('\nMissing:');
     for (const item of evidence.missing.slice(0, 4)) {
       console.log(`- ${item}`);
+    }
+  }
+  if (Array.isArray(drill.steps) && drill.steps.length) {
+    console.log('\nDogfood drill:');
+    console.log(`- ${drill.status || 'pending'} · ${compact(drill.summary || '-', 240)}`);
+    for (const step of drill.steps.slice(0, 8)) {
+      console.log(`- ${step.status || (step.ok ? 'ready' : 'pending')} ${step.label || step.id || '-'} · ${compact(step.nextAction || step.detail || '-', 180)}`);
+    }
+    if (Array.isArray(drill.prompts) && drill.prompts.length) {
+      console.log(`- prompts: ${drill.prompts.slice(0, 4).join(' | ')}`);
     }
   }
   console.log('\nShortcut tools:');

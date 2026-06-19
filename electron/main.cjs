@@ -15855,6 +15855,33 @@ function realtimeShortcutToolEvidence(limit = 8) {
   };
 }
 
+function realtimeShortcutRecallEvidence(limit = 5) {
+  const recent = routingSnapshot(100)
+    .filter((record) => !isInternalRoutingRecord(record))
+    .map((record) => ({ record, plan: normalizeSkillRecallPlan(record.skillRecallPlan) }))
+    .filter(({ plan }) => plan.applied && plan.decisionEffect === 'shortcut_phrase_matched')
+    .slice(0, Math.max(1, Math.min(20, Number(limit || 5))))
+    .map(({ record, plan }) => ({
+      id: record.id,
+      taskTitle: compactRecordText(record.taskTitle, 160),
+      lane: record.lane,
+      owner: record.owner,
+      status: record.status,
+      resultLink: record.resultLink,
+      primarySkill: plan.primarySkill.name,
+      summary: compactRecordText(plan.summary, 220),
+      updatedAt: record.updatedAt,
+    }));
+  return {
+    ok: recent.length > 0,
+    count: recent.length,
+    recent,
+    nextAction: recent.length
+      ? 'Ask the live voice session to repeat the saved phrase and confirm the route mentions the recalled skill plan.'
+      : 'After saving a shortcut phrase, ask the live voice session to use that phrase so routing records shortcut recall evidence.',
+  };
+}
+
 function realtimeEvidenceStep({ id, label, ok, blocked = false, detail = '', nextAction = '', evidence = {} }) {
   const status = ok ? 'ready' : blocked ? 'blocked' : 'pending';
   return {
@@ -16017,6 +16044,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools });
   return {
     ok: true,
     status: ready ? 'ready' : evidence.status || 'pending',
@@ -16061,12 +16089,134 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasForget: Boolean(shortcutTools.hasForget),
       nextAction: shortcutTools.nextAction || 'Ask the live voice session to list, save, or forget a shortcut phrase.',
     },
+    drill,
     promptWhenReady: '后台现在怎么样',
     currentStep,
     steps,
     nextAction: ready
       ? 'Ask in the live voice session: 后台现在怎么样'
       : currentStep?.nextAction || evidence.nextAction || 'Start a real voice session and keep it open while background work changes.',
+  };
+}
+
+function realtimeDogfoodDrillStep({ id, label, ok, detail = '', nextAction = '', evidence = {} }) {
+  return {
+    id,
+    label,
+    status: ok ? 'ready' : 'pending',
+    ok: Boolean(ok),
+    detail: compactRecordText(detail, 240),
+    nextAction: compactRecordText(nextAction, 240),
+    evidence,
+  };
+}
+
+function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
+  const checks = evidence.checks || {};
+  const progress = evidence.progress || {};
+  const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
+  const recall = realtimeShortcutRecallEvidence(5);
+  const steps = [
+    realtimeDogfoodDrillStep({
+      id: 'open_monitor',
+      label: 'Open the Realtime evidence monitor',
+      ok: true,
+      detail: 'The drill is available from CUI option V, /api/realtime/evidence, and /api/realtime/dogfood/drill.',
+      nextAction: 'Run npm run config, choose V, and keep it visible during the voice session.',
+      evidence: {
+        cui: 'npm run config -> V',
+        oneShot: 'npm run config -- --print-realtime-evidence',
+        endpoint: '/api/realtime/dogfood/drill',
+      },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'start_live_voice',
+      label: 'Start a real renderer/WebRTC voice session',
+      ok: Boolean(checks.sessionNegotiated),
+      detail: checks.sessionNegotiated ? 'A successful renderer WebRTC negotiation is recorded.' : 'No successful renderer WebRTC offer/answer receipt has been recorded.',
+      nextAction: 'Click the desktop pet or press the summon hotkey to start live voice.',
+      evidence: { hotkey: SUMMON_HOTKEY || 'Option+Space' },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'inject_worker_progress',
+      label: 'Inject background worker progress passively',
+      ok: Boolean(checks.progressInjectedFromRenderer && checks.passiveContextOnly),
+      detail: checks.progressInjectedFromRenderer
+        ? 'Renderer progress injection reached the Realtime data channel without forcing a response.'
+        : 'No open WebRTC data-channel progress injection has been recorded from the renderer.',
+      nextAction: 'Run POST /api/realtime/dogfood/prepare with execute:true, keep voice live, and let the renderer send the progress update.',
+      evidence: {
+        method: 'POST',
+        path: '/api/realtime/dogfood/prepare',
+        body: { execute: true, durationMs: 45000 },
+      },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'ask_progress',
+      label: 'Ask for spoken background progress',
+      ok: Boolean(evidence.readyForVoiceProgressQuestion),
+      detail: progress.spokenSummary || 'The voice session is not ready to answer from passive progress context yet.',
+      nextAction: 'When ready, ask: 后台现在怎么样',
+      evidence: { prompt: '后台现在怎么样' },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'list_shortcuts',
+      label: 'Ask voice to list saved shortcut phrases',
+      ok: Boolean(shortcutTools.hasList),
+      detail: shortcutTools.hasList ? 'get_skill_shortcuts was observed.' : 'No get_skill_shortcuts call has been observed in the recent Realtime tool evidence.',
+      nextAction: 'Ask: 有哪些快捷短语?',
+      evidence: { tool: 'get_skill_shortcuts' },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'save_shortcut_with_confirmation',
+      label: 'Save a shortcut phrase after explicit confirmation',
+      ok: Boolean(shortcutTools.hasConfirmationGate && shortcutTools.hasSave),
+      detail: shortcutTools.hasSave ? 'save_skill_shortcut reached the confirmation gate and then saved.' : 'No confirmed save_skill_shortcut call has been observed yet.',
+      nextAction: 'Ask it to save a phrase for a recalled workflow, then explicitly confirm that exact phrase.',
+      evidence: {
+        tool: 'save_skill_shortcut',
+        hasConfirmationGate: Boolean(shortcutTools.hasConfirmationGate),
+        hasSave: Boolean(shortcutTools.hasSave),
+      },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'route_recalled_shortcut',
+      label: 'Use the saved phrase and verify routed recall',
+      ok: recall.ok,
+      detail: recall.ok ? recall.recent[0]?.summary || 'A route recalled a shortcut-backed skill plan.' : 'No non-internal routing record has recalled a shortcut-backed skill plan yet.',
+      nextAction: recall.nextAction,
+      evidence: { count: recall.count, recent: recall.recent.slice(0, 3) },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'forget_shortcut',
+      label: 'Forget the saved shortcut phrase',
+      ok: Boolean(shortcutTools.hasForget),
+      detail: shortcutTools.hasForget ? 'forget_skill_shortcut was observed.' : 'No forget_skill_shortcut call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask voice to forget the phrase you just saved.',
+      evidence: { tool: 'forget_skill_shortcut' },
+    }),
+  ];
+  const pending = steps.filter((step) => !step.ok);
+  return {
+    ok: pending.length === 0,
+    status: pending.length ? 'pending' : 'ready',
+    manualOnly: true,
+    requiresUserPresence: true,
+    autoEligible: false,
+    summary: pending.length
+      ? `${steps.length - pending.length}/${steps.length} drill step(s) ready. Next: ${pending[0].label}.`
+      : 'Realtime voice dogfood drill is complete.',
+    prompts: [
+      '后台现在怎么样',
+      '有哪些快捷短语?',
+      '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
+      '确认保存「测试贾维斯快捷短语」',
+      '用「测试贾维斯快捷短语」继续',
+      '忘记「测试贾维斯快捷短语」',
+    ],
+    steps,
+    pending,
+    shortcutRecall: recall,
   };
 }
 
@@ -16190,6 +16340,7 @@ function realtimeVoiceEvidenceSnapshot() {
     },
   };
   snapshot.dogfood = realtimeDogfoodRunbookFromEvidence(snapshot);
+  snapshot.drill = snapshot.dogfood.drill;
   return snapshot;
 }
 
@@ -24415,6 +24566,15 @@ function startApiServer() {
       res.json({ dogfood: realtimeDogfoodRunbookSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood runbook failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/drill', (_req, res) => {
+    try {
+      const evidence = realtimeVoiceEvidenceSnapshot();
+      res.json({ drill: evidence.drill, evidence });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood drill failed', error instanceof Error ? error.message : String(error));
     }
   });
 

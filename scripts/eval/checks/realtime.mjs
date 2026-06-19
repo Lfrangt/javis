@@ -262,6 +262,7 @@ export default {
       const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
       out.push(
         output.includes('Shortcut tools:') &&
+          output.includes('Dogfood drill:') &&
           output.includes('Recent realtime tool calls:') &&
           output.includes('confirm_required') &&
           output.includes('save') &&
@@ -354,6 +355,9 @@ export default {
         ['providerReady', 'sessionNegotiated', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof e.checks[key] === 'boolean') &&
         structuredEvidenceOk &&
         typeof e.nextAction === 'string' &&
+        Array.isArray(e.drill?.steps) &&
+        e.drill.steps.some((step) => step.id === 'start_live_voice') &&
+        e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
         : fail('realtime.evidence_checklist', 'Realtime evidence checklist', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),
@@ -380,10 +384,40 @@ export default {
         d.start?.workNext?.path === '/api/work/next' &&
         d.prepareProgress?.path === '/api/realtime/dogfood/prepare' &&
         d.monitor?.endpoint === '/api/realtime/evidence' &&
+        d.drill?.manualOnly === true &&
+        Array.isArray(d.drill?.steps) &&
+        d.drill.steps.some((step) => step.id === 'ask_progress') &&
+        Array.isArray(d.drill?.prompts) &&
+        d.drill.prompts.includes('后台现在怎么样') &&
         typeof d.promptWhenReady === 'string' &&
         dogfoodRequiredSteps.every((id) => dogfoodStepIds.has(id))
         ? ok('realtime.dogfood_runbook', 'Realtime dogfood runbook', `${d.status}/${d.phase || '-'} · manual-only · ${d.nextAction || ''}`)
         : fail('realtime.dogfood_runbook', 'Realtime dogfood runbook', `GET /api/realtime/dogfood ${dogfood.status}`, dogfood.data),
+    );
+
+    const drill = await ctx.api('/api/realtime/dogfood/drill');
+    const drillData = drill.data?.drill;
+    const drillIds = new Set((Array.isArray(drillData?.steps) ? drillData.steps : []).map((step) => step.id));
+    const drillRequired = [
+      'open_monitor',
+      'start_live_voice',
+      'inject_worker_progress',
+      'ask_progress',
+      'list_shortcuts',
+      'save_shortcut_with_confirmation',
+      'route_recalled_shortcut',
+      'forget_shortcut',
+    ];
+    out.push(
+      drill.ok &&
+        drillData?.manualOnly === true &&
+        drillData?.autoEligible === false &&
+        drillRequired.every((id) => drillIds.has(id)) &&
+        Array.isArray(drillData.prompts) &&
+        drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
+        drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
+        ? ok('realtime.dogfood_drill', 'Realtime dogfood drill', `${drillData.status || 'pending'} · ${drillData.summary || ''}`)
+        : fail('realtime.dogfood_drill', 'Realtime dogfood drill', `GET /api/realtime/dogfood/drill ${drill.status}`, drill.data),
     );
 
     const prepare = await ctx.api('/api/realtime/dogfood/prepare', {
