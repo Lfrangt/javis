@@ -50,6 +50,23 @@ export default {
         : warn('routing.ledger', 'Routing ledger', `ledger ${ledger.status} ${ledger.error || ''}`),
     );
 
+    const briefing = await ctx.api('/api/briefing');
+    const routeActions = (briefing.data?.briefing?.nextActions || []).filter((action) => action.source === 'routing');
+    let internalRouteAction = null;
+    for (const action of routeActions) {
+      const route = action.routeId ? await ctx.api(`/api/tasks/routing/${encodeURIComponent(action.routeId)}`) : null;
+      const source = String(route?.data?.record?.source || '').toLowerCase();
+      if (source === 'eval' || source === 'doctor' || source.startsWith('eval_')) {
+        internalRouteAction = { action, route: route?.data?.record };
+        break;
+      }
+    }
+    out.push(
+      briefing.ok && !internalRouteAction
+        ? ok('routing.internal_hidden', 'Internal routes hidden from Work Next', routeActions.length ? `${routeActions.length} user route action(s) visible` : 'no routing action currently visible')
+        : fail('routing.internal_hidden', 'Internal routes hidden from Work Next', 'eval/doctor route appeared in briefing next actions', internalRouteAction),
+    );
+
     return out;
   },
 };

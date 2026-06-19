@@ -33,7 +33,7 @@
 - Add read-only active browser page extraction for webpage-aware tasks.
 - Persist background task history.
 - Persist user-level workflow history with linked jobs and results.
-- Add deterministic work briefing over status, blockers, recent work, and next actions.
+- Add deterministic work briefing over status, blockers, recent work, and next actions, filtering internal eval/doctor evidence out of user-facing Work Next.
 - Add deterministic lane contract registry for owner/scope/handoff/risk boundaries before model choice.
 - Add deterministic spoken progress check-ins for background jobs and workflows.
 - Add unified work-next execution for one safe next action across the local workbench.

@@ -7326,7 +7326,7 @@ async function runCreativeWorkflowAction(options = {}) {
       : 'blocked';
   const workflowDraft = {
     kind: 'creative_action',
-    source: 'creative_action',
+    source: options.source || 'creative_action',
     status: workflowStatus,
     title: `Creative action · ${action.label}`.slice(0, 180),
     intent: action.id,
@@ -14973,9 +14973,28 @@ function isRoutingAttentionStatus(status) {
   return ['queued', 'running', 'approval_required', 'blocked', 'failed'].includes(String(status || ''));
 }
 
+function isInternalRoutingRecord(record) {
+  const source = String(record?.source || '').toLowerCase();
+  return source === 'eval' || source === 'doctor' || source === 'eval_restore' || source.startsWith('eval_');
+}
+
+function isInternalJob(job) {
+  if (!job) return false;
+  const source = String(job.source || '').toLowerCase();
+  if (source === 'eval' || source === 'doctor' || source === 'eval_restore' || source === 'verification' || source.startsWith('eval_')) return true;
+  const title = String(job.title || '').toLowerCase();
+  const result = String(job.result || '').toLowerCase();
+  const text = [job.title, job.result, job.log].filter(Boolean).join('\n').toLowerCase();
+  if (source === 'api_parallel' && /^parallel cli [ab]$/.test(title) && /^parallel-[ab]$/.test(result)) return true;
+  return /\b(realtime dogfood|read-only .* smoke|cli smoke|smoke test|verification|diagnostic|internal test)\b/.test(text)
+    || /javis-[a-z-]*smoke/.test(text)
+    || /\b(window cli smoke|tool cli smoke)\b/.test(text)
+    || /\b(route-cli-ok|window-cli-ok|tool-cli-ok)\b/.test(text);
+}
+
 function activeRoutingSnapshot(limit = 20) {
   return Array.from(routingRecords.values())
-    .filter((record) => isRoutingAttentionStatus(record.status))
+    .filter((record) => isRoutingAttentionStatus(record.status) && !isInternalRoutingRecord(record))
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
 }
@@ -15248,7 +15267,20 @@ function retryableBlockedWorkflowPlan(workflow) {
 function isInternalWorkflow(workflow) {
   if (!workflow) return false;
   const source = String(workflow.source || '').toLowerCase();
+  if (source === 'eval' || source === 'doctor' || source === 'eval_restore' || source.startsWith('eval_')) return true;
   if (/(test|smoke|verification|diagnostic|internal)/.test(source)) return true;
+  if (workflow.id) {
+    const routes = Array.from(routingRecords.values()).filter((record) => record.workflowId === workflow.id);
+    if (routes.length && routes.every(isInternalRoutingRecord)) return true;
+  }
+  const legacySafetyFixture =
+    source === 'creative_action'
+    && workflow.kind === 'creative_action'
+    && String(workflow.request || '') === 'Prepare a video export panel without exporting anything'
+    && workflow.target?.appId === 'final_cut_pro'
+    && workflow.target?.actionId === 'open_export_panel'
+    && workflow.target?.appInstalled === false;
+  if (legacySafetyFixture) return true;
   const text = [
     workflow.title,
     workflow.request,
@@ -15309,17 +15341,20 @@ function workflowBriefing(options = {}) {
   const readiness = readinessSnapshot();
   const workflowContext = workflowSnapshot(Math.max(workflowLimit, 50));
   const recentWorkflows = workflowContext.slice(0, workflowLimit);
-  const recentJobs = jobSnapshot().slice(0, jobLimit);
+  const recentJobs = jobSnapshot(Math.max(jobLimit, 50)).filter((job) => !isInternalJob(job)).slice(0, jobLimit);
   const openInbox = inboxSnapshot(6, 'open');
   const activeSession = activeSessionSnapshot();
   const pendingApprovals = pendingApprovalSnapshot(10);
-  const recentRoutes = routingSnapshot(6);
+  const recentRoutes = routingSnapshot(20).filter((record) => !isInternalRoutingRecord(record)).slice(0, 6);
   const activeRoutes = activeRoutingSnapshot(12);
   const routingLedger = activeRoutes.map(routingLedgerEntry).filter(Boolean);
   const collaboration = collaborationSnapshot(6);
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const recoveryActions = recoveryActionCandidates(recentJobs);
-  const recentBlockedWorkflows = recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed');
+  const recentBlockedWorkflows = recentWorkflows.filter((workflow) => (
+    (workflow.status === 'blocked' || workflow.status === 'failed')
+    && !isInternalWorkflow(workflow)
+  ));
   const resolvedBlockedWorkflows = recentBlockedWorkflows.filter((workflow) => (
     isWorkflowResolvedByLaterDone(workflow, workflowContext)
   ));
@@ -15702,9 +15737,11 @@ function uniqueProgressRecords(list, keyForRecord) {
 function workProgressCheckIn(options = {}) {
   const jobLimit = Math.max(1, Math.min(12, Number(options.jobLimit || 5)));
   const workflowLimit = Math.max(1, Math.min(12, Number(options.workflowLimit || 5)));
-  const recentJobs = jobSnapshot().slice(0, jobLimit);
-  const recentWorkflows = workflowSnapshot(workflowLimit);
-  const recentRoutes = routingSnapshot(Math.max(jobLimit, workflowLimit, 5));
+  const recentJobs = jobSnapshot(Math.max(jobLimit, 50)).filter((job) => !isInternalJob(job)).slice(0, jobLimit);
+  const recentWorkflows = workflowSnapshot(Math.max(workflowLimit, 50)).filter((workflow) => !isInternalWorkflow(workflow)).slice(0, workflowLimit);
+  const recentRoutes = routingSnapshot(Math.max(jobLimit, workflowLimit, 20))
+    .filter((record) => !isInternalRoutingRecord(record))
+    .slice(0, Math.max(jobLimit, workflowLimit, 5));
   const activeRouteSnapshot = activeRoutingSnapshot(Math.max(jobLimit, workflowLimit, 5));
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
   const activeWorkflows = uniqueProgressRecords(
