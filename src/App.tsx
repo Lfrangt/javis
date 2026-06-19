@@ -156,6 +156,48 @@ type ConversationState = {
   }
 }
 
+type PresenceMode =
+  | 'standby'
+  | 'watching'
+  | 'waking'
+  | 'connecting'
+  | 'listening'
+  | 'voice_error'
+  | 'working'
+  | 'needs_attention'
+  | 'setup_blocked'
+
+type PresenceState = {
+  ok: boolean
+  generatedAt: string
+  mode: PresenceMode
+  label: string
+  summary: string
+  intervention: {
+    passiveByDefault: boolean
+    requiresUserIntent: boolean
+    canActWhenInvited: boolean
+    trustedLocalMode: boolean
+    maxAutoRiskLevel: number
+    requireApprovalAtRiskLevel: number
+    next: string
+  }
+  observing?: {
+    latest?: {
+      available: boolean
+      app: string
+      windowTitle: string
+      browser?: {
+        available: boolean
+        app: string
+        title: string
+        url: string
+        host: string
+      }
+    }
+  }
+}
+
 type RealtimePreflightContext = {
   enabled: boolean
   generatedAt: string
@@ -379,6 +421,7 @@ type Status = {
     imageDataUrl?: string
   }
   screenPrivacy?: ScreenPrivacy
+  presence?: PresenceState
   conversation?: ConversationState
   speech?: {
     available: boolean
@@ -781,6 +824,20 @@ const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   jpegQuality: 0.46,
   realtimeAllowed: true,
   updatedAt: startupTime,
+}
+
+type PetMood = 'standby' | 'ready' | 'watching' | 'listening' | 'thinking' | 'attention' | 'needs-key'
+
+function petMoodLabel(mood: PetMood, presence?: PresenceState, talking = false) {
+  if (mood === 'needs-key') return 'Needs key'
+  if (talking) return 'Hearing you'
+  if (presence?.label) return presence.label
+  if (mood === 'attention') return 'Needs attention'
+  if (mood === 'listening') return 'Listening'
+  if (mood === 'thinking') return 'Working'
+  if (mood === 'watching') return 'Watching'
+  if (mood === 'standby') return 'Standby'
+  return 'Ready'
 }
 
 function initialApiToken() {
@@ -2239,14 +2296,18 @@ function App() {
     return found?.text || 'Ready.'
   }, [messages])
 
-  const mood = useMemo(() => {
+  const presence = status?.presence
+  const mood = useMemo<PetMood>(() => {
     if (!status?.api.hasOpenAiKey) return 'needs-key'
-    if (approvals.length > 0) return 'thinking'
-    if (voiceStatus === 'live') return 'listening'
-    if (activeJobCount > 0) return 'thinking'
-    if (screenLive) return 'watching'
+    if (presence?.mode === 'setup_blocked' || presence?.mode === 'voice_error' || readiness?.overall === 'blocked') return 'attention'
+    if (presence?.mode === 'needs_attention' || approvals.length > 0) return 'attention'
+    if (voiceStatus === 'connecting' || presence?.mode === 'connecting' || presence?.mode === 'waking') return 'thinking'
+    if (voiceStatus === 'live' || presence?.mode === 'listening') return 'listening'
+    if (activeJobCount > 0 || presence?.mode === 'working') return 'thinking'
+    if (screenLive || presence?.mode === 'watching') return 'watching'
+    if (presence?.mode === 'standby') return 'standby'
     return 'ready'
-  }, [activeJobCount, approvals.length, screenLive, status?.api.hasOpenAiKey, voiceStatus])
+  }, [activeJobCount, approvals.length, presence?.mode, readiness?.overall, screenLive, status?.api.hasOpenAiKey, voiceStatus])
 
   const voiceAction = useCallback(() => {
     if (voiceStatus === 'idle' || voiceStatus === 'error') {
@@ -2264,6 +2325,8 @@ function App() {
   }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
   const petAction = status?.api.hasOpenAiKey ? startAssistantSession : openConfigCui
+  const petStatusLabel = petMoodLabel(mood, presence, talking)
+  const petStatusDetail = presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
   const petActionLabel = !status?.api.hasOpenAiKey
     ? 'Open JAVIS config'
     : voiceStatus === 'live' || screenLive
@@ -2295,8 +2358,8 @@ function App() {
             void openConfigCui()
           }}
           disabled={voiceStatus === 'connecting'}
-          aria-label={petActionLabel}
-          title="Click to talk. Right-click for config."
+          aria-label={`${petStatusLabel}. ${petActionLabel}`}
+          title={`${petStatusLabel}. ${petStatusDetail} Click to talk. Right-click for config.`}
         >
           <span className="island-glow" aria-hidden="true" />
           <span className="island-lights" aria-hidden="true">
@@ -2308,7 +2371,7 @@ function App() {
         </button>
 
         <div className="speech no-drag">
-          <span>{mood === 'needs-key' ? 'Needs key' : talking ? 'Hearing you' : mood === 'listening' ? 'Voice ready' : mood === 'thinking' ? 'Working' : mood === 'watching' ? 'Watching' : 'Ready'}</span>
+          <span>{petStatusLabel}</span>
           <p>{latestLine}</p>
         </div>
 

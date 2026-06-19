@@ -22,6 +22,7 @@
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.
 - Runtime/tool activity log in CUI/API, not on the desktop pet.
+- Desktop pet consumes resident presence as a traffic-light Dynamic Island capsule instead of showing diagnostic chips.
 
 ## Phase 1: Reliable Resident Server
 
@@ -78,6 +79,7 @@
 - Capture queue scoped to the local machine: current build supports persistent Inbox items, read-only triage, explicit process-next, and routing them into work lanes; next, add spoken confirmation policies and richer triage grouping.
 - Work sessions scoped to the local machine: current build supports start/resume/status/note/check-in/end plus automatic evidence from Inbox, jobs, workflows, and approvals; next, improve spoken handoff quality.
 - Long-running work status scoped to the local machine: current build supports deterministic progress check-ins over jobs and workflows; next, stream richer live updates into active voice sessions.
+- Presence status scoped to the local machine: current build exposes standby/watch/work/listening state and maps it to the compact traffic-light pet; next, connect richer notification timing so attention states stay rare and useful.
 - Continue-from-history prompts over recent workflow records and memory-aware follow-up prompts.
 
 ## Phase 4: Trust And Autonomy

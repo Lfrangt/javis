@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 const { app, BrowserWindow } = require('electron');
 
 const mode = 'pet';
@@ -15,6 +16,15 @@ const windowSizes = {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function readLocalApiToken() {
+  const tokenFile = path.join(os.homedir(), 'Library/Application Support/JAVIS/Runtime/api-token');
+  try {
+    return fs.readFileSync(tokenFile, 'utf8').trim();
+  } catch {
+    return '';
+  }
 }
 
 async function main() {
@@ -38,7 +48,8 @@ async function main() {
     },
   });
 
-  await window.loadFile(distIndex);
+  const token = readLocalApiToken();
+  await window.loadFile(distIndex, token ? { query: { javisApiToken: token } } : undefined);
   await wait(800);
 
   const image = await window.capturePage();

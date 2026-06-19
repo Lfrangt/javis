@@ -123,6 +123,7 @@ select {
 }
 
 .mood-ready .light-green,
+.mood-standby .light-green,
 .mood-listening .light-green,
 .mood-watching .light-green {
   background: #35f29a;
@@ -130,6 +131,13 @@ select {
     0 0 16px rgba(53, 242, 154, 0.85),
     0 0 0 1px rgba(53, 242, 154, 0.35);
   opacity: 1;
+}
+
+.mood-standby .light-green {
+  opacity: 0.64;
+  box-shadow:
+    0 0 10px rgba(53, 242, 154, 0.42),
+    0 0 0 1px rgba(53, 242, 154, 0.22);
 }
 
 .mood-thinking .light-yellow,
@@ -142,6 +150,7 @@ select {
   opacity: 1;
 }
 
+.mood-attention .light-red,
 .mood-needs-key .light-red {
   background: #ff5c55;
   box-shadow:
@@ -150,10 +159,19 @@ select {
   opacity: 1;
 }
 
+.mood-attention .voice-capsule,
+.mood-needs-key .voice-capsule {
+  border-color: rgba(255, 92, 85, 0.24);
+}
+
 .mood-listening .voice-capsule,
 .mood-watching .voice-capsule {
   width: 188px;
   border-color: rgba(96, 255, 213, 0.24);
+}
+
+.mood-standby .voice-capsule {
+  border-color: rgba(95, 255, 171, 0.14);
 }
 
 .mood-thinking .voice-capsule {
@@ -163,7 +181,8 @@ select {
 
 .mood-listening .island-light,
 .mood-thinking .island-light,
-.mood-watching .island-light {
+.mood-watching .island-light,
+.mood-attention .island-light {
   animation: island-pulse 900ms ease-in-out infinite alternate;
 }
 

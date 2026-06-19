@@ -13,7 +13,19 @@ export default {
     if (!presence.ok || !p) {
       out.push(fail('presence.state', 'Presence state', `GET /api/presence ${presence.status} ${presence.error || ''}`));
     } else {
-      out.push(ok('presence.state', 'Presence state', `mode=${p.mode || '?'} · ${p.label || ''}${p.intervention ? ' · guardrails on' : ''}`, { mode: p.mode }));
+      const knownModes = new Set(['standby', 'watching', 'waking', 'connecting', 'listening', 'voice_error', 'working', 'needs_attention', 'setup_blocked']);
+      out.push(
+        knownModes.has(p.mode)
+          ? ok('presence.state', 'Presence state', `mode=${p.mode || '?'} · ${p.label || ''}`, { mode: p.mode })
+          : fail('presence.state', 'Presence state', `unknown mode ${p.mode || '?'}`, { mode: p.mode }),
+      );
+
+      const intervention = p.intervention || {};
+      out.push(
+        intervention.passiveByDefault === true && intervention.requiresUserIntent === true && typeof intervention.next === 'string'
+          ? ok('presence.guardrails', 'Presence guardrails', `passive=${intervention.passiveByDefault} · user intent=${intervention.requiresUserIntent}`)
+          : fail('presence.guardrails', 'Presence guardrails', 'presence must expose passive-by-default intervention boundaries', intervention),
+      );
     }
 
     const ambient = await ctx.api('/api/ambient');
