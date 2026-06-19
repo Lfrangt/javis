@@ -253,6 +253,36 @@ export default {
         : fail('realtime.shortcut_tool_evidence', 'Realtime shortcut tool evidence', 'expected shortcut tool calls to be visible in realtime evidence', shortcutToolEvidence),
     );
 
+    const handoffTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_work_handoff',
+        arguments: { maxChars: 500, nextLimit: 2, followUpLimit: 2 },
+      },
+    });
+    const handoffOutput = parseToolOutput(handoffTool);
+    out.push(
+      handoffTool.ok &&
+        handoffTool.data?.ok === true &&
+        typeof handoffOutput?.spokenSummary === 'string' &&
+        handoffOutput.spokenSummary.trim().length > 0 &&
+        handoffOutput.spokenSummary.length <= 500
+        ? ok('realtime.handoff_tool', 'Realtime work handoff tool', handoffOutput.spokenSummary)
+        : fail('realtime.handoff_tool', 'Realtime work handoff tool', `tool execute ${handoffTool.status}`, handoffTool.data),
+    );
+
+    const handoffEvidence = await ctx.api('/api/realtime/evidence');
+    const handoffToolEvidence = handoffEvidence.data?.evidence?.handoffTools;
+    const handoffToolEvents = Array.isArray(handoffToolEvidence?.recent) ? handoffToolEvidence.recent : [];
+    out.push(
+      handoffEvidence.ok &&
+        handoffToolEvidence?.hasHandoff === true &&
+        handoffToolEvents.some((event) => event.name === 'get_work_handoff' && event.source === 'eval' && event.handoff?.spokenSummary)
+        ? ok('realtime.handoff_tool_evidence', 'Realtime handoff tool evidence', `${handoffToolEvidence.count || 0} handoff call(s) visible`)
+        : fail('realtime.handoff_tool_evidence', 'Realtime handoff tool evidence', 'expected get_work_handoff calls to be visible in realtime evidence', handoffToolEvidence),
+    );
+
     try {
       const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-evidence'], {
         cwd: process.cwd(),
@@ -263,14 +293,17 @@ export default {
       const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
       out.push(
         output.includes('Shortcut tools:') &&
+          output.includes('Handoff tool:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Recent realtime tool calls:') &&
           output.includes('- sync ') &&
           output.includes('confirm_required') &&
           output.includes('save') &&
-          output.includes('forget')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut tool and progress sync evidence', { output: output.slice(0, 2000) }),
+          output.includes('forget') &&
+          output.includes('called=yes') &&
+          output.includes('get_work_handoff')
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, handoff, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, handoff, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -380,7 +413,9 @@ export default {
         typeof e.nextAction === 'string' &&
         Array.isArray(e.drill?.steps) &&
         e.drill.steps.some((step) => step.id === 'start_live_voice') &&
+        e.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
+        e.handoffTools?.hasHandoff === true &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
         : fail('realtime.evidence_checklist', 'Realtime evidence checklist', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),
@@ -411,6 +446,8 @@ export default {
         d.drill?.manualOnly === true &&
         Array.isArray(d.drill?.steps) &&
         d.drill.steps.some((step) => step.id === 'ask_progress') &&
+        d.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
+        d.handoffTools?.hasHandoff === true &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
         typeof d.promptWhenReady === 'string' &&
@@ -427,6 +464,7 @@ export default {
       'start_live_voice',
       'inject_worker_progress',
       'ask_progress',
+      'ask_work_handoff',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',

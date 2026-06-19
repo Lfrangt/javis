@@ -12,8 +12,8 @@ Local Mac-first realtime desktop buddy.
 - Resident conversation lifecycle state for connecting/live/error/idle voice sessions, with heartbeats back into presence.
 - Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
 - Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
-- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget events in `/api/realtime/evidence`.
-- Manual Realtime dogfood drill for verifying live voice progress answers plus shortcut list/save/recall/forget flows from CUI/API.
+- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget and work-handoff events in `/api/realtime/evidence`.
+- Manual Realtime dogfood drill for verifying live voice progress and work-handoff answers plus shortcut list/save/recall/forget flows from CUI/API.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.

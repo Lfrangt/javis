@@ -15788,6 +15788,7 @@ const REALTIME_SHORTCUT_TOOL_NAMES = new Set([
   'save_skill_shortcut',
   'forget_skill_shortcut',
 ]);
+const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
 
 function realtimeToolOutputObject(result = {}) {
   if (!result || typeof result.output !== 'string') return null;
@@ -15836,12 +15837,32 @@ function realtimeShortcutToolSummary(name, args = {}, result = {}) {
   return summary;
 }
 
+function realtimeHandoffToolSummary(name, args = {}, result = {}) {
+  if (name !== REALTIME_HANDOFF_TOOL_NAME) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const nextActions = Array.isArray(output.nextActions) ? output.nextActions : [];
+  const followUps = Array.isArray(output.followUps) ? output.followUps : [];
+  return {
+    spokenSummary: compactRecordText(output.spokenSummary || output.output || '', 420),
+    source: compactRecordText(output.source || args?.source || '', 80),
+    generatedAt: compactRecordText(output.generatedAt || '', 80),
+    readiness: compactRecordText(output.briefing?.readiness?.overall || '', 80),
+    workerSummary: compactRecordText(output.progress?.workerSummary || '', 180),
+    progressSequence: boundedCount(output.progress?.version?.sequence, 1000000000),
+    hasSession: Boolean(output.session),
+    nextActionCount: nextActions.length,
+    followUpCount: followUps.length,
+    firstNextAction: compactRecordText(nextActions[0] ? formatHandoffAction(nextActions[0], 140) : '', 180),
+  };
+}
+
 function recordRealtimeToolCall(options = {}) {
   const name = compactRecordText(options.name || '', 120);
   if (!name) return null;
   const result = options.result || {};
   const errorText = options.error instanceof Error ? options.error.message : options.error || '';
   const shortcut = realtimeShortcutToolSummary(name, options.args || {}, result);
+  const handoff = realtimeHandoffToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
     name,
@@ -15853,6 +15874,7 @@ function recordRealtimeToolCall(options = {}) {
     error: compactRecordText(errorText, 240),
     result: realtimeToolOutputShape(result),
     shortcut,
+    handoff,
   };
   realtimeToolCallEvents.unshift(event);
   realtimeToolCallEvents.splice(MAX_REALTIME_TOOL_CALL_EVENTS);
@@ -15865,6 +15887,8 @@ function recordRealtimeToolCall(options = {}) {
     shortcutId: shortcut?.shortcutId || '',
     phrase: shortcut?.phrase || '',
     requiresConfirmation: Boolean(shortcut?.requiresConfirmation),
+    handoffSummary: handoff?.spokenSummary || '',
+    handoffNextActions: handoff?.nextActionCount || 0,
     error: event.error,
   });
   return event;
@@ -15894,6 +15918,23 @@ function realtimeShortcutToolEvidence(limit = 8) {
     nextAction: recent.length
       ? 'Use a live voice session to list, save, and forget a shortcut phrase while watching this evidence.'
       : 'Ask the live voice session to list shortcut phrases or save a confirmed shortcut phrase.',
+  };
+}
+
+function realtimeHandoffToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => event.name === REALTIME_HANDOFF_TOOL_NAME)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasHandoff = recent.some((event) => event.ok && event.handoff?.spokenSummary);
+  return {
+    ok: hasHandoff,
+    count: recent.length,
+    hasHandoff,
+    last: recent[0] || null,
+    recent,
+    nextAction: hasHandoff
+      ? 'Ask live voice to summarize the handoff naturally and continue the next step.'
+      : 'Ask the live voice session: 现在做到哪了 / what next, and confirm get_work_handoff appears here.',
   };
 }
 
@@ -16136,6 +16177,7 @@ function realtimeVoiceWorkbenchSnapshot() {
 function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const shortcutTools = evidence.shortcutTools || {};
+  const handoffTools = evidence.handoffTools || {};
   const stepById = new Map(checklist.map((step) => [step.id, step]));
   const stepIds = [
     'provider_ready',
@@ -16158,7 +16200,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools });
   return {
     ok: true,
     status: ready ? 'ready' : evidence.status || 'pending',
@@ -16209,6 +16251,12 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasForget: Boolean(shortcutTools.hasForget),
       nextAction: shortcutTools.nextAction || 'Ask the live voice session to list, save, or forget a shortcut phrase.',
     },
+    handoffTools: {
+      observed: Boolean(handoffTools.ok),
+      count: Number(handoffTools.count || 0),
+      hasHandoff: Boolean(handoffTools.hasHandoff),
+      nextAction: handoffTools.nextAction || 'Ask the live voice session for the current work handoff.',
+    },
     drill,
     promptWhenReady: '后台现在怎么样',
     currentStep,
@@ -16236,6 +16284,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const progress = evidence.progress || {};
   const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
+  const handoffTools = options.handoffTools || evidence.handoffTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
   const steps = [
@@ -16302,6 +16351,14 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { prompt: '后台现在怎么样' },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_work_handoff',
+      label: 'Ask voice for a work handoff',
+      ok: Boolean(handoffTools.hasHandoff),
+      detail: handoffTools.hasHandoff ? 'get_work_handoff was observed in recent Realtime tool evidence.' : 'No get_work_handoff call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 现在做到哪了？接下来做什么？',
+      evidence: { tool: REALTIME_HANDOFF_TOOL_NAME, count: Number(handoffTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'list_shortcuts',
       label: 'Ask voice to list saved shortcut phrases',
       ok: Boolean(shortcutTools.hasList),
@@ -16350,6 +16407,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       : 'Realtime voice dogfood drill is complete.',
     prompts: [
       '后台现在怎么样',
+      '现在做到哪了？接下来做什么？',
       '有哪些快捷短语?',
       '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
       '确认保存「测试贾维斯快捷短语」',
@@ -16605,6 +16663,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const progressSync = realtimeProgressSyncEvidence({ currentVersion: progress.version, injection });
   const toolCalls = realtimeToolCallSnapshot(10);
   const shortcutTools = realtimeShortcutToolEvidence(8);
+  const handoffTools = realtimeHandoffToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const checks = {
     providerReady: voiceHealth.status === 'ready',
@@ -16660,6 +16719,7 @@ function realtimeVoiceEvidenceSnapshot() {
     dogfoodStart,
     toolCalls,
     shortcutTools,
+    handoffTools,
     progressSync,
     progress: {
       version: progress.version,

@@ -883,6 +883,8 @@ function printRealtimeEvidence(result) {
   const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = evidence.shortcutTools || {};
   const shortcutEvents = Array.isArray(shortcutTools.recent) ? shortcutTools.recent : [];
+  const handoffTools = evidence.handoffTools || {};
+  const handoffEvents = Array.isArray(handoffTools.recent) ? handoffTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
   const drill = evidence.drill || dogfood.drill || {};
   const dogfoodStart = evidence.dogfoodStart || drill.dogfoodStart || {};
@@ -945,6 +947,21 @@ function printRealtimeEvidence(result) {
       shortcut.phrase ? `phrase="${compact(shortcut.phrase, 60)}"` : '',
     ].filter(Boolean);
     console.log(`- ${event.name || 'shortcut_tool'} · ${bits.join(' · ')}`);
+  }
+  console.log('\nHandoff tool:');
+  console.log(`- observed ${Number(handoffTools.count || 0)} recent event(s) · called=${handoffTools.hasHandoff ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(handoffTools.nextAction || dogfood.handoffTools?.nextAction || 'Ask live voice for the current work handoff.', 220)}`);
+  for (const event of handoffEvents.slice(0, 4)) {
+    const handoff = event.handoff || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      handoff.readiness ? `readiness=${handoff.readiness}` : '',
+      handoff.progressSequence ? `seq=${handoff.progressSequence}` : '',
+      handoff.nextActionCount ? `next=${handoff.nextActionCount}` : '',
+    ].filter(Boolean);
+    const summary = handoff.spokenSummary ? ` · ${compact(handoff.spokenSummary, 140)}` : '';
+    console.log(`- ${event.name || 'get_work_handoff'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nRecent realtime tool calls:');
   if (toolCalls.length) {
