@@ -12667,6 +12667,115 @@ function normalizeBrowserFillDraftVerificationEntries(entries = []) {
   }));
 }
 
+function browserFillDraftRecoveryHints({ verification = {}, plan = {}, results = [], live = false, confirmationRequired = false, fixtureExecutionBlocked = false } = {}) {
+  const entries = Array.isArray(verification.entries) ? verification.entries : [];
+  const blockedResults = (Array.isArray(results) ? results : []).filter((result) => ['blocked', 'approval_required'].includes(result.status));
+  const unmatched = entries.filter((entry) => !entry.matched);
+  const missing = unmatched.filter((entry) => entry.evidence === 'target_missing' || entry.found === false);
+  const mismatched = unmatched.filter((entry) => entry.found && !entry.matched);
+  const plannedFields = (Array.isArray(plan.steps) ? plan.steps : []).map((step) => ({
+    index: step.index,
+    field: compactRecordText(step.field || step.query || '', 120),
+    action: compactRecordText(step.action || '', 40),
+    selector: compactRecordText(step.selector || '', 220),
+  }));
+  const safeUnmatched = unmatched.map((entry) => ({
+    index: entry.index,
+    field: entry.field,
+    action: entry.action,
+    selector: entry.selector,
+    evidence: entry.evidence,
+    found: entry.found,
+    matched: entry.matched,
+    expectedBytes: entry.expectedBytes,
+    actualBytes: entry.actualBytes,
+  }));
+
+  const actions = [];
+  let status = verification.status || 'unknown';
+  let summary = 'No browser fill recovery is needed.';
+  let nextAction = 'Continue with the completed browser form draft.';
+
+  if (confirmationRequired) {
+    status = 'waiting_for_confirmation';
+    summary = 'Browser form fill is waiting for explicit confirmation before execution.';
+    nextAction = 'Review the field draft, then rerun with execute:true and confirm:true if it is safe.';
+    actions.push({ type: 'confirm_then_execute', riskLevel: 3, fields: plannedFields });
+  } else if (fixtureExecutionBlocked) {
+    status = 'fixture_preview_only';
+    summary = 'Fixture DOM cannot prove live page state.';
+    nextAction = 'Open the real browser page, then rerun the same fill draft with execute:true and confirm:true.';
+    actions.push({ type: 'rerun_on_live_browser', riskLevel: 3, fields: plannedFields });
+  } else if (!live && verification.status === 'preview_only') {
+    status = 'preview_only';
+    summary = 'Preview has no live browser state to recover.';
+    nextAction = 'Use a live supported browser tab before asking JAVIS to execute and verify the fill.';
+    actions.push({ type: 'open_live_browser_tab', riskLevel: 1, fields: plannedFields });
+  } else if (verification.status === 'verified') {
+    status = 'verified';
+  } else if (verification.status === 'partial' || verification.status === 'unverified') {
+    summary = `Browser post-fill verification did not match ${unmatched.length}/${entries.length} executed field(s).`;
+    nextAction = missing.length
+      ? 'Re-read the current DOM and rebuild the fill draft because at least one target selector disappeared.'
+      : 'Retry only the unmatched fields after checking whether the page reformatted or rejected the values.';
+    if (missing.length) {
+      actions.push({
+        type: 'refresh_dom_and_replan',
+        riskLevel: 1,
+        reason: 'One or more selectors were missing after execution.',
+        fields: missing.map((entry) => ({ index: entry.index, field: entry.field, selector: entry.selector })),
+      });
+    }
+    if (mismatched.length) {
+      actions.push({
+        type: 'retry_unmatched_fields',
+        riskLevel: 3,
+        reason: 'One or more fields were present but did not match the expected byte-length/value check.',
+        fields: mismatched.map((entry) => ({ index: entry.index, field: entry.field, selector: entry.selector, actualBytes: entry.actualBytes, expectedBytes: entry.expectedBytes })),
+      });
+    }
+    actions.push({
+      type: 'read_browser_dom',
+      riskLevel: 1,
+      endpoint: '/api/browser/dom?limit=40',
+      reason: 'Inspect visible controls before retrying.',
+    });
+  } else if (verification.status === 'browser_unavailable') {
+    summary = 'JAVIS could not read the browser after attempting the fill.';
+    nextAction = 'Bring a supported browser tab to the front and rerun verification or the fill draft.';
+    actions.push({ type: 'focus_supported_browser', riskLevel: 1 });
+    actions.push({ type: 'read_browser_dom', riskLevel: 1, endpoint: '/api/browser/dom?limit=40' });
+  } else if (verification.status === 'verification_failed') {
+    summary = 'Browser verification failed before it could compare field state.';
+    nextAction = 'Check browser JavaScript bridge status, then re-read DOM before retrying.';
+    actions.push({ type: 'check_browser_javascript_bridge', riskLevel: 1, endpoint: '/api/browser/javascript' });
+    actions.push({ type: 'read_browser_dom', riskLevel: 1, endpoint: '/api/browser/dom?limit=40' });
+  } else if (verification.status === 'no_executed_fields' && blockedResults.length) {
+    summary = 'No fields executed because the fill draft was blocked or needed approval.';
+    nextAction = 'Resolve the first blocked or approval-required field before retrying.';
+    actions.push({
+      type: 'resolve_blocked_result',
+      riskLevel: 2,
+      results: blockedResults.slice(0, 3).map((result) => ({
+        index: result.index,
+        field: compactRecordText(result.field || '', 120),
+        status: result.status,
+        action: result.action,
+      })),
+    });
+  }
+
+  return {
+    needed: status !== 'verified' && status !== 'preview_only',
+    status,
+    summary,
+    nextAction,
+    unmatchedCount: unmatched.length,
+    unmatched: safeUnmatched,
+    actions,
+  };
+}
+
 async function verifyBrowserFillDraftExecution(steps = [], options = {}) {
   const executableSteps = (Array.isArray(steps) ? steps : []).filter((step) => step?.selector && step?.value !== undefined);
   if (!executableSteps.length) {
@@ -12852,6 +12961,14 @@ async function runBrowserFillDraftWorkflow(options = {}) {
     }
   }
   const verificationBlocked = execute && confirmed && live && verification.status && !['verified', 'no_executed_fields'].includes(verification.status);
+  const recovery = browserFillDraftRecoveryHints({
+    verification,
+    plan,
+    results,
+    live,
+    confirmationRequired,
+    fixtureExecutionBlocked,
+  });
   const blocked = confirmationRequired || fixtureExecutionBlocked || verificationBlocked || plan.blocked.length > 0 || results.some((result) => ['blocked', 'approval_required'].includes(result.status));
   const output = [
     `Browser fill draft: ${instruction}`,
@@ -12859,6 +12976,7 @@ async function runBrowserFillDraftWorkflow(options = {}) {
     plan.blocked.length ? `Review needed: ${plan.blocked.map((item) => `${item.field} (${item.reason})`).join('; ')}` : '',
     results.length ? formatBrowserTaskResults(results) : 'No matching fillable fields were found.',
     verification.output,
+    recovery.needed ? `Recovery: ${recovery.nextAction}` : '',
     confirmationRequired ? 'Execution paused: pass confirm:true after reviewing the field draft.' : '',
     fixtureExecutionBlocked ? 'Execution blocked: fixture DOM is preview-only.' : '',
   ].filter(Boolean).join('\n');
@@ -12873,6 +12991,7 @@ async function runBrowserFillDraftWorkflow(options = {}) {
       blockedFieldCount: plan.blocked.length,
       verifiedFieldCount: verification.verifiedCount,
       verificationStatus: verification.status,
+      recoveryStatus: recovery.status,
       fixture: !live,
       confirmed,
     },
@@ -12885,6 +13004,7 @@ async function runBrowserFillDraftWorkflow(options = {}) {
     results: results.length,
     verificationStatus: verification.status,
     verified: verification.verifiedCount,
+    recoveryStatus: recovery.status,
     execute,
     confirmed,
     live,
@@ -12909,6 +13029,7 @@ async function runBrowserFillDraftWorkflow(options = {}) {
     page: pageSummary,
     dom: { ...dom, elements: (dom.elements || []).slice(0, 40) },
     verification,
+    recovery,
     fields: fields.map((field) => ({
       name: field.name,
       valuePreview: browserFillDraftSensitiveField(field) ? '[sensitive]' : compactRecordText(field.value, 80),

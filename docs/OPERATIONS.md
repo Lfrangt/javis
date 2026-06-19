@@ -875,7 +875,7 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
 
 Supported intents: `summarize`, `extract_actions`, `draft`, `ask`, `act`, `fill_draft`, `search`, `compare`, `review_result`, and `research`.
 
-For form-fill drafts, JAVIS matches supplied fields against visible DOM controls and previews the fill/select plan. Execution requires `execute:true` and `confirm:true`, fixture DOM can only preview, and confirmed live execution returns a `verification` object with matched-field counts but not raw filled values:
+For form-fill drafts, JAVIS matches supplied fields against visible DOM controls and previews the fill/select plan. Execution requires `execute:true` and `confirm:true`, fixture DOM can only preview, and confirmed live execution returns `verification` plus `recovery` objects with matched-field counts, unmatched selectors, and next safe actions but not raw filled values:
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/browser/fill-draft \

@@ -77,6 +77,7 @@ export default {
         fillDraft.data?.verification?.status === 'preview_only' &&
         fillDraft.data?.verification?.entries?.length === 3 &&
         !JSON.stringify(fillDraft.data?.verification || {}).includes('haoge@example.com') &&
+        !JSON.stringify(fillDraft.data?.recovery || {}).includes('haoge@example.com') &&
         fillDraft.data?.results?.every((result) => result.status === 'previewed')
         ? ok('browser.fill_draft_preview', 'Browser fill draft preview', '3 field fill draft(s), 1 sensitive field blocked')
         : fail('browser.fill_draft_preview', 'Browser fill draft preview', `POST /api/browser/fill-draft ${fillDraft.status}`, fillDraft.data),
@@ -96,6 +97,9 @@ export default {
       fixtureExecute.ok &&
         fixtureExecute.data?.executed === false &&
         fixtureExecute.data?.verification?.status === 'fixture_blocked' &&
+        fixtureExecute.data?.recovery?.status === 'fixture_preview_only' &&
+        fixtureExecute.data?.recovery?.actions?.some((action) => action.type === 'rerun_on_live_browser') &&
+        !JSON.stringify(fixtureExecute.data?.recovery || {}).includes('haoge@example.com') &&
         fixtureExecute.data?.results?.[0]?.status === 'blocked' &&
         /fixture/i.test(String(fixtureExecute.data?.output || ''))
         ? ok('browser.fill_draft_fixture_gate', 'Browser fill draft fixture gate', 'fixture DOM cannot execute browser fills')
