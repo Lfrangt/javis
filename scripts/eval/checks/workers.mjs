@@ -35,6 +35,34 @@ export default {
         ? ok('workers.autopilot', 'Autopilot status', `enabled=${ap.enabled} running=${ap.running} ticks=${ap.tickCount} executed=${ap.executedCount} skipped=${ap.skippedCount}${ap.lastError ? ` lastError=${String(ap.lastError).slice(0, 40)}` : ''}`)
         : warn('workers.autopilot', 'Autopilot status', `GET /api/autopilot ${autopilot.status} ${autopilot.error || ''}`),
     );
+    out.push(
+      autopilot.ok && ap?.maintenance && typeof ap.maintenance.minIntervalMs === 'number'
+        ? ok('workers.autopilot_maintenance_state', 'Autopilot maintenance state', `due=${ap.maintenance.due} last=${ap.maintenance.lastSnapshotAt || 0}`)
+        : warn('workers.autopilot_maintenance_state', 'Autopilot maintenance state', 'autopilot did not expose maintenance cooldown state'),
+    );
+
+    const maintenancePreview = await ctx.api('/api/work/next', {
+      method: 'POST',
+      body: {
+        execute: false,
+        actionId: 'maintenance:resident_snapshot',
+        includeMaintenance: true,
+        forceMaintenance: true,
+        source: 'eval',
+      },
+    });
+    const maintenance = maintenancePreview.data?.next;
+    out.push(
+      maintenancePreview.ok &&
+        maintenance?.action?.source === 'maintenance' &&
+        maintenance.action.autoEligible === true &&
+        maintenance.action.autopilotEligible === true &&
+        maintenance.action.riskLevel === 0 &&
+        maintenance.executed === false &&
+        /maintenance snapshot/i.test(String(maintenance.output || ''))
+        ? ok('workers.autopilot_maintenance_preview', 'Autopilot maintenance fallback', `${maintenance.action.label} · ${maintenance.action.cooldown}`)
+        : fail('workers.autopilot_maintenance_preview', 'Autopilot maintenance fallback', 'work-next did not expose a read-only maintenance fallback preview', maintenancePreview.data),
+    );
 
     const progress = await ctx.api('/api/work/progress');
     const p = progress.data?.progress;

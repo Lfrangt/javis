@@ -147,6 +147,9 @@ low-risk progress while unattended. The resident autopilot executes only low-ris
 and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
 another background job is running. When multiple work-next actions exist, autopilot skips manual-only
 items, including Realtime voice dogfood, and executes the first action that passes its auto-executable guard.
+If no user-visible action is auto-executable, it can run a cooldown-gated read-only maintenance snapshot
+that records resident health, doctor/readiness state, worker progress, learning status, Realtime status,
+and collaboration state as an internal workflow. Tune the cooldown with `JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS`.
 
 Use options `19`-`25` for local learning maintenance: refresh the inferred profile, save it as an
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, preview

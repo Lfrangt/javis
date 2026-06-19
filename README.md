@@ -137,7 +137,7 @@ Local Express service on 127.0.0.1:3417
   /api/notifications/state -> resident notification support and counters
   /api/briefing         -> local status, blockers, recent work, and next actions
   /api/work/progress    -> spoken-style job/workflow progress check-in
-  /api/work/next        -> preview or execute one safe next workbench action
+  /api/work/next        -> preview or execute one safe next workbench action, including explicit maintenance fallback previews
   /api/jobs             -> persisted background job history
   /api/workflows        -> persisted workflow history with linked jobs and results
   /api/workflows/continue -> continue the latest or specified prior workflow

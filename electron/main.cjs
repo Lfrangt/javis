@@ -85,6 +85,7 @@ const LEARNING_AUTO_MEMORY_MIN_EVENTS = Math.max(5, Math.min(200, Number(process
 const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true'
   || (process.env.JAVIS_AUTOPILOT_ENABLED !== 'false' && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
+const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
@@ -615,6 +616,12 @@ let autopilotState = {
   lastAction: null,
   lastResult: '',
   lastError: '',
+};
+let maintenanceState = {
+  lastSnapshotAt: 0,
+  runCount: 0,
+  lastWorkflowId: '',
+  lastSummary: '',
 };
 let wakeEngineProcess = null;
 let wakeState = {
@@ -15274,12 +15281,16 @@ function autopilotStateSnapshot() {
     enabled: AUTOPILOT_ENABLED,
     intervalMs: AUTOPILOT_INTERVAL_MS,
     busy: autopilotBusy,
+    maintenance: maintenanceStateSnapshot(),
   };
 }
 
 function isAutopilotExecutableAction(action) {
   if (!action || typeof action !== 'object') return false;
   if (action.manualOnly || action.autopilotEligible === false) return false;
+  if (action.source === 'maintenance') {
+    return Boolean(action.executable && action.autoEligible && Number(action.riskLevel || 0) <= 1);
+  }
   if (action.source === 'recovery') {
     if (action.trustedAutoEligible && Number(action.recoveryAttempts || 0) < Number(action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS)) {
       return true;
@@ -15311,7 +15322,12 @@ async function autopilotTick(options = {}) {
     lastError: '',
   };
   try {
-    const briefing = workflowBriefing({ workflowLimit: options.workflowLimit || 6, jobLimit: options.jobLimit || 6 });
+    const briefing = workflowBriefing({
+      workflowLimit: options.workflowLimit || 6,
+      jobLimit: options.jobLimit || 6,
+      includeMaintenance: true,
+      forceMaintenance: options.forceMaintenance,
+    });
     const firstAction = (briefing.nextActions || [])[0] || null;
     const action = firstAutopilotExecutableAction(briefing.nextActions);
     const firstActionManualOnly = Boolean(firstAction?.manualOnly || firstAction?.autopilotEligible === false);
@@ -17793,13 +17809,75 @@ function isWorkflowResolvedByLaterDone(workflow, candidates = []) {
     && candidate?.status === 'done'
     && !isInternalWorkflow(candidate)
     && workflowResolutionKey(candidate) === key
-    && workflowResolutionTime(candidate) > blockedAt
+      && workflowResolutionTime(candidate) > blockedAt
   ));
+}
+
+function isMaintenanceWorkflow(workflow) {
+  return Boolean(
+    workflow
+    && String(workflow.source || '').toLowerCase() === 'maintenance_internal'
+    && workflow.intent === 'overnight_snapshot',
+  );
+}
+
+function latestMaintenanceWorkflow(workflowContext = workflowSnapshot(80)) {
+  return workflowContext.find(isMaintenanceWorkflow) || null;
+}
+
+function latestMaintenanceSnapshotAt(workflowContext = workflowSnapshot(80)) {
+  const latestWorkflow = latestMaintenanceWorkflow(workflowContext);
+  return Math.max(
+    Number(maintenanceState.lastSnapshotAt || 0),
+    Number(latestWorkflow?.completedAt || 0),
+    Number(latestWorkflow?.updatedAt || 0),
+    Number(latestWorkflow?.createdAt || 0),
+  );
+}
+
+function maintenanceStateSnapshot(workflowContext = workflowSnapshot(80)) {
+  const lastSnapshotAt = latestMaintenanceSnapshotAt(workflowContext);
+  const ageMs = lastSnapshotAt ? Math.max(0, Date.now() - lastSnapshotAt) : null;
+  return {
+    ...maintenanceState,
+    minIntervalMs: AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS,
+    lastSnapshotAt,
+    ageMs,
+    due: !lastSnapshotAt || ageMs >= AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS,
+  };
+}
+
+function maintenanceActionCandidate(workflowContext = workflowSnapshot(80), options = {}) {
+  const force = options.force === true || String(options.force || '').toLowerCase() === 'true';
+  const state = maintenanceStateSnapshot(workflowContext);
+  if (!force && !state.due) return null;
+  const minutes = Math.round(AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS / 60000);
+  return {
+    id: 'maintenance:resident_snapshot',
+    priority: 5,
+    label: 'Run maintenance snapshot',
+    summary: state.lastSnapshotAt
+      ? `Read-only resident maintenance snapshot is due; last ran ${progressAgeLabel(state.lastSnapshotAt)}.`
+      : 'Read-only resident maintenance snapshot has not run yet.',
+    source: 'maintenance',
+    workflowAction: 'resident_snapshot',
+    executable: true,
+    autoEligible: true,
+    autopilotEligible: true,
+    manualOnly: false,
+    riskLevel: 0,
+    lastRunAt: state.lastSnapshotAt,
+    minIntervalMs: AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS,
+    due: force || state.due,
+    cooldown: `${minutes}m`,
+  };
 }
 
 function workflowBriefing(options = {}) {
   const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 6)));
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
+  const includeMaintenance = options.includeMaintenance === true || String(options.includeMaintenance || '').toLowerCase() === 'true';
+  const forceMaintenance = options.forceMaintenance === true || String(options.forceMaintenance || '').toLowerCase() === 'true';
   const readiness = readinessSnapshot();
   const workflowContext = workflowSnapshot(Math.max(workflowLimit, 50));
   const recentWorkflows = workflowContext.slice(0, workflowLimit);
@@ -17954,6 +18032,13 @@ function workflowBriefing(options = {}) {
       source: 'workflows',
       workflowId: latestDeliverableWorkflow.id,
     });
+  }
+
+  if (includeMaintenance) {
+    const maintenance = maintenanceActionCandidate(workflowContext, { force: forceMaintenance });
+    if (maintenance && !firstAutopilotExecutableAction(nextActions)) {
+      nextActions.push(maintenance);
+    }
   }
 
   if (!nextActions.length) {
@@ -18352,11 +18437,154 @@ function workProgressCheckIn(options = {}) {
   };
 }
 
+async function runMaintenanceSnapshot(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const source = String(options.source || 'maintenance').slice(0, 80);
+  const startedAt = Date.now();
+  const [resident, doctor] = await Promise.all([
+    residentStatusSnapshot().catch((error) => ({
+      error: error instanceof Error ? error.message : String(error),
+    })),
+    doctorReportSnapshot().catch((error) => ({
+      overall: 'blocked',
+      summary: error instanceof Error ? error.message : String(error),
+      counts: { ready: 0, warning: 0, blocked: 1, total: 1 },
+      checks: [],
+    })),
+  ]);
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
+  const realtime = realtimeVoiceWorkbenchSnapshot();
+  const progress = workProgressCheckIn({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    source,
+  });
+  const learning = learningStateSnapshot();
+  const ambient = ambientStateSnapshot(3);
+  const collaboration = collaborationSnapshot(5);
+  const counts = {
+    doctor: doctor.counts || {},
+    readiness: readiness.counts || {},
+    jobs: queueCounts(),
+    workflows: workflowCounts(),
+    routing: routingCounts(),
+    collaboration: collaboration.counts,
+    ambient: ambient.count,
+    learningEvents: learning.profile.sourceEventCount,
+  };
+  const output = [
+    `Maintenance snapshot: doctor=${doctor.overall || 'unknown'}, readiness=${readiness.overall || 'unknown'}, realtime=${realtime.status}/${realtime.phase}.`,
+    `Resident: installed=${Boolean(resident.installed)} loaded=${Boolean(resident.loaded)} pid=${resident.pid || 'none'} project=${resident.matchesProject ? 'matched' : 'unmatched'}.`,
+    `Work: jobs ${counts.jobs.running || 0} running / ${counts.jobs.queued || 0} queued; workflows ${counts.workflows.running || 0} running / ${counts.workflows.blocked || 0} blocked; routes ${counts.routing.running || 0} running / ${counts.routing.blocked || 0} blocked.`,
+    `Learning: ${learning.enabled ? 'on' : 'off'} · ${counts.learningEvents} distilled event(s). Ambient: ${ambient.enabled ? 'on' : 'off'} · ${ambient.count} sample(s).`,
+    collaboration.counts.active ? `Collab: ${collaboration.counts.active} active claim(s), ${collaboration.counts.conflicts} conflict pair(s).` : 'Collab: no active claim.',
+    progress.spokenSummary ? `Progress: ${progress.spokenSummary}` : '',
+  ].filter(Boolean).join('\n');
+
+  const snapshot = {
+    ok: doctor.overall !== 'blocked' && readiness.overall !== 'blocked',
+    startedAt,
+    completedAt: Date.now(),
+    durationMs: Date.now() - startedAt,
+    source,
+    resident,
+    readiness: {
+      overall: readiness.overall,
+      summary: readiness.summary,
+      counts: readiness.counts,
+      primaryIssue: readiness.primaryIssue,
+    },
+    doctor: {
+      overall: doctor.overall || 'unknown',
+      summary: doctor.summary || '',
+      counts: doctor.counts || {},
+    },
+    realtime: {
+      status: realtime.status,
+      phase: realtime.phase,
+      nextAction: realtime.nextAction,
+    },
+    progress: {
+      counts: progress.counts,
+      workerSummary: progress.workerSummary,
+      spokenSummary: progress.spokenSummary,
+    },
+    learning: {
+      enabled: learning.enabled,
+      includeInPrompts: learning.includeInPrompts,
+      sourceEventCount: learning.profile.sourceEventCount,
+      summary: learning.profile.summary,
+    },
+    ambient: {
+      enabled: ambient.enabled,
+      captureScreen: ambient.captureScreen,
+      count: ambient.count,
+    },
+    collaboration,
+    counts,
+  };
+
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      snapshot,
+      output: [
+        'Preview read-only resident maintenance snapshot.',
+        output,
+      ].join('\n'),
+    };
+  }
+
+  const workflow = createWorkflowRecord({
+    kind: 'maintenance',
+    source: 'maintenance_internal',
+    status: 'done',
+    title: 'internal maintenance snapshot',
+    intent: 'overnight_snapshot',
+    mode: 'local',
+    request: 'Run read-only resident maintenance snapshot for unattended autopilot.',
+    result: output,
+    target: {
+      type: 'resident_maintenance',
+      doctorOverall: snapshot.doctor.overall,
+      readinessOverall: snapshot.readiness.overall,
+      realtimePhase: snapshot.realtime.phase,
+      returnedLength: output.length,
+    },
+  });
+  maintenanceState = {
+    ...maintenanceState,
+    lastSnapshotAt: snapshot.completedAt,
+    runCount: Number(maintenanceState.runCount || 0) + 1,
+    lastWorkflowId: workflow.id,
+    lastSummary: output.slice(0, 500),
+  };
+  appendAudit('maintenance.snapshot', {
+    source,
+    workflowId: workflow.id,
+    doctorOverall: snapshot.doctor.overall,
+    readinessOverall: snapshot.readiness.overall,
+    realtimePhase: snapshot.realtime.phase,
+    durationMs: snapshot.durationMs,
+  });
+
+  return {
+    ok: true,
+    executed: true,
+    workflow,
+    snapshot,
+    output,
+  };
+}
+
 async function workNextAction(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const briefing = workflowBriefing({
     workflowLimit: options.workflowLimit || 6,
     jobLimit: options.jobLimit || 6,
+    includeMaintenance: options.includeMaintenance === true || String(options.includeMaintenance || '').toLowerCase() === 'true' || options.autopilot === true,
+    forceMaintenance: options.forceMaintenance,
   });
   const requestedActionId = String(options.actionId || options.id || '').trim();
   const actions = briefing.nextActions || [];
@@ -18539,6 +18767,15 @@ async function workNextAction(options = {}) {
       prepareProgress: execute,
       durationMs: options.durationMs || 45000,
       source: options.source || 'work_next',
+    });
+    executed = Boolean(result.executed);
+    output = result.output;
+  } else if (action.source === 'maintenance') {
+    result = await runMaintenanceSnapshot({
+      execute,
+      source: options.source || 'work_next',
+      jobLimit: options.jobLimit,
+      workflowLimit: options.workflowLimit,
     });
     executed = Boolean(result.executed);
     output = result.output;

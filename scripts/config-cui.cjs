@@ -243,7 +243,11 @@ async function printStatus() {
     }
     if (autopilotResult.autopilot) {
       const autopilot = autopilotResult.autopilot;
-      console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · every ${formatInterval(autopilot.intervalMs)} · ticks ${autopilot.tickCount || 0} · ran ${autopilot.executedCount || 0} · last ${compact(autopilot.lastResult || 'none', 80)}`);
+      const maintenance = autopilot.maintenance || {};
+      const maintenanceText = maintenance.minIntervalMs
+        ? ` · maintenance ${maintenance.due ? 'due' : 'cooldown'}${maintenance.lastSnapshotAt ? ` last ${formatTime(maintenance.lastSnapshotAt)}` : ''}`
+        : '';
+      console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · every ${formatInterval(autopilot.intervalMs)} · ticks ${autopilot.tickCount || 0} · ran ${autopilot.executedCount || 0} · last ${compact(autopilot.lastResult || 'none', 80)}${maintenanceText}`);
     }
     if (browserJs.javascript?.supported && browserJs.javascript?.available) {
       const bridge = browserJs.javascript.bridge || '';
@@ -448,6 +452,10 @@ function printAutopilotDetails(autopilot) {
   console.log(`Ticks: ${autopilot.tickCount || 0} · executed ${autopilot.executedCount || 0} · skipped ${autopilot.skippedCount || 0}`);
   console.log(`Last tick: ${formatTime(autopilot.lastTickAt)}`);
   console.log(`Last executed: ${formatTime(autopilot.lastExecutedAt)}`);
+  if (autopilot.maintenance) {
+    const maintenance = autopilot.maintenance;
+    console.log(`Maintenance: ${maintenance.due ? 'due' : 'cooldown'} · every ${formatInterval(maintenance.minIntervalMs)} · last ${formatTime(maintenance.lastSnapshotAt)} · ran ${maintenance.runCount || 0}`);
+  }
   if (autopilot.lastResult) console.log(`Last result: ${compact(autopilot.lastResult, 260)}`);
   if (autopilot.lastError) console.log(`Last error: ${compact(autopilot.lastError, 260)}`);
 }
