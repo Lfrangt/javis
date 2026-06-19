@@ -972,6 +972,8 @@ function printRealtimeEvidence(result) {
   const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = evidence.shortcutTools || {};
   const shortcutEvents = Array.isArray(shortcutTools.recent) ? shortcutTools.recent : [];
+  const dogfoodSessionTools = evidence.dogfoodSessionTools || {};
+  const dogfoodSessionEvents = Array.isArray(dogfoodSessionTools.recent) ? dogfoodSessionTools.recent : [];
   const handoffTools = evidence.handoffTools || {};
   const handoffEvents = Array.isArray(handoffTools.recent) ? handoffTools.recent : [];
   const autopilotTools = evidence.autopilotTools || {};
@@ -1040,6 +1042,21 @@ function printRealtimeEvidence(result) {
       shortcut.phrase ? `phrase="${compact(shortcut.phrase, 60)}"` : '',
     ].filter(Boolean);
     console.log(`- ${event.name || 'shortcut_tool'} · ${bits.join(' · ')}`);
+  }
+  console.log('\nDogfood session tools:');
+  console.log(`- observed ${Number(dogfoodSessionTools.count || 0)} recent event(s) · actions ${(dogfoodSessionTools.observedActions || []).join(', ') || '-'}`);
+  console.log(`- starts microphone=${dogfoodSessionTools.startsMicrophone ? 'yes' : 'no'} · start=${dogfoodSessionTools.hasStart ? 'yes' : 'no'} · mark=${dogfoodSessionTools.hasMark ? 'yes' : 'no'} · end=${dogfoodSessionTools.hasEnd ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(dogfoodSessionTools.nextAction || 'Ask live voice to inspect or update the Realtime dogfood session tracker.', 220)}`);
+  for (const event of dogfoodSessionEvents.slice(0, 4)) {
+    const session = event.dogfoodSession || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      session.action || event.name || '-',
+      session.sessionStatus ? `status=${session.sessionStatus}` : '',
+      session.stepId ? `step=${session.stepId}` : '',
+      session.startsMicrophone ? 'starts-mic' : 'no-mic',
+    ].filter(Boolean);
+    console.log(`- ${event.name || 'dogfood_session_tool'} · ${bits.join(' · ')}`);
   }
   console.log('\nHandoff tool:');
   console.log(`- observed ${Number(handoffTools.count || 0)} recent event(s) · called=${handoffTools.hasHandoff ? 'yes' : 'no'}`);

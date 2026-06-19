@@ -18,6 +18,10 @@ const REQUIRED_TOOLS = [
   'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
+  'get_realtime_dogfood_session',
+  'start_realtime_dogfood_session',
+  'mark_realtime_dogfood_step',
+  'end_realtime_dogfood_session',
   'get_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
@@ -275,6 +279,7 @@ export default {
         realtimeEvidenceOutput.tools?.handoff &&
         realtimeEvidenceOutput.tools?.autopilot &&
         realtimeEvidenceOutput.tools?.shortcuts &&
+        realtimeEvidenceOutput.tools?.dogfoodSession &&
         realtimeEvidenceOutput.tools?.attention
         ? ok('realtime.evidence_tool', 'Realtime evidence voice tool', `${realtimeEvidenceOutput.status}/${realtimeEvidenceOutput.phase} · ${realtimeEvidenceOutput.nextAction}`)
         : fail('realtime.evidence_tool', 'Realtime evidence voice tool', `tool execute ${realtimeEvidenceTool.status}`, realtimeEvidenceTool.data),
@@ -460,6 +465,127 @@ export default {
         : fail('realtime.handoff_tool_evidence', 'Realtime handoff tool evidence', 'expected get_work_handoff calls to be visible in realtime evidence', handoffToolEvidence),
     );
 
+    const dogfoodSessionTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_realtime_dogfood_session',
+        arguments: { limit: 3 },
+      },
+    });
+    const dogfoodSessionOutput = parseToolOutput(dogfoodSessionTool);
+    out.push(
+      dogfoodSessionTool.ok &&
+        dogfoodSessionTool.data?.ok === true &&
+        dogfoodSessionOutput?.manualOnly === true &&
+        dogfoodSessionOutput?.startsMicrophone === false &&
+        dogfoodSessionOutput?.prompt?.startsMicrophone === false &&
+        typeof dogfoodSessionOutput?.prompt?.copyText === 'string'
+        ? ok('realtime.dogfood_session_tool_snapshot', 'Realtime dogfood session voice tool snapshot', `${dogfoodSessionOutput.counts?.active || 0} active session(s)`)
+        : fail('realtime.dogfood_session_tool_snapshot', 'Realtime dogfood session voice tool snapshot', `tool execute ${dogfoodSessionTool.status}`, dogfoodSessionTool.data),
+    );
+
+    const dogfoodSessionStartTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'start_realtime_dogfood_session',
+        arguments: {
+          title: 'Eval realtime voice dogfood tool session',
+          allowConcurrent: true,
+        },
+      },
+    });
+    const dogfoodSessionStartOutput = parseToolOutput(dogfoodSessionStartTool);
+    const dogfoodToolSession = dogfoodSessionStartOutput?.session;
+    const dogfoodToolSessionId = dogfoodToolSession?.id || '';
+    const dogfoodToolStepId = dogfoodToolSession?.steps?.find((step) => step.id === 'open_monitor')?.id || dogfoodToolSession?.steps?.[0]?.id || '';
+    out.push(
+      dogfoodSessionStartTool.ok &&
+        dogfoodSessionStartTool.data?.ok === true &&
+        dogfoodSessionStartOutput?.ok === true &&
+        dogfoodSessionStartOutput?.manualOnly === true &&
+        dogfoodSessionStartOutput?.startsMicrophone === false &&
+        dogfoodToolSession?.status === 'active' &&
+        dogfoodToolSession?.manualOnly === true &&
+        dogfoodToolSession?.startsMicrophone === false &&
+        dogfoodToolSessionId &&
+        dogfoodToolStepId
+        ? ok('realtime.dogfood_session_tool_start', 'Realtime dogfood session voice tool start', `${dogfoodToolSessionId} · ${dogfoodToolSession.counts?.operatorDone || 0}/${dogfoodToolSession.counts?.total || 0} operator done`)
+        : fail('realtime.dogfood_session_tool_start', 'Realtime dogfood session voice tool start', 'expected voice tool to start a manual operator session without starting microphone capture', dogfoodSessionStartTool.data),
+    );
+
+    if (dogfoodToolSessionId && dogfoodToolStepId) {
+      const dogfoodSessionMarkTool = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          name: 'mark_realtime_dogfood_step',
+          arguments: {
+            sessionId: dogfoodToolSessionId,
+            stepId: dogfoodToolStepId,
+            status: 'done',
+            note: 'Eval marked this voice-tool dogfood step without starting microphone capture.',
+          },
+        },
+      });
+      const dogfoodSessionMarkOutput = parseToolOutput(dogfoodSessionMarkTool);
+      out.push(
+        dogfoodSessionMarkTool.ok &&
+          dogfoodSessionMarkTool.data?.ok === true &&
+          dogfoodSessionMarkOutput?.ok === true &&
+          dogfoodSessionMarkOutput?.startsMicrophone === false &&
+          dogfoodSessionMarkOutput?.step?.id === dogfoodToolStepId &&
+          dogfoodSessionMarkOutput?.step?.operatorDone === true
+          ? ok('realtime.dogfood_session_tool_mark', 'Realtime dogfood session voice tool mark', `${dogfoodToolStepId} marked done`)
+          : fail('realtime.dogfood_session_tool_mark', 'Realtime dogfood session voice tool mark', 'expected voice tool to mark a dogfood step', dogfoodSessionMarkTool.data),
+      );
+
+      const dogfoodSessionEndTool = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          name: 'end_realtime_dogfood_session',
+          arguments: {
+            sessionId: dogfoodToolSessionId,
+            status: 'cancelled',
+            note: 'Eval cleanup.',
+          },
+        },
+      });
+      const dogfoodSessionEndOutput = parseToolOutput(dogfoodSessionEndTool);
+      out.push(
+        dogfoodSessionEndTool.ok &&
+          dogfoodSessionEndTool.data?.ok === true &&
+          dogfoodSessionEndOutput?.ok === true &&
+          dogfoodSessionEndOutput?.startsMicrophone === false &&
+          dogfoodSessionEndOutput?.session?.id === dogfoodToolSessionId &&
+          dogfoodSessionEndOutput?.session?.status === 'cancelled'
+          ? ok('realtime.dogfood_session_tool_end', 'Realtime dogfood session voice tool end', `${dogfoodToolSessionId} cleaned up`)
+          : fail('realtime.dogfood_session_tool_end', 'Realtime dogfood session voice tool end', 'expected voice tool to end the operator session', dogfoodSessionEndTool.data),
+      );
+    } else {
+      out.push(fail('realtime.dogfood_session_tool_mark', 'Realtime dogfood session voice tool mark', 'session voice tool start did not return a markable step', dogfoodSessionStartTool.data));
+      out.push(fail('realtime.dogfood_session_tool_end', 'Realtime dogfood session voice tool end', 'session voice tool start did not return an id to clean up', dogfoodSessionStartTool.data));
+    }
+
+    const dogfoodSessionEvidence = await ctx.api('/api/realtime/evidence');
+    const dogfoodSessionToolEvidence = dogfoodSessionEvidence.data?.evidence?.dogfoodSessionTools;
+    const dogfoodSessionToolEvents = Array.isArray(dogfoodSessionToolEvidence?.recent) ? dogfoodSessionToolEvidence.recent : [];
+    out.push(
+      dogfoodSessionEvidence.ok &&
+        dogfoodSessionToolEvidence?.hasSnapshot === true &&
+        dogfoodSessionToolEvidence?.hasStart === true &&
+        dogfoodSessionToolEvidence?.hasMark === true &&
+        dogfoodSessionToolEvidence?.hasEnd === true &&
+        dogfoodSessionToolEvidence?.startsMicrophone === false &&
+        dogfoodSessionToolEvents.some((event) => event.name === 'start_realtime_dogfood_session' && event.source === 'eval' && event.dogfoodSession?.sessionId) &&
+        dogfoodSessionToolEvents.some((event) => event.name === 'mark_realtime_dogfood_step' && event.source === 'eval' && event.dogfoodSession?.stepOperatorDone === true) &&
+        dogfoodSessionToolEvents.some((event) => event.name === 'end_realtime_dogfood_session' && event.source === 'eval' && event.dogfoodSession?.sessionStatus === 'cancelled')
+        ? ok('realtime.dogfood_session_tool_evidence', 'Realtime dogfood session voice tool evidence', `actions=${(dogfoodSessionToolEvidence.observedActions || []).join(', ')}`)
+        : fail('realtime.dogfood_session_tool_evidence', 'Realtime dogfood session voice tool evidence', 'expected dogfood session voice tool calls to be visible in realtime evidence', dogfoodSessionToolEvidence),
+    );
+
     try {
       const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-evidence'], {
         cwd: process.cwd(),
@@ -470,6 +596,7 @@ export default {
       const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
       out.push(
           output.includes('Shortcut tools:') &&
+          output.includes('Dogfood session tools:') &&
           output.includes('Handoff tool:') &&
           output.includes('Autopilot tool:') &&
           output.includes('Attention explanation tool:') &&
@@ -480,11 +607,14 @@ export default {
           output.includes('save') &&
           output.includes('forget') &&
           output.includes('called=yes') &&
+          output.includes('get_realtime_dogfood_session') &&
+          output.includes('start_realtime_dogfood_session') &&
+          output.includes('no-mic') &&
           output.includes('get_work_handoff') &&
           output.includes('get_autopilot_status') &&
           output.includes('get_attention_explanation')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, handoff, autopilot, attention, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, handoff, autopilot, attention, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));

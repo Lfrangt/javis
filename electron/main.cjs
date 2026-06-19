@@ -16985,6 +16985,12 @@ const REALTIME_SHORTCUT_TOOL_NAMES = new Set([
   'save_skill_shortcut',
   'forget_skill_shortcut',
 ]);
+const REALTIME_DOGFOOD_SESSION_TOOL_NAMES = new Set([
+  'get_realtime_dogfood_session',
+  'start_realtime_dogfood_session',
+  'mark_realtime_dogfood_step',
+  'end_realtime_dogfood_session',
+]);
 const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
 const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
@@ -17104,6 +17110,42 @@ function realtimeAttentionToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function dogfoodSessionActionForToolCall(name) {
+  if (name === 'get_realtime_dogfood_session') return 'snapshot';
+  if (name === 'start_realtime_dogfood_session') return 'start';
+  if (name === 'mark_realtime_dogfood_step') return 'mark_step';
+  if (name === 'end_realtime_dogfood_session') return 'end';
+  return '';
+}
+
+function realtimeDogfoodSessionToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_DOGFOOD_SESSION_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const sessions = output.sessions || {};
+  const session = output.session || sessions.active || null;
+  const counts = session?.counts || sessions.counts || {};
+  const step = output.step || null;
+  return {
+    action: dogfoodSessionActionForToolCall(name),
+    sessionId: String(session?.id || args?.id || args?.sessionId || '').slice(0, 120),
+    sessionStatus: compactRecordText(session?.status || '', 40),
+    active: Boolean(sessions.active || session?.status === 'active'),
+    startsMicrophone: output.startsMicrophone === true || sessions.startsMicrophone === true || session?.startsMicrophone === true,
+    manualOnly: output.manualOnly !== false && sessions.manualOnly !== false && session?.manualOnly !== false,
+    evidenceStatus: compactRecordText(sessions.evidence?.status || session?.evidenceStatus || '', 40),
+    evidencePhase: compactRecordText(sessions.evidence?.phase || session?.evidencePhase || '', 80),
+    evidenceReady: boundedCount(counts.evidenceReady, 1000),
+    operatorDone: boundedCount(counts.operatorDone, 1000),
+    totalSteps: boundedCount(counts.total, 1000),
+    nextStepId: compactRecordText(session?.nextStep?.id || '', 80),
+    nextStepLabel: compactRecordText(session?.nextStep?.label || '', 160),
+    promptText: compactRecordText(output.prompt?.copyText || sessions.prompt?.copyText || session?.promptText || '', 240),
+    stepId: compactRecordText(step?.id || args?.stepId || '', 80),
+    stepStatus: compactRecordText(step?.status || args?.status || '', 40),
+    stepOperatorDone: Boolean(step?.operatorDone),
+  };
+}
+
 function recordRealtimeToolCall(options = {}) {
   const name = compactRecordText(options.name || '', 120);
   if (!name) return null;
@@ -17113,6 +17155,7 @@ function recordRealtimeToolCall(options = {}) {
   const handoff = realtimeHandoffToolSummary(name, options.args || {}, result);
   const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
+  const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
     name,
@@ -17127,6 +17170,7 @@ function recordRealtimeToolCall(options = {}) {
     handoff,
     autopilot,
     attention,
+    dogfoodSession,
   };
   realtimeToolCallEvents.unshift(event);
   realtimeToolCallEvents.splice(MAX_REALTIME_TOOL_CALL_EVENTS);
@@ -17152,6 +17196,12 @@ function recordRealtimeToolCall(options = {}) {
     attentionPetState: attention?.petState || '',
     attentionHistoryCount: attention?.historyCount || 0,
     attentionOperatorOnlyHistory: Boolean(attention?.operatorOnlyHistory),
+    dogfoodSessionAction: dogfoodSession?.action || '',
+    dogfoodSessionId: dogfoodSession?.sessionId || '',
+    dogfoodSessionStatus: dogfoodSession?.sessionStatus || '',
+    dogfoodSessionStartsMicrophone: Boolean(dogfoodSession?.startsMicrophone),
+    dogfoodSessionEvidenceReady: dogfoodSession?.evidenceReady || 0,
+    dogfoodSessionOperatorDone: dogfoodSession?.operatorDone || 0,
     error: event.error,
   });
   return event;
@@ -17181,6 +17231,28 @@ function realtimeShortcutToolEvidence(limit = 8) {
     nextAction: recent.length
       ? 'Use a live voice session to list, save, and forget a shortcut phrase while watching this evidence.'
       : 'Ask the live voice session to list shortcut phrases or save a confirmed shortcut phrase.',
+  };
+}
+
+function realtimeDogfoodSessionToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_DOGFOOD_SESSION_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.dogfoodSession?.action).filter(Boolean));
+  return {
+    ok: recent.length > 0,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasSnapshot: actions.has('snapshot'),
+    hasStart: actions.has('start'),
+    hasMark: actions.has('mark_step'),
+    hasEnd: actions.has('end'),
+    startsMicrophone: recent.some((event) => event.dogfoodSession?.startsMicrophone === true),
+    last: recent[0] || null,
+    recent,
+    nextAction: recent.length
+      ? 'Use live voice to inspect or update the operator dogfood session while watching evidence.'
+      : 'Ask the live voice session to start or inspect the Realtime dogfood session tracker.',
   };
 }
 
@@ -18533,6 +18605,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const progressSync = realtimeProgressSyncEvidence({ currentVersion: progress.version, injection });
   const toolCalls = realtimeToolCallSnapshot(10);
   const shortcutTools = realtimeShortcutToolEvidence(8);
+  const dogfoodSessionTools = realtimeDogfoodSessionToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
   const autopilotTools = realtimeAutopilotToolEvidence(8);
   const attentionTools = realtimeAttentionToolEvidence(8);
@@ -18594,6 +18667,7 @@ function realtimeVoiceEvidenceSnapshot() {
     dogfoodStart,
     toolCalls,
     shortcutTools,
+    dogfoodSessionTools,
     handoffTools,
     autopilotTools,
     attentionTools,
@@ -18701,6 +18775,13 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         count: Number(evidence.shortcutTools?.count || 0),
         observedActions: Array.isArray(evidence.shortcutTools?.observedActions) ? evidence.shortcutTools.observedActions : [],
         nextAction: evidence.shortcutTools?.nextAction || '',
+      },
+      dogfoodSession: {
+        observed: Boolean(evidence.dogfoodSessionTools?.ok),
+        count: Number(evidence.dogfoodSessionTools?.count || 0),
+        observedActions: Array.isArray(evidence.dogfoodSessionTools?.observedActions) ? evidence.dogfoodSessionTools.observedActions : [],
+        startsMicrophone: Boolean(evidence.dogfoodSessionTools?.startsMicrophone),
+        nextAction: evidence.dogfoodSessionTools?.nextAction || '',
       },
       autopilot: {
         observed: Boolean(evidence.autopilotTools?.hasStatus),
@@ -24984,6 +25065,42 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(realtimeVoiceEvidenceToolSnapshot(args || {})) };
   }
 
+  if (name === 'get_realtime_dogfood_session') {
+    return { ok: true, output: JSON.stringify(realtimeDogfoodOperatorSessionSnapshot({ ...(args || {}), source: 'voice' })) };
+  }
+
+  if (name === 'start_realtime_dogfood_session') {
+    const result = startRealtimeDogfoodOperatorSession({
+      ...(args || {}),
+      source: 'voice',
+    });
+    return { ok: Boolean(result.ok), output: JSON.stringify(result) };
+  }
+
+  if (name === 'mark_realtime_dogfood_step') {
+    try {
+      const result = markRealtimeDogfoodOperatorStep({
+        ...(args || {}),
+        source: 'voice',
+      });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'end_realtime_dogfood_session') {
+    try {
+      const result = finishRealtimeDogfoodOperatorSession({
+        ...(args || {}),
+        source: 'voice',
+      });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_worker_recovery') {
     return {
       ok: true,
@@ -25587,6 +25704,10 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
+      'Use get_realtime_dogfood_session when the user asks about the dogfood session tracker, current drill record, next prompt, or which operator steps are recorded.',
+      'Use start_realtime_dogfood_session only when the user asks to start tracking a real voice dogfood drill. It creates a local dogfood session tracker but does not start microphone capture.',
+      'Use mark_realtime_dogfood_step when the user says a dogfood step is done, blocked, skipped, or when local evidence visibly proves that step. It only updates the local tracker.',
+      'Use end_realtime_dogfood_session when the user asks to finish, cancel, or close the dogfood tracker. These dogfood session tools never start microphone/live voice by themselves.',
       'Use get_worker_recovery when the user asks which background jobs failed, why a worker failed, or what can recover automatically. It is read-only; use run_work_next only after the user explicitly asks to do or run the recovery step.',
       'Use get_autopilot_status when the user asks what autopilot did, why unattended work stopped or skipped, whether JAVIS can continue by itself, or what condition autopilot is waiting on. It is read-only; do not start microphone/live voice or execute a tick unless the user explicitly asks.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
@@ -26112,6 +26233,68 @@ function createRealtimeSessionConfig(options = {}) {
             includeChecklist: { type: 'boolean' },
             includeRecentTools: { type: 'boolean' },
             promptLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_realtime_dogfood_session',
+        description: 'Get the operator-visible Realtime dogfood session tracker: active session, next prompt, evidence counts, and step state. Read-only and does not start microphone capture.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+            status: { type: 'string', enum: ['active', 'done', 'cancelled'] },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'start_realtime_dogfood_session',
+        description: 'Start a local operator record for a real Realtime voice dogfood drill. It does not start microphone capture; the user must still click the pet or press the summon hotkey.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            replace: { type: 'boolean' },
+            allowConcurrent: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'mark_realtime_dogfood_step',
+        description: 'Mark one step in the active Realtime dogfood operator session after the user confirms or the evidence is visible. Does not grant permissions or start microphone capture.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            sessionId: { type: 'string' },
+            stepId: { type: 'string' },
+            status: { type: 'string', enum: ['pending', 'ready', 'done', 'blocked', 'skipped'] },
+            note: { type: 'string' },
+            prompt: { type: 'string' },
+            promptType: { type: 'string', enum: ['spoken', 'manual_action'] },
+          },
+          required: ['stepId'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'end_realtime_dogfood_session',
+        description: 'End or cancel the active Realtime dogfood operator session with a deterministic summary. Does not start microphone capture.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            sessionId: { type: 'string' },
+            status: { type: 'string', enum: ['done', 'cancelled'] },
+            note: { type: 'string' },
+            summary: { type: 'string' },
           },
           additionalProperties: false,
         },
@@ -27060,6 +27243,10 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
+  'get_realtime_dogfood_session',
+  'start_realtime_dogfood_session',
+  'mark_realtime_dogfood_step',
+  'end_realtime_dogfood_session',
   'get_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
@@ -27099,6 +27286,7 @@ function realtimeInstructionChecks(instructions = '') {
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
+    realtimeDogfoodSession: /get_realtime_dogfood_session|start_realtime_dogfood_session|mark_realtime_dogfood_step|end_realtime_dogfood_session|dogfood session tracker/i.test(text),
     workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
     autopilotStatus: /get_autopilot_status|autopilot did|unattended work|can continue by itself|autopilot is waiting/i.test(text),
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
