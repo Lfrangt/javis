@@ -15418,6 +15418,43 @@ function workerProgressSummary(workerGroups = []) {
   return pieces.join(', ');
 }
 
+function workProgressSpokenSummary(progress = {}) {
+  const workerGroups = Array.isArray(progress.workerGroups) ? progress.workerGroups : [];
+  const activeJobs = Array.isArray(progress.activeJobs) ? progress.activeJobs : [];
+  const blockedWorkflows = Array.isArray(progress.blockedWorkflows) ? progress.blockedWorkflows : [];
+  const nextActions = Array.isArray(progress.nextActions) ? progress.nextActions : [];
+  const latestDoneJob = progress.latestDone?.job || null;
+  const latestDoneWorkflow = progress.latestDone?.workflow || null;
+  const workerSummary = progress.workerSummary || workerProgressSummary(workerGroups);
+  const parts = [];
+
+  if (workerGroups.length) {
+    const groupText = workerGroups
+      .slice(0, 3)
+      .map((group) => `${group.owner}/${group.lane} ${group.active ? `${group.active} active` : group.done ? `${group.done} done` : `${group.total} tracked`}`)
+      .join('; ');
+    parts.push(`后台 worker: ${workerSummary}. ${groupText}.`);
+  } else if (activeJobs.length) {
+    parts.push(`后台有 ${activeJobs.length} 个任务在跑。`);
+  } else {
+    parts.push('当前没有正在运行的后台任务。');
+  }
+
+  if (blockedWorkflows.length) {
+    parts.push(`有 ${blockedWorkflows.length} 个 workflow 需要处理。`);
+  } else if (latestDoneJob) {
+    parts.push(`最近完成: ${compactRecordText(latestDoneJob.title || latestDoneJob.result || latestDoneJob.id, 80)}.`);
+  } else if (latestDoneWorkflow) {
+    parts.push(`最近完成: ${compactRecordText(latestDoneWorkflow.title || latestDoneWorkflow.result || latestDoneWorkflow.id, 80)}.`);
+  }
+
+  if (nextActions.length) {
+    parts.push(`下一步: ${compactRecordText(nextActions[0].label || nextActions[0].summary || '', 100)}.`);
+  }
+
+  return compactRecordText(parts.filter(Boolean).join(' '), 420);
+}
+
 function uniqueProgressRecords(list, keyForRecord) {
   const seen = new Set();
   return list.filter((item) => {
@@ -15457,6 +15494,11 @@ function workProgressCheckIn(options = {}) {
   const nextActions = (briefing.nextActions || []).slice(0, 3);
   const workerGroups = buildWorkerProgressGroups([...activeJobs, ...recentJobs]);
   const workerSummary = workerProgressSummary(workerGroups);
+  const latestDone = {
+    job: latestDoneJob,
+    workflow: latestDoneWorkflow,
+    route: latestDoneRoute,
+  };
 
   const lines = [
     collaboration.counts.active
@@ -15499,7 +15541,7 @@ function workProgressCheckIn(options = {}) {
     source: String(options.source || 'api').slice(0, 80),
   });
 
-  return {
+  const progress = {
     ok: true,
     output,
     counts: {
@@ -15524,12 +15566,12 @@ function workProgressCheckIn(options = {}) {
     activeWorkflows,
     blockedWorkflows,
     recentWorkflows,
-    latestDone: {
-      job: latestDoneJob,
-      workflow: latestDoneWorkflow,
-      route: latestDoneRoute,
-    },
+    latestDone,
     nextActions,
+  };
+  return {
+    ...progress,
+    spokenSummary: workProgressSpokenSummary(progress),
   };
 }
 

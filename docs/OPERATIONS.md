@@ -81,11 +81,12 @@ npm run eval
 npm run eval -- --list
 npm run eval -- --only=health,realtime,routing,parallel,collaboration
 JAVIS_EVAL_LIVE_WORKERS=true npm run eval -- --only=workers-live
+JAVIS_EVAL_REALTIME_DOGFOOD=true npm run eval -- --only=realtime-live-dogfood
 npm run eval:json
 npm run eval:routing
 ```
 
-Current eval lanes cover resident health, Realtime voice configuration and preflight context, work briefing, explicit memory, Inbox, routing, four-task parallel ownership dogfood, collaboration claims, control-mode gates, browser snapshots, file read/search/plan previews, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `workers-live` is intentionally opt-in because it queues real Codex, Claude, and local CLI read-only jobs. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
+Current eval lanes cover resident health, Realtime voice configuration and preflight context, work briefing, explicit memory, Inbox, routing, four-task parallel ownership dogfood, collaboration claims, control-mode gates, browser snapshots, file read/search/plan previews, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `workers-live` and `realtime-live-dogfood` are intentionally opt-in because they queue real Codex, Claude, and local CLI read-only jobs. `realtime-live-dogfood` additionally keeps a temporary live conversation state, records a Realtime progress-injection receipt, and verifies the short `spokenSummary` used for voice progress answers. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
 
 Routine maintenance lives in the terminal CUI instead of the desktop pet:
 
