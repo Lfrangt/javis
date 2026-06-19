@@ -76,6 +76,8 @@ export default {
         fillDraft.data?.fields?.find((field) => field.name === 'Password')?.valuePreview === '[sensitive]' &&
         fillDraft.data?.verification?.status === 'preview_only' &&
         fillDraft.data?.verification?.entries?.length === 3 &&
+        !JSON.stringify(fillDraft.data?.results || {}).includes('haoge@example.com') &&
+        !JSON.stringify(fillDraft.data?.results || {}).includes('secret-password') &&
         !JSON.stringify(fillDraft.data?.verification || {}).includes('haoge@example.com') &&
         !JSON.stringify(fillDraft.data?.recovery || {}).includes('haoge@example.com') &&
         fillDraft.data?.results?.every((result) => result.status === 'previewed')

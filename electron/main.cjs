@@ -12448,7 +12448,7 @@ function normalizeBrowserFillDraftFields(options = {}) {
     .filter((item) => item.name && item.value);
 }
 
-function normalizeBrowserFillDraftFixturePage(value = {}) {
+function normalizeBrowserFillDraftFixturePage(value) {
   if (!value || typeof value !== 'object') return null;
   return {
     available: value.available !== false,
@@ -12467,7 +12467,7 @@ function normalizeBrowserFillDraftFixturePage(value = {}) {
   };
 }
 
-function normalizeBrowserFillDraftFixtureDom(value = {}) {
+function normalizeBrowserFillDraftFixtureDom(value) {
   if (!value || typeof value !== 'object') return null;
   const elements = Array.isArray(value.elements) ? value.elements : Array.isArray(value.controls) ? value.controls : [];
   return {
@@ -12546,6 +12546,22 @@ function redactedBrowserFillDraftPlan(plan = {}) {
       valuePreview: compactRecordText(step.valuePreview || step.value, 80),
     })),
   };
+}
+
+function redactedBrowserFillDraftResults(results = []) {
+  return (Array.isArray(results) ? results : []).map((result) => {
+    const next = { ...result };
+    if (next.plan?.args && Object.prototype.hasOwnProperty.call(next.plan.args, 'value')) {
+      next.plan = {
+        ...next.plan,
+        args: {
+          ...next.plan.args,
+          value: next.plan.args.value ? `[redacted ${Buffer.byteLength(String(next.plan.args.value), 'utf8')} bytes]` : '',
+        },
+      };
+    }
+    return next;
+  });
 }
 
 function browserFillDraftVerificationPreview(plan = {}, status = 'preview_only') {
@@ -13035,7 +13051,7 @@ async function runBrowserFillDraftWorkflow(options = {}) {
       valuePreview: browserFillDraftSensitiveField(field) ? '[sensitive]' : compactRecordText(field.value, 80),
     })),
     plan: redactedBrowserFillDraftPlan(plan),
-    results,
+    results: redactedBrowserFillDraftResults(results),
     output,
   };
 }

@@ -30,6 +30,7 @@
     "eval:json": "node scripts/eval/run.mjs --json",
     "eval:routing": "node scripts/eval-routing.mjs",
     "dogfood:realtime-renderer": "node scripts/realtime-dogfood-renderer.mjs",
+    "dogfood:browser-live-fill": "JAVIS_EVAL_BROWSER_LIVE_FILL=true node scripts/eval/run.mjs --only=browser-live-fill",
     "dogfood:workers-live": "JAVIS_EVAL_LIVE_WORKERS=true node scripts/eval/run.mjs --only=workers-live",
     "dogfood:realtime-live": "JAVIS_EVAL_REALTIME_DOGFOOD=true node scripts/eval/run.mjs --only=realtime-live-dogfood",
     "verify:ax": "node scripts/verify-ax-targeting.mjs",
