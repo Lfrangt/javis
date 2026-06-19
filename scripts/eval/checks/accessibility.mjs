@@ -19,6 +19,10 @@ export default {
       out.push(warn('ax.tree', 'AX tree read', 'Accessibility permission not granted — grant it in System Settings to use app control.'));
       return out;
     }
+    if (t.error === 'accessibility_tree_read_timeout') {
+      out.push(fail('ax.tree', 'AX tree read', `tree read timed out for app="${t.app || '?'}" budget=${smokeMaxNodes}/${smokeMaxDepth}`));
+      return out;
+    }
     out.push(
       t.available
         ? ok('ax.tree', 'AX tree read', `app="${t.app}" nodes=${t.nodeCount} truncated=${t.truncated} budget=${smokeMaxNodes}/${smokeMaxDepth}`)

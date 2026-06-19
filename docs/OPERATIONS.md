@@ -788,12 +788,15 @@ curl -X POST http://127.0.0.1:3417/api/accessibility/plan \
 The CUI/API flow exposes this as `tree` -> `plan` -> `guard` -> `act`:
 
 For Chromium browsers, the tree reader attempts to enable the web accessibility tree before walking
-nodes, and captures web hints such as placeholder text, DOM role, DOM id, class list, editable state,
-and focus state. This makes side panes and web textboxes easier to target without bypassing the
+nodes, then lazily captures web hints such as placeholder text, DOM role, DOM id, class list,
+editable state, and focus state for likely editable/actionable candidates. This makes side panes and web textboxes easier to target without bypassing the
 same Level 3 action policy used by `ax_press` and `ax_set_value`.
 AX tree reads and action JXA calls default to a 25s timeout (`JAVIS_AX_TREE_TIMEOUT_MS` and
 `JAVIS_AX_ACTION_TIMEOUT_MS`, capped at 60s) so suspended or complex Chromium pages do not fail
 before the app has exposed a usable accessibility tree.
+If Chromium exposes only menu bars and no usable window/content AX root, the tree reader now returns
+`no_accessibility_window` quickly instead of walking the menu tree until timeout; browser DOM/CDP
+tools should handle webpage work in that state.
 
 For the Gemini/Chromium side-pane targeting regression, use the shared verifier:
 

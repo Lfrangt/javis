@@ -58,7 +58,7 @@
 ## Phase 2: Practical Computer Workflows
 
 - Browser task workflows: current build supports current-page summarize, action extraction, drafting, Q&A, guarded DOM click/fill/select, search/compare result-page capture loops with structured candidate links, guarded result-page review, and guarded multi-page research synthesis; next, add deeper iterative research loops and fill-draft loops.
-- Accessibility tree workflows: current build supports read-only UI tree inspection, dry-run UI target planning, guarded Level 3 AX press/value-action plumbing, one-step current-app control, current-state workflow planning, and short multi-step app workflows; next, richer permissioned app-specific workflows.
+- Accessibility tree workflows: current build supports read-only UI tree inspection, lazy Chromium web-hint reads, fast no-window fallback, dry-run UI target planning, guarded Level 3 AX press/value-action plumbing, one-step current-app control, current-state workflow planning, and short multi-step app workflows; next, richer permissioned app-specific workflows.
 - File workflows: current build supports list/search/summarize/Q&A plus guarded by-type organization plans and Level 3 create/copy/move/rename actions; next, richer rename/convert plans and batch execution UX.
 - Calendar, email, notes, and reminders through explicit connectors or local apps.
 - Obsidian/MCP bridge for notes and knowledge work.

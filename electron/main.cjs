@@ -5148,8 +5148,106 @@ function childrenOf(element) {
   }
 }
 
+function nonMenuChildrenOf(element) {
+  return childrenOf(element).filter((child) => !['AXMenuBar', 'AXMenuBarItem', 'AXMenu'].includes(readProp(child, 'role')));
+}
+
 function nodeLabel(node) {
   return [node.name, node.description, node.value, node.placeholder, node.title, node.domIdentifier, node.domRole].filter(Boolean)[0] || '';
+}
+
+const DIRECT_TEXT_ROLES = ['AXComboBox', 'AXSearchField', 'AXTextArea', 'AXTextField'];
+const BROAD_WEB_EDITABLE_ROLES = ['AXGroup', 'AXStaticText', 'AXWebArea'];
+const ACTIONABLE_DETAIL_ROLES = [
+  'AXButton',
+  'AXCheckBox',
+  'AXComboBox',
+  'AXLink',
+  'AXMenuButton',
+  'AXMenuItem',
+  'AXPopUpButton',
+  'AXRadioButton',
+  'AXSearchField',
+  'AXTab',
+  'AXTextArea',
+  'AXTextField',
+];
+const EDITABLE_HINT_PATTERN = /(^|[^a-z])true([^a-z]|$)|editable|contenteditable|rich.?textarea|textbox|searchbox|text area|text field|composer|compose|input/;
+const STRONG_EDITABLE_HINT_PATTERN = /(^|[^a-z])true([^a-z]|$)|contenteditable|rich.?textarea|textbox|searchbox|text area|text field|composer|compose|input/;
+
+function coreNodeText(node) {
+  return [
+    node.role,
+    node.subrole,
+    node.roleDescription,
+    node.name,
+    node.description,
+    node.value,
+  ].join(' ').toLowerCase();
+}
+
+function readFullWebHints(element, node, alreadyRead) {
+  const present = alreadyRead || {};
+  if (!present.value) node.value = readProp(element, 'value');
+  if (!present.placeholder) node.placeholder = readAttribute(element, 'AXPlaceholderValue');
+  if (!present.title) node.title = readAttribute(element, 'AXTitle');
+  if (!present.domIdentifier) node.domIdentifier = readAttribute(element, 'AXDOMIdentifier');
+  if (!present.domClassList) node.domClassList = readAttribute(element, 'AXDOMClassList');
+  if (!present.domRole) node.domRole = readAttribute(element, 'AXDOMRole');
+  if (!present.editable) node.editable = readAttribute(element, 'AXEditable');
+  attributeStats.fullWebHintReads += 1;
+}
+
+function readLazyWebHints(element, node) {
+  const role = String(node.role || '');
+  const text = coreNodeText(node);
+  const directTextRole = DIRECT_TEXT_ROLES.includes(role);
+  const broadWebRole = BROAD_WEB_EDITABLE_ROLES.includes(role);
+  const actionableRole = ACTIONABLE_DETAIL_ROLES.includes(role);
+  const coreEditableHint = EDITABLE_HINT_PATTERN.test(text);
+
+  node.value = '';
+  node.placeholder = '';
+  node.title = '';
+  node.domIdentifier = '';
+  node.domClassList = '';
+  node.domRole = '';
+  node.editable = '';
+  node.focused = '';
+  node.position = null;
+  node.size = null;
+
+  if (directTextRole || coreEditableHint) {
+    readFullWebHints(element, node, {});
+    node.focused = readAttribute(element, 'AXFocused');
+    node.position = readPair(element, 'position');
+    node.size = readPair(element, 'size');
+    attributeStats.focusGeometryReads += 1;
+  } else if (broadWebRole) {
+    node.domRole = readAttribute(element, 'AXDOMRole');
+    node.editable = readAttribute(element, 'AXEditable');
+    attributeStats.broadWebProbeReads += 1;
+    const probeText = [text, node.domRole, node.editable].join(' ').toLowerCase();
+    if (STRONG_EDITABLE_HINT_PATTERN.test(probeText)) {
+      readFullWebHints(element, node, { domRole: true, editable: true });
+      node.focused = readAttribute(element, 'AXFocused');
+      node.position = readPair(element, 'position');
+      node.size = readPair(element, 'size');
+      attributeStats.focusGeometryReads += 1;
+    } else {
+      attributeStats.skippedWebHintReads += 1;
+    }
+  } else if (actionableRole) {
+    node.value = readProp(element, 'value');
+    node.title = readAttribute(element, 'AXTitle');
+    node.focused = readAttribute(element, 'AXFocused');
+    node.position = readPair(element, 'position');
+    node.size = readPair(element, 'size');
+    attributeStats.actionableTitleReads += 1;
+    attributeStats.focusGeometryReads += 1;
+  } else {
+    attributeStats.skippedWebHintReads += 1;
+  }
 }
 
 function isChromiumApp(name) {
@@ -5167,19 +5265,10 @@ function readNode(element, depth, parentId, childCount) {
     roleDescription: readProp(element, 'roleDescription'),
     name: readProp(element, 'name'),
     description: readProp(element, 'description'),
-    value: readProp(element, 'value'),
-    placeholder: readAttribute(element, 'AXPlaceholderValue'),
-    title: readAttribute(element, 'AXTitle'),
-    domIdentifier: readAttribute(element, 'AXDOMIdentifier'),
-    domClassList: readAttribute(element, 'AXDOMClassList'),
-    domRole: readAttribute(element, 'AXDOMRole'),
-    editable: readAttribute(element, 'AXEditable'),
-    focused: readAttribute(element, 'AXFocused'),
     enabled: readBool(element, 'enabled'),
-    position: readPair(element, 'position'),
-    size: readPair(element, 'size'),
     childCount,
   };
+  readLazyWebHints(element, node);
   node.label = nodeLabel(node);
   return node;
 }
@@ -5190,6 +5279,14 @@ if (!processes.length) {
 } else {
   const process = processes[0];
   const appName = readProp(process, 'name');
+  var attributeStats = {
+    strategy: 'lazy_web_editable',
+    fullWebHintReads: 0,
+    broadWebProbeReads: 0,
+    actionableTitleReads: 0,
+    skippedWebHintReads: 0,
+    focusGeometryReads: 0,
+  };
   let chromiumAccessibilityActivated = false;
   if (isChromiumApp(appName)) {
     chromiumAccessibilityActivated =
@@ -5206,37 +5303,61 @@ if (!processes.length) {
     }
   }
   if (!root) {
-    root = windows.find((window) => childrenOf(window).length) || windows[0] || process;
+    root = windows.find((window) => childrenOf(window).length) || windows[0] || null;
+  }
+  if (!root) {
+    const contentChildren = nonMenuChildrenOf(process);
+    root = contentChildren.find((child) => childrenOf(child).length) || contentChildren[0] || null;
   }
 
-  var nodes = [];
-  var queue = [{ element: root, depth: 0, parentId: '' }];
-  while (queue.length && nodes.length < maxNodes) {
-    const item = queue.shift();
-    const children = childrenOf(item.element);
-    const node = readNode(item.element, item.depth, item.parentId, children.length);
-    nodes.push(node);
-    if (item.depth < maxDepth) {
-      for (const child of children) {
-        queue.push({ element: child, depth: item.depth + 1, parentId: node.id });
+  if (!root) {
+    JSON.stringify({
+      available: false,
+      app: readProp(process, 'name'),
+      windowTitle: '',
+      rootRole: readProp(process, 'role'),
+      rootSubrole: readProp(process, 'subrole'),
+      nodeCount: 0,
+      truncated: false,
+      maxNodes,
+      maxDepth,
+      nodes: [],
+      attributeStats,
+      chromiumAccessibilityActivated,
+      error: 'no_accessibility_window',
+      generatedAt: new Date().toISOString(),
+    });
+  } else {
+    var nodes = [];
+    var queue = [{ element: root, depth: 0, parentId: '' }];
+    while (queue.length && nodes.length < maxNodes) {
+      const item = queue.shift();
+      const children = childrenOf(item.element);
+      const node = readNode(item.element, item.depth, item.parentId, children.length);
+      nodes.push(node);
+      if (item.depth < maxDepth) {
+        for (const child of children) {
+          queue.push({ element: child, depth: item.depth + 1, parentId: node.id });
+        }
       }
     }
+    JSON.stringify({
+      available: nodes.length > 0,
+      app: readProp(process, 'name'),
+      windowTitle: readProp(root, 'name'),
+      rootRole: readProp(root, 'role'),
+      rootSubrole: readProp(root, 'subrole'),
+      nodeCount: nodes.length,
+      truncated: nodes.length >= maxNodes,
+      maxNodes,
+      maxDepth,
+      nodes,
+      attributeStats,
+      chromiumAccessibilityActivated,
+      error: '',
+      generatedAt: new Date().toISOString(),
+    });
   }
-  JSON.stringify({
-    available: nodes.length > 0,
-    app: readProp(process, 'name'),
-    windowTitle: readProp(root, 'name'),
-    rootRole: readProp(root, 'role'),
-    rootSubrole: readProp(root, 'subrole'),
-    nodeCount: nodes.length,
-    truncated: nodes.length >= maxNodes,
-    maxNodes,
-    maxDepth,
-    nodes,
-    chromiumAccessibilityActivated,
-    error: '',
-    generatedAt: new Date().toISOString(),
-  });
 }
 `;
 

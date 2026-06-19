@@ -63,6 +63,18 @@ Run against the live resident service at `http://127.0.0.1:3417`:
    The resident now uses configurable 25s JXA timeouts for tree reads and AX
    actions (`JAVIS_AX_TREE_TIMEOUT_MS`, `JAVIS_AX_ACTION_TIMEOUT_MS`) and the eval
    smoke check waits 30s before aborting its client request.
+4. **Follow-up landed — menu-only Chromium AX no longer hangs.** On a live Chrome
+   page where `System Events` exposed `process.windows() === 0` and only menu bars
+   under the application process, the old `240/9` read walked the menu tree until
+   `accessibility_tree_read_timeout` at ~25s. The resident now skips menu-only
+   roots and returns `no_accessibility_window` quickly; the same request completed
+   in ~262ms on 2026-06-19. Webpage work should use the browser DOM/CDP lane in
+   this state.
+5. **Follow-up landed — web hints are lazy.** `/api/accessibility/tree` now reads
+   expensive Chromium hints (`AXPlaceholderValue`, title, DOM id/class/role, and
+   editable state) only for likely editable/actionable candidates. Responses include
+   `attributeStats.strategy === "lazy_web_editable"` so performance evidence is
+   visible in future field runs.
 
 ## Status of the core fix (to confirm once Codex's diff lands)
 
