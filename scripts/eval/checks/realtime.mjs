@@ -23,6 +23,7 @@ const REQUIRED_TOOLS = [
   'mark_realtime_dogfood_step',
   'end_realtime_dogfood_session',
   'get_worker_recovery',
+  'run_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
   'get_collaboration_state',

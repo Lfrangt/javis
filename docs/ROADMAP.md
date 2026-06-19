@@ -50,7 +50,7 @@
 - Add explicit process-next Inbox flow for doing one highest-priority capture at a time.
 - Route Inbox captures into quick/background/Codex/Claude work from CUI/API or voice tools.
 - Copy workflow results back to the clipboard from CUI/API or voice tools.
-- Add cancellable background workers with visible logs, structured failure recovery plans, `/api/jobs/recovery` summaries, and Realtime `get_worker_recovery` access for attempts, diagnostics, recovery child jobs, and recommended next actions.
+- Add cancellable background workers with visible logs, structured failure recovery plans, `/api/jobs/recovery` summaries, job-level recovery execution through `/api/jobs/:id/recovery/run`, and Realtime `get_worker_recovery` / `run_worker_recovery` access for attempts, diagnostics, recovery child jobs, and recommended next actions.
 - Add a multi-agent lane decision record for every routed task: realtime voice, background, Codex, Claude, owner, lane contract, write scope, parallel group, approval requirement, status, and result link.
 - Add resident status views and spoken check-ins that report active parallel work by lane, owner, blocker, and next action.
 - Add a local config validator with terminal CUI diagnostics.

@@ -16203,6 +16203,9 @@ function autopilotActionDecision(action, index = 0) {
     requiresUserPresence: Boolean(action.requiresUserPresence),
     riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
     recoveryType: compactRecordText(action.recoveryType || '', 80),
+    trustedAutoEligible: Boolean(action.trustedAutoEligible),
+    recoveryAttempts: Math.max(0, Number(action.recoveryAttempts || 0)),
+    maxRecoveryAttempts: Math.max(0, Number(action.maxRecoveryAttempts || 0)),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     decision: eligibility,
@@ -20277,6 +20280,54 @@ function recoverySnapshotAction(job, action = {}, index = 0) {
   };
 }
 
+function normalizedRecoveryActionForJob(job, action = {}, index = 0) {
+  if (!job) return null;
+  const type = action.type || action.recoveryType || `action_${index}`;
+  const childCount = recoveryChildJobs(job.id).length;
+  return {
+    ...action,
+    ...recoverySnapshotAction(job, { ...action, type }, index),
+    id: action.id || `recovery:${job.id}:${type || index}`,
+    type,
+    recoveryType: type,
+    source: 'recovery',
+    jobId: job.id,
+    failureKind: job.failureKind || job.recoveryPlan?.failureKind || '',
+    summary: [
+      `${job.mode}/${job.failureKind || job.recoveryPlan?.failureKind || 'failed'}: ${compactRecordText(job.title, 110)}`,
+      action.reason || job.recoveryPlan?.summary || '',
+    ].filter(Boolean).join(' · '),
+    recoveryAttempts: childCount,
+    maxRecoveryAttempts: MAX_RECOVERY_JOB_ATTEMPTS,
+    trustedAutoEligible: trustedRecoveryAutoEligible(job, { ...action, type }, childCount),
+  };
+}
+
+function recoveryActionForJob(job, options = {}) {
+  if (!job?.recoveryPlan?.nextActions?.length) return null;
+  if (options.action && typeof options.action === 'object') {
+    return normalizedRecoveryActionForJob(job, options.action, Number(options.index || 0));
+  }
+  const actions = job.recoveryPlan.nextActions
+    .map((action, index) => normalizedRecoveryActionForJob(job, action, index))
+    .filter(Boolean)
+    .sort((a, b) => a.priority - b.priority);
+  const actionId = String(options.actionId || options.id || '').trim();
+  if (actionId) {
+    const byId = actions.find((action) => action.id === actionId);
+    if (byId) return byId;
+  }
+  const recoveryType = String(options.recoveryType || options.actionType || options.type || '').trim();
+  if (recoveryType) {
+    const byType = actions.find((action) => action.recoveryType === recoveryType || action.type === recoveryType);
+    if (byType) return byType;
+  }
+  const index = Number.isFinite(Number(options.actionIndex ?? options.index))
+    ? Math.max(0, Number(options.actionIndex ?? options.index))
+    : 0;
+  return actions[index] || actions[0] || null;
+}
+
 function jobRecoverySnapshot(options = {}) {
   const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
   const includeInternal = options.includeInternal === true || String(options.includeInternal || '').toLowerCase() === 'true';
@@ -21459,49 +21510,13 @@ async function workNextAction(options = {}) {
     output = result.output;
   } else if (action.source === 'recovery') {
     const job = action.jobId ? jobs.get(action.jobId) || null : null;
-    const diagnostics = job?.recoveryPlan?.diagnostics || recoveryDiagnosticsSnapshot();
-    const recoverySummary = job?.recoveryPlan?.summary || action.summary || '';
-    const safeToExecute = Boolean(action.autoEligible && action.riskLevel <= 1 && ['diagnose', 'policy', 'approval'].includes(action.recoveryType));
-    const canQueueRecovery = Boolean(
-      job
-      && execute
-      && ['retry', 'alternative_worker'].includes(action.recoveryType)
-      && (action.trustedAutoEligible || !options.autopilot)
-      && [
-        'worker_failed',
-        'command_failed',
-        'timeout',
-        'interrupted',
-        'worker_command_missing',
-        'model_failed',
-        'model_quota_or_api',
-        'openai_key_missing',
-      ].includes(job.failureKind || job.recoveryPlan?.failureKind || action.failureKind),
-    );
-    if (canQueueRecovery) {
-      result = queueRecoveryJob(job, action, { source: options.source || 'work_next' });
-      executed = Boolean(result.queued);
-      output = result.output;
-    } else if (execute && safeToExecute && job) {
-      appendJobLog(job.id, `Recovery action reviewed via work_next: ${action.recoveryType}.`);
-      executed = true;
-    }
-    if (!result) result = { job, recovery: action, diagnostics };
-    if (!output) output = job
-      ? [
-        `恢复任务: ${job.mode}/${job.failureKind || job.recoveryPlan?.failureKind || 'failed'} · ${compactRecordText(job.title, 120)}`,
-        recoverySummary ? `原因: ${compactRecordText(recoverySummary, 220)}` : '',
-        diagnostics?.summary ? `诊断: ${compactRecordText(diagnostics.summary, 220)}` : '',
-        diagnostics?.runtime ? `权限: localExec=${diagnostics.runtime.localExecutionEnabled ? 'on' : 'off'}, trusted=${diagnostics.runtime.trustedLocalMode ? 'on' : 'off'}, autoLevel=${diagnostics.runtime.maxAutoRiskLevel}, approvalAt=${diagnostics.runtime.requireApprovalAtRiskLevel}` : '',
-        diagnostics?.workers ? `Worker: Codex ${diagnostics.workers.codex?.available ? 'ready' : 'missing'}, Claude ${diagnostics.workers.claude?.available ? 'ready' : 'missing'}` : '',
-        ['retry', 'alternative_worker'].includes(action.recoveryType)
-          ? `可恢复: ${action.trustedAutoEligible ? '自动驾驶可排' : '手动执行会排'}一个缩小范围的 ${recoveryJobModeFor(job, action)} recovery job (${action.recoveryAttempts || 0}/${action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS}).`
-          : '',
-        safeToExecute
-          ? '已完成低风险恢复检查；下一步可以按诊断继续修复。'
-          : `这一步不是低风险自动动作，已保留为计划: ${action.label}.`,
-      ].filter(Boolean).join('\n')
-      : '没有找到对应的失败任务，可能已经被清理。';
+    result = runRecoveryActionForJob(job, action, {
+      execute,
+      autopilot: options.autopilot,
+      source: options.source || 'work_next',
+    });
+    executed = Boolean(result.executed);
+    output = result.output;
   } else if (action.source === 'workflows' && action.workflowAction === 'retry_app_workflow') {
     const workflow = action.workflowId ? workflows.get(action.workflowId) || null : null;
     const retryPlan = retryableBlockedWorkflowPlan(workflow);
@@ -22184,6 +22199,111 @@ function queueRecoveryJob(job, action = {}, options = {}) {
     queued: true,
     job: recoveryJob,
     output: `Queued recovery job ${recoveryJob.id} in ${mode} mode for ${job.title}.`,
+  };
+}
+
+function runRecoveryActionForJob(job, actionOrOptions = {}, options = {}) {
+  const latestJob = job?.id ? jobs.get(job.id) || job : null;
+  if (!latestJob) {
+    return {
+      ok: false,
+      executed: false,
+      queued: false,
+      status: 404,
+      action: null,
+      job: null,
+      output: '没有找到对应的失败任务，可能已经被清理。',
+    };
+  }
+  const action = recoveryActionForJob(latestJob, {
+    ...(options || {}),
+    action: actionOrOptions?.source === 'recovery' || actionOrOptions?.recoveryType || actionOrOptions?.type ? actionOrOptions : options.action,
+  });
+  if (!action) {
+    return {
+      ok: false,
+      executed: false,
+      queued: false,
+      status: 404,
+      action: null,
+      job: latestJob,
+      output: '这个失败任务没有可执行的 recovery action。',
+    };
+  }
+
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const diagnostics = latestJob.recoveryPlan?.diagnostics || recoveryDiagnosticsSnapshot();
+  const recoverySummary = latestJob.recoveryPlan?.summary || action.summary || '';
+  const safeToExecute = Boolean(action.autoEligible && action.riskLevel <= 1 && ['diagnose', 'policy', 'approval'].includes(action.recoveryType));
+  const canQueueRecovery = Boolean(
+    latestJob
+    && execute
+    && ['retry', 'alternative_worker'].includes(action.recoveryType)
+    && (action.trustedAutoEligible || !options.autopilot)
+    && [
+      'worker_failed',
+      'command_failed',
+      'timeout',
+      'interrupted',
+      'worker_command_missing',
+      'model_failed',
+      'model_quota_or_api',
+      'openai_key_missing',
+    ].includes(latestJob.failureKind || latestJob.recoveryPlan?.failureKind || action.failureKind),
+  );
+
+  let result = null;
+  let output = '';
+  let executed = false;
+  let queued = false;
+  if (canQueueRecovery) {
+    result = queueRecoveryJob(latestJob, action, { source: options.source || 'job_recovery' });
+    queued = Boolean(result.queued);
+    executed = queued;
+    output = result.output;
+  } else if (execute && safeToExecute) {
+    appendJobLog(latestJob.id, `Recovery action reviewed via work_next: ${action.recoveryType}.`);
+    result = { reviewed: true, diagnostics };
+    executed = true;
+  }
+
+  const currentJob = jobs.get(latestJob.id) || latestJob;
+  if (!result) result = { job: currentJob, recovery: action, diagnostics };
+  if (!output) output = [
+    `恢复任务: ${currentJob.mode}/${currentJob.failureKind || currentJob.recoveryPlan?.failureKind || 'failed'} · ${compactRecordText(currentJob.title, 120)}`,
+    recoverySummary ? `原因: ${compactRecordText(recoverySummary, 220)}` : '',
+    diagnostics?.summary ? `诊断: ${compactRecordText(diagnostics.summary, 220)}` : '',
+    diagnostics?.runtime ? `权限: localExec=${diagnostics.runtime.localExecutionEnabled ? 'on' : 'off'}, trusted=${diagnostics.runtime.trustedLocalMode ? 'on' : 'off'}, autoLevel=${diagnostics.runtime.maxAutoRiskLevel}, approvalAt=${diagnostics.runtime.requireApprovalAtRiskLevel}` : '',
+    diagnostics?.workers ? `Worker: Codex ${diagnostics.workers.codex?.available ? 'ready' : 'missing'}, Claude ${diagnostics.workers.claude?.available ? 'ready' : 'missing'}` : '',
+    ['retry', 'alternative_worker'].includes(action.recoveryType)
+      ? `可恢复: ${action.trustedAutoEligible ? '自动驾驶可排' : '手动执行会排'}一个缩小范围的 ${recoveryJobModeFor(currentJob, action)} recovery job (${action.recoveryAttempts || 0}/${action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS}).`
+      : '',
+    safeToExecute && execute
+      ? '已完成低风险恢复检查；下一步可以按诊断继续修复。'
+      : safeToExecute
+        ? '这是低风险恢复检查；执行后会把该检查记入失败 job 日志。'
+        : `这一步不是低风险自动动作，已保留为计划: ${action.label}.`,
+  ].filter(Boolean).join('\n');
+
+  appendAudit('job.recovery_action', {
+    id: currentJob.id,
+    actionId: action.id,
+    recoveryType: action.recoveryType,
+    execute,
+    executed,
+    queued,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+
+  return {
+    ok: true,
+    executed,
+    queued,
+    action,
+    job: jobs.get(currentJob.id) || currentJob,
+    result,
+    recovery: jobRecoverySnapshot({ includeInternal: true, limit: 20 }),
+    output,
   };
 }
 
@@ -25384,6 +25504,16 @@ async function executeTool(name, args) {
     };
   }
 
+  if (name === 'run_worker_recovery') {
+    const job = jobs.get(String(args?.jobId || args?.id || '')) || null;
+    const result = runRecoveryActionForJob(job, {}, {
+      ...(args || {}),
+      execute: args?.execute !== false,
+      source: 'voice',
+    });
+    return { ok: Boolean(result.ok), output: JSON.stringify(result) };
+  }
+
   if (name === 'get_autopilot_status') {
     return { ok: true, output: JSON.stringify(autopilotVoiceStatusSnapshot({ ...(args || {}), source: 'voice' })) };
   }
@@ -26587,6 +26717,24 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'run_worker_recovery',
+        description: 'Run or preview one bounded recovery action for a specific failed worker job. It can queue a retry/alternative worker only through the normal recovery policy and never approves pending approvals.',
+        parameters: {
+          type: 'object',
+          properties: {
+            jobId: { type: 'string' },
+            id: { type: 'string' },
+            actionId: { type: 'string' },
+            recoveryType: { type: 'string', enum: ['diagnose', 'policy', 'approval', 'retry', 'alternative_worker', 'setup'] },
+            actionType: { type: 'string', enum: ['diagnose', 'policy', 'approval', 'retry', 'alternative_worker', 'setup'] },
+            actionIndex: { type: 'number' },
+            execute: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_autopilot_status',
         description: 'Get read-only voice-friendly overnight autopilot status: last decision, current candidate actions, skip reason, and what condition JAVIS is waiting on. Does not execute a tick.',
         parameters: {
@@ -26653,6 +26801,8 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {
+            actionId: { type: 'string' },
+            id: { type: 'string' },
             jobLimit: { type: 'number' },
             workflowLimit: { type: 'number' },
           },
@@ -26666,6 +26816,8 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {
+            actionId: { type: 'string' },
+            id: { type: 'string' },
             includeScreen: { type: 'boolean' },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
@@ -27870,6 +28022,23 @@ function startApiServer() {
         includeInternal: req.query.includeInternal,
       }),
     });
+  });
+
+  api.post('/api/jobs/:id/recovery/run', express.json({ limit: '128kb' }), (req, res) => {
+    const job = jobs.get(String(req.params.id || ''));
+    if (!job) {
+      jsonError(res, 404, 'Job not found');
+      return;
+    }
+    const result = runRecoveryActionForJob(job, {}, {
+      ...(req.body || {}),
+      source: req.body?.source || 'api_job_recovery',
+    });
+    if (!result.ok && result.status) {
+      res.status(result.status).json(result);
+      return;
+    }
+    res.status(result.ok ? 200 : 409).json(result);
   });
 
   api.get('/api/jobs/:id', (req, res) => {

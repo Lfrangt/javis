@@ -52,7 +52,7 @@ Local Mac-first realtime desktop buddy.
 - Workflow history for recent browser, voice, and background work.
 - Local work briefing for recent progress, blockers, active work, and next actions.
 - Local work progress check-ins for background jobs, workflows, grouped Codex/Claude/local worker batches, and recoverable failed-worker plans.
-- Realtime voice recovery inspection for failed workers through `get_worker_recovery`, while execution still goes through explicit `run_work_next`.
+- Realtime voice recovery inspection and targeted recovery for failed workers through `get_worker_recovery` and `run_worker_recovery`, with execution still bounded by normal recovery policy.
 - Voice-ready work handoff that compresses readiness, progress, session, collaboration, next actions, and workflow continuation suggestions into one short spoken summary.
 - Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, workflows, and Realtime dogfood; Realtime blockers include a guided handoff dogfood pack with start, monitor, prompt, and evidence instructions.
 - Overnight autopilot decision evidence through `/api/autopilot`, CUI status, and Realtime voice `get_autopilot_status`, showing candidate counts, waiting conditions, the selected safe action, skip summaries, and what the resident needs before it can continue unattended.

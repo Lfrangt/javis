@@ -124,9 +124,10 @@ surfaced there too: when `/api/realtime/evidence` is stuck at `needs_live_sessio
 uses the same summon/wake path as `Option+Space` and parks the pet at the notch for the live session.
 This Realtime voice action is marked manual-only because starting microphone/live voice requires an
 explicit user action; overnight autopilot must skip it.
-Retryable failed jobs can be advanced from work-next into a narrower recovery job with the original
-task, attempts, diagnostics, and log tail attached. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued
-recovery jobs per failed parent job.
+Retryable failed jobs can be advanced from work-next or `POST /api/jobs/:id/recovery/run` into a
+narrower recovery job with the original task, attempts, diagnostics, and log tail attached. Realtime
+voice can target the same path through `run_worker_recovery` when the user asks to recover a specific
+failed worker. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs per failed parent job.
 
 Use option `14. Show next work item`, or `npm run config -- --print-work-next`, to preview the current `/api/work/next` action from the CUI.
 

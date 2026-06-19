@@ -6,6 +6,14 @@ import { ok, warn, fail } from '../_client.mjs';
 const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function parseToolOutput(response) {
+  try {
+    return JSON.parse(response.data?.output || '{}');
+  } catch {
+    return null;
+  }
+}
+
 async function waitForJob(ctx, id, timeoutMs = 10000) {
   const started = Date.now();
   let latest = null;
@@ -169,6 +177,73 @@ export default {
           progressRecovery?.counts?.recoverable >= 1
           ? ok('workers.recovery_progress', 'Recovery in work progress', recoveryProgress.data.progress.spokenSummary || progressRecovery.summary)
           : fail('workers.recovery_progress', 'Recovery in work progress', 'work progress did not include recoverable worker evidence', recoveryProgress.data),
+      );
+
+      const recoveryPreview = await ctx.api(`/api/jobs/${encodeURIComponent(recoveryJobId)}/recovery/run`, {
+        method: 'POST',
+        body: {
+          execute: false,
+          recoveryType: 'retry',
+          source: 'eval_recovery_contract',
+        },
+        retries: 0,
+      });
+      out.push(
+        recoveryPreview.ok &&
+          recoveryPreview.data?.ok === true &&
+          recoveryPreview.data?.executed === false &&
+          recoveryPreview.data?.queued === false &&
+          recoveryPreview.data?.action?.recoveryType === 'retry' &&
+          recoveryPreview.data?.action?.id === `recovery:${recoveryJobId}:retry` &&
+          /recovery job/i.test(String(recoveryPreview.data?.output || ''))
+          ? ok('workers.recovery_action_preview', 'Worker recovery action preview', `${recoveryPreview.data.action.id} previewed`)
+          : fail('workers.recovery_action_preview', 'Worker recovery action preview', 'job-level recovery preview did not expose the selected retry action', recoveryPreview.data),
+      );
+
+      const recoveryDiagnose = await ctx.api(`/api/jobs/${encodeURIComponent(recoveryJobId)}/recovery/run`, {
+        method: 'POST',
+        body: {
+          execute: true,
+          recoveryType: 'diagnose',
+          source: 'eval_recovery_contract',
+        },
+        retries: 0,
+      });
+      const diagnosedJob = recoveryJobId ? await ctx.api(`/api/jobs/${encodeURIComponent(recoveryJobId)}`, { retries: 0 }) : null;
+      out.push(
+        recoveryDiagnose.ok &&
+          recoveryDiagnose.data?.ok === true &&
+          recoveryDiagnose.data?.executed === true &&
+          recoveryDiagnose.data?.queued === false &&
+          recoveryDiagnose.data?.action?.recoveryType === 'diagnose' &&
+          /Recovery action reviewed via work_next: diagnose/.test(String(diagnosedJob?.data?.job?.log || ''))
+          ? ok('workers.recovery_action_execute', 'Worker recovery action execute', 'diagnose action recorded against failed job without queueing a child worker')
+          : fail('workers.recovery_action_execute', 'Worker recovery action execute', 'diagnose recovery action did not execute safely against the failed job', { recoveryDiagnose: recoveryDiagnose.data, diagnosedJob: diagnosedJob?.data }),
+      );
+
+      const recoveryVoiceTool = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          name: 'run_worker_recovery',
+          arguments: {
+            jobId: recoveryJobId,
+            recoveryType: 'retry',
+            execute: false,
+          },
+        },
+        retries: 0,
+      });
+      const recoveryVoiceOutput = parseToolOutput(recoveryVoiceTool);
+      out.push(
+        recoveryVoiceTool.ok &&
+          recoveryVoiceTool.data?.ok === true &&
+          recoveryVoiceOutput?.ok === true &&
+          recoveryVoiceOutput?.executed === false &&
+          recoveryVoiceOutput?.action?.recoveryType === 'retry' &&
+          recoveryVoiceOutput?.job?.id === recoveryJobId
+          ? ok('workers.recovery_voice_tool', 'Worker recovery voice tool', 'run_worker_recovery can target a specific failed job without executing by default')
+          : fail('workers.recovery_voice_tool', 'Worker recovery voice tool', 'run_worker_recovery did not preview the selected failed-job recovery action', recoveryVoiceTool.data),
       );
     } finally {
       if (recoveryJobId) {
