@@ -10,6 +10,7 @@ const REQUIRED_TOOLS = [
   'observe_now',
   'get_mac_context',
   'get_browser_context',
+  'get_browser_activity',
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
@@ -101,6 +102,22 @@ export default {
       failedInstructions.length === 0
         ? ok('realtime.instructions', 'Realtime instruction guardrails', `${Object.keys(realtime.instructionChecks || {}).length} invariant(s) present`)
         : fail('realtime.instructions', 'Realtime instruction guardrails', `missing invariant(s): ${failedInstructions.join(', ')}`),
+    );
+
+    const browserActivityTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_browser_activity', arguments: { limit: 5 } },
+    });
+    const browserActivityOutput = parseToolOutput(browserActivityTool);
+    out.push(
+      browserActivityTool.ok &&
+        browserActivityTool.data?.ok === true &&
+        browserActivityOutput?.privacy?.metadataOnly === true &&
+        browserActivityOutput?.privacy?.noPageText === true &&
+        Array.isArray(browserActivityOutput.recent) &&
+        Array.isArray(browserActivityOutput.topHosts)
+        ? ok('realtime.browser_activity_tool', 'Realtime browser activity tool', `${browserActivityOutput.recent.length} recent page context(s)`)
+        : fail('realtime.browser_activity_tool', 'Realtime browser activity tool', `tool execute ${browserActivityTool.status}`, browserActivityTool.data),
     );
 
     const shortcutList = await ctx.api('/api/tools/execute', {

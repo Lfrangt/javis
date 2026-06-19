@@ -31,7 +31,7 @@
 - Add readiness diagnostics for setup, permissions, policy, and runtime state.
 - Add Mac context visibility for frontmost app/window and clipboard state.
 - Add browser context visibility for supported active tabs.
-- Add metadata-only local browser activity summaries from ambient observations into presence, Realtime preflight context, CUI, and API.
+- Add metadata-only local browser activity summaries from ambient observations into presence, Realtime preflight context, Realtime tools, CUI, and API.
 - Add read-only active browser page extraction for webpage-aware tasks.
 - Persist background task history.
 - Persist user-level workflow history with linked jobs and results.

@@ -155,7 +155,7 @@ Use options `19`-`25` for local learning maintenance: refresh the inferred profi
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, preview
 a Codex-style skill draft, or export that draft to `~/.agents/skills` after typing `SAVE`.
 
-Use option `30. Show browser activity`, or `npm run config -- --print-browser-activity`, to inspect the local browser activity summary. This is metadata-only: app, host, title, timestamp, and redacted URL context from ambient observations. It does not store page text, and learning exclusions for apps/sites/folders are applied before the activity summary is built.
+Use option `30. Show browser activity`, or `npm run config -- --print-browser-activity`, to inspect the local browser activity summary. Realtime voice can ask for the same data through `get_browser_activity`. This is metadata-only: app, host, title, timestamp, and redacted URL context from ambient observations. It does not store page text, and learning exclusions for apps/sites/folders are applied before the activity summary is built.
 
 Use option `27. Show UI demonstrations` to inspect explicit local demonstrations. Demonstrations are user-started records for repeatable UI workflows; they store notes plus sanitized app/browser/screen/accessibility summaries and a manual-preview playbook, not screenshots or raw clipboard text. Completed demonstrations can become replay plans or reviewable local skill drafts; saving a draft to `~/.agents/skills` requires explicit confirmation.
 

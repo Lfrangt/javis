@@ -502,7 +502,7 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'background',
-      tools: ['get_browser_context', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
+      tools: ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
       rule: 'Read first, then act only on clear explicit browser intent; synthesize longer research in background.',
     },
     toolPosture: 'Read-only by default; guarded DOM actions are one-step and auditable.',
@@ -2149,6 +2149,7 @@ function normalizeContextPlan(value) {
     vision: Boolean(rawNeeds.vision),
     accessibility: Boolean(rawNeeds.accessibility),
     browserContext: Boolean(rawNeeds.browserContext),
+    browserActivity: Boolean(rawNeeds.browserActivity),
     browserPage: Boolean(rawNeeds.browserPage),
     browserDom: Boolean(rawNeeds.browserDom),
     clipboard: Boolean(rawNeeds.clipboard),
@@ -13077,6 +13078,7 @@ function contextPlanRecommendedTools(needs) {
   if (needs.vision) tools.push('describe_screen');
   if (needs.accessibility) tools.push('read_accessibility_tree', 'plan_ui_action');
   if (needs.browserContext) tools.push('get_browser_context');
+  if (needs.browserActivity) tools.push('get_browser_activity');
   if (needs.browserPage) tools.push('read_browser_page', 'run_browser_workflow');
   if (needs.browserDom) tools.push('read_browser_dom');
   if (needs.files) tools.push('run_file_workflow');
@@ -13098,7 +13100,7 @@ function contextPlanMode(needs) {
   if (heavyCount >= 3) return 'full';
   if (needs.accessibility || needs.localExecution) return 'app';
   if (needs.screen || needs.vision) return 'screen';
-  if (needs.browserPage || needs.browserDom || needs.browserContext) return 'browser';
+  if (needs.browserActivity || needs.browserPage || needs.browserDom || needs.browserContext) return 'browser';
   if (needs.files) return 'file';
   if (needs.delegatedWorkerContext) return 'worker';
   if (needs.residentState || needs.macContext || needs.clipboard) return 'resident';
@@ -13118,6 +13120,7 @@ function buildContextPlan(message, options = {}) {
     vision: false,
     accessibility: false,
     browserContext: false,
+    browserActivity: false,
     browserPage: false,
     browserDom: false,
     clipboard: false,
@@ -13145,6 +13148,7 @@ function buildContextPlan(message, options = {}) {
   const screenSignal = /screen|screenshot|visible|look at|what do you see|describe.*screen|current view|屏幕|截屏|截图|看屏幕|看看|看一下|当前界面|现在界面|界面|看到/.test(text);
   const visionSignal = /describe|what.*see|read.*screen|ocr|vision|看图|描述|识别|屏幕上有什么|读一下/.test(text);
   const browserSignal = /browser|webpage|web page|current page|tab|url|link|website|site|google|search result|网页|页面|浏览器|标签页|链接|网站|搜索结果/.test(text);
+  const browserActivitySignal = /((recent|lately|earlier|history|activity|just now).*(browser|browsing|web|page|tab|site))|((browser|browsing).*(activity|history|recent|lately|just now))|((最近|之前|刚才|刚刚).*(浏览|访问|打开|网页|页面|网站|看了什么|看过什么))|((浏览器|网页|页面|网站).*(记录|活动|最近|历史|刚才|刚刚|看了什么|看过什么))|看过什么/.test(text);
   const browserPageSignal = /summari[sz]e|extract|read|compare|research|review|answer.*page|当前网页|总结.*网页|阅读.*网页|提取|比较|调研|研究|看.*页面/.test(text);
   const browserDomSignal = /click|fill|select|button|form|input|submit|点击|填写|填入|选择|按钮|表单|输入框/.test(text);
   const fileSignal = /file|folder|directory|path|repo|codebase|readme|\.md\b|\.json\b|\.ts\b|\.tsx\b|\.js\b|\.py\b|文件|目录|文件夹|仓库|代码库|路径/.test(text);
@@ -13163,15 +13167,19 @@ function buildContextPlan(message, options = {}) {
     needs.vision = true;
     contextPlanPushReason(reasons, 'task asks for visual interpretation, not only screen metadata');
   }
-  if (browserSignal) {
+  if (browserActivitySignal) {
+    needs.browserActivity = true;
+    contextPlanPushReason(reasons, 'task asks for recent browser activity metadata');
+  }
+  if (browserSignal && !browserActivitySignal) {
     needs.browserContext = true;
     contextPlanPushReason(reasons, 'task refers to browser/page context');
   }
-  if (browserSignal && browserPageSignal) {
+  if (browserSignal && browserPageSignal && !browserActivitySignal) {
     needs.browserPage = true;
     contextPlanPushReason(reasons, 'task needs current page text or multiple page evidence');
   }
-  if (browserSignal && browserDomSignal) {
+  if (browserSignal && browserDomSignal && !browserActivitySignal) {
     needs.browserDom = true;
     needs.localExecution = /click|fill|select|submit|点击|填写|选择/.test(text);
     contextPlanPushReason(reasons, 'task may need visible browser controls');
@@ -13236,6 +13244,7 @@ function buildContextPlan(message, options = {}) {
     screen: needs.screen,
     vision: needs.vision,
     accessibility: needs.accessibility,
+    browserActivity: needs.browserActivity,
     browserPage: needs.browserPage,
     browserDom: needs.browserDom,
     files: needs.files,
@@ -22906,6 +22915,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(context) };
   }
 
+  if (name === 'get_browser_activity') {
+    return { ok: true, output: JSON.stringify(browserActivitySnapshot({ limit: args?.limit, eventLimit: args?.eventLimit })) };
+  }
+
   if (name === 'control_browser') {
     try {
       const result = await executeBrowserControl(args || {});
@@ -23588,6 +23601,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use capture_screen when the user asks what is currently on the Mac screen and no recent screen frame is available.',
       'Use get_mac_context before acting on the current app, active window, clipboard, or local runtime state.',
       'Use get_browser_context before summarizing, comparing, or acting on a webpage open in the browser.',
+      'Use get_browser_activity when the user asks what they recently browsed, saw, opened, or looked at in the browser; it returns only metadata such as app, host, title, and time, not page text.',
       'Use control_browser when the user explicitly asks for browser navigation such as back, forward, reload, new tab, close tab, focus address bar, open a URL, or search.',
       'Use read_browser_dom before choosing a clickable or fillable element inside the current webpage.',
       'Use control_browser_dom only when the user explicitly asks to click, fill, or select an element inside the current webpage. Do not use it for submits, purchases, sends, logins, deletes, or account changes without confirmation.',
@@ -23724,6 +23738,19 @@ function createRealtimeSessionConfig(options = {}) {
           type: 'object',
           properties: {
             app: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_browser_activity',
+        description: 'Get metadata-only recent browser app, host, title, and time activity from local ambient observations. Does not return page text.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+            eventLimit: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -24992,6 +25019,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'observe_now',
   'get_mac_context',
   'get_browser_context',
+  'get_browser_activity',
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
@@ -25029,6 +25057,7 @@ function realtimeInstructionChecks(instructions = '') {
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
+    browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),

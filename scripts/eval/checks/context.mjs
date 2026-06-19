@@ -33,6 +33,21 @@ export default {
         : fail('context.browser', 'Browser context plan', `expected browser page plan, got ${browser.status}`, browser.data),
     );
 
+    const browserActivity = await ctx.api('/api/context/plan', {
+      method: 'POST',
+      body: { message: '我刚才在浏览器看了什么？', useMemory: false },
+    });
+    const browserActivityPlan = browserActivity.data?.contextPlan;
+    const browserActivityNeeds = needs(browserActivityPlan);
+    out.push(
+      browserActivity.ok &&
+        browserActivityNeeds.browserActivity === true &&
+        browserActivityNeeds.browserPage !== true &&
+        browserActivityPlan?.recommendedTools?.includes('get_browser_activity')
+        ? ok('context.browser_activity', 'Browser activity context plan', `${browserActivityPlan.mode}: ${browserActivityPlan.recommendedTools?.join(', ')}`, browserActivityPlan)
+        : fail('context.browser_activity', 'Browser activity context plan', `expected metadata-only browser activity plan, got ${browserActivity.status}`, browserActivity.data),
+    );
+
     const app = await ctx.api('/api/context/plan', {
       method: 'POST',
       body: { message: '点击当前应用里的搜索框并输入 JAVIS', useMemory: false },
