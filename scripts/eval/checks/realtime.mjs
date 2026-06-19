@@ -84,8 +84,8 @@ export default {
     const progress = await ctx.api('/api/work/progress');
     const p = progress.data?.progress;
     out.push(
-      progress.ok && p
-        ? ok('realtime.progress', 'Silent work progress source', `active=${(p.activeJobs || []).length} · blocked=${(p.blockedWorkflows || []).length} · next=${(p.nextActions || []).length}`)
+      progress.ok && p && Array.isArray(p.workerGroups) && typeof p.workerSummary === 'string'
+        ? ok('realtime.progress', 'Silent work progress source', `active=${(p.activeJobs || []).length} · workerGroups=${p.workerGroups.length} · blocked=${(p.blockedWorkflows || []).length} · next=${(p.nextActions || []).length}`)
         : warn('realtime.progress', 'Silent work progress source', `GET /api/work/progress ${progress.status} ${progress.error || ''}`),
     );
 
