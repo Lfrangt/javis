@@ -13754,6 +13754,7 @@ function autopilotStateSnapshot() {
 
 function isAutopilotExecutableAction(action) {
   if (!action || typeof action !== 'object') return false;
+  if (action.manualOnly || action.autopilotEligible === false) return false;
   if (action.source === 'recovery') {
     if (action.trustedAutoEligible && Number(action.recoveryAttempts || 0) < Number(action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS)) {
       return true;
@@ -13788,12 +13789,14 @@ async function autopilotTick(options = {}) {
     const briefing = workflowBriefing({ workflowLimit: options.workflowLimit || 6, jobLimit: options.jobLimit || 6 });
     const firstAction = (briefing.nextActions || [])[0] || null;
     const action = firstAutopilotExecutableAction(briefing.nextActions);
+    const firstActionManualOnly = Boolean(firstAction?.manualOnly || firstAction?.autopilotEligible === false);
     const conversation = conversationStateSnapshot();
     let reason = '';
     if (!AUTOPILOT_ENABLED) reason = 'autopilot_disabled';
     else if (!execute) reason = 'preview_only';
     else if (conversation.active) reason = 'conversation_active';
     else if (activeJobRuns.size) reason = 'active_job_running';
+    else if (!action && firstActionManualOnly) reason = 'manual_only_action';
     else if (!action) reason = firstAction ? 'no_auto_executable_action' : 'no_action';
 
     if (reason) {
@@ -13808,6 +13811,7 @@ async function autopilotTick(options = {}) {
         reason,
         action: action?.id || firstAction?.id || '',
         actionSource: action?.source || firstAction?.source || '',
+        manualOnlyReason: firstActionManualOnly ? compactRecordText(firstAction?.manualOnlyReason || '', 180) : '',
         nextActions: (briefing.nextActions || []).length,
       });
       return { ok: true, executed: false, skipped: true, reason, action: action || firstAction, selectedAction: action, briefing, autopilot: autopilotStateSnapshot() };
@@ -15795,6 +15799,11 @@ function workflowBriefing(options = {}) {
       status: realtimeWorkbench.status,
       blocker: realtimeWorkbench.blocker,
       executable: realtimeWorkbench.phase === 'needs_live_session',
+      autoEligible: false,
+      autopilotEligible: false,
+      manualOnly: true,
+      manualOnlyReason: 'Starting microphone/live voice requires explicit user action.',
+      requiresUserPresence: true,
     });
   }
 

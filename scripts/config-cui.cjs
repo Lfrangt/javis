@@ -442,9 +442,12 @@ function printNextAction(next) {
     console.log('Next action: none');
     return;
   }
-  const auto = action.autoEligible || action.workflowAction === 'retry_app_workflow' ? 'auto-eligible' : 'manual';
+  const auto = action.manualOnly || action.autopilotEligible === false
+    ? 'manual-only'
+    : action.autoEligible || action.workflowAction === 'retry_app_workflow' ? 'auto-eligible' : 'manual';
   console.log(`Next action: ${action.label || action.id || 'unnamed'} (${action.source || 'unknown'}, ${auto})`);
   if (action.summary) console.log(`Summary: ${compact(action.summary, 260)}`);
+  if (action.manualOnlyReason) console.log(`Manual reason: ${compact(action.manualOnlyReason, 220)}`);
 }
 
 async function showWorkbenchNext() {

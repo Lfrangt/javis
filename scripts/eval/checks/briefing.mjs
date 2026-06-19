@@ -29,7 +29,16 @@ export default {
       !realtimeVoice.status ||
         (['ready', 'pending', 'blocked'].includes(realtimeVoice.status) &&
           typeof realtimeVoice.phase === 'string' &&
-          (!realtimePending || (realtimeAction && realtimeAction.phase === realtimeVoice.phase && realtimeAction.blocker)))
+          (!realtimePending || (
+            realtimeAction &&
+            realtimeAction.phase === realtimeVoice.phase &&
+            realtimeAction.blocker &&
+            realtimeAction.manualOnly === true &&
+            realtimeAction.autoEligible === false &&
+            realtimeAction.autopilotEligible === false &&
+            typeof realtimeAction.manualOnlyReason === 'string' &&
+            realtimeAction.manualOnlyReason.length > 0
+          )))
         ? ok('briefing.realtime_voice', 'Realtime voice next action', realtimePending ? `${realtimeVoice.status}/${realtimeVoice.phase}` : 'ready or not surfaced')
         : fail('briefing.realtime_voice', 'Realtime voice next action', 'briefing did not expose a coherent realtime voice work-next blocker', {
           realtimeVoice,

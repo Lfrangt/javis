@@ -122,6 +122,8 @@ Recovery actions are also surfaced through `/api/briefing` and `/api/work/next`;
 actions can be reviewed there without opening a separate UI. Realtime voice dogfood blockers are
 surfaced there too: when `/api/realtime/evidence` is stuck at `needs_live_session`, running work-next
 uses the same summon/wake path as `Option+Space` and parks the pet at the notch for the live session.
+This Realtime voice action is marked manual-only because starting microphone/live voice requires an
+explicit user action; overnight autopilot must skip it.
 Retryable failed jobs can be advanced from work-next into a narrower recovery job with the original
 task, attempts, diagnostics, and log tail attached. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued
 recovery jobs per failed parent job.
@@ -144,7 +146,7 @@ also aligns local execution, trusted local mode, and Level 3 auto-run so the res
 low-risk progress while unattended. The resident autopilot executes only low-risk recovery diagnostics
 and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
 another background job is running. When multiple work-next actions exist, autopilot skips manual-only
-items and executes the first action that passes its auto-executable guard.
+items, including Realtime voice dogfood, and executes the first action that passes its auto-executable guard.
 
 Use options `19`-`25` for local learning maintenance: refresh the inferred profile, save it as an
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, preview
