@@ -160,8 +160,9 @@ export default {
         typeof realtimeEvidenceOutput.summary === 'string' &&
         typeof realtimeEvidenceOutput.nextAction === 'string' &&
         realtimeEvidenceOutput.voiceHealth?.hasOpenAiKey === true &&
-        ['providerReady', 'sessionNegotiated', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof realtimeEvidenceOutput.checks?.[key] === 'boolean') &&
+        ['providerReady', 'sessionNegotiated', 'voiceSessionLive', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof realtimeEvidenceOutput.checks?.[key] === 'boolean') &&
         realtimeEvidenceChecklistIds.has('session_negotiated') &&
+        realtimeEvidenceChecklistIds.has('voice_session_live') &&
         realtimeEvidenceChecklistIds.has('worker_progress_injected') &&
         realtimeEvidenceOutput.dogfood?.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(realtimeEvidenceOutput.dogfood?.prompts) &&
@@ -477,6 +478,7 @@ export default {
     const requiredChecklist = [
       'provider_ready',
       'session_negotiated',
+      'voice_session_live',
       'worker_progress_injected',
       'passive_context_only',
       'spoken_summary_ready',
@@ -495,7 +497,7 @@ export default {
         e &&
         typeof e.readyForVoiceProgressQuestion === 'boolean' &&
         e.checks &&
-        ['providerReady', 'sessionNegotiated', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof e.checks[key] === 'boolean') &&
+        ['providerReady', 'sessionNegotiated', 'voiceSessionLive', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof e.checks[key] === 'boolean') &&
         structuredEvidenceOk &&
         typeof e.nextAction === 'string' &&
         Array.isArray(e.drill?.steps) &&
@@ -515,6 +517,7 @@ export default {
     const dogfoodRequiredSteps = [
       'provider_ready',
       'session_negotiated',
+      'voice_session_live',
       'worker_progress_injected',
       'passive_context_only',
       'spoken_summary_ready',

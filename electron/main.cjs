@@ -16067,6 +16067,7 @@ function realtimeEvidencePhase(checks = {}, voiceHealth = {}) {
     return voiceHealth.status === 'blocked' ? 'provider_blocked' : 'provider_attention';
   }
   if (!checks.sessionNegotiated) return 'needs_live_session';
+  if (!checks.voiceSessionLive) return 'needs_live_voice';
   if (!checks.progressInjectedFromRenderer) return 'needs_worker_progress_injection';
   if (!checks.progressVersionSynced) return 'needs_fresh_worker_progress';
   if (!checks.passiveContextOnly) return 'needs_passive_injection';
@@ -16128,7 +16129,7 @@ function realtimeProgressSyncEvidence({ currentVersion = null, injection = null 
   };
 }
 
-function realtimeEvidenceChecklist({ checks = {}, voiceHealth = {}, negotiation = null, injection = null, progress = null, progressSync = null, includeSpokenSummary = true } = {}) {
+function realtimeEvidenceChecklist({ checks = {}, voiceHealth = {}, conversation = null, negotiation = null, injection = null, progress = null, progressSync = null, includeSpokenSummary = true } = {}) {
   const checklist = [
     realtimeEvidenceStep({
       id: 'provider_ready',
@@ -16152,6 +16153,21 @@ function realtimeEvidenceChecklist({ checks = {}, voiceHealth = {}, negotiation 
         statusCode: negotiation?.statusCode || 0,
         offerBytes: negotiation?.offerBytes || 0,
         answerBytes: negotiation?.answerBytes || 0,
+      },
+    }),
+    realtimeEvidenceStep({
+      id: 'voice_session_live',
+      label: 'Renderer voice session reached live state',
+      ok: checks.voiceSessionLive,
+      detail: checks.voiceSessionLive
+        ? `voice ${conversation?.status || 'live'} · session ${conversation?.sessionId || negotiation?.sessionId || '-'}`
+        : 'No renderer live/data-channel-open heartbeat has been recorded after SDP negotiation.',
+      nextAction: 'Keep the renderer voice session open after starting it from the desktop pet or summon hotkey.',
+      evidence: {
+        conversationStatus: conversation?.status || '',
+        active: Boolean(conversation?.active),
+        liveAt: conversation?.liveAt || 0,
+        lastHeartbeatAt: conversation?.lastHeartbeatAt || 0,
       },
     }),
     realtimeEvidenceStep({
@@ -16215,15 +16231,18 @@ function realtimeVoiceWorkbenchSnapshot() {
   const injection = conversation.lastRealtimeProgressInjection || null;
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const progressSync = realtimeProgressSyncEvidence({ injection });
+  const liveAt = Number(conversation.liveAt || 0);
+  const negotiationAt = Number(negotiation?.createdAt || 0);
   const checks = {
     providerReady: voiceHealth.status === 'ready',
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
+    voiceSessionLive: Boolean(conversation.status === 'live' && liveAt && (!negotiationAt || liveAt >= negotiationAt - 5000)),
     progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
     progressVersionSynced: progressSync.ok,
     passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
     spokenSummaryReady: true,
   };
-  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, progressSync, includeSpokenSummary: false });
+  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, conversation, negotiation, injection, progressSync, includeSpokenSummary: false });
   const phase = realtimeEvidencePhase(checks, voiceHealth);
   const status = phase === 'ready'
     ? 'ready'
@@ -16300,6 +16319,11 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         ok: Boolean(evidence.checks?.sessionNegotiated),
       },
       {
+        id: 'voice_session_live',
+        label: 'Renderer voice session reached live state',
+        ok: Boolean(evidence.checks?.voiceSessionLive),
+      },
+      {
         id: 'progress_synced',
         label: 'Latest work progress sequence reached voice',
         ok: Boolean(evidence.checks?.progressVersionSynced || progressSync.ok),
@@ -16324,6 +16348,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const stepIds = [
     'provider_ready',
     'session_negotiated',
+    'voice_session_live',
     'worker_progress_injected',
     'progress_version_synced',
     'passive_context_only',
@@ -16826,15 +16851,18 @@ function realtimeVoiceEvidenceSnapshot() {
   const shortcutTools = realtimeShortcutToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
+  const liveAt = Number(conversation.liveAt || 0);
+  const negotiationAt = Number(negotiation?.createdAt || 0);
   const checks = {
     providerReady: voiceHealth.status === 'ready',
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
+    voiceSessionLive: Boolean(conversation.status === 'live' && liveAt && (!negotiationAt || liveAt >= negotiationAt - 5000)),
     progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
     progressVersionSynced: progressSync.ok,
     passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
     spokenSummaryReady: Boolean(progress.spokenSummary && progress.spokenSummary.length <= 420),
   };
-  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, progress, progressSync });
+  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, conversation, negotiation, injection, progress, progressSync });
   const phase = realtimeEvidencePhase(checks, voiceHealth);
   const status = phase === 'ready'
     ? 'ready'
