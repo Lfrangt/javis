@@ -240,6 +240,11 @@ async function printStatus() {
       const observing = status.presence.observing?.latest || {};
       const where = [observing.app, observing.browser?.host || observing.browser?.title || observing.windowTitle].filter(Boolean).join(' · ');
       console.log(`Presence: ${status.presence.label || status.presence.mode || 'Standby'}${where ? ` · ${where}` : ''}`);
+      if (status.presence.attention) {
+        const attention = status.presence.attention;
+        const cooldown = attention.cooldown?.active ? ` · quiet ${attention.cooldown.remainingLabel || '-'}` : '';
+        console.log(`Attention: ${attention.level || 'quiet'} · pet ${attention.petState || '-'} · notify ${attention.shouldNotify ? 'yes' : 'no'}${cooldown} · ${compact(attention.summary || '', 90)}`);
+      }
     }
     if (autopilotResult.autopilot) {
       const autopilot = autopilotResult.autopilot;
@@ -304,7 +309,8 @@ async function printStatus() {
   console.log('28. Show skill shortcuts');
   console.log('29. Promote shortcut candidate');
   console.log('30. Show browser activity');
-  console.log('31. Quit');
+  console.log('31. Show attention policy');
+  console.log('32. Quit');
 }
 
 async function setupAction(action) {
@@ -1164,6 +1170,34 @@ async function showInboxTriage() {
   printInboxTriage(result);
 }
 
+function printAttentionPolicy(result) {
+  const attention = result?.attention || result || {};
+  console.log(`Attention: ${attention.level || 'quiet'} · pet ${attention.petState || '-'} · notify=${attention.shouldNotify ? 'yes' : 'no'}`);
+  console.log(`Summary: ${compact(attention.summary || '-', 420)}`);
+  console.log(`Next: ${compact(attention.nextAction || '-', 420)}`);
+  if (attention.cooldown) {
+    console.log(`Cooldown: ${attention.cooldown.active ? 'active' : 'ready'} · remaining ${attention.cooldown.remainingLabel || 'now'} · window ${formatInterval(attention.cooldownMs || 0)}`);
+  }
+  const counts = attention.counts || {};
+  console.log(`Counts: reasons ${counts.reasons || 0} · high ${counts.highPriority || 0} · approvals ${counts.pendingApprovals || 0} · jobs ${counts.activeJobs || 0} · inbox ${counts.openInbox || 0}`);
+  const reasons = Array.isArray(attention.reasons) ? attention.reasons : [];
+  console.log('\nReasons:');
+  if (!reasons.length) {
+    console.log('- none');
+    return;
+  }
+  for (const reason of reasons.slice(0, 8)) {
+    const notify = reason.notify ? 'notify' : 'quiet';
+    const count = reason.count ? ` · ${reason.count}` : '';
+    console.log(`- ${reason.severity || 'info'} ${reason.label || reason.id} · ${notify}${count}: ${compact(reason.summary || '', 180)}`);
+  }
+}
+
+async function showAttentionPolicy() {
+  const result = await request('/api/attention');
+  printAttentionPolicy(result);
+}
+
 async function watchRealtimeEvidence(rl) {
   const answer = (await rl.question('\nWatch realtime voice evidence for how many seconds? [120] ')).trim();
   const parsedSeconds = Number(answer);
@@ -1264,6 +1298,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-attention') || process.argv.includes('--attention')) {
+    await showAttentionPolicy();
+    return;
+  }
+
   if (process.argv.includes('--print-autopilot') || process.argv.includes('--autopilot')) {
     await showAutopilotStatus();
     return;
@@ -1355,7 +1394,9 @@ async function main() {
         await promoteShortcutCandidate(rl);
       } else if (answer === '30') {
         await showBrowserActivity();
-      } else if (answer === '31' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '31') {
+        await showAttentionPolicy();
+      } else if (answer === '32' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

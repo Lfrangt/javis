@@ -32,6 +32,20 @@ export default {
           : fail('presence.guardrails', 'Presence guardrails', 'presence must expose passive-by-default intervention boundaries', intervention),
       );
 
+      const attention = p.attention || {};
+      out.push(
+        attention.ok === true &&
+          ['quiet', 'watching', 'waiting', 'notify'].includes(attention.level) &&
+          typeof attention.shouldNotify === 'boolean' &&
+          typeof attention.petState === 'string' &&
+          attention.cooldown &&
+          typeof attention.cooldown.remainingMs === 'number' &&
+          Array.isArray(attention.reasons) &&
+          intervention.attentionLevel === attention.level
+          ? ok('presence.attention_policy', 'Attention policy', `${attention.level} · pet=${attention.petState} · notify=${attention.shouldNotify ? 'yes' : 'no'}`)
+          : fail('presence.attention_policy', 'Attention policy', 'presence must expose quiet attention policy and cooldown state', attention),
+      );
+
       const browserActivity = p.observing?.browserActivity || {};
       out.push(
         browserActivity.ok === true &&
@@ -85,6 +99,25 @@ export default {
       );
     } catch (error) {
       out.push(fail('presence.browser_activity_cui', 'CUI browser activity', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-attention'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      out.push(
+        output.includes('Attention:') &&
+          output.includes('Cooldown:') &&
+          output.includes('Reasons:')
+          ? ok('presence.attention_cui', 'CUI attention policy', 'config CUI prints quiet attention policy')
+          : fail('presence.attention_cui', 'CUI attention policy', 'expected --print-attention to print attention policy', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('presence.attention_cui', 'CUI attention policy', error instanceof Error ? error.message : String(error)));
     }
 
     return out;

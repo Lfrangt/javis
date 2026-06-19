@@ -185,6 +185,7 @@ JAVIS also creates a macOS menu bar status item. It exposes resident controls wi
 curl http://127.0.0.1:3417/api/window/state
 curl http://127.0.0.1:3417/api/menubar/state
 curl http://127.0.0.1:3417/api/notifications/state
+curl http://127.0.0.1:3417/api/attention
 curl -X POST http://127.0.0.1:3417/api/config/open-cui
 curl -X POST http://127.0.0.1:3417/api/window/mode \
   -H 'Content-Type: application/json' \
@@ -200,7 +201,7 @@ curl -X POST http://127.0.0.1:3417/api/notifications/test \
   -d '{"body":"JAVIS notification check"}'
 ```
 
-Resident notifications are enabled by default and can be disabled with `JAVIS_NOTIFICATIONS=false`. They fire for pending approvals and background task completion/failure/cancellation.
+Resident notifications are enabled by default and can be disabled with `JAVIS_NOTIFICATIONS=false`. They fire for pending approvals and background task completion/failure/cancellation. `/api/attention` and `npm run config -- --print-attention` expose the quiet attention policy that tells the pet/CUI whether JAVIS should stay quiet, wait through the notification cooldown, or notify because a high-priority approval/setup/voice issue needs attention.
 
 For a local work briefing:
 
@@ -335,6 +336,7 @@ curl -X POST http://127.0.0.1:3417/api/screen/capture-now \
   -H 'Content-Type: application/json' \
   -d '{"includeImage":false}'
 curl http://127.0.0.1:3417/api/presence
+curl http://127.0.0.1:3417/api/attention
 curl http://127.0.0.1:3417/api/conversation/state
 curl http://127.0.0.1:3417/api/realtime/context
 curl http://127.0.0.1:3417/api/realtime/evidence
@@ -385,7 +387,7 @@ For a real voice progress run, keep `npm run config` open on option `V` while th
 
 Learning controls are local. `paused:true` stops future learning distillation, `includeInPrompts:false` keeps the profile on disk but prevents prompt injection, and exclusions keep matching apps/sites/folder-like contexts out of future ambient samples and distillation. Routing records include `learningEvidence` so you can see whether inferred habits were attached to a task prompt. `/api/learning/skill-draft` follows the Codex Record & Replay shape by turning inferred habits plus recent routing/workflow evidence into a reviewable `SKILL.md` draft; it does not write files. `/api/learning/skill-draft/save` requires `confirm:true` and writes to user-level `~/.agents/skills`, not the open-source repo.
 
-`private` mode is the default. It downscales and blurs/pixelates frames before they are sent to the local API or Realtime. `/api/screen/capture-now` refreshes the latest full-screen frame from the resident process without a window picker. Use `{"mode":"clear"}` only when sharper screen context is worth the privacy tradeoff. `/api/conversation/state` tracks the renderer-reported voice lifecycle and heartbeats with a per-session token, so stale closes or heartbeats from an older Realtime connection do not overwrite the active session. `/api/realtime/context` is the silent preflight context sent into new voice sessions when `JAVIS_REALTIME_PREFLIGHT_CONTEXT` is not `false`. While voice is live, the renderer also polls `/api/work/progress` at `VITE_JAVIS_REALTIME_WORK_PROGRESS_SYNC_MS` and sends deduplicated silent updates when background work changes. `/api/presence` is a read-only standby/watch/work/listening summary over conversation state, wake state, ambient metadata, local learning, active jobs, approvals, and guardrails; its `intervention` block must remain passive-by-default and require user intent. Ambient observe stores local metadata and can keep the latest private screen frame fresh when `JAVIS_AMBIENT_CAPTURE_SCREEN=true`. Stopping screen context from the buddy clears the latest stored frame; the DELETE endpoint is the manual equivalent.
+`private` mode is the default. It downscales and blurs/pixelates frames before they are sent to the local API or Realtime. `/api/screen/capture-now` refreshes the latest full-screen frame from the resident process without a window picker. Use `{"mode":"clear"}` only when sharper screen context is worth the privacy tradeoff. `/api/conversation/state` tracks the renderer-reported voice lifecycle and heartbeats with a per-session token, so stale closes or heartbeats from an older Realtime connection do not overwrite the active session. `/api/realtime/context` is the silent preflight context sent into new voice sessions when `JAVIS_REALTIME_PREFLIGHT_CONTEXT` is not `false`. While voice is live, the renderer also polls `/api/work/progress` at `VITE_JAVIS_REALTIME_WORK_PROGRESS_SYNC_MS` and sends deduplicated silent updates when background work changes. `/api/presence` is a read-only standby/watch/work/listening summary over conversation state, wake state, ambient metadata, local learning, active jobs, approvals, guardrails, and the same quiet attention policy exposed by `/api/attention`; its `intervention` block must remain passive-by-default and require user intent. The desktop pet should consume compact `attention.level` and `attention.petState` rather than show diagnostics. Ambient observe stores local metadata and can keep the latest private screen frame fresh when `JAVIS_AMBIENT_CAPTURE_SCREEN=true`. Stopping screen context from the buddy clears the latest stored frame; the DELETE endpoint is the manual equivalent.
 
 For local work sessions:
 

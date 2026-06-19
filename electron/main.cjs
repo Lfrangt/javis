@@ -74,6 +74,7 @@ const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR || path.
 const AX_TREE_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_TREE_TIMEOUT_MS || 25000)));
 const AX_ACTION_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_ACTION_TIMEOUT_MS || 25000)));
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
+const ATTENTION_NOTIFICATION_COOLDOWN_MS = Math.max(60000, Math.min(3600000, Number(process.env.JAVIS_ATTENTION_NOTIFICATION_COOLDOWN_MS || 600000)));
 const AMBIENT_OBSERVE_ENABLED = process.env.JAVIS_AMBIENT_OBSERVE === 'true';
 const AMBIENT_CAPTURE_SCREEN = process.env.JAVIS_AMBIENT_CAPTURE_SCREEN === 'true';
 const AMBIENT_INTERVAL_MS = Math.max(2500, Math.min(60000, Number(process.env.JAVIS_AMBIENT_INTERVAL_MS || 8000)));
@@ -913,6 +914,215 @@ function notificationSnapshot() {
     sent: notificationState.sent,
     skipped: notificationState.skipped,
     last: notificationState.last,
+    attention: attentionPolicySnapshot(),
+  };
+}
+
+function attentionDurationLabel(ms) {
+  const value = Math.max(0, Number(ms || 0));
+  if (!value) return 'now';
+  const seconds = Math.ceil(value / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `${minutes}m`;
+  return `${Math.ceil(minutes / 60)}h`;
+}
+
+function attentionReason(id, severity, label, summary, options = {}) {
+  return {
+    id,
+    severity,
+    label: compactRecordText(label || id, 90),
+    summary: compactRecordText(summary || '', 240),
+    notify: options.notify !== false,
+    source: compactRecordText(options.source || id, 80),
+    count: Math.max(0, Number(options.count || 0)),
+    action: compactRecordText(options.action || '', 160),
+  };
+}
+
+function attentionSeverityRank(value) {
+  return {
+    critical: 4,
+    high: 3,
+    medium: 2,
+    low: 1,
+    info: 0,
+  }[String(value || '').toLowerCase()] ?? 0;
+}
+
+function attentionPetState(level, reasons = []) {
+  if (level === 'notify' || reasons.some((reason) => reason.severity === 'critical' || reason.severity === 'high')) return 'red';
+  if (level === 'waiting' || reasons.some((reason) => reason.severity === 'medium')) return 'yellow';
+  if (level === 'watching' || reasons.length) return 'green_yellow';
+  return 'green';
+}
+
+function attentionPolicySnapshot(options = {}) {
+  const now = Date.now();
+  const readiness = options.readiness || readinessSnapshot();
+  const conversation = options.conversation || conversationStateSnapshot();
+  const pendingApprovals = options.pendingApprovals || pendingApprovalSnapshot(10);
+  const activeJobs = options.activeJobs || jobSnapshot(30).filter((job) => job.status === 'queued' || job.status === 'running');
+  const failedJobs = options.failedJobs || jobSnapshot(30).filter((job) => job.status === 'failed' && !job.recoveryForJobId && !isInternalJob(job));
+  const activeRoutes = options.activeRoutes || activeRoutingSnapshot(10).map(routingLedgerEntry).filter(Boolean);
+  const inbox = options.inbox || inboxCounts();
+  const reasons = [];
+
+  if (readiness?.overall === 'blocked') {
+    reasons.push(attentionReason(
+      'setup_blocked',
+      'critical',
+      'Setup blocked',
+      readiness.primaryIssue?.summary || readiness.summary || 'A setup or permission issue blocks JAVIS.',
+      { source: 'readiness', action: readiness.primaryIssue?.next || '' },
+    ));
+  } else if (readiness?.overall === 'degraded') {
+    reasons.push(attentionReason(
+      'setup_degraded',
+      'medium',
+      'Setup needs attention',
+      readiness.primaryIssue?.summary || readiness.summary || 'A setup check needs attention.',
+      { source: 'readiness', action: readiness.primaryIssue?.next || '', notify: false },
+    ));
+  }
+
+  if (pendingApprovals.length) {
+    reasons.push(attentionReason(
+      'pending_approvals',
+      'high',
+      'Approval waiting',
+      `${pendingApprovals.length} action approval(s) are waiting.`,
+      { source: 'approvals', count: pendingApprovals.length, action: pendingApprovals[0]?.summary || '' },
+    ));
+  }
+
+  if (conversation.status === 'error' && Number(conversation.ageMs || 0) < 300000) {
+    reasons.push(attentionReason(
+      'voice_error',
+      'high',
+      'Voice error',
+      conversation.error || 'The last Realtime voice session failed.',
+      { source: 'realtime' },
+    ));
+  } else if (conversation.status === 'connecting') {
+    reasons.push(attentionReason(
+      'voice_connecting',
+      'medium',
+      'Voice connecting',
+      'Realtime voice is connecting.',
+      { source: 'realtime', notify: false },
+    ));
+  } else if (conversation.status === 'live') {
+    reasons.push(attentionReason(
+      'voice_live',
+      'low',
+      'Voice live',
+      `Realtime voice is live in ${conversation.micMode || 'open'} mic mode.`,
+      { source: 'realtime', notify: false },
+    ));
+  }
+
+  if (failedJobs.length) {
+    reasons.push(attentionReason(
+      'failed_jobs',
+      'medium',
+      'Worker recovery available',
+      `${failedJobs.length} failed worker job(s) have recovery context.`,
+      { source: 'jobs', count: failedJobs.length, action: failedJobs[0]?.title || '', notify: false },
+    ));
+  }
+
+  const blockedRoutes = activeRoutes.filter((route) => ['blocked', 'failed', 'needs_attention'].includes(String(route.status || '')));
+  if (blockedRoutes.length) {
+    reasons.push(attentionReason(
+      'blocked_routes',
+      'medium',
+      'Routed work blocked',
+      `${blockedRoutes.length} routed task(s) need attention.`,
+      { source: 'routing', count: blockedRoutes.length, action: blockedRoutes[0]?.nextAction || blockedRoutes[0]?.taskTitle || '', notify: false },
+    ));
+  }
+
+  if (activeJobs.length) {
+    reasons.push(attentionReason(
+      'active_jobs',
+      'low',
+      'Background work running',
+      `${activeJobs.length} background job(s) are queued or running.`,
+      { source: 'jobs', count: activeJobs.length, action: activeJobs[0]?.title || '', notify: false },
+    ));
+  }
+
+  if (inbox.open) {
+    reasons.push(attentionReason(
+      'open_inbox',
+      'low',
+      'Inbox has captures',
+      `${inbox.open} Inbox item(s) are open.`,
+      { source: 'inbox', count: inbox.open, notify: false },
+    ));
+  }
+
+  reasons.sort((a, b) => attentionSeverityRank(b.severity) - attentionSeverityRank(a.severity) || b.count - a.count || a.id.localeCompare(b.id));
+  const top = reasons[0] || null;
+  const lastNotificationAt = Number(notificationState.last?.createdAt || 0);
+  const elapsed = lastNotificationAt ? now - lastNotificationAt : Infinity;
+  const cooldownRemainingMs = Number.isFinite(elapsed)
+    ? Math.max(0, ATTENTION_NOTIFICATION_COOLDOWN_MS - elapsed)
+    : 0;
+  const cooldownActive = cooldownRemainingMs > 0;
+  const candidate = reasons.find((reason) => reason.notify && attentionSeverityRank(reason.severity) >= 3) || null;
+  const canNotify = Boolean(NOTIFICATIONS_ENABLED && notificationSupported());
+  const shouldNotify = Boolean(candidate && canNotify && !cooldownActive);
+  const level = shouldNotify
+    ? 'notify'
+    : candidate
+      ? 'waiting'
+      : top
+        ? 'watching'
+        : 'quiet';
+  const summary = top
+    ? `${top.label}: ${top.summary}`
+    : 'No attention needed. Keep the pet quiet and stay in passive watch mode.';
+  const nextAction = shouldNotify
+    ? `Notify user about ${candidate.label}.`
+    : candidate && cooldownActive
+      ? `Keep quiet for ${attentionDurationLabel(cooldownRemainingMs)} before notifying about ${candidate.label}.`
+      : top
+        ? `Expose ${top.label} in CUI/API without interrupting the user.`
+        : 'Stay quiet until the user speaks, a permission blocks work, or a high-priority approval appears.';
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    level,
+    shouldNotify,
+    canNotify,
+    enabled: NOTIFICATIONS_ENABLED,
+    supported: notificationSupported(),
+    cooldownMs: ATTENTION_NOTIFICATION_COOLDOWN_MS,
+    cooldown: {
+      active: cooldownActive,
+      remainingMs: cooldownRemainingMs,
+      remainingLabel: attentionDurationLabel(cooldownRemainingMs),
+      lastNotificationAt,
+    },
+    petState: attentionPetState(level, reasons),
+    topReason: top,
+    notifyCandidate: candidate,
+    reasons,
+    counts: {
+      reasons: reasons.length,
+      highPriority: reasons.filter((reason) => attentionSeverityRank(reason.severity) >= 3).length,
+      pendingApprovals: pendingApprovals.length,
+      activeJobs: activeJobs.length,
+      failedJobs: failedJobs.length,
+      openInbox: inbox.open || 0,
+      activeRoutes: activeRoutes.length,
+    },
+    summary,
+    nextAction,
   };
 }
 
@@ -15269,6 +15479,14 @@ function presenceStateSnapshot(options = {}) {
   const activeJobs = jobSnapshot().filter((job) => job.status === 'queued' || job.status === 'running');
   const activeRoutes = activeRoutingSnapshot(6).map(routingLedgerEntry).filter(Boolean);
   const activeSession = activeSessionSnapshot();
+  const attention = attentionPolicySnapshot({
+    readiness,
+    conversation,
+    pendingApprovals,
+    activeJobs,
+    activeRoutes,
+    inbox: inboxCounts(),
+  });
   const latestAmbient = ambient.recent[0] || null;
   const latestScreen = latestScreenSnapshot();
   const mode = presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation });
@@ -15353,7 +15571,10 @@ function presenceStateSnapshot(options = {}) {
       maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
       requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
       next: nextIntervention,
+      attentionLevel: attention.level,
+      shouldNotify: attention.shouldNotify,
     },
+    attention,
     conversation,
     wake,
     observing: {
@@ -23801,6 +24022,10 @@ async function executeTool(name, args) {
     };
   }
 
+  if (name === 'get_attention_policy') {
+    return { ok: true, output: JSON.stringify(attentionPolicySnapshot()) };
+  }
+
   if (name === 'set_control_mode') {
     try {
       const result = setControlMode({ mode: args?.mode, source: 'voice' });
@@ -24477,6 +24702,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use control_browser_dom only when the user explicitly asks to click, fill, or select an element inside the current webpage. Do not use it for submits, purchases, sends, logins, deletes, or account changes without confirmation.',
       'Use get_config_check when setup, permission, resident mode, or local worker readiness is unclear.',
       'Use get_control_mode when the user asks whether JAVIS is observing, asking, trusted, or in supervised takeover mode. Use set_control_mode only when the user explicitly asks to change autonomy.',
+      'Use get_attention_policy when the user asks whether JAVIS should interrupt, why the pet is red/yellow/green, why no notification fired, or what needs attention. It is read-only and should keep the answer short.',
       'Use get_setup_guide when the user asks what setup remains. Use run_setup_next only when the user asks to fix, open, or do the next setup step.',
       'Use read_accessibility_tree before planning control of a visible Mac app through its UI structure.',
       'Use plan_ui_action when the user asks you to click, choose, fill, edit, or control the current app; this is a dry-run plan, not execution.',
@@ -24701,6 +24927,16 @@ function createRealtimeSessionConfig(options = {}) {
         type: 'function',
         name: 'get_control_mode',
         description: 'Read the current JAVIS control mode and effective action thresholds. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_attention_policy',
+        description: 'Read whether JAVIS should stay quiet, wait, or notify the user, with reasons, cooldown, pet state, and next attention action. Read-only.',
         parameters: {
           type: 'object',
           properties: {},
@@ -25936,6 +26172,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_browser_activity',
   'get_config_check',
   'get_control_mode',
+  'get_attention_policy',
   'get_work_progress',
   'get_realtime_evidence',
   'get_worker_recovery',
@@ -25972,6 +26209,7 @@ function realtimeInstructionChecks(instructions = '') {
     contextPlanner: /plan_context/i.test(text),
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
+    attentionPolicy: /get_attention_policy|should interrupt|pet is red\/yellow\/green|notification fired|needs attention/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
@@ -26684,6 +26922,10 @@ function startApiServer() {
 
   api.get('/api/presence', (req, res) => {
     res.json({ presence: presenceStateSnapshot({ limit: req.query.limit }) });
+  });
+
+  api.get('/api/attention', (_req, res) => {
+    res.json({ attention: attentionPolicySnapshot() });
   });
 
   api.get('/api/conversation/state', (_req, res) => {

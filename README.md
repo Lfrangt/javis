@@ -22,7 +22,7 @@ Local Mac-first realtime desktop buddy.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
 - Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, attach recalled local skills as structured `skillRecallPlan` evidence during later task routing, promote confirmed repeats into local skill shortcuts, manage those shortcuts from CUI/API/Realtime voice tools, and pass recalled plans into queued background/Codex/Claude workers.
-- Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
+- Resident presence state: standby/watching/wake/work/attention status with the latest passive context, quiet attention policy, notification cooldown, and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser activity: local recent browser host/title timeline from ambient metadata, exposed through API/CUI/presence/Realtime tools without storing page text.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
@@ -142,7 +142,7 @@ Local Express service on 127.0.0.1:3417
   /api/window/park      -> move the buddy back to its configured notch/corner position
   /api/window/move      -> move the buddy to explicit screen coordinates
   /api/menubar/state    -> macOS menu bar status item state
-  /api/notifications/state -> resident notification support and counters
+  /api/notifications/state -> resident notification support, counters, and quiet attention policy
   /api/briefing         -> local status, blockers, recent work, and next actions
   /api/work/progress    -> spoken-style job/workflow progress check-in
   /api/work/handoff     -> voice-ready handoff over readiness, progress, sessions, collaboration, and continuations
@@ -182,7 +182,8 @@ Local Express service on 127.0.0.1:3417
   /api/learning         -> local inferred profile from ambient metadata
   /api/learning/distill -> refresh the local inferred profile now
   /api/learning/skill-draft -> build a reviewable SKILL.md draft from inferred local patterns
-  /api/presence         -> resident standby/watch/work state and latest passive context
+  /api/presence         -> resident standby/watch/work state, attention policy, and latest passive context
+  /api/attention        -> quiet attention policy for pet color, notifications, cooldown, and reasons
   /api/conversation/state -> resident voice conversation lifecycle state
   /api/realtime/context -> silent preflight context for new voice sessions
   /api/realtime/evidence -> live voice dogfood checklist and sanitized tool-call evidence

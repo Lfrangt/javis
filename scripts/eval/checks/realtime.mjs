@@ -14,6 +14,7 @@ const REQUIRED_TOOLS = [
   'get_browser_activity',
   'get_config_check',
   'get_control_mode',
+  'get_attention_policy',
   'get_work_progress',
   'get_realtime_evidence',
   'get_worker_recovery',
@@ -158,6 +159,25 @@ export default {
         typeof inboxTriageOutput.spokenSummary === 'string'
         ? ok('realtime.inbox_triage_tool', 'Realtime Inbox triage tool', `open=${inboxTriageOutput.counts?.open || 0} · groups=${inboxTriageOutput.groups.byLane.length}`)
         : fail('realtime.inbox_triage_tool', 'Realtime Inbox triage tool', `tool execute ${inboxTriageTool.status}`, inboxTriageTool.data),
+    );
+
+    const attentionTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_attention_policy', arguments: {} },
+    });
+    const attentionOutput = parseToolOutput(attentionTool);
+    out.push(
+      attentionTool.ok &&
+        attentionTool.data?.ok === true &&
+        attentionOutput?.ok === true &&
+        ['quiet', 'watching', 'waiting', 'notify'].includes(attentionOutput.level) &&
+        typeof attentionOutput.shouldNotify === 'boolean' &&
+        typeof attentionOutput.petState === 'string' &&
+        attentionOutput.cooldown &&
+        typeof attentionOutput.cooldown.remainingMs === 'number' &&
+        Array.isArray(attentionOutput.reasons)
+        ? ok('realtime.attention_policy_tool', 'Realtime attention policy tool', `${attentionOutput.level} · pet=${attentionOutput.petState}`)
+        : fail('realtime.attention_policy_tool', 'Realtime attention policy tool', `tool execute ${attentionTool.status}`, attentionTool.data),
     );
 
     const autopilotStatusTool = await ctx.api('/api/tools/execute', {
