@@ -32,6 +32,29 @@ export type RealtimeWorkProgress = {
   }
 }
 
+export type RealtimeProgressInjectionEvidence = {
+  contextLength: number
+  contextPreview: string
+  workerSummary: string
+  workerGroups: number
+  activeWorkerGroups: number
+  activeWorkers: number
+  doneWorkers: number
+  failedWorkers: number
+  activeJobs: number
+  activeWorkflows: number
+  blockedWorkflows: number
+  activeRoutes: number
+  groups: Array<{
+    owner: string
+    lane: string
+    parallelGroup: string
+    active: number
+    done: number
+    failed: number
+  }>
+}
+
 export function compactRealtimeText(value: string, maxLength = 160) {
   const text = String(value || '').replace(/\s+/g, ' ').trim()
   if (text.length <= maxLength) return text
@@ -105,5 +128,34 @@ export function buildRealtimeTextContextEvent(text: string): Record<string, unkn
         },
       ],
     },
+  }
+}
+
+export function realtimeProgressInjectionEvidence(
+  progress: RealtimeWorkProgress,
+  contextText: string,
+): RealtimeProgressInjectionEvidence {
+  const groups = (progress.workerGroups || []).slice(0, 5)
+  return {
+    contextLength: contextText.length,
+    contextPreview: compactRealtimeText(contextText, 240),
+    workerSummary: progress.workerSummary || '',
+    workerGroups: groups.length,
+    activeWorkerGroups: groups.filter((group) => group.active > 0).length,
+    activeWorkers: groups.reduce((sum, group) => sum + Math.max(0, Number(group.active || 0)), 0),
+    doneWorkers: groups.reduce((sum, group) => sum + Math.max(0, Number(group.done || 0)), 0),
+    failedWorkers: groups.reduce((sum, group) => sum + Math.max(0, Number(group.failed || 0)), 0),
+    activeJobs: Math.max(0, Number(progress.counts.activeJobs || 0)),
+    activeWorkflows: Math.max(0, Number(progress.counts.activeWorkflows || 0)),
+    blockedWorkflows: Math.max(0, Number(progress.counts.blockedWorkflows || 0)),
+    activeRoutes: Math.max(0, Number(progress.counts.activeRoutes || progress.activeRoutes?.length || progress.routingLedger?.length || 0)),
+    groups: groups.map((group) => ({
+      owner: compactRealtimeText(group.owner, 50),
+      lane: compactRealtimeText(group.lane, 40),
+      parallelGroup: compactRealtimeText(group.parallelGroup, 70),
+      active: Math.max(0, Number(group.active || 0)),
+      done: Math.max(0, Number(group.done || 0)),
+      failed: Math.max(0, Number(group.failed || 0)),
+    })),
   }
 }

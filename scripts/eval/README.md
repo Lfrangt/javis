@@ -10,7 +10,7 @@ way as `scripts/doctor.mjs` (`JAVIS_API_TOKEN[_FILE]`, `Runtime/api-token`,
 | `npm run doctor` | Resident readiness, permissions, policy, runtime state | read-only |
 | `npm run eval` | Full lane scorecard (health, Realtime, briefing, routing, parallel, learning, safety, workers, AX, ...) | read-only previews + routing records + temporary collaboration claim + temporary control-mode restore |
 | `npm run eval -- --only=realtime,parallel,safety,workers` | Run specific lanes (`--list` to see them) | preview routes for routing/parallel lanes |
-| `npm run eval -- --only=realtime-injection` | Renderer Realtime progress injection regression: grouped worker context, stale skip, no forced response | local fixture only |
+| `npm run eval -- --only=realtime-injection` | Renderer and resident Realtime progress injection regression: grouped worker context, stale skip, no forced response, runtime evidence | temporary conversation state when no live user session is active |
 | `JAVIS_EVAL_LIVE_WORKERS=true npm run eval -- --only=workers-live` | Opt-in live worker batch: Codex + Claude + local CLI read-only jobs | queues real local workers |
 | `npm run eval:json` | Machine-readable scorecard | — |
 | `npm run eval:routing` | Lane-classifier accuracy over a labeled corpus | preview routes; appends local routing records |

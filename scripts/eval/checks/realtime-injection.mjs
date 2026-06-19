@@ -63,7 +63,7 @@ function baseProgress(now, overrides = {}) {
 
 export default {
   lane: 'realtime-injection',
-  async run() {
+  async run(ctx) {
     const out = [];
     const mod = await importRealtimeProgressModule();
     const now = Date.now();
@@ -123,6 +123,77 @@ export default {
         ? ok('realtime_injection.no_response_create', 'No forced Realtime response', 'progress injection creates only a user context item')
         : fail('realtime_injection.no_response_create', 'No forced Realtime response', 'progress injection event would force or malformed a response', { event }),
     );
+
+    if (!ctx?.api) return out;
+
+    const before = await ctx.api('/api/conversation/state');
+    const conversation = before.data?.conversation;
+    if (!before.ok || !conversation) {
+      out.push(fail('realtime_injection.runtime_read', 'Runtime injection evidence', `GET /api/conversation/state ${before.status} ${before.error || before.data?.error || ''}`));
+      return out;
+    }
+
+    const evidence = mod.realtimeProgressInjectionEvidence(baseProgress(now), context);
+    if (conversation.active) {
+      const dryRun = await ctx.api('/api/realtime/progress-injection', {
+        method: 'POST',
+        body: {
+          source: 'eval-dry-run',
+          sessionId: conversation.sessionId,
+          dryRun: true,
+          ...evidence,
+        },
+      });
+      out.push(
+        dryRun.ok && dryRun.data?.injection?.workerSummary === evidence.workerSummary
+          ? ok('realtime_injection.runtime_dry_run', 'Runtime injection evidence', 'active user session detected; dry-run normalization passed')
+          : fail('realtime_injection.runtime_dry_run', 'Runtime injection evidence', `dry-run failed ${dryRun.status}`, dryRun.data),
+      );
+      return out;
+    }
+
+    const sessionId = `eval-realtime-injection-${Date.now()}`;
+    try {
+      await ctx.api('/api/conversation/state', {
+        method: 'POST',
+        body: { status: 'connecting', sessionId, micMode: 'open', source: 'eval' },
+      });
+      await ctx.api('/api/conversation/state', {
+        method: 'POST',
+        body: { status: 'live', sessionId, micMode: 'open', source: 'eval' },
+      });
+      const record = await ctx.api('/api/realtime/progress-injection', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          sessionId,
+          ...evidence,
+        },
+      });
+      const recorded = record.data?.conversation?.lastRealtimeProgressInjection;
+      out.push(
+        record.ok &&
+          record.data?.conversation?.status === 'live' &&
+          record.data?.conversation?.realtimeProgressInjectionCount >= 1 &&
+          recorded?.sessionId === sessionId &&
+          recorded?.workerSummary === evidence.workerSummary &&
+          recorded?.contextPreview === evidence.contextPreview
+          ? ok('realtime_injection.runtime_record', 'Runtime injection evidence', 'resident recorded the live progress injection summary')
+          : fail('realtime_injection.runtime_record', 'Runtime injection evidence', `record failed ${record.status}`, record.data),
+      );
+    } finally {
+      await ctx.api('/api/conversation/state', {
+        method: 'POST',
+        body: {
+          status: 'idle',
+          sessionId,
+          micMode: conversation.micMode || 'open',
+          screenLive: false,
+          source: 'eval-restore',
+          clearRealtimeProgressInjection: true,
+        },
+      });
+    }
 
     return out;
   },

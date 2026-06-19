@@ -26,7 +26,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent, PointerEvent as ReactPointerEvent } from 'react'
 import './App.css'
-import { buildRealtimeTextContextEvent, realtimeWorkProgressContext } from './realtimeProgress'
+import { buildRealtimeTextContextEvent, realtimeProgressInjectionEvidence, realtimeWorkProgressContext } from './realtimeProgress'
 
 type JobStatus = 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
 type WorkflowStatus = JobStatus | 'blocked'
@@ -110,6 +110,25 @@ type ConversationState = {
   ageMs: number | null
   activeForMs: number | null
   staleAfterMs: number
+  realtimeProgressInjectionCount?: number
+  lastRealtimeProgressInjection?: null | {
+    source: string
+    sessionId: string
+    status: string
+    contextLength: number
+    contextPreview: string
+    workerSummary: string
+    workerGroups: number
+    activeWorkerGroups: number
+    activeWorkers: number
+    doneWorkers: number
+    failedWorkers: number
+    activeJobs: number
+    activeWorkflows: number
+    blockedWorkflows: number
+    activeRoutes: number
+    createdAt: number
+  }
 }
 
 type RealtimePreflightContext = {
@@ -1455,6 +1474,20 @@ function App() {
         const now = Date.now()
         if (now - lastRealtimeWorkProgressSyncAtRef.current < 10000) return
         if (pushRealtimeTextContext(contextText)) {
+          void apiJson<{ conversation: ConversationState }>('/api/realtime/progress-injection', {
+            method: 'POST',
+            body: JSON.stringify({
+              source: 'renderer',
+              sessionId: voiceSessionIdRef.current,
+              ...realtimeProgressInjectionEvidence(result.progress, contextText),
+            }),
+          })
+            .then((injectionResult) => {
+              setStatus((current) => (current ? { ...current, conversation: injectionResult.conversation } : current))
+            })
+            .catch(() => {
+              // Runtime evidence is best-effort; Realtime context should keep flowing.
+            })
           lastRealtimeWorkProgressSignatureRef.current = signature
           lastRealtimeWorkProgressSyncAtRef.current = now
         }

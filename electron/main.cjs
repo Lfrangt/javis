@@ -632,6 +632,8 @@ let conversationState = {
   updatedAt: 0,
   lastHeartbeatAt: 0,
   transitionCount: 0,
+  realtimeProgressInjectionCount: 0,
+  lastRealtimeProgressInjection: null,
 };
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
@@ -13797,6 +13799,94 @@ function normalizeConversationMicMode(value) {
   return String(value || '').trim().toLowerCase() === 'push' ? 'push' : 'open';
 }
 
+function boundedCount(value, max = 100000) {
+  return Math.max(0, Math.min(max, Number(value || 0)));
+}
+
+function normalizeRealtimeProgressInjectionGroup(group = {}) {
+  return {
+    owner: compactRecordText(group.owner || '', 50),
+    lane: compactRecordText(group.lane || '', 40),
+    parallelGroup: compactRecordText(group.parallelGroup || '', 70),
+    active: boundedCount(group.active, 1000),
+    done: boundedCount(group.done, 1000),
+    failed: boundedCount(group.failed, 1000),
+  };
+}
+
+function normalizeRealtimeProgressInjection(options = {}) {
+  const groups = Array.isArray(options.groups)
+    ? options.groups.slice(0, 5).map(normalizeRealtimeProgressInjectionGroup)
+    : [];
+  return {
+    source: compactRecordText(options.source || 'renderer', 80),
+    sessionId: String(options.sessionId || conversationState.sessionId || '').slice(0, 120),
+    status: conversationStateSnapshot().status,
+    contextLength: boundedCount(options.contextLength, 200000),
+    contextPreview: compactRecordText(options.contextPreview || '', 300),
+    workerSummary: compactRecordText(options.workerSummary || '', 300),
+    workerGroups: boundedCount(options.workerGroups ?? groups.length, 1000),
+    activeWorkerGroups: boundedCount(options.activeWorkerGroups, 1000),
+    activeWorkers: boundedCount(options.activeWorkers, 1000),
+    doneWorkers: boundedCount(options.doneWorkers, 100000),
+    failedWorkers: boundedCount(options.failedWorkers, 100000),
+    activeJobs: boundedCount(options.activeJobs, 100000),
+    activeWorkflows: boundedCount(options.activeWorkflows, 100000),
+    blockedWorkflows: boundedCount(options.blockedWorkflows, 100000),
+    activeRoutes: boundedCount(options.activeRoutes, 100000),
+    groups,
+    createdAt: Date.now(),
+  };
+}
+
+function recordRealtimeProgressInjection(options = {}) {
+  const snapshot = conversationStateSnapshot();
+  const injection = normalizeRealtimeProgressInjection(options);
+  if (options.dryRun === true) {
+    return { ok: true, dryRun: true, injection, conversation: snapshot };
+  }
+  if (snapshot.status !== 'live') {
+    appendAudit('realtime.progress_injection_ignored', {
+      reason: 'conversation_not_live',
+      status: snapshot.status,
+      source: injection.source,
+      workerSummary: injection.workerSummary,
+    });
+    return { ok: false, ignored: true, reason: 'conversation_not_live', injection, conversation: snapshot };
+  }
+  if (snapshot.sessionId && injection.sessionId && snapshot.sessionId !== injection.sessionId) {
+    appendAudit('realtime.progress_injection_ignored', {
+      reason: 'session_mismatch',
+      currentSessionId: snapshot.sessionId,
+      incomingSessionId: injection.sessionId,
+      source: injection.source,
+    });
+    return { ok: false, ignored: true, reason: 'session_mismatch', injection, conversation: snapshot };
+  }
+
+  const now = Date.now();
+  conversationState = {
+    ...conversationState,
+    sessionId: conversationState.sessionId || injection.sessionId,
+    updatedAt: now,
+    lastHeartbeatAt: conversationState.status === 'live' ? now : conversationState.lastHeartbeatAt,
+    realtimeProgressInjectionCount: Number(conversationState.realtimeProgressInjectionCount || 0) + 1,
+    lastRealtimeProgressInjection: injection,
+  };
+  appendAudit('realtime.progress_injection', {
+    sessionId: injection.sessionId,
+    source: injection.source,
+    contextLength: injection.contextLength,
+    workerSummary: injection.workerSummary,
+    workerGroups: injection.workerGroups,
+    activeWorkerGroups: injection.activeWorkerGroups,
+    activeWorkers: injection.activeWorkers,
+    doneWorkers: injection.doneWorkers,
+    failedWorkers: injection.failedWorkers,
+  });
+  return { ok: true, injection, conversation: conversationStateSnapshot() };
+}
+
 function conversationStateSnapshot() {
   const now = Date.now();
   const activeStatus = conversationState.status === 'connecting' || conversationState.status === 'live';
@@ -13856,6 +13946,8 @@ function updateConversationState(options = {}) {
     next.liveAt = 0;
     next.endedAt = 0;
     next.lastHeartbeatAt = 0;
+    next.realtimeProgressInjectionCount = 0;
+    next.lastRealtimeProgressInjection = null;
     next.error = '';
   }
   if (requestedStatus === 'live') {
@@ -13876,6 +13968,10 @@ function updateConversationState(options = {}) {
   }
   if (options.heartbeat === true) {
     next.lastHeartbeatAt = now;
+  }
+  if (options.clearRealtimeProgressInjection === true) {
+    next.realtimeProgressInjectionCount = 0;
+    next.lastRealtimeProgressInjection = null;
   }
 
   next.updatedAt = now;
@@ -21404,6 +21500,15 @@ function startApiServer() {
       res.json({ context });
     } catch (error) {
       jsonError(res, 500, 'Realtime context failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/progress-injection', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const result = recordRealtimeProgressInjection(req.body || {});
+      res.status(result.ok ? 200 : 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime progress injection record failed', error instanceof Error ? error.message : String(error));
     }
   });
 

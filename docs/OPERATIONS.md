@@ -262,6 +262,9 @@ curl -X POST http://127.0.0.1:3417/api/screen/capture-now \
 curl http://127.0.0.1:3417/api/presence
 curl http://127.0.0.1:3417/api/conversation/state
 curl http://127.0.0.1:3417/api/realtime/context
+curl -X POST http://127.0.0.1:3417/api/realtime/progress-injection \
+  -H 'Content-Type: application/json' \
+  -d '{"dryRun":true,"source":"manual","contextLength":120,"contextPreview":"Worker summary: ...","workerSummary":"1 worker group(s)"}'
 curl http://127.0.0.1:3417/api/ambient
 curl -X POST http://127.0.0.1:3417/api/ambient/sample \
   -H 'Content-Type: application/json' \
