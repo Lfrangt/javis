@@ -51,6 +51,7 @@ const APPROVALS_FILE = path.join(DATA_DIR, 'approvals.json');
 const MEMORIES_FILE = path.join(DATA_DIR, 'memories.json');
 const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
+const DEMONSTRATIONS_FILE = path.join(DATA_DIR, 'demonstrations.json');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
@@ -94,6 +95,7 @@ const MAX_PERSISTED_APPROVALS = Number(process.env.JAVIS_MAX_PERSISTED_APPROVALS
 const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES || 500);
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
+const MAX_PERSISTED_DEMONSTRATIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_DEMONSTRATIONS || 200)));
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
@@ -565,6 +567,7 @@ const approvals = new Map();
 const memories = new Map();
 const inboxItems = new Map();
 const workSessions = new Map();
+const demonstrations = new Map();
 const ambientEvents = [];
 const activeJobRuns = new Map();
 let learnedProfile = null;
@@ -658,6 +661,7 @@ loadPersistedApprovals();
 loadPersistedMemories();
 loadPersistedInbox();
 loadPersistedSessions();
+loadPersistedDemonstrations();
 loadPersistedAmbient();
 loadPersistedLearning();
 appendAudit('process.start', {
@@ -2416,6 +2420,104 @@ function normalizePersistedSession(session) {
   };
 }
 
+function normalizeDemonstrationObservation(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const mac = raw.mac && typeof raw.mac === 'object' ? raw.mac : {};
+  const frontmost = raw.frontmost && typeof raw.frontmost === 'object' ? raw.frontmost : mac.frontmost || {};
+  const browser = raw.browser && typeof raw.browser === 'object' ? raw.browser : mac.browser || {};
+  const screenFrame = raw.screen && typeof raw.screen === 'object' ? raw.screen : {};
+  const accessibility = raw.accessibility && typeof raw.accessibility === 'object' ? raw.accessibility : {};
+  return {
+    generatedAt: String(raw.generatedAt || new Date().toISOString()).slice(0, 80),
+    frontmost: {
+      app: String(frontmost.app || '').slice(0, 120),
+      windowTitle: String(frontmost.windowTitle || frontmost.title || '').slice(0, 300),
+      available: Boolean(frontmost.available || frontmost.app || frontmost.windowTitle),
+    },
+    browser: {
+      available: Boolean(browser.available),
+      supported: browser.supported === undefined ? undefined : Boolean(browser.supported),
+      app: String(browser.app || '').slice(0, 120),
+      title: String(browser.title || '').slice(0, 300),
+      url: redactUrlForStorage(browser.url || '').slice(0, 2000),
+      source: String(browser.source || '').slice(0, 80),
+      error: String(browser.error || '').slice(0, 240),
+    },
+    screen: {
+      width: Number(screenFrame.width || 0),
+      height: Number(screenFrame.height || 0),
+      updatedAt: Number(screenFrame.updatedAt || 0),
+      source: String(screenFrame.source || '').slice(0, 80),
+      privacyMode: String(screenFrame.privacy?.mode || screenFrame.privacyMode || '').slice(0, 40),
+    },
+    accessibility: {
+      available: Boolean(accessibility.available),
+      app: String(accessibility.app || '').slice(0, 120),
+      windowTitle: String(accessibility.windowTitle || '').slice(0, 300),
+      nodeCount: Number(accessibility.nodeCount || 0),
+      truncated: Boolean(accessibility.truncated),
+      outline: String(accessibility.outline || '').slice(0, 3000),
+      error: String(accessibility.error || '').slice(0, 240),
+    },
+  };
+}
+
+function normalizeDemonstrationStep(step = {}, index = 0) {
+  if (!step || typeof step !== 'object') return null;
+  const note = String(step.note || step.text || step.summary || '').trim().slice(0, 2000);
+  const instruction = String(step.instruction || step.action || step.intent || '').trim().slice(0, 1200);
+  const observation = normalizeDemonstrationObservation(step.observation || step.context || {});
+  if (!note && !instruction && !observation.frontmost.available && !observation.browser.available && !observation.accessibility.available) {
+    return null;
+  }
+  return {
+    id: String(step.id || crypto.randomUUID()),
+    index: Number(step.index || index + 1),
+    note,
+    instruction,
+    observation,
+    createdAt: Number(step.createdAt || Date.now()),
+  };
+}
+
+function normalizeDemonstrationPlaybook(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  return {
+    version: 1,
+    title: String(raw.title || '').slice(0, 180),
+    summary: String(raw.summary || '').slice(0, 1200),
+    steps: Array.isArray(raw.steps)
+      ? raw.steps.map((step) => String(step || '').trim()).filter(Boolean).slice(0, 80)
+      : [],
+    replayMode: String(raw.replayMode || 'manual_preview').slice(0, 80),
+    markdown: String(raw.markdown || '').slice(0, 20000),
+    generatedAt: Number(raw.generatedAt || Date.now()),
+  };
+}
+
+function normalizePersistedDemonstration(demo) {
+  if (!demo || typeof demo !== 'object' || !demo.id) return null;
+  const status = ['recording', 'done', 'cancelled'].includes(demo.status) ? demo.status : 'done';
+  const title = String(demo.title || demo.goal || 'Untitled demonstration').trim().slice(0, 180);
+  const goal = String(demo.goal || title).trim().slice(0, 2000);
+  const steps = Array.isArray(demo.steps)
+    ? demo.steps.map((step, index) => normalizeDemonstrationStep(step, index)).filter(Boolean).slice(-200)
+    : [];
+  return {
+    id: String(demo.id),
+    title: title || 'Untitled demonstration',
+    goal: goal || title || 'Untitled demonstration',
+    status,
+    source: String(demo.source || 'manual').slice(0, 80),
+    tags: normalizeMemoryTags(demo.tags),
+    steps,
+    playbook: demo.playbook ? normalizeDemonstrationPlaybook(demo.playbook) : null,
+    createdAt: Number(demo.createdAt || Date.now()),
+    updatedAt: Number(demo.updatedAt || Date.now()),
+    completedAt: status === 'recording' ? 0 : Number(demo.completedAt || Date.now()),
+  };
+}
+
 function normalizeAmbientEvent(event) {
   if (!event || typeof event !== 'object') return null;
   const frontmost = event.frontmost && typeof event.frontmost === 'object' ? event.frontmost : {};
@@ -3025,6 +3127,22 @@ function loadPersistedSessions() {
   }
 }
 
+function loadPersistedDemonstrations() {
+  if (!fs.existsSync(DEMONSTRATIONS_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(DEMONSTRATIONS_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.demonstrations) ? parsed.demonstrations : [];
+    for (const rawDemo of list) {
+      const demo = normalizePersistedDemonstration(rawDemo);
+      if (demo) demonstrations.set(demo.id, demo);
+    }
+    persistDemonstrations();
+    appendAudit('demonstrations.loaded', { count: demonstrations.size });
+  } catch (error) {
+    appendAudit('demonstrations.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function loadPersistedAmbient() {
   if (!fs.existsSync(AMBIENT_FILE)) return;
   try {
@@ -3142,6 +3260,17 @@ function persistSessions() {
     version: 1,
     updatedAt: new Date().toISOString(),
     sessions: sessionsForStorage,
+  });
+}
+
+function persistDemonstrations() {
+  const demosForStorage = Array.from(demonstrations.values())
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_PERSISTED_DEMONSTRATIONS);
+  writeJsonAtomic(DEMONSTRATIONS_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    demonstrations: demosForStorage,
   });
 }
 
@@ -3366,6 +3495,239 @@ function learningStateSnapshot() {
     learningFile: LEARNING_FILE,
     controls,
     profile: normalizeLearnedProfile(learnedProfile),
+  };
+}
+
+function demonstrationCounts() {
+  return Array.from(demonstrations.values()).reduce(
+    (counts, demo) => {
+      counts[demo.status] = (counts[demo.status] || 0) + 1;
+      counts.total += 1;
+      return counts;
+    },
+    { total: 0, recording: 0, done: 0, cancelled: 0 },
+  );
+}
+
+function demonstrationSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
+  const status = String(options.status || '').trim();
+  return Array.from(demonstrations.values())
+    .filter((demo) => (!status || demo.status === status))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, limit);
+}
+
+function activeDemonstration() {
+  return Array.from(demonstrations.values())
+    .filter((demo) => demo.status === 'recording')
+    .sort((a, b) => b.updatedAt - a.updatedAt)[0] || null;
+}
+
+function demonstrationStateSnapshot(options = {}) {
+  return {
+    counts: demonstrationCounts(),
+    active: activeDemonstration(),
+    recent: demonstrationSnapshot({ limit: options.limit || 8 }),
+    file: DEMONSTRATIONS_FILE,
+    storage: {
+      localOnly: true,
+      storesScreenshots: false,
+      storesClipboardText: false,
+      note: 'Demonstrations store explicit user notes plus sanitized app/browser/screen/accessibility summaries.',
+    },
+  };
+}
+
+function setDemonstration(id, patch = {}) {
+  const existing = demonstrations.get(String(id || ''));
+  if (!existing) return null;
+  const next = normalizePersistedDemonstration({
+    ...existing,
+    ...patch,
+    updatedAt: Date.now(),
+  });
+  demonstrations.set(next.id, next);
+  persistDemonstrations();
+  return next;
+}
+
+async function captureDemonstrationObservation(options = {}) {
+  if (options.observation && typeof options.observation === 'object') {
+    return normalizeDemonstrationObservation(options.observation);
+  }
+  const observation = await observeNow({
+    source: options.source || 'demonstration',
+    includeClipboardText: false,
+    includeAccessibility: options.includeAccessibility !== false,
+    captureScreen: options.captureScreen === true,
+    describeScreen: false,
+    maxNodes: options.maxNodes || 60,
+    maxDepth: options.maxDepth || 4,
+    useCache: options.useCache !== false,
+  });
+  return normalizeDemonstrationObservation(observation);
+}
+
+function demonstrationContextLabel(step = {}) {
+  const obs = step.observation || {};
+  const app = obs.frontmost?.app || obs.browser?.app || obs.accessibility?.app || 'Mac';
+  const title = obs.browser?.title || obs.frontmost?.windowTitle || obs.accessibility?.windowTitle || '';
+  const url = obs.browser?.url || '';
+  return [app, title, url].filter(Boolean).map((item) => compactRecordText(item, 90)).join(' · ');
+}
+
+function buildDemonstrationPlaybook(demo) {
+  const steps = (demo.steps || []).map((step, index) => {
+    const label = step.instruction || step.note || `Observe ${demonstrationContextLabel(step) || 'current context'}`;
+    const context = demonstrationContextLabel(step);
+    return `${index + 1}. ${label}${context ? ` (${context})` : ''}`;
+  });
+  const summary = steps.length
+    ? `Recorded ${steps.length} demonstrated step(s) for ${demo.goal || demo.title}.`
+    : `Recorded an empty demonstration for ${demo.goal || demo.title}.`;
+  const markdown = [
+    `# ${demo.title || 'JAVIS Demonstration'}`,
+    '',
+    `Goal: ${demo.goal || demo.title || '-'}`,
+    '',
+    'Replay mode: manual preview. JAVIS should re-observe the live UI before executing any action.',
+    '',
+    '## Steps',
+    '',
+    steps.length ? steps.join('\n') : '- No steps captured.',
+    '',
+    '## Safety',
+    '',
+    '- Do not replay coordinates blindly.',
+    '- Re-read browser DOM or Accessibility targets before each action.',
+    '- Keep sends, deletes, purchases, exports, account changes, and private data exposure behind normal approvals.',
+  ].join('\n');
+  return normalizeDemonstrationPlaybook({
+    title: demo.title,
+    summary,
+    steps,
+    replayMode: 'manual_preview',
+    markdown,
+    generatedAt: Date.now(),
+  });
+}
+
+async function startDemonstration(options = {}) {
+  const existing = activeDemonstration();
+  if (existing && options.force !== true) {
+    return {
+      ok: false,
+      status: 409,
+      demonstration: existing,
+      output: `A demonstration is already recording: ${existing.title}. Finish or cancel it before starting another.`,
+    };
+  }
+  const now = Date.now();
+  const demo = normalizePersistedDemonstration({
+    id: crypto.randomUUID(),
+    title: options.title || options.goal || 'Untitled demonstration',
+    goal: options.goal || options.title || 'Untitled demonstration',
+    status: 'recording',
+    source: options.source || 'api',
+    tags: options.tags || [],
+    steps: [],
+    createdAt: now,
+    updatedAt: now,
+  });
+  demonstrations.set(demo.id, demo);
+  persistDemonstrations();
+  appendAudit('demonstration.started', { id: demo.id, title: demo.title, source: demo.source });
+  let demonstration = demo;
+  if (options.captureInitial === true) {
+    const captured = await captureDemonstrationStep(demo.id, {
+      ...options,
+      note: options.note || 'Starting context',
+      instruction: options.instruction || '',
+      source: options.source || 'api',
+    });
+    demonstration = captured.demonstration;
+  }
+  return {
+    ok: true,
+    demonstration,
+    demonstrations: demonstrationStateSnapshot(),
+    output: `Started demonstration: ${demonstration.title}.`,
+  };
+}
+
+async function captureDemonstrationStep(id, options = {}) {
+  const requestedId = String(id || '').trim();
+  const demo = requestedId ? demonstrations.get(requestedId) : activeDemonstration();
+  if (!demo) throw new Error(requestedId ? 'Demonstration not found.' : 'No active demonstration.');
+  if (demo.status !== 'recording') throw new Error(`Demonstration is ${demo.status}, not recording.`);
+  const observation = await captureDemonstrationObservation(options);
+  const step = normalizeDemonstrationStep({
+    note: options.note || options.text || '',
+    instruction: options.instruction || options.action || '',
+    observation,
+    createdAt: Date.now(),
+  }, demo.steps.length);
+  if (!step) throw new Error('Nothing to capture for this demonstration step.');
+  const next = setDemonstration(demo.id, {
+    steps: [...demo.steps, step],
+  });
+  appendAudit('demonstration.step_captured', {
+    id: next.id,
+    stepId: step.id,
+    stepCount: next.steps.length,
+    app: step.observation.frontmost?.app || step.observation.browser?.app || '',
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return {
+    ok: true,
+    demonstration: next,
+    step,
+    output: `Captured demonstration step ${next.steps.length}: ${compactRecordText(step.instruction || step.note || demonstrationContextLabel(step), 120)}.`,
+  };
+}
+
+function finishDemonstration(id, options = {}) {
+  const requestedId = String(id || '').trim();
+  const demo = requestedId ? demonstrations.get(requestedId) : activeDemonstration();
+  if (!demo) throw new Error(requestedId ? 'Demonstration not found.' : 'No active demonstration.');
+  const cancelled = options.cancel === true || String(options.status || '').toLowerCase() === 'cancelled';
+  const playbook = cancelled ? demo.playbook : buildDemonstrationPlaybook(demo);
+  const next = setDemonstration(demo.id, {
+    status: cancelled ? 'cancelled' : 'done',
+    completedAt: Date.now(),
+    playbook,
+  });
+  appendAudit('demonstration.finished', {
+    id: next.id,
+    status: next.status,
+    stepCount: next.steps.length,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return {
+    ok: true,
+    demonstration: next,
+    playbook: next.playbook,
+    output: `${cancelled ? 'Cancelled' : 'Finished'} demonstration: ${next.title}.`,
+  };
+}
+
+function deleteDemonstration(id, options = {}) {
+  const key = String(id || '').trim();
+  const existing = demonstrations.get(key);
+  if (!existing) return { ok: false, status: 404, output: 'Demonstration not found.' };
+  demonstrations.delete(key);
+  persistDemonstrations();
+  appendAudit('demonstration.deleted', {
+    id: key,
+    status: existing.status,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return {
+    ok: true,
+    removed: key,
+    demonstrations: demonstrationStateSnapshot(),
+    output: `Deleted demonstration: ${existing.title}.`,
   };
 }
 
@@ -22290,6 +22652,7 @@ function startApiServer() {
         active: activeSessionSnapshot(),
         recent: sessionSnapshot(5),
       },
+      demonstrations: demonstrationStateSnapshot({ limit: 5 }),
       screen: latestScreenSnapshot(),
       queue: jobSnapshot(),
     });
@@ -22520,6 +22883,64 @@ function startApiServer() {
     } catch (error) {
       jsonError(res, 400, 'Learning delete failed', error instanceof Error ? error.message : String(error));
     }
+  });
+
+  api.get('/api/demonstrations', (req, res) => {
+    res.json({
+      demonstrations: {
+        ...demonstrationStateSnapshot({ limit: req.query.limit || 20 }),
+        recent: demonstrationSnapshot({ limit: req.query.limit || 20, status: req.query.status }),
+      },
+    });
+  });
+
+  api.get('/api/demonstrations/:id', (req, res) => {
+    const demonstration = demonstrations.get(String(req.params.id || ''));
+    if (!demonstration) {
+      jsonError(res, 404, 'Demonstration not found');
+      return;
+    }
+    res.json({ demonstration });
+  });
+
+  api.post('/api/demonstrations/start', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await startDemonstration({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : result.status || 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration start failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/demonstrations/capture', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await captureDemonstrationStep(req.body?.id || req.body?.demonstrationId || '', { ...(req.body || {}), source: req.body?.source || 'api' });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration capture failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/demonstrations/:id/capture', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await captureDemonstrationStep(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration capture failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/demonstrations/:id/finish', express.json({ limit: '256kb' }), (req, res) => {
+    try {
+      res.json(finishDemonstration(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' }));
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration finish failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.delete('/api/demonstrations/:id', express.json({ limit: '64kb' }), (req, res) => {
+    const result = deleteDemonstration(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' });
+    res.status(result.ok ? 200 : result.status || 404).json(result);
   });
 
   api.get('/api/wake/status', (req, res) => {

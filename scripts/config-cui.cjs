@@ -220,6 +220,11 @@ async function printStatus() {
       const exclusions = (controls.excludedApps?.length || 0) + (controls.excludedHosts?.length || 0) + (controls.excludedFolders?.length || 0);
       console.log(`Learning: ${status.learning.enabled ? 'on' : status.learning.paused ? 'paused' : 'off'} · prompts ${status.learning.includeInPrompts ? 'on' : 'off'} · ${profile.sourceEventCount || 0} distilled · ${exclusions} exclusion(s) · ${profile.summary || 'no profile yet'}`);
     }
+    if (status.demonstrations) {
+      const counts = status.demonstrations.counts || {};
+      const active = status.demonstrations.active;
+      console.log(`Demos: ${counts.total || 0} saved · ${counts.recording || 0} recording${active?.title ? ` · ${compact(active.title, 80)}` : ''}`);
+    }
     if (status.collaboration) {
       const counts = status.collaboration.counts || {};
       console.log(`Collab: ${counts.active || 0} active claim(s) · ${counts.conflicts || 0} conflict pair(s)`);
@@ -280,7 +285,8 @@ async function printStatus() {
   console.log('24. Preview learning skill draft');
   console.log('25. Export learning skill');
   console.log('26. Show collaboration claims');
-  console.log('27. Quit');
+  console.log('27. Show UI demonstrations');
+  console.log('28. Quit');
 }
 
 async function setupAction(action) {
@@ -698,6 +704,33 @@ async function showCollaborationClaims() {
   printCollaborationClaims(result.collaboration || {});
 }
 
+function printDemonstrations(demonstrations) {
+  const counts = demonstrations?.counts || {};
+  console.log(`Demonstrations: ${counts.total || 0} total · ${counts.recording || 0} recording · ${counts.done || 0} done`);
+  if (demonstrations?.storage?.note) console.log(`Storage: ${demonstrations.storage.note}`);
+  const active = demonstrations?.active;
+  if (active) {
+    console.log(`\nRecording: ${active.title} · ${active.steps?.length || 0} step(s)`);
+  }
+  const recent = demonstrations?.recent || [];
+  if (!recent.length) {
+    console.log('\nRecent demonstrations: none');
+    return;
+  }
+  console.log('\nRecent demonstrations:');
+  for (const demo of recent.slice(0, 10)) {
+    const generated = demo.playbook?.generatedAt ? ` · playbook ${formatTime(demo.playbook.generatedAt)}` : '';
+    console.log(`- ${demo.status} · ${demo.title || demo.goal || demo.id} · ${demo.steps?.length || 0} step(s)${generated}`);
+    if (demo.playbook?.summary) console.log(`  ${compact(demo.playbook.summary, 160)}`);
+  }
+}
+
+async function showDemonstrations() {
+  const result = await request('/api/demonstrations?limit=10');
+  console.log('');
+  printDemonstrations(result.demonstrations || {});
+}
+
 function summarizeWorkerGroups(groups) {
   if (!Array.isArray(groups)) return `${Number(groups || 0)} group(s)`;
   if (!groups.length) return '0 group(s)';
@@ -925,7 +958,9 @@ async function main() {
         await exportLearningSkillDraft(rl);
       } else if (answer === '26') {
         await showCollaborationClaims();
-      } else if (answer === '27' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '27') {
+        await showDemonstrations();
+      } else if (answer === '28' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

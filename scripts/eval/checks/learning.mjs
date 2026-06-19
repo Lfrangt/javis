@@ -34,6 +34,61 @@ export default {
         : warn('learning.skill_draft', 'Skill draft preview', `draft ${draft.status} ${draft.error || draft.data?.error || ''}`),
     );
 
+    let demoId = '';
+    try {
+      const started = await ctx.api('/api/demonstrations/start', {
+        method: 'POST',
+        body: {
+          title: 'Eval UI demonstration',
+          goal: 'Verify explicit local UI demonstration recording',
+          captureInitial: false,
+          source: 'eval',
+        },
+      });
+      demoId = started.data?.demonstration?.id || '';
+      if (!started.ok || !demoId) {
+        out.push(fail('learning.demonstration_record', 'UI demonstration record', `start ${started.status} ${started.error || ''}`, started.data));
+        return out;
+      }
+
+      const captured = await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/capture`, {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          instruction: 'Open the target panel and confirm the saved state',
+          observation: {
+            frontmost: { app: 'EvalApp', windowTitle: 'Demo Window', available: true },
+            browser: { available: false },
+            screen: { width: 1200, height: 800, privacyMode: 'private', source: 'eval' },
+            accessibility: { available: true, app: 'EvalApp', windowTitle: 'Demo Window', nodeCount: 1, outline: '1 AXButton "Confirm"' },
+          },
+        },
+      });
+      const finished = await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/finish`, {
+        method: 'POST',
+        body: { source: 'eval' },
+      });
+      const demo = finished.data?.demonstration;
+      const playbook = finished.data?.playbook || demo?.playbook;
+      out.push(
+        captured.ok &&
+          finished.ok &&
+          demo?.status === 'done' &&
+          Array.isArray(demo.steps) &&
+          demo.steps.length === 1 &&
+          String(playbook?.markdown || '').includes('Replay mode: manual preview')
+          ? ok('learning.demonstration_record', 'UI demonstration record', `${demo.steps.length} step(s) · ${playbook?.replayMode || 'manual_preview'}`)
+          : fail('learning.demonstration_record', 'UI demonstration record', `capture ${captured.status} finish ${finished.status}`, { captured: captured.data, finished: finished.data }),
+      );
+    } finally {
+      if (demoId) {
+        await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}`, {
+          method: 'DELETE',
+          body: { source: 'eval_cleanup' },
+        });
+      }
+    }
+
     return out;
   },
 };

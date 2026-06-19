@@ -75,7 +75,7 @@
 - Wake-word or push-to-talk mode.
 - Better interruption handling.
 - Ongoing screen context with privacy zones: current build supports a global private/clear screen mode; next, add selectable app/window/region redaction.
-- Task memory scoped to the local machine: current build supports explicit local memories plus a controllable local inferred learning profile with pause/resume, prompt inclusion, exclusions, deletion, promotion to memory, routing evidence, and reviewable skill draft generation; next, richer retrieval inside workflows and true record/replay capture of demonstrated UI sequences.
+- Task memory scoped to the local machine: current build supports explicit local memories plus a controllable local inferred learning profile with pause/resume, prompt inclusion, exclusions, deletion, promotion to memory, routing evidence, reviewable skill draft generation, and explicit UI demonstration records that turn sanitized app/browser/accessibility captures into manual-preview playbooks; next, richer retrieval inside workflows and safe replay planning from those demonstrations.
 - Capture queue scoped to the local machine: current build supports persistent Inbox items, read-only triage, explicit process-next, and routing them into work lanes; next, add spoken confirmation policies and richer triage grouping.
 - Work sessions scoped to the local machine: current build supports start/resume/status/note/check-in/end plus automatic evidence from Inbox, jobs, workflows, and approvals; next, improve spoken handoff quality.
 - Long-running work status scoped to the local machine: current build supports deterministic progress check-ins over jobs and workflows; next, stream richer live updates into active voice sessions.

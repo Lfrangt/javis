@@ -152,6 +152,8 @@ Use options `19`-`25` for local learning maintenance: refresh the inferred profi
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, preview
 a Codex-style skill draft, or export that draft to `~/.agents/skills` after typing `SAVE`.
 
+Use option `27. Show UI demonstrations` to inspect explicit local demonstrations. Demonstrations are user-started records for repeatable UI workflows; they store notes plus sanitized app/browser/screen/accessibility summaries and a manual-preview playbook, not screenshots or raw clipboard text.
+
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
 The desktop pet is intentionally minimal. It is a small voice capsule on the edge of the screen and avoids showing setup state, diagnostic chips, or configuration controls. In compact mode it consumes `/api/presence` and maps the resident state to traffic-light dots: red for attention/setup, yellow for waking/working, green for ready/standby, and green+yellow for observing or listening.
@@ -260,6 +262,21 @@ curl -X POST http://127.0.0.1:3417/api/context/plan \
 When Claude Code is working beside Codex, ask it to use the collaboration commands above before editing. The CUI option `26. Show collaboration claims` should show its active scope, and overlapping write scopes will be reported as conflicts instead of silently running competing agents on the same files.
 
 For local Claude Code/Codex sessions, prefer `npm run collab -- claim ...` over manual curl. It auto-discovers the local API token, prints the claim id, and gives the matching heartbeat/release commands.
+
+`/api/demonstrations` is the Record & Replay-style local learning surface. It is explicit and local: start a demonstration, capture one or more current UI states, finish it into a manual-preview playbook, and delete it when no longer useful.
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/demonstrations/start \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Invoice export flow","goal":"Show JAVIS how I export monthly invoices","captureInitial":true}'
+curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/capture \
+  -H 'Content-Type: application/json' \
+  -d '{"instruction":"Open the export menu and choose CSV"}'
+curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/finish \
+  -H 'Content-Type: application/json' \
+  -d '{"status":"done"}'
+curl http://127.0.0.1:3417/api/demonstrations
+```
 
 `/api/browser/workflow` supports `search`, `compare`, `review_result`, and `research` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages and capture those result pages. `review_result` opens one explicit URL or selected result link through the guarded `open_url` path, then reads the target page. `research` opens several explicit URLs or selected result links in sequence and synthesizes their read-only page snapshots. Browser workflows do not click page controls, type into arbitrary fields, submit forms, or make account changes by themselves.
 

@@ -106,6 +106,7 @@ Renderer
 - Workflow delivery lane: copies completed workflow results back to the system clipboard in result-only or Markdown format.
 - Memory lane: user-approved local memories for durable preferences, project facts, and notes, with keyword search, task-context injection, and delete.
 - Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, routing evidence, and Record & Replay-inspired `SKILL.md` draft generation for repeatable local workflows.
+- Demonstration lane: explicit user-started UI demonstration records with sanitized app/browser/screen/accessibility summaries, deterministic manual-preview playbooks, and delete controls. It stores no screenshots or clipboard text.
 - Clipboard lane: local clipboard read/write, guarded by policy and audit logs.
 - File lane: local file list/read/search/write/create/copy/move, guarded by allowed roots, risk levels, approvals, local-execution enablement, and audit logs.
 
@@ -121,6 +122,7 @@ By default, local runtime state lives in:
     routing.json
     collaboration.json
     sessions.json
+    demonstrations.json
     memories.json
     learned-profile.json
     inbox.json
@@ -140,6 +142,8 @@ Each routing record also stores `contextPlan`, which explains the planned contex
 `collaboration.json` preserves short-lived agent scope claims across resident restarts. External workers can claim an owner/scope/access pair, heartbeat it while editing, and release it when done. Active write claims seed the parallel router's ownership guard so JAVIS avoids launching overlapping Codex/Claude/local workers against the same file or folder.
 
 `sessions.json` preserves local work sessions. Session records store a goal, active/done/cancelled status, local events, source, tags, timestamps, and deterministic summaries. Only one active session is allowed at a time, and the active session is surfaced in status, menu bar, briefing, and the buddy panel.
+
+`demonstrations.json` preserves explicit UI demonstrations started by the user through API/CUI/voice. Records store a goal, short user notes, sanitized current-app/browser context, screen metadata, Accessibility outline summaries, and a deterministic manual-preview playbook. They do not store screenshots or raw clipboard text, and replay still has to re-observe live UI targets before taking actions.
 
 `memories.json` preserves explicit local memories only when the user asks JAVIS to remember something. Memory records store text, kind, scope, tags, source, and timestamps, and can be searched or deleted through the local API.
 
