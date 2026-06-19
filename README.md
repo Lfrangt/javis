@@ -10,6 +10,7 @@ Local Mac-first realtime desktop buddy.
 - Soft wake-word behavior inside live voice sessions through `JAVIS_WAKE_WORDS`.
 - Wake trigger API for plugging in a local wake-word engine without changing the Realtime flow.
 - Resident conversation lifecycle state for connecting/live/error/idle voice sessions, with heartbeats back into presence.
+- Renderer-recorded Realtime SDP negotiation evidence, so successful or failed real WebRTC starts update `/api/realtime/evidence`.
 - Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
 - Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
 - Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget and work-handoff events in `/api/realtime/evidence`.

@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 
 import { ok, warn, fail } from '../_client.mjs';
@@ -449,6 +450,25 @@ export default {
         n?.ok === true
         ? ok('realtime.negotiation_evidence', 'Realtime negotiation evidence', 'session negotiation receipt normalizes WebRTC offer/answer metadata')
         : fail('realtime.negotiation_evidence', 'Realtime negotiation evidence', `POST /api/realtime/session-negotiation ${negotiation.status}`, negotiation.data),
+    );
+
+    const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
+    const rendererNegotiationEvidenceOk =
+      rendererSource.includes('/api/realtime/session-negotiation') &&
+      rendererSource.includes("source: 'renderer'") &&
+      rendererSource.includes('offerBytes') &&
+      rendererSource.includes('answerBytes') &&
+      rendererSource.includes('statusCode') &&
+      rendererSource.includes('durationMs') &&
+      rendererSource.includes('setRemoteDescription') &&
+      rendererSource.includes('recordRealtimeNegotiation');
+    out.push(
+      rendererNegotiationEvidenceOk
+        ? ok('realtime.renderer_negotiation_evidence', 'Renderer negotiation evidence reporter', 'renderer records real WebRTC offer/answer evidence after SDP negotiation')
+        : fail('realtime.renderer_negotiation_evidence', 'Renderer negotiation evidence reporter', 'renderer no longer records WebRTC negotiation evidence', {
+            hasEndpoint: rendererSource.includes('/api/realtime/session-negotiation'),
+            hasRecorder: rendererSource.includes('recordRealtimeNegotiation'),
+          }),
     );
 
     const evidence = await ctx.api('/api/realtime/evidence');

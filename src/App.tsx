@@ -887,6 +887,10 @@ async function apiJson<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T
 }
 
+function utf8Bytes(value = '') {
+  return new TextEncoder().encode(value).length
+}
+
 async function fetchDoctorReport() {
   const result = await apiJson<{ doctor: DoctorReport }>('/api/doctor/report')
   return result.doctor
@@ -1300,6 +1304,30 @@ function App() {
       })
   }, [])
 
+  const recordRealtimeNegotiation = useCallback(
+    async (payload: {
+      sessionId: string
+      micMode: MicMode
+      offerBytes: number
+      answerBytes: number
+      statusCode: number
+      ok: boolean
+      durationMs: number
+      error?: string
+    }) => {
+      const result = await apiJson<{ conversation: ConversationState }>('/api/realtime/session-negotiation', {
+        method: 'POST',
+        body: JSON.stringify({
+          source: 'renderer',
+          ...payload,
+        }),
+      })
+      setStatus((current) => (current ? { ...current, conversation: result.conversation } : current))
+      return result
+    },
+    [],
+  )
+
   const stopVoice = useCallback((options: { report?: boolean } = {}) => {
     const voiceSessionId = voiceSessionIdRef.current
     if (initialScreenContextTimeoutRef.current !== null) {
@@ -1462,6 +1490,11 @@ function App() {
     setLastError('')
     setVoiceStatus('connecting')
     void updateResidentConversation({ status: 'connecting', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
+    let negotiationStartedAt = 0
+    let negotiationRecorded = false
+    let offerBytes = 0
+    let answerBytes = 0
+    let statusCode = 0
     try {
       const peer = new RTCPeerConnection()
       peerRef.current = peer
@@ -1525,24 +1558,68 @@ function App() {
 
       const offer = await peer.createOffer()
       await peer.setLocalDescription(offer)
+      offerBytes = utf8Bytes(offer.sdp || '')
+      negotiationStartedAt = Date.now()
       const response = await fetch(`${API_BASE}/api/realtime/session?micMode=${micMode}`, {
         method: 'POST',
         body: offer.sdp,
         headers: apiHeaders(undefined, 'application/sdp'),
       })
+      statusCode = response.status
       const answerSdp = await response.text()
-      if (!response.ok) throw new Error(answerSdp || response.statusText)
+      answerBytes = utf8Bytes(answerSdp)
+      if (!response.ok) {
+        await recordRealtimeNegotiation({
+          sessionId: voiceSessionId,
+          micMode,
+          offerBytes,
+          answerBytes,
+          statusCode,
+          ok: false,
+          durationMs: Math.max(0, Date.now() - negotiationStartedAt),
+          error: answerSdp || response.statusText,
+        }).catch(() => null)
+        negotiationRecorded = true
+        throw new Error(answerSdp || response.statusText)
+      }
       await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp })
+      await recordRealtimeNegotiation({
+        sessionId: voiceSessionId,
+        micMode,
+        offerBytes,
+        answerBytes,
+        statusCode,
+        ok: true,
+        durationMs: Math.max(0, Date.now() - negotiationStartedAt),
+      })
+        .then(() => {
+          negotiationRecorded = true
+        })
+        .catch((recordError) => {
+          addMessage('tool', `Realtime negotiation evidence failed: ${recordError instanceof Error ? recordError.message : String(recordError)}`)
+        })
     } catch (error) {
       stopVoice({ report: false })
       setVoiceStatus('error')
       const message = error instanceof Error ? error.message : String(error)
+      if (negotiationStartedAt && !negotiationRecorded) {
+        await recordRealtimeNegotiation({
+          sessionId: voiceSessionId,
+          micMode,
+          offerBytes,
+          answerBytes,
+          statusCode,
+          ok: false,
+          durationMs: Math.max(0, Date.now() - negotiationStartedAt),
+          error: message,
+        }).catch(() => null)
+      }
       void updateResidentConversation({ status: 'error', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive, error: message })
       setLastError(message)
       addMessage('system', message)
       void runLocalVoiceFallback()
     }
-  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, runLocalVoiceFallback, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
+  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, recordRealtimeNegotiation, runLocalVoiceFallback, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return undefined
