@@ -87,7 +87,7 @@ The CUI also exposes microphone permission recovery, explicit control-mode switc
 
 Use `npm run verify:ax` as a read-only Accessibility targeting smoke test. For the strict Chrome/Gemini side-pane case, focus Chrome and run `npm run verify:ax -- --require-chromium`.
 
-Use `npm run eval` against a running resident for a broader local product-lane scorecard. It uses read-only or preview checks by default and can be scoped with `npm run eval -- --only=health,routing`. The control-mode lane temporarily switches modes, preview-tests the gates, and restores the previous mode. Use `npm run eval:routing` for the labeled lane-classifier corpus.
+Use `npm run eval` against a running resident for a broader local product-lane scorecard. It uses read-only or preview checks by default and can be scoped with `npm run eval -- --only=health,routing`. The control-mode lane temporarily switches modes, preview-tests the gates, and restores the previous mode. Use `npm run eval:routing` for the labeled lane-classifier corpus. `JAVIS_EVAL_LIVE_WORKERS=true npm run eval -- --only=workers-live` is the opt-in check that queues real read-only Codex, Claude, and local CLI workers.
 
 Local file policy lives in `~/Library/Application Support/JAVIS/Runtime/action-policy.json`; broad Home-directory access can be enabled there while protected macOS folders may still need Full Disk Access approval.
 Local autonomy posture lives in `~/Library/Application Support/JAVIS/Runtime/control-mode.json` and is also available through `/api/control/mode`.
