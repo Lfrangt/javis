@@ -183,12 +183,13 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor, autopilotResult, browserJs, shortcutsResult] = await Promise.all([
+    const [status, doctor, autopilotResult, browserJs, shortcutsResult, perceptionResult] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
       request('/api/autopilot').catch(() => ({ autopilot: null })),
       request('/api/browser/javascript').catch((error) => ({ javascript: { enabled: false, error: error instanceof Error ? error.message : String(error) } })),
       request('/api/shortcuts?limit=5').catch(() => ({ shortcuts: null })),
+      request('/api/perception/consent?limit=3').catch(() => ({ perception: null })),
     ]);
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
@@ -214,6 +215,11 @@ async function printStatus() {
     }
     if (status.ambient) {
       console.log(`Ambient: ${status.ambient.enabled ? 'on' : 'off'} · screen ${status.ambient.captureScreen ? 'on' : 'off'} · ${status.ambient.count || 0} sample(s)`);
+    }
+    if (perceptionResult.perception) {
+      const perception = perceptionResult.perception;
+      const counts = perception.counts || {};
+      console.log(`Perception: ${counts.enabled || 0}/${counts.total || 0} enabled · active ${counts.active || 0} · limited ${counts.limited || 0} · blocked ${counts.blocked || 0}`);
     }
     if (status.learning) {
       const profile = status.learning.profile || {};
@@ -312,7 +318,8 @@ async function printStatus() {
   console.log('29. Promote shortcut candidate');
   console.log('30. Show browser activity');
   console.log('31. Show attention policy');
-  console.log('32. Quit');
+  console.log('32. Show perception consent');
+  console.log('33. Quit');
 }
 
 async function setupAction(action) {
@@ -887,6 +894,37 @@ async function showBrowserActivity() {
   const result = await request('/api/browser/activity?limit=10');
   console.log('');
   printBrowserActivity(result.activity || {});
+}
+
+function printPerceptionConsent(result) {
+  const perception = result?.perception || result || {};
+  const counts = perception.counts || {};
+  console.log('Perception Consent');
+  console.log('==================');
+  console.log(perception.summary || 'No perception consent summary available.');
+  console.log(`Policy: local-only=${perception.policy?.localOnly ? 'yes' : 'no'} · passive=${perception.policy?.passiveByDefault ? 'yes' : 'no'} · user intent for action=${perception.policy?.requiresUserIntentForAction ? 'yes' : 'no'}`);
+  console.log(`Control: ${perception.policy?.controlMode?.mode || '-'} · local execution=${perception.policy?.localExecutionEnabled ? 'on' : 'off'} · trusted=${perception.policy?.trustedLocalMode ? 'yes' : 'no'}`);
+  console.log(`Counts: ${counts.enabled || 0}/${counts.total || 0} enabled · active ${counts.active || 0} · ready ${counts.ready || 0} · waiting ${counts.waiting || 0} · limited ${counts.limited || 0} · blocked ${counts.blocked || 0}`);
+  const surfaces = Array.isArray(perception.surfaces) ? perception.surfaces : [];
+  if (!surfaces.length) {
+    console.log('\nSurfaces: none');
+    return;
+  }
+  console.log('\nSurfaces:');
+  for (const surface of surfaces) {
+    const consent = surface.consent || {};
+    const lastAudit = surface.lastAudit ? `${surface.lastAudit.type} ${surface.lastAudit.ts || ''}`.trim() : 'none';
+    console.log(`- ${surface.id} · ${surface.label}: ${surface.status} · enabled=${surface.enabled ? 'yes' : 'no'} · raw stored=${surface.rawContentStored ? 'yes' : 'no'}`);
+    console.log(`  data=${surface.dataClass || '-'} · retention=${compact(surface.retention || '-', 160)}`);
+    console.log(`  consent=${consent.policyGate || '-'} · system=${consent.systemPermission ?? '-'} · user action=${consent.explicitUserActionRequired ? 'yes' : 'no'} · audit=${lastAudit}`);
+    if (surface.nextAction) console.log(`  next=${compact(surface.nextAction, 180)}`);
+  }
+}
+
+async function showPerceptionConsent() {
+  const result = await request('/api/perception/consent?limit=8');
+  console.log('');
+  printPerceptionConsent(result);
 }
 
 function printShortcutCandidate(candidate, index) {
@@ -1477,6 +1515,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-perception') || process.argv.includes('--perception')) {
+    await showPerceptionConsent();
+    return;
+  }
+
   if (process.argv.includes('--print-inbox-triage') || process.argv.includes('--inbox-triage')) {
     await showInboxTriage();
     return;
@@ -1584,7 +1627,9 @@ async function main() {
         await showBrowserActivity();
       } else if (answer === '31') {
         await showAttentionPolicy();
-      } else if (answer === '32' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '32') {
+        await showPerceptionConsent();
+      } else if (answer === '33' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

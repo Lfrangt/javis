@@ -13,10 +13,16 @@ export default {
     if (report) {
       const counts = report.counts || {};
       const blocked = Number(counts.blocked || 0);
+      const perceptionCheck = (report.checks || []).find((check) => check.id === 'perception_consent_registry');
       out.push(
         blocked === 0
           ? ok('health.doctor', 'Doctor report', `${counts.ready || 0} ready · ${counts.warning || 0} warning · 0 blocked (${(report.checks || []).length} checks)`, { counts })
           : warn('health.doctor', 'Doctor report', `${blocked} blocked check(s): ${(report.checks || []).filter((c) => c.status === 'blocked').map((c) => c.id).join(', ')}`, { counts }),
+      );
+      out.push(
+        perceptionCheck && perceptionCheck.status === 'ready'
+          ? ok('health.doctor_perception_consent', 'Doctor perception consent', perceptionCheck.summary || 'perception consent registry ready')
+          : fail('health.doctor_perception_consent', 'Doctor perception consent', 'doctor must include a ready perception consent registry check', perceptionCheck || {}),
       );
     } else {
       out.push(fail('health.doctor', 'Doctor report', `GET /api/doctor/report ${doctor.status} ${doctor.error || ''}`));

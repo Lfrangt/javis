@@ -138,6 +138,42 @@ export default {
         : fail('presence.browser_activity_api', 'Browser activity API', `GET /api/browser/activity ${activity.status}`, activity.data),
     );
 
+    const perception = await ctx.api('/api/perception/consent?limit=5');
+    const consent = perception.data?.perception;
+    const surfaces = Array.isArray(consent?.surfaces) ? consent.surfaces : [];
+    const surfaceIds = new Set(surfaces.map((surface) => surface.id));
+    const requiredSurfaces = [
+      'screen_context',
+      'voice_microphone',
+      'ambient_observer',
+      'browser_activity',
+      'browser_page_reader',
+      'clipboard',
+      'accessibility_tree',
+      'app_control',
+      'local_learning',
+      'worker_tools',
+    ];
+    const missingSurfaces = requiredSurfaces.filter((id) => !surfaceIds.has(id));
+    out.push(
+      perception.ok &&
+        consent?.ok === true &&
+        missingSurfaces.length === 0 &&
+        surfaces.every((surface) => (
+          typeof surface.enabled === 'boolean' &&
+          typeof surface.status === 'string' &&
+          typeof surface.rawContentStored === 'boolean' &&
+          Array.isArray(surface.controls) &&
+          Array.isArray(surface.auditTypes) &&
+          surface.consent &&
+          typeof surface.consent === 'object'
+        )) &&
+        consent.policy?.passiveByDefault === true &&
+        consent.policy?.requiresUserIntentForAction === true
+        ? ok('presence.perception_consent_api', 'Perception consent API', `${surfaces.length} surface(s), ${consent.summary || ''}`)
+        : fail('presence.perception_consent_api', 'Perception consent API', `missing/incomplete surface(s): ${missingSurfaces.join(', ') || 'metadata'}`, consent || perception.data),
+    );
+
     try {
       const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-browser-activity'], {
         cwd: process.cwd(),
@@ -155,6 +191,27 @@ export default {
       );
     } catch (error) {
       out.push(fail('presence.browser_activity_cui', 'CUI browser activity', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-perception'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      out.push(
+        output.includes('Perception Consent') &&
+          output.includes('screen_context') &&
+          output.includes('browser_activity') &&
+          output.includes('clipboard') &&
+          output.includes('raw stored')
+          ? ok('presence.perception_consent_cui', 'CUI perception consent', 'config CUI prints consent, storage, and audit status for perception surfaces')
+          : fail('presence.perception_consent_cui', 'CUI perception consent', 'expected --print-perception to print perception surface status', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('presence.perception_consent_cui', 'CUI perception consent', error instanceof Error ? error.message : String(error)));
     }
 
     try {

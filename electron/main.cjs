@@ -15756,6 +15756,496 @@ function ambientStateSnapshot(limit = 8) {
   };
 }
 
+function summarizeAuditData(data = {}) {
+  const text = compactRecordText(JSON.stringify(data || {}), 260);
+  return text === '{}' ? '' : text;
+}
+
+function auditEventSummary(event = {}) {
+  const createdAt = Date.parse(event.ts || '') || 0;
+  return {
+    type: String(event.type || ''),
+    ts: event.ts || '',
+    ageMs: createdAt ? Math.max(0, Date.now() - createdAt) : null,
+    summary: summarizeAuditData(event.data),
+  };
+}
+
+function auditTrailForTypes(events = [], types = [], max = 3) {
+  const wanted = new Set(types.map(String));
+  if (!wanted.size) return [];
+  return events
+    .filter((event) => wanted.has(String(event.type || '')))
+    .slice(-Math.max(1, Math.min(10, Number(max || 3))))
+    .reverse()
+    .map(auditEventSummary);
+}
+
+function perceptionSurface(config = {}, auditEvents = []) {
+  const auditTypes = Array.isArray(config.auditTypes) ? config.auditTypes.map(String) : [];
+  const recentAudit = auditTrailForTypes(auditEvents, auditTypes, config.auditLimit || 3);
+  return {
+    id: String(config.id || ''),
+    label: String(config.label || config.id || ''),
+    category: String(config.category || 'perception'),
+    enabled: Boolean(config.enabled),
+    available: Boolean(config.available ?? config.enabled),
+    status: String(config.status || (config.enabled ? 'ready' : 'disabled')),
+    dataClass: String(config.dataClass || ''),
+    localOnly: config.localOnly !== false,
+    rawContentStored: Boolean(config.rawContentStored),
+    rawStoredByDefault: Boolean(config.rawStoredByDefault),
+    retention: String(config.retention || ''),
+    consent: config.consent && typeof config.consent === 'object' ? config.consent : {},
+    controls: Array.isArray(config.controls) ? config.controls : [],
+    auditTypes,
+    lastAudit: recentAudit[0] || null,
+    recentAudit,
+    evidence: config.evidence && typeof config.evidence === 'object' ? config.evidence : {},
+    summary: String(config.summary || ''),
+    nextAction: String(config.nextAction || ''),
+  };
+}
+
+function policySurfaceEnabled(...actions) {
+  return actions.some((action) => actionPolicy.allow?.[action]?.enabled !== false);
+}
+
+function perceptionConsentSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(20, Number(options.limit || 5)));
+  const auditEvents = readRecentAudit(Math.max(20, Math.min(200, Number(options.auditLimit || 160))));
+  const screenFrame = latestScreenSnapshot();
+  const screenPrivacy = screenPrivacySnapshot();
+  const screenStatus = mediaAccessStatus('screen');
+  const microphoneStatus = mediaAccessStatus('microphone');
+  const conversation = conversationStateSnapshot();
+  const ambient = ambientStateSnapshot(limit);
+  const browserActivity = browserActivitySnapshot({ limit });
+  const learning = learningStateSnapshot();
+  const clipboardState = clipboardSnapshot(false);
+  const accessibilityTrusted =
+    typeof systemPreferences?.isTrustedAccessibilityClient === 'function'
+      ? systemPreferences.isTrustedAccessibilityClient(false)
+      : null;
+  const controlMode = controlModeSnapshot();
+  const effectivePolicy = effectiveActionPolicySnapshot();
+
+  const screenBlocked = screenStatus === 'denied' || screenStatus === 'restricted';
+  const screenStatusValue = screenFrame
+    ? 'active'
+    : screenBlocked
+      ? 'blocked'
+      : 'waiting';
+  const voiceBlocked = microphoneStatus === 'denied' || microphoneStatus === 'restricted' || !OPENAI_API_KEY;
+  const voiceStatus = conversation.status === 'live'
+    ? 'active'
+    : voiceBlocked
+      ? 'blocked'
+      : 'ready';
+  const ambientStatus = AMBIENT_OBSERVE_ENABLED
+    ? ambient.count > 0 ? 'active' : 'waiting'
+    : 'disabled';
+  const browserActivityStatus = AMBIENT_OBSERVE_ENABLED
+    ? browserActivity.current ? 'active' : 'waiting'
+    : 'disabled';
+  const browserPageEnabled = actionPolicy.allow?.read_browser_page?.enabled !== false;
+  const clipboardEnabled = policySurfaceEnabled('read_clipboard', 'write_clipboard', 'clear_clipboard');
+  const accessibilityEnabled = actionPolicy.allow?.read_accessibility_tree?.enabled !== false;
+  const appControlEnabled = policySurfaceEnabled('ax_press', 'ax_set_value', 'type_text', 'hotkey');
+  const appControlReady = appControlEnabled && LOCAL_EXEC_ENABLED && accessibilityTrusted !== false;
+  const codeAgentEnabled = actionPolicy.allow?.code_agent?.enabled !== false;
+  const cliEnabled = actionPolicy.allow?.cli_command?.enabled !== false;
+
+  const surfaces = [
+    perceptionSurface({
+      id: 'screen_context',
+      label: 'Screen context',
+      enabled: !screenBlocked,
+      available: Boolean(screenFrame),
+      status: screenStatusValue,
+      dataClass: 'screen_frame',
+      rawContentStored: screenPrivacy.mode === 'clear' && Boolean(screenFrame),
+      rawStoredByDefault: screenPrivacy.mode === 'clear',
+      retention: 'latest frame only; private mode stores a downscaled/blurred frame, audit stores metadata',
+      consent: {
+        systemPermission: screenStatus,
+        userToggle: true,
+        explicitUserActionRequired: false,
+        policyGate: 'screen_privacy',
+      },
+      controls: [
+        { label: 'Screen privacy', endpoint: '/api/screen/privacy', method: 'GET/PUT' },
+        { label: 'Capture now', endpoint: '/api/screen/capture-now', method: 'POST' },
+        { label: 'Open Screen Recording settings', cui: 'npm run config -> 3' },
+      ],
+      auditTypes: ['screen.frame_captured', 'screen.frame_received', 'screen.frame_cleared', 'screen_privacy.updated', 'ambient.screen_failed'],
+      evidence: {
+        privacyMode: screenPrivacy.mode,
+        width: screenFrame?.width || 0,
+        height: screenFrame?.height || 0,
+        ageMs: Number.isFinite(latestScreenAgeMs()) ? latestScreenAgeMs() : null,
+        source: screenFrame?.source || '',
+      },
+      summary: screenFrame
+        ? `Latest ${screenFrame.width}x${screenFrame.height} ${screenPrivacy.mode} screen frame is available.`
+        : screenBlocked
+          ? `macOS screen permission is ${screenStatus}.`
+          : 'No screen frame is cached yet.',
+      nextAction: screenFrame
+        ? 'Keep private mode for normal use; switch to clear only when precision matters.'
+        : screenBlocked
+          ? 'Open Screen Recording settings and approve JAVIS/Electron.'
+          : 'Start a voice session or use capture-now to create the first frame.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'voice_microphone',
+      label: 'Voice microphone',
+      enabled: Boolean(OPENAI_API_KEY) && microphoneStatus !== 'denied' && microphoneStatus !== 'restricted',
+      available: conversation.active,
+      status: voiceStatus,
+      dataClass: 'live_audio',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: 'no local raw audio retention; live Realtime sessions start only from pet/hotkey/user action',
+      consent: {
+        systemPermission: microphoneStatus,
+        userToggle: true,
+        explicitUserActionRequired: true,
+        policyGate: 'wake_or_pet_start',
+      },
+      controls: [
+        { label: 'Realtime evidence', endpoint: '/api/realtime/evidence', method: 'GET' },
+        { label: 'Conversation state', endpoint: '/api/conversation/state', method: 'GET/POST' },
+        { label: 'Open Microphone settings', cui: 'npm run config -> M' },
+      ],
+      auditTypes: ['conversation.state', 'realtime.session_negotiation', 'realtime.latency', 'wake.triggered'],
+      evidence: {
+        status: conversation.status,
+        active: conversation.active,
+        micMode: conversation.micMode,
+        screenLive: conversation.screenLive,
+        ageMs: conversation.ageMs,
+        hasOpenAiKey: Boolean(OPENAI_API_KEY),
+      },
+      summary: conversation.active
+        ? `Voice is ${conversation.status} in ${conversation.micMode} mode.`
+        : 'Voice is idle and waits for explicit user action.',
+      nextAction: voiceStatus === 'blocked'
+        ? (OPENAI_API_KEY ? 'Open Microphone settings and approve JAVIS/Electron.' : 'Add OPENAI_API_KEY locally before starting live voice.')
+        : 'Use the pet or summon hotkey when you want JAVIS to answer.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'ambient_observer',
+      label: 'Ambient observer',
+      enabled: AMBIENT_OBSERVE_ENABLED,
+      available: ambient.count > 0,
+      status: ambientStatus,
+      dataClass: 'app_window_browser_metadata',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: `metadata capped at ${MAX_PERSISTED_AMBIENT} local ambient events`,
+      consent: {
+        systemPermission: 'local_runtime',
+        userToggle: true,
+        explicitUserActionRequired: false,
+        policyGate: 'JAVIS_AMBIENT_OBSERVE',
+      },
+      controls: [
+        { label: 'Ambient sample', endpoint: '/api/ambient/sample', method: 'POST' },
+        { label: 'Ambient state', endpoint: '/api/ambient', method: 'GET' },
+        { label: 'Learning exclusions', endpoint: '/api/learning/settings', method: 'PUT' },
+      ],
+      auditTypes: ['ambient.started', 'ambient.sample', 'ambient.excluded', 'ambient.sample_failed', 'ambient.stopped'],
+      evidence: {
+        count: ambient.count,
+        intervalMs: ambient.intervalMs,
+        captureScreen: ambient.captureScreen,
+        latestApp: ambient.recent?.[0]?.frontmost?.app || '',
+      },
+      summary: AMBIENT_OBSERVE_ENABLED
+        ? `Passive local metadata observation is on with ${ambient.count} retained sample(s).`
+        : 'Passive local metadata observation is off.',
+      nextAction: AMBIENT_OBSERVE_ENABLED
+        ? 'Manage sensitive apps/sites/folders through learning exclusions.'
+        : 'Enable JAVIS_AMBIENT_OBSERVE=true only if passive context is desired.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'browser_activity',
+      label: 'Browser activity',
+      enabled: AMBIENT_OBSERVE_ENABLED,
+      available: Boolean(browserActivity.current),
+      status: browserActivityStatus,
+      dataClass: 'browser_metadata',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: `metadata derived from the latest ${MAX_PERSISTED_AMBIENT} local ambient events; no page text`,
+      consent: {
+        systemPermission: 'browser_frontmost_metadata',
+        userToggle: true,
+        explicitUserActionRequired: false,
+        policyGate: 'ambient_browser_metadata',
+      },
+      controls: [
+        { label: 'Browser activity', endpoint: '/api/browser/activity', method: 'GET' },
+        { label: 'CUI browser activity', cui: 'npm run config -- --print-browser-activity' },
+      ],
+      auditTypes: ['ambient.sample', 'ambient.excluded'],
+      evidence: {
+        count: browserActivity.count,
+        metadataOnly: browserActivity.privacy?.metadataOnly === true,
+        noPageText: browserActivity.privacy?.noPageText === true,
+        currentHost: browserActivity.current?.host || '',
+      },
+      summary: browserActivity.summary,
+      nextAction: browserActivity.nextAction,
+    }, auditEvents),
+    perceptionSurface({
+      id: 'browser_page_reader',
+      label: 'Browser page reader',
+      enabled: browserPageEnabled,
+      available: browserPageEnabled,
+      status: browserPageEnabled ? 'ready' : 'disabled',
+      dataClass: 'browser_visible_page_text',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: 'read on demand only; page text is not persisted by the ambient observer',
+      consent: {
+        systemPermission: 'browser_automation',
+        userToggle: true,
+        explicitUserActionRequired: true,
+        policyGate: 'allow.read_browser_page',
+      },
+      controls: [
+        { label: 'Browser page', endpoint: '/api/browser/page', method: 'GET' },
+        { label: 'Action policy', endpoint: '/api/actions/policy', method: 'GET/PUT' },
+      ],
+      auditTypes: ['browser.page_read', 'browser.page_failed', 'browser.workflow'],
+      evidence: {
+        maxChars: actionPolicy.allow?.read_browser_page?.maxChars || 0,
+        policyEnabled: browserPageEnabled,
+      },
+      summary: browserPageEnabled
+        ? 'Visible browser page text can be read only when a tool/request asks for it.'
+        : 'Visible browser page reading is disabled by policy.',
+      nextAction: browserPageEnabled
+        ? 'Prefer browser activity metadata unless the task needs actual page text.'
+        : 'Enable allow.read_browser_page in action-policy.json when needed.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'clipboard',
+      label: 'Clipboard',
+      enabled: clipboardEnabled,
+      available: clipboardState.hasText,
+      status: clipboardEnabled ? (clipboardState.hasText ? 'ready' : 'waiting') : 'disabled',
+      dataClass: 'clipboard_text',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: 'clipboard text is read on demand; explicit Inbox capture persists an item locally',
+      consent: {
+        systemPermission: 'local_clipboard',
+        userToggle: true,
+        explicitUserActionRequired: true,
+        policyGate: 'allow.read_clipboard/write_clipboard/clear_clipboard',
+      },
+      controls: [
+        { label: 'Capture clipboard to Inbox', endpoint: '/api/inbox/capture-clipboard', method: 'POST' },
+        { label: 'Action policy', endpoint: '/api/actions/policy', method: 'GET/PUT' },
+        { label: 'Capture hotkey', cui: `JAVIS_CAPTURE_HOTKEY=${CAPTURE_HOTKEY || 'false'}` },
+      ],
+      auditTypes: ['inbox.clipboard_captured', 'local_action.clipboard_read', 'local_action.clipboard_write', 'local_action.clipboard_clear'],
+      evidence: {
+        hasText: clipboardState.hasText,
+        length: clipboardState.length,
+        captureHotkey: CAPTURE_HOTKEY || '',
+        captureHotkeyRegistered,
+      },
+      summary: clipboardEnabled
+        ? `Clipboard policy is enabled; current clipboard ${clipboardState.hasText ? 'has text' : 'has no text'}.`
+        : 'Clipboard policy is disabled.',
+      nextAction: clipboardEnabled
+        ? 'Use explicit capture or read tools when the user asks to use clipboard content.'
+        : 'Enable clipboard actions in action-policy.json if needed.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'accessibility_tree',
+      label: 'Accessibility tree',
+      enabled: accessibilityEnabled,
+      available: accessibilityTrusted !== false,
+      status: accessibilityEnabled
+        ? accessibilityTrusted === false ? 'limited' : 'ready'
+        : 'disabled',
+      dataClass: 'app_ui_tree',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: 'read on demand; audit stores action metadata, not full UI trees',
+      consent: {
+        systemPermission: accessibilityTrusted === null ? 'unknown' : accessibilityTrusted ? 'trusted' : 'not_trusted',
+        userToggle: true,
+        explicitUserActionRequired: true,
+        policyGate: 'allow.read_accessibility_tree',
+      },
+      controls: [
+        { label: 'Accessibility tree', endpoint: '/api/accessibility/tree', method: 'GET' },
+        { label: 'Open Accessibility settings', cui: 'npm run config -> 4' },
+      ],
+      auditTypes: ['accessibility.tree_read', 'accessibility.tree_failed', 'accessibility.plan'],
+      evidence: {
+        trusted: accessibilityTrusted,
+        maxNodes: actionPolicy.allow?.read_accessibility_tree?.maxNodes || 0,
+        maxDepth: actionPolicy.allow?.read_accessibility_tree?.maxDepth || 0,
+      },
+      summary: accessibilityEnabled
+        ? accessibilityTrusted === false
+          ? 'Accessibility tree reading is enabled by policy but macOS trust is missing.'
+          : 'Accessibility tree reading is enabled for on-demand app context.'
+        : 'Accessibility tree reading is disabled by policy.',
+      nextAction: accessibilityTrusted === false
+        ? 'Open Accessibility settings and approve JAVIS/Electron.'
+        : 'Use Accessibility tree before coordinate-based app control.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'app_control',
+      label: 'App control',
+      enabled: appControlEnabled,
+      available: appControlReady,
+      status: appControlReady ? 'ready' : appControlEnabled ? 'limited' : 'disabled',
+      dataClass: 'mac_app_actions',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: 'actions are audited; app contents are observed on demand through Accessibility/screen context',
+      consent: {
+        systemPermission: accessibilityTrusted === null ? 'unknown' : accessibilityTrusted ? 'trusted' : 'not_trusted',
+        userToggle: true,
+        explicitUserActionRequired: true,
+        policyGate: 'control_mode + action_policy + local_execution',
+      },
+      controls: [
+        { label: 'Control mode', endpoint: '/api/control/mode', method: 'GET/PUT' },
+        { label: 'Actions policy', endpoint: '/api/actions/policy', method: 'GET/PUT' },
+        { label: 'Current app control', endpoint: '/api/accessibility/control', method: 'POST' },
+      ],
+      auditTypes: ['control_mode.updated', 'action_policy.updated', 'local_action.executed', 'local_action.blocked', 'approval.created'],
+      evidence: {
+        localExecutionEnabled: LOCAL_EXEC_ENABLED,
+        trustedLocalMode: TRUSTED_LOCAL_MODE,
+        controlMode: controlMode.mode,
+        autoRiskLevel: effectivePolicy.maxAutoRiskLevel,
+        approvalRiskLevel: effectivePolicy.requireApprovalAtRiskLevel,
+      },
+      summary: appControlReady
+        ? `App control is ready under ${controlMode.label}.`
+        : appControlEnabled
+          ? 'App control policy is enabled, but local execution or Accessibility trust is limited.'
+          : 'App control policy is disabled.',
+      nextAction: appControlReady
+        ? 'Use preview/plan endpoints first, then execute guarded actions only after user intent.'
+        : 'Enable local execution and Accessibility trust before takeover-style app control.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'local_learning',
+      label: 'Local learning',
+      enabled: learning.enabled,
+      available: learning.profile.sourceEventCount > 0,
+      status: learning.enabled ? (learning.profile.sourceEventCount ? 'active' : 'waiting') : learning.paused ? 'paused' : 'disabled',
+      dataClass: 'distilled_profile',
+      rawContentStored: false,
+      rawStoredByDefault: false,
+      retention: `distilled profile in ${LEARNING_FILE}; source ambient metadata capped locally`,
+      consent: {
+        systemPermission: 'local_runtime',
+        userToggle: true,
+        explicitUserActionRequired: false,
+        policyGate: 'learning_controls',
+      },
+      controls: [
+        { label: 'Learning state', endpoint: '/api/learning', method: 'GET' },
+        { label: 'Learning settings', endpoint: '/api/learning/settings', method: 'PUT' },
+        { label: 'Delete learning data', endpoint: '/api/learning', method: 'DELETE' },
+      ],
+      auditTypes: ['learning.started', 'learning.stopped', 'learning.distilled', 'learning.controls_updated', 'learning.exclusion_updated', 'learning.reset'],
+      evidence: {
+        configured: learning.configured,
+        paused: learning.paused,
+        includeInPrompts: learning.includeInPrompts,
+        sourceEventCount: learning.profile.sourceEventCount,
+        signalCount: Array.isArray(learning.profile.signals) ? learning.profile.signals.length : 0,
+      },
+      summary: learning.profile.summary || (learning.enabled ? 'Learning is waiting for enough local metadata.' : 'Local inferred learning is off or paused.'),
+      nextAction: 'Review/pause/delete/promote learned signals from the CUI or /api/learning before relying on them.',
+    }, auditEvents),
+    perceptionSurface({
+      id: 'worker_tools',
+      label: 'Worker and CLI tools',
+      enabled: codeAgentEnabled || cliEnabled,
+      available: LOCAL_EXEC_ENABLED && (codeAgentEnabled || cliEnabled),
+      status: LOCAL_EXEC_ENABLED && (codeAgentEnabled || cliEnabled) ? 'ready' : (codeAgentEnabled || cliEnabled) ? 'limited' : 'disabled',
+      dataClass: 'local_worker_execution',
+      rawContentStored: true,
+      rawStoredByDefault: false,
+      retention: 'worker commands, redacted diagnostics, logs, and results are persisted in local job/workflow history',
+      consent: {
+        systemPermission: 'local_filesystem_processes',
+        userToggle: true,
+        explicitUserActionRequired: true,
+        policyGate: 'allow.code_agent/cli_command + local_execution + control_mode',
+      },
+      controls: [
+        { label: 'Task queue', endpoint: '/api/tasks', method: 'GET/POST' },
+        { label: 'CLI runner', endpoint: '/api/cli/run', method: 'POST' },
+        { label: 'Collaboration ledger', endpoint: '/api/collaboration', method: 'GET/POST' },
+      ],
+      auditTypes: ['job.queued', 'job.process_start', 'job.process_close', 'cli_command.queued', 'collaboration.claimed', 'collaboration.released'],
+      evidence: {
+        localExecutionEnabled: LOCAL_EXEC_ENABLED,
+        codeAgentEnabled,
+        cliEnabled,
+        allowedCodeCommands: actionPolicy.allow?.code_agent?.allowedCommands || [],
+        controlMode: controlMode.mode,
+      },
+      summary: LOCAL_EXEC_ENABLED
+        ? 'Worker/CLI tools can run through policy, control mode, routing, and collaboration claims.'
+        : 'Worker/CLI tools are configured but local execution is disabled.',
+      nextAction: LOCAL_EXEC_ENABLED
+        ? 'Use scoped collaboration claims for concurrent Codex/Claude work.'
+        : 'Enable local execution only when you want local workers to run commands.',
+    }, auditEvents),
+  ];
+
+  const counts = surfaces.reduce((acc, surface) => {
+    acc.total += 1;
+    if (surface.enabled) acc.enabled += 1;
+    acc[surface.status] = (acc[surface.status] || 0) + 1;
+    return acc;
+  }, { total: 0, enabled: 0 });
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    summary: `${counts.enabled}/${counts.total} perception/tool surface(s) enabled; ${counts.active || 0} active, ${counts.limited || 0} limited, ${counts.blocked || 0} blocked.`,
+    policy: {
+      localOnly: true,
+      passiveByDefault: true,
+      requiresUserIntentForAction: true,
+      controlMode,
+      effectivePolicy,
+      localExecutionEnabled: LOCAL_EXEC_ENABLED,
+      trustedLocalMode: TRUSTED_LOCAL_MODE,
+    },
+    counts,
+    surfaces,
+    controls: {
+      cui: 'npm run config -- --print-perception',
+      endpoints: [
+        '/api/perception/consent',
+        '/api/actions/policy',
+        '/api/control/mode',
+        '/api/screen/privacy',
+        '/api/learning',
+      ],
+    },
+  };
+}
+
 function presenceAgeMs(timestamp) {
   const value = Number(timestamp || 0);
   return value ? Math.max(0, Date.now() - value) : null;
@@ -23183,6 +23673,7 @@ async function doctorReportSnapshot() {
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
   const setupGuidePreview = setupGuideSnapshot();
+  const perceptionConsentPreview = perceptionConsentSnapshot({ limit: 3 });
   const axPressPreview = previewDoctorAction({
     action: 'ax_press',
     nodeId: '1',
@@ -23557,6 +24048,55 @@ async function doctorReportSnapshot() {
     skillDraftReady ? '' : 'Review learningSkillDraft() and /api/learning/skill-draft.',
   ));
 
+  const requiredPerceptionSurfaces = [
+    'screen_context',
+    'voice_microphone',
+    'ambient_observer',
+    'browser_activity',
+    'browser_page_reader',
+    'clipboard',
+    'accessibility_tree',
+    'app_control',
+    'local_learning',
+    'worker_tools',
+  ];
+  const perceptionSurfaceIds = new Set((perceptionConsentPreview.surfaces || []).map((surface) => surface.id));
+  const missingPerceptionSurfaces = requiredPerceptionSurfaces.filter((id) => !perceptionSurfaceIds.has(id));
+  const perceptionRegistryReady =
+    perceptionConsentPreview.ok === true &&
+    missingPerceptionSurfaces.length === 0 &&
+    (perceptionConsentPreview.surfaces || []).every((surface) => (
+      surface.id &&
+      typeof surface.enabled === 'boolean' &&
+      typeof surface.status === 'string' &&
+      typeof surface.rawContentStored === 'boolean' &&
+      Array.isArray(surface.controls) &&
+      Array.isArray(surface.auditTypes) &&
+      surface.consent &&
+      typeof surface.consent === 'object'
+    ));
+  checks.push(doctorCheck(
+    'perception_consent_registry',
+    'Perception consent registry',
+    perceptionRegistryReady ? 'ready' : 'warning',
+    perceptionRegistryReady
+      ? `Perception registry exposes ${perceptionConsentPreview.surfaces.length} local surface(s) with controls, consent gates, storage notes, and audit types.`
+      : `Perception registry missing or incomplete: ${missingPerceptionSurfaces.join(', ') || 'surface metadata'}.`,
+    {
+      summary: perceptionConsentPreview.summary,
+      counts: perceptionConsentPreview.counts,
+      missing: missingPerceptionSurfaces,
+      surfaces: (perceptionConsentPreview.surfaces || []).map((surface) => ({
+        id: surface.id,
+        status: surface.status,
+        enabled: surface.enabled,
+        rawContentStored: surface.rawContentStored,
+        auditTypes: surface.auditTypes,
+      })),
+    },
+    perceptionRegistryReady ? '' : 'Review perceptionConsentSnapshot() and /api/perception/consent.',
+  ));
+
   const briefingReady = Boolean(briefingPreview.summary && Array.isArray(briefingPreview.nextActions) && briefingPreview.nextActions.length);
   checks.push(doctorCheck(
     'work_briefing',
@@ -23743,6 +24283,10 @@ async function doctorReportSnapshot() {
         name: skillDraftPreview.skill?.name || '',
         suggestedUserPath: skillDraftPreview.skill?.suggestedUserPath || '',
         sourceEventCount: skillDraftPreview.evidence?.learning?.profile?.sourceEventCount || 0,
+      },
+      perceptionConsent: {
+        summary: perceptionConsentPreview.summary,
+        counts: perceptionConsentPreview.counts,
       },
       collaboration: {
         counts: collaborationPreview.counts,
@@ -28438,6 +28982,14 @@ function startApiServer() {
 
   api.get('/api/presence', (req, res) => {
     res.json({ presence: presenceStateSnapshot({ limit: req.query.limit }) });
+  });
+
+  api.get('/api/perception/consent', (req, res) => {
+    try {
+      res.json({ perception: perceptionConsentSnapshot({ limit: req.query.limit, auditLimit: req.query.auditLimit }) });
+    } catch (error) {
+      jsonError(res, 500, 'Perception consent snapshot failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/attention', (req, res) => {
