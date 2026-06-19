@@ -99,7 +99,7 @@ export default {
 
     const shortcutList = await ctx.api('/api/tools/execute', {
       method: 'POST',
-      body: { name: 'get_skill_shortcuts', arguments: { limit: 3 } },
+      body: { source: 'eval', name: 'get_skill_shortcuts', arguments: { limit: 3 } },
     });
     const shortcutListOutput = parseToolOutput(shortcutList);
     out.push(
@@ -113,7 +113,7 @@ export default {
 
     const shortcutCandidates = await ctx.api('/api/tools/execute', {
       method: 'POST',
-      body: { name: 'get_skill_shortcut_candidates', arguments: { limit: 3 } },
+      body: { source: 'eval', name: 'get_skill_shortcut_candidates', arguments: { limit: 3 } },
     });
     const shortcutCandidateOutput = parseToolOutput(shortcutCandidates);
     out.push(
@@ -156,6 +156,7 @@ export default {
       const savePreview = await ctx.api('/api/tools/execute', {
         method: 'POST',
         body: {
+          source: 'eval',
           name: 'save_skill_shortcut',
           arguments: {
             phrase: shortcutPhrase,
@@ -177,6 +178,7 @@ export default {
       const saveConfirmed = await ctx.api('/api/tools/execute', {
         method: 'POST',
         body: {
+          source: 'eval',
           name: 'save_skill_shortcut',
           arguments: {
             phrase: shortcutPhrase,
@@ -200,6 +202,7 @@ export default {
       const forget = await ctx.api('/api/tools/execute', {
         method: 'POST',
         body: {
+          source: 'eval',
           name: 'forget_skill_shortcut',
           arguments: {
             id: savedShortcutId,
@@ -224,6 +227,25 @@ export default {
         });
       }
     }
+
+    const shortcutEvidence = await ctx.api('/api/realtime/evidence');
+    const shortcutToolEvidence = shortcutEvidence.data?.evidence?.shortcutTools;
+    const shortcutToolEvents = Array.isArray(shortcutToolEvidence?.recent) ? shortcutToolEvidence.recent : [];
+    const shortcutEventNames = new Set(shortcutToolEvents.map((event) => event.name));
+    const shortcutActions = new Set(shortcutToolEvents.map((event) => event.shortcut?.action).filter(Boolean));
+    out.push(
+      shortcutEvidence.ok &&
+        shortcutToolEvidence?.hasConfirmationGate === true &&
+        shortcutToolEvidence?.hasSave === true &&
+        shortcutToolEvidence?.hasForget === true &&
+        shortcutToolEvidence?.hasList === true &&
+        shortcutToolEvidence?.hasCandidates === true &&
+        shortcutEventNames.has('save_skill_shortcut') &&
+        shortcutEventNames.has('forget_skill_shortcut') &&
+        shortcutToolEvents.some((event) => event.source === 'eval')
+        ? ok('realtime.shortcut_tool_evidence', 'Realtime shortcut tool evidence', `actions=${Array.from(shortcutActions).join(', ')}`)
+        : fail('realtime.shortcut_tool_evidence', 'Realtime shortcut tool evidence', 'expected shortcut tool calls to be visible in realtime evidence', shortcutToolEvidence),
+    );
 
     const context = await ctx.api('/api/realtime/context?source=eval');
     const c = context.data?.context;

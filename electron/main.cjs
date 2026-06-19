@@ -88,6 +88,7 @@ const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.e
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
+const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
 const API_AUTH_ENABLED = process.env.JAVIS_API_AUTH !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
@@ -572,6 +573,7 @@ const workSessions = new Map();
 const demonstrations = new Map();
 const shortcuts = new Map();
 const ambientEvents = [];
+const realtimeToolCallEvents = [];
 const activeJobRuns = new Map();
 let learnedProfile = null;
 const windowModes = {
@@ -15738,6 +15740,121 @@ function recordRealtimeProgressInjection(options = {}) {
   return { ok: true, injection, conversation: conversationStateSnapshot() };
 }
 
+const REALTIME_SHORTCUT_TOOL_NAMES = new Set([
+  'get_skill_shortcuts',
+  'get_skill_shortcut_candidates',
+  'save_skill_shortcut',
+  'forget_skill_shortcut',
+]);
+
+function realtimeToolOutputObject(result = {}) {
+  if (!result || typeof result.output !== 'string') return null;
+  try {
+    const parsed = JSON.parse(result.output);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function realtimeToolOutputShape(result = {}) {
+  const output = typeof result.output === 'string' ? result.output : '';
+  const parsed = realtimeToolOutputObject(result);
+  return {
+    outputBytes: Buffer.byteLength(output, 'utf8'),
+    outputType: parsed ? 'json' : output ? 'text' : 'empty',
+    keys: parsed ? Object.keys(parsed).slice(0, 8) : [],
+  };
+}
+
+function shortcutActionForToolCall(name, output = {}) {
+  if (name === 'get_skill_shortcuts') return 'list';
+  if (name === 'get_skill_shortcut_candidates') return 'candidates';
+  if (name === 'forget_skill_shortcut') return 'forget';
+  if (name === 'save_skill_shortcut') return output?.requiresConfirmation ? 'confirm_required' : 'save';
+  return '';
+}
+
+function realtimeShortcutToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_SHORTCUT_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const shortcut = output.shortcut || output.removed || {};
+  const counts = output.counts || output.shortcuts?.counts || {};
+  const action = shortcutActionForToolCall(name, output);
+  const summary = {
+    action,
+    requiresConfirmation: Boolean(output.requiresConfirmation),
+    status: Number(output.status || 0),
+    shortcutId: String(shortcut.id || args?.id || args?.shortcutId || '').slice(0, 120),
+    phrase: compactRecordText(shortcut.phrase || args?.phrase || '', 120),
+    primarySkill: compactRecordText(shortcut.skillRecallPlan?.primarySkill?.name || args?.skillRecallPlan?.primarySkill?.name || '', 120),
+    shortcutCount: Math.max(0, Number(counts.total || 0)),
+    candidateCount: Math.max(0, Number(output.count || 0)),
+  };
+  return summary;
+}
+
+function recordRealtimeToolCall(options = {}) {
+  const name = compactRecordText(options.name || '', 120);
+  if (!name) return null;
+  const result = options.result || {};
+  const errorText = options.error instanceof Error ? options.error.message : options.error || '';
+  const shortcut = realtimeShortcutToolSummary(name, options.args || {}, result);
+  const event = {
+    id: crypto.randomUUID(),
+    name,
+    source: compactRecordText(options.source || 'tool_execute', 80),
+    ok: Boolean(result.ok && !errorText),
+    durationMs: Math.max(0, Math.min(3600000, Number(options.durationMs || 0))),
+    createdAt: Date.now(),
+    createdAtIso: new Date().toISOString(),
+    error: compactRecordText(errorText, 240),
+    result: realtimeToolOutputShape(result),
+    shortcut,
+  };
+  realtimeToolCallEvents.unshift(event);
+  realtimeToolCallEvents.splice(MAX_REALTIME_TOOL_CALL_EVENTS);
+  appendAudit('realtime.tool_call', {
+    name: event.name,
+    source: event.source,
+    ok: event.ok,
+    durationMs: event.durationMs,
+    shortcutAction: shortcut?.action || '',
+    shortcutId: shortcut?.shortcutId || '',
+    phrase: shortcut?.phrase || '',
+    requiresConfirmation: Boolean(shortcut?.requiresConfirmation),
+    error: event.error,
+  });
+  return event;
+}
+
+function realtimeToolCallSnapshot(limit = 20) {
+  return realtimeToolCallEvents.slice(0, Math.max(1, Math.min(100, Number(limit || 20))));
+}
+
+function realtimeShortcutToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_SHORTCUT_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.shortcut?.action).filter(Boolean));
+  const hasConfirmationGate = recent.some((event) => event.shortcut?.requiresConfirmation === true);
+  return {
+    ok: recent.length > 0,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasList: actions.has('list'),
+    hasCandidates: actions.has('candidates'),
+    hasSave: actions.has('save'),
+    hasForget: actions.has('forget'),
+    hasConfirmationGate,
+    last: recent[0] || null,
+    recent,
+    nextAction: recent.length
+      ? 'Use a live voice session to list, save, and forget a shortcut phrase while watching this evidence.'
+      : 'Ask the live voice session to list shortcut phrases or save a confirmed shortcut phrase.',
+  };
+}
+
 function realtimeEvidenceStep({ id, label, ok, blocked = false, detail = '', nextAction = '', evidence = {} }) {
   const status = ok ? 'ready' : blocked ? 'blocked' : 'pending';
   return {
@@ -15878,6 +15995,7 @@ function realtimeVoiceWorkbenchSnapshot() {
 
 function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
+  const shortcutTools = evidence.shortcutTools || {};
   const stepById = new Map(checklist.map((step) => [step.id, step]));
   const stepIds = [
     'provider_ready',
@@ -15933,6 +16051,15 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       endpoint: '/api/realtime/evidence',
       cui: 'npm run config -> V. Watch Realtime voice evidence',
       pollMs: 3000,
+    },
+    shortcutTools: {
+      observed: Boolean(shortcutTools.ok),
+      count: Number(shortcutTools.count || 0),
+      observedActions: Array.isArray(shortcutTools.observedActions) ? shortcutTools.observedActions : [],
+      hasConfirmationGate: Boolean(shortcutTools.hasConfirmationGate),
+      hasSave: Boolean(shortcutTools.hasSave),
+      hasForget: Boolean(shortcutTools.hasForget),
+      nextAction: shortcutTools.nextAction || 'Ask the live voice session to list, save, or forget a shortcut phrase.',
     },
     promptWhenReady: '后台现在怎么样',
     currentStep,
@@ -15999,6 +16126,8 @@ function realtimeVoiceEvidenceSnapshot() {
   const injection = conversation.lastRealtimeProgressInjection || null;
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
+  const toolCalls = realtimeToolCallSnapshot(10);
+  const shortcutTools = realtimeShortcutToolEvidence(8);
   const checks = {
     providerReady: voiceHealth.status === 'ready',
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
@@ -16049,6 +16178,8 @@ function realtimeVoiceEvidenceSnapshot() {
       lastRealtimeProgressInjection: injection,
     },
     voiceHealth,
+    toolCalls,
+    shortcutTools,
     progress: {
       spokenSummary: progress.spokenSummary,
       workerSummary: progress.workerSummary,
@@ -25461,10 +25592,29 @@ function startApiServer() {
   });
 
   api.post('/api/tools/execute', async (req, res) => {
+    const name = String(req.body?.name || '');
+    const args = req.body?.arguments || {};
+    const source = req.body?.source || args?.source || 'tool_execute';
+    const started = Date.now();
     try {
-      const result = await executeTool(String(req.body?.name || ''), req.body?.arguments || {});
+      const result = await executeTool(name, args);
+      recordRealtimeToolCall({
+        name,
+        args,
+        result,
+        source,
+        durationMs: Date.now() - started,
+      });
       res.json(result);
     } catch (error) {
+      recordRealtimeToolCall({
+        name,
+        args,
+        result: { ok: false, output: '' },
+        error,
+        source,
+        durationMs: Date.now() - started,
+      });
       jsonError(res, 500, 'Tool execution failed', error instanceof Error ? error.message : String(error));
     }
   });

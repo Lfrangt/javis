@@ -52,6 +52,7 @@ Renderer
 - Conversation state lane: renderer-reported connecting/live/idle/error voice lifecycle with heartbeats so the resident can expose whether it is truly listening.
 - Realtime preflight lane: one silent text context pushed into each new voice session with presence, current app/browser, screen freshness, active work, next actions, and guardrails.
 - Realtime work-progress lane: while voice is live, sends deduplicated silent `/api/work/progress` updates when background jobs, grouped Codex/Claude/local workers, or workflows change. The progress payload includes a short `spokenSummary` for voice answers. The resident records sanitized `/api/realtime/session` negotiation metadata for the OpenAI WebRTC offer/answer, and the renderer reports a sanitized `/api/realtime/progress-injection` receipt with WebRTC data-channel metadata. `/api/realtime/evidence` combines those receipts into one checklist for active-session dogfood.
+- Realtime tool evidence lane: records a short in-memory ring of `/api/tools/execute` calls for live voice dogfood. It stores tool name, source, timing, success/error state, output shape, and safe shortcut-tool fields for list/candidate/confirmation/save/forget flows; it does not persist full tool arguments or raw tool outputs.
 - Lane contract registry lane: deterministic OpenClaw-inspired contracts for realtime/background/Codex/Claude/local/browser/file/app ownership, non-goals, handoff tools, tool posture, and risk boundaries, exposed to API, Realtime tools, briefing, status, and doctor checks.
 - Task routing ledger lane: persists each quick/background/Codex/Claude/local routing decision with owner, scope, parallel group, approval requirement, status, and result link.
 - Skill shortcut lane: persists confirmed phrase triggers for previously recalled local skill plans, exposes CUI/API/Realtime voice promotion and deletion, and feeds matched shortcuts back into routing without granting execution permission.
@@ -158,7 +159,7 @@ Each routing record also stores `contextPlan`, which explains the planned contex
 
 Running jobs keep their latest log in `jobs.json`. Jobs launched from a routed task also retain `skillRecallPlan` when one was available, and worker prompts/logs include that plan as reusable procedure context without turning it into permission. Codex and Claude workers are launched in their own process group so cancellation can stop the worker tree instead of only the shell wrapper.
 
-`audit.jsonl` records structured process, job, tool, and local-action events for debugging and later replay/audit work.
+`audit.jsonl` records structured process, job, tool, and local-action events for debugging and later replay/audit work. Realtime tool-call evidence is intentionally shorter-lived in memory; only compact audit metadata is persisted.
 
 `action-policy.json` controls which local actions can run automatically, which require approval, and whether actions should run in dry-run mode.
 
