@@ -264,11 +264,12 @@ export default {
         output.includes('Shortcut tools:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Recent realtime tool calls:') &&
+          output.includes('- sync ') &&
           output.includes('confirm_required') &&
           output.includes('save') &&
           output.includes('forget')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut and recent tool-call evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut tool evidence', { output: output.slice(0, 2000) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut tool and progress sync evidence', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));

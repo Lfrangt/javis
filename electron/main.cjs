@@ -15943,12 +15943,67 @@ function realtimeEvidencePhase(checks = {}, voiceHealth = {}) {
   }
   if (!checks.sessionNegotiated) return 'needs_live_session';
   if (!checks.progressInjectedFromRenderer) return 'needs_worker_progress_injection';
+  if (!checks.progressVersionSynced) return 'needs_fresh_worker_progress';
   if (!checks.passiveContextOnly) return 'needs_passive_injection';
   if (!checks.spokenSummaryReady) return 'needs_spoken_summary';
   return 'ready';
 }
 
-function realtimeEvidenceChecklist({ checks = {}, voiceHealth = {}, negotiation = null, injection = null, progress = null, includeSpokenSummary = true } = {}) {
+function realtimeProgressSyncEvidence({ currentVersion = null, injection = null } = {}) {
+  const version = currentVersion || workProgressSnapshot();
+  const currentSequence = boundedCount(version?.sequence, 1000000000);
+  const currentUpdatedAt = boundedCount(version?.updatedAt, 4102444800000);
+  const currentSource = compactRecordText(version?.source || 'startup', 80);
+  const injectedSequence = boundedCount(injection?.progressSequence, 1000000000);
+  const injectedUpdatedAt = boundedCount(injection?.progressUpdatedAt, 4102444800000);
+  const injectedSource = compactRecordText(injection?.progressSource || '', 80);
+  const hasInjection = Boolean(injection);
+  const hasVersionedInjection = hasInjection && Boolean(injectedSequence || injectedUpdatedAt || injectedSource);
+  const behindBy = hasInjection ? Math.max(0, currentSequence - injectedSequence) : currentSequence;
+  const status = !hasInjection
+    ? 'pending'
+    : !hasVersionedInjection
+      ? 'unversioned'
+      : behindBy > 0
+        ? 'stale'
+        : 'synced';
+  const ok = status === 'synced';
+  const detail = ok
+    ? `Progress sequence ${injectedSequence} has reached Realtime.`
+    : status === 'stale'
+      ? `Realtime is ${behindBy} progress sequence(s) behind current work.`
+      : status === 'unversioned'
+        ? 'Last Realtime progress receipt did not include a work progress version.'
+        : 'No Realtime progress receipt has been recorded yet.';
+  return {
+    ok,
+    status,
+    detail,
+    currentSequence,
+    injectedSequence,
+    behindBy,
+    current: {
+      sequence: currentSequence,
+      updatedAt: currentUpdatedAt,
+      source: currentSource,
+    },
+    injected: hasInjection
+      ? {
+        sequence: injectedSequence,
+        updatedAt: injectedUpdatedAt,
+        source: injectedSource,
+        receiptSource: injection.source || '',
+        transport: injection.transport || '',
+        createdAt: injection.createdAt || 0,
+      }
+      : null,
+    nextAction: ok
+      ? 'Ask in the live voice session: 后台现在怎么样'
+      : 'Keep voice live while background work changes so the renderer can send the latest progress sequence.',
+  };
+}
+
+function realtimeEvidenceChecklist({ checks = {}, voiceHealth = {}, negotiation = null, injection = null, progress = null, progressSync = null, includeSpokenSummary = true } = {}) {
   const checklist = [
     realtimeEvidenceStep({
       id: 'provider_ready',
@@ -15986,6 +16041,20 @@ function realtimeEvidenceChecklist({ checks = {}, voiceHealth = {}, negotiation 
         transport: injection?.transport || '',
         dataChannelReadyState: injection?.dataChannelReadyState || '',
         workerSummary: injection?.workerSummary || '',
+        progressSequence: injection?.progressSequence || 0,
+      },
+    }),
+    realtimeEvidenceStep({
+      id: 'progress_version_synced',
+      label: 'Latest work progress sequence reached voice',
+      ok: checks.progressVersionSynced,
+      detail: progressSync?.detail || 'No progress sync evidence has been recorded yet.',
+      nextAction: progressSync?.nextAction || 'Keep voice live while background work changes.',
+      evidence: {
+        status: progressSync?.status || 'pending',
+        currentSequence: progressSync?.currentSequence || 0,
+        injectedSequence: progressSync?.injectedSequence || 0,
+        behindBy: progressSync?.behindBy || 0,
       },
     }),
     realtimeEvidenceStep({
@@ -16020,14 +16089,16 @@ function realtimeVoiceWorkbenchSnapshot() {
   const negotiation = conversation.lastRealtimeSessionNegotiation || null;
   const injection = conversation.lastRealtimeProgressInjection || null;
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const progressSync = realtimeProgressSyncEvidence({ injection });
   const checks = {
     providerReady: voiceHealth.status === 'ready',
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
     progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
+    progressVersionSynced: progressSync.ok,
     passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
     spokenSummaryReady: true,
   };
-  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, includeSpokenSummary: false });
+  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, progressSync, includeSpokenSummary: false });
   const phase = realtimeEvidencePhase(checks, voiceHealth);
   const status = phase === 'ready'
     ? 'ready'
@@ -16070,6 +16141,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
     'provider_ready',
     'session_negotiated',
     'worker_progress_injected',
+    'progress_version_synced',
     'passive_context_only',
     'spoken_summary_ready',
   ];
@@ -16162,6 +16234,7 @@ function realtimeDogfoodDrillStep({ id, label, ok, detail = '', nextAction = '',
 function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const checks = evidence.checks || {};
   const progress = evidence.progress || {};
+  const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
@@ -16205,6 +16278,19 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
         path: '/api/realtime/dogfood/start',
         body: { execute: true, prepareProgress: true, prepareWhenLive: true, durationMs: 45000 },
         dogfoodStart,
+      },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'sync_latest_progress',
+      label: 'Sync latest work progress sequence into voice',
+      ok: Boolean(checks.progressVersionSynced),
+      detail: progressSync.detail || 'No latest progress sequence sync evidence has been recorded yet.',
+      nextAction: progressSync.nextAction || 'Keep voice live while background work changes.',
+      evidence: {
+        status: progressSync.status || 'pending',
+        currentSequence: progressSync.currentSequence || 0,
+        injectedSequence: progressSync.injectedSequence || 0,
+        behindBy: progressSync.behindBy || 0,
       },
     }),
     realtimeDogfoodDrillStep({
@@ -16516,6 +16602,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const injection = conversation.lastRealtimeProgressInjection || null;
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
+  const progressSync = realtimeProgressSyncEvidence({ currentVersion: progress.version, injection });
   const toolCalls = realtimeToolCallSnapshot(10);
   const shortcutTools = realtimeShortcutToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
@@ -16523,10 +16610,11 @@ function realtimeVoiceEvidenceSnapshot() {
     providerReady: voiceHealth.status === 'ready',
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
     progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
+    progressVersionSynced: progressSync.ok,
     passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
     spokenSummaryReady: Boolean(progress.spokenSummary && progress.spokenSummary.length <= 420),
   };
-  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, progress });
+  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, progress, progressSync });
   const phase = realtimeEvidencePhase(checks, voiceHealth);
   const status = phase === 'ready'
     ? 'ready'
@@ -16572,7 +16660,10 @@ function realtimeVoiceEvidenceSnapshot() {
     dogfoodStart,
     toolCalls,
     shortcutTools,
+    progressSync,
     progress: {
+      version: progress.version,
+      sync: progressSync,
       spokenSummary: progress.spokenSummary,
       workerSummary: progress.workerSummary,
       workerGroups: progress.workerGroups,

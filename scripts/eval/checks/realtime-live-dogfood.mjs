@@ -212,6 +212,18 @@ export default {
           : fail('realtime_live_dogfood.injection_evidence', 'Realtime injection evidence', `record failed ${record.status}`, record.data),
       );
 
+      const evidenceSnapshot = await ctx.api('/api/realtime/evidence');
+      const progressSync = evidenceSnapshot.data?.evidence?.progressSync || evidenceSnapshot.data?.evidence?.progress?.sync;
+      out.push(
+        evidenceSnapshot.ok &&
+          ['synced', 'stale'].includes(progressSync?.status) &&
+          progressSync.injectedSequence === evidence.progressSequence &&
+          typeof progressSync.currentSequence === 'number' &&
+          typeof progressSync.behindBy === 'number'
+          ? ok('realtime_live_dogfood.progress_sync', 'Realtime progress sync evidence', `status=${progressSync.status} current=${progressSync.currentSequence} injected=${progressSync.injectedSequence}`)
+          : fail('realtime_live_dogfood.progress_sync', 'Realtime progress sync evidence', 'live dogfood evidence did not expose current/injected progress sequence state', evidenceSnapshot.data),
+      );
+
       const spokenSummary = String(progress.spokenSummary || '');
       const spokenOk = spokenSummary.length > 0
         && spokenSummary.length <= 420

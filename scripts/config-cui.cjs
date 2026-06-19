@@ -853,6 +853,7 @@ function printRealtimeEvidence(result) {
   const negotiation = conversation.lastRealtimeSessionNegotiation || {};
   const injection = conversation.lastRealtimeProgressInjection || {};
   const progress = evidence.progress || {};
+  const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = evidence.shortcutTools || {};
   const shortcutEvents = Array.isArray(shortcutTools.recent) ? shortcutTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
@@ -863,6 +864,7 @@ function printRealtimeEvidence(result) {
     ['providerReady', 'Realtime provider'],
     ['sessionNegotiated', 'WebRTC session'],
     ['progressInjectedFromRenderer', 'Renderer progress injection'],
+    ['progressVersionSynced', 'Progress sequence sync'],
     ['passiveContextOnly', 'Passive context only'],
     ['spokenSummaryReady', 'Short spoken summary'],
   ];
@@ -956,11 +958,12 @@ function printRealtimeEvidence(result) {
     console.log('- negotiation none yet');
   }
   if (Object.keys(injection).length) {
-    console.log(`- injection ${injection.transport || '-'} · channel=${injection.dataChannelReadyState || '-'} · forced=${injection.forcedResponse === true ? 'yes' : 'no'} · workers=${injection.workerSummary || '-'}`);
+    console.log(`- injection ${injection.transport || '-'} · channel=${injection.dataChannelReadyState || '-'} · forced=${injection.forcedResponse === true ? 'yes' : 'no'} · seq=${injection.progressSequence || 0} · workers=${injection.workerSummary || '-'}`);
   } else {
     console.log('- injection none yet');
   }
   console.log('\nProgress summary:');
+  console.log(`- sync ${progressSync.status || 'pending'} · current seq ${progressSync.currentSequence ?? progress.version?.sequence ?? 0} · injected seq ${progressSync.injectedSequence ?? injection.progressSequence ?? 0} · behind ${progressSync.behindBy ?? 0}`);
   console.log(`- workers ${summarizeWorkerGroups(progress.workerGroups)} · active jobs ${progress.activeJobs || 0} · blocked workflows ${progress.blockedWorkflows || 0}`);
   console.log(`- spoken ${compact(progress.spokenSummary || '-', 420)}`);
   if (Array.isArray(progress.nextActions) && progress.nextActions.length) {

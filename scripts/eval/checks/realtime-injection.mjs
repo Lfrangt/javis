@@ -239,6 +239,17 @@ export default {
           ? ok('realtime_injection.runtime_record', 'Runtime injection evidence', 'resident recorded the live progress injection summary')
           : fail('realtime_injection.runtime_record', 'Runtime injection evidence', `record failed ${record.status}`, record.data),
       );
+
+      const evidenceSnapshot = await ctx.api('/api/realtime/evidence');
+      const progressSync = evidenceSnapshot.data?.evidence?.progressSync || evidenceSnapshot.data?.evidence?.progress?.sync;
+      out.push(
+        evidenceSnapshot.ok &&
+          typeof progressSync?.currentSequence === 'number' &&
+          progressSync.injectedSequence === evidence.progressSequence &&
+          ['synced', 'stale'].includes(progressSync.status)
+          ? ok('realtime_injection.progress_sync_evidence', 'Progress sync evidence', `status=${progressSync.status} current=${progressSync.currentSequence} injected=${progressSync.injectedSequence}`)
+          : fail('realtime_injection.progress_sync_evidence', 'Progress sync evidence', 'realtime evidence did not expose current/injected progress sequence state', evidenceSnapshot.data),
+      );
     } finally {
       await ctx.api('/api/conversation/state', {
         method: 'POST',
