@@ -1333,23 +1333,27 @@ function printRealtimeDogfoodSession(result) {
   const active = sessions.active || null;
   const items = Array.isArray(sessions.items) ? sessions.items : [];
   const counts = sessions.counts || {};
+  const autoSync = sessions.autoSync || active?.autoSync || {};
   console.log('JAVIS Realtime Dogfood Session');
   console.log('==============================');
   console.log(`Sessions: ${counts.active || 0} active · ${counts.done || 0} done · ${counts.cancelled || 0} cancelled · ${counts.total || 0} total`);
   console.log(`Manual only=yes · starts microphone=${sessions.startsMicrophone ? 'yes' : 'no'}`);
   console.log(`Evidence: ${sessions.evidence?.status || '-'} · phase ${sessions.evidence?.phase || '-'}`);
+  console.log(`Evidence sync: auto=${autoSync.enabled === false ? 'no' : 'yes'} · changed=${Number(autoSync.changed || 0)} session(s) · synced=${Number(autoSync.syncedSteps || 0)} step(s) · currentReady=${Number(autoSync.currentEvidenceReady || 0)}`);
   if (sessions.prompt?.copyText) console.log(`Next prompt: ${sessions.prompt.copyText}`);
   console.log(`Monitor: ${sessions.active?.monitor?.cui || 'npm run config -> V. Watch Realtime voice evidence'}`);
   if (!active) {
     console.log('\nActive session: none');
   } else {
     console.log(`\nActive session: ${active.title} · ${active.status} · ${formatTime(active.createdAt)}`);
-    console.log(`Progress: ${active.counts?.evidenceReady || 0}/${active.counts?.total || 0} evidence ready · ${active.counts?.operatorDone || 0}/${active.counts?.total || 0} operator done`);
+    console.log(`Progress: ${active.counts?.evidenceReady || 0}/${active.counts?.total || 0} evidence ready · ${active.counts?.currentEvidenceReady || 0}/${active.counts?.total || 0} currently ready · ${active.counts?.operatorDone || 0}/${active.counts?.total || 0} operator done`);
+    console.log(`Auto-sync: sticky=${active.autoSync?.stickyEvidence ? 'yes' : 'no'} · last=${active.autoSync?.lastSyncedAt ? formatTime(active.autoSync.lastSyncedAt) : '-'} · count=${active.autoSync?.syncCount || 0}`);
     if (active.nextStep) console.log(`Next evidence step: ${active.nextStep.label}`);
     const steps = Array.isArray(active.steps) ? active.steps : [];
     for (const step of steps.slice(0, 12)) {
-      const mark = step.evidenceOk ? 'ready' : step.operatorDone ? 'done' : step.status || 'pending';
-      console.log(`- ${mark} ${step.label || step.id}`);
+      const mark = step.operatorDone ? 'done' : step.evidenceOk ? 'ready' : step.status || 'pending';
+      const sticky = step.evidenceOk && !step.currentEvidenceOk ? ' · sticky' : '';
+      console.log(`- ${mark} ${step.label || step.id}${sticky}`);
     }
   }
   const recent = items.filter((item) => !active || item.id !== active.id).slice(0, 3);

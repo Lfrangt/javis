@@ -21,6 +21,7 @@ Local Mac-first realtime desktop buddy.
 - Next Realtime dogfood prompt helper from CUI/API, with clipboard copy and dry-run support, so operators can manually dogfood live voice without starting microphone capture from automation.
 - Realtime dogfood operator session tracker from CUI/API, so a real spoken drill can be started, marked, ended, and audited without turning the desktop pet into a dashboard.
 - Realtime voice dogfood-session tools, so the live voice model can inspect, start, mark, and end the same operator drill record while CUI/API evidence proves it did not start microphone capture.
+- Realtime dogfood session auto-sync, so evidence-proven drill steps are persisted as sticky progress even after the live voice session disconnects.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.

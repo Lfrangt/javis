@@ -93,6 +93,7 @@ export default {
 
     const maintenancePreview = await ctx.api('/api/work/next', {
       method: 'POST',
+      timeoutMs: 45000,
       body: {
         execute: false,
         actionId: 'maintenance:resident_snapshot',

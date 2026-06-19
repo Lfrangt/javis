@@ -651,6 +651,7 @@ export default {
       out.push(
         output.includes('JAVIS Realtime Dogfood Session') &&
           output.includes('starts microphone=no') &&
+          output.includes('Evidence sync: auto=yes') &&
           output.includes('Next prompt:') &&
           output.includes('npm run config -> V. Watch Realtime voice evidence')
           ? ok('realtime.cui_dogfood_session', 'Realtime CUI dogfood session', 'config CUI prints the manual dogfood session tracker')
@@ -924,6 +925,7 @@ export default {
         dogfoodSessionBefore.data?.sessions?.manualOnly === true &&
         dogfoodSessionBefore.data?.sessions?.startsMicrophone === false &&
         dogfoodSessionBefore.data?.sessions?.prompt?.startsMicrophone === false &&
+        dogfoodSessionBefore.data?.sessions?.autoSync?.enabled === true &&
         dogfoodSessionBefore.data?.sessions?.prompt?.copyText
         ? ok('realtime.dogfood_operator_session_snapshot', 'Realtime dogfood operator session snapshot', `${dogfoodSessionBefore.data.sessions.counts?.active || 0} active session(s)`)
         : fail('realtime.dogfood_operator_session_snapshot', 'Realtime dogfood operator session snapshot', `GET /api/realtime/dogfood/session ${dogfoodSessionBefore.status}`, dogfoodSessionBefore.data),
@@ -948,8 +950,14 @@ export default {
         dogfoodSession?.manualOnly === true &&
         dogfoodSession?.startsMicrophone === false &&
         dogfoodSession?.monitor?.endpoint === '/api/realtime/evidence' &&
+        dogfoodSessionStart.data?.autoSync?.enabled === true &&
+        dogfoodSessionStart.data?.autoSync?.changed === true &&
+        dogfoodSessionStart.data?.autoSync?.syncedSteps === dogfoodSession?.counts?.evidenceReady &&
+        dogfoodSession?.autoSync?.stickyEvidence === true &&
+        dogfoodSession?.autoSync?.syncCount >= 1 &&
+        dogfoodSession?.counts?.currentEvidenceReady <= dogfoodSession?.counts?.evidenceReady &&
         dogfoodSessionStepId
-        ? ok('realtime.dogfood_operator_session_start', 'Realtime dogfood operator session start', `${dogfoodSession.id} · ${dogfoodSession.counts?.evidenceReady || 0}/${dogfoodSession.counts?.total || 0} evidence ready`)
+        ? ok('realtime.dogfood_operator_session_start', 'Realtime dogfood operator session start', `${dogfoodSession.id} · ${dogfoodSession.counts?.evidenceReady || 0}/${dogfoodSession.counts?.total || 0} evidence ready · auto-sync=${dogfoodSessionStart.data.autoSync.syncedSteps}`)
         : fail('realtime.dogfood_operator_session_start', 'Realtime dogfood operator session start', `POST /api/realtime/dogfood/session/start ${dogfoodSessionStart.status}`, dogfoodSessionStart.data),
     );
 

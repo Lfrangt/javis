@@ -3289,6 +3289,8 @@ function normalizeRealtimeDogfoodOperatorSession(session = {}) {
     promptText: compactRecordText(session.promptText || '', 400),
     steps,
     summary: compactRecordText(session.summary || '', 1200),
+    lastEvidenceSyncedAt: Number(session.lastEvidenceSyncedAt || 0),
+    evidenceSyncCount: Math.max(0, Number(session.evidenceSyncCount || 0)),
     createdAt: Number(session.createdAt || Date.now()),
     updatedAt: Number(session.updatedAt || Date.now()),
     completedAt: status === 'active' ? 0 : Number(session.completedAt || Date.now()),
@@ -18109,21 +18111,153 @@ function activeRealtimeDogfoodOperatorSession() {
   return realtimeDogfoodOperatorSessionItems(1, 'active')[0] || null;
 }
 
+function realtimeDogfoodDrillStepsForEvidence(evidence = {}) {
+  const drill = evidence.drill || evidence.dogfood?.drill || {};
+  return Array.isArray(drill.steps) ? drill.steps : [];
+}
+
+function syncRealtimeDogfoodOperatorSessionWithEvidence(session = null, evidence = realtimeVoiceEvidenceSnapshot(), options = {}) {
+  if (!session || session.status !== 'active') {
+    return { enabled: true, session, changed: false, addedSteps: 0, syncedSteps: 0, currentEvidenceReady: 0 };
+  }
+  const drillSteps = realtimeDogfoodDrillStepsForEvidence(evidence);
+  if (!drillSteps.length) {
+    return { enabled: true, session, changed: false, addedSteps: 0, syncedSteps: 0, currentEvidenceReady: 0 };
+  }
+
+  const now = Date.now();
+  const storedById = new Map((Array.isArray(session.steps) ? session.steps : []).map((step) => [step.id, step]));
+  const nextSteps = [];
+  let changed = false;
+  let addedSteps = 0;
+  let newlySyncedSteps = 0;
+  let currentEvidenceReady = 0;
+
+  for (const drillStep of drillSteps) {
+    const id = String(drillStep.id || '').trim();
+    if (!id) continue;
+    const stored = storedById.get(id) || {};
+    const currentEvidenceOk = Boolean(drillStep.ok);
+    const stickyEvidenceOk = Boolean(stored.evidenceOk || currentEvidenceOk);
+    if (currentEvidenceOk) currentEvidenceReady += 1;
+    if (!storedById.has(id)) addedSteps += 1;
+    if (currentEvidenceOk && !stored.evidenceOk) newlySyncedSteps += 1;
+    const preservedStatus = ['done', 'blocked', 'skipped'].includes(stored.status) ? stored.status : '';
+    const status = preservedStatus || (stickyEvidenceOk ? 'ready' : stored.status || 'pending');
+    const nextStep = normalizeRealtimeDogfoodOperatorStep({
+      ...stored,
+      id,
+      label: drillStep.label || stored.label || id,
+      status,
+      evidenceOk: stickyEvidenceOk,
+      prompt: stored.prompt || drillStep.evidence?.prompt || '',
+      source: currentEvidenceOk && !stored.evidenceOk ? 'evidence_sync' : stored.source || options.source || 'api',
+      updatedAt: currentEvidenceOk && !stored.evidenceOk ? now : stored.updatedAt || session.updatedAt,
+    });
+    nextSteps.push(nextStep);
+    if (
+      !stored.id ||
+      stored.label !== nextStep.label ||
+      stored.status !== nextStep.status ||
+      Boolean(stored.evidenceOk) !== Boolean(nextStep.evidenceOk) ||
+      stored.prompt !== nextStep.prompt
+    ) {
+      changed = true;
+    }
+  }
+
+  const evidenceStatus = String(evidence.status || session.evidenceStatus || '').slice(0, 40);
+  const evidencePhase = String(evidence.phase || session.evidencePhase || '').slice(0, 80);
+  const drillSummary = compactRecordText(evidence.drill?.summary || session.drillSummary || '', 300);
+  const promptText = compactRecordText(realtimeDogfoodNextPromptSnapshot({ evidence }).copyText || session.promptText || '', 400);
+  if (
+    session.evidenceStatus !== evidenceStatus ||
+    session.evidencePhase !== evidencePhase ||
+    session.drillSummary !== drillSummary ||
+    session.promptText !== promptText
+  ) {
+    changed = true;
+  }
+
+  if (!changed) {
+    return {
+      enabled: true,
+      session,
+      changed: false,
+      addedSteps,
+      syncedSteps: 0,
+      currentEvidenceReady,
+      evidenceReady: nextSteps.filter((step) => step.evidenceOk).length,
+    };
+  }
+
+  const next = normalizeRealtimeDogfoodOperatorSession({
+    ...session,
+    evidenceStatus,
+    evidencePhase,
+    drillSummary,
+    promptText,
+    steps: nextSteps,
+    lastEvidenceSyncedAt: now,
+    evidenceSyncCount: Number(session.evidenceSyncCount || 0) + 1,
+    updatedAt: now,
+  });
+  realtimeDogfoodOperatorSessions.set(next.id, next);
+  persistRealtimeDogfoodOperatorSessions();
+  appendAudit('realtime.dogfood_operator_session_synced', {
+    id: next.id,
+    source: String(options.source || 'api').slice(0, 80),
+    evidenceStatus,
+    evidencePhase,
+    addedSteps,
+    newlySyncedSteps,
+    evidenceReady: next.steps.filter((step) => step.evidenceOk).length,
+    currentEvidenceReady,
+  });
+  return {
+    enabled: true,
+    session: next,
+    changed: true,
+    addedSteps,
+    syncedSteps: newlySyncedSteps,
+    currentEvidenceReady,
+    evidenceReady: next.steps.filter((step) => step.evidenceOk).length,
+  };
+}
+
+function syncRealtimeDogfoodOperatorSessionsWithEvidence(evidence = realtimeVoiceEvidenceSnapshot(), options = {}) {
+  const activeSessions = realtimeDogfoodOperatorSessionItems(100, 'active');
+  const results = activeSessions.map((session) => syncRealtimeDogfoodOperatorSessionWithEvidence(session, evidence, options));
+  return {
+    enabled: true,
+    source: String(options.source || 'api').slice(0, 80),
+    checked: results.length,
+    changed: results.filter((result) => result.changed).length,
+    addedSteps: results.reduce((sum, result) => sum + Number(result.addedSteps || 0), 0),
+    syncedSteps: results.reduce((sum, result) => sum + Number(result.syncedSteps || 0), 0),
+    currentEvidenceReady: Math.max(0, ...results.map((result) => Number(result.currentEvidenceReady || 0))),
+  };
+}
+
 function realtimeDogfoodOperatorSessionView(session = null, evidence = realtimeVoiceEvidenceSnapshot()) {
   if (!session) return null;
   const drill = evidence.drill || evidence.dogfood?.drill || {};
   const prompt = realtimeDogfoodNextPromptSnapshot({ evidence });
   const storedById = new Map((Array.isArray(session.steps) ? session.steps : []).map((step) => [step.id, step]));
-  const drillSteps = Array.isArray(drill.steps) ? drill.steps : [];
+  const drillSteps = realtimeDogfoodDrillStepsForEvidence(evidence);
   const steps = drillSteps.map((step) => {
     const stored = storedById.get(step.id) || {};
-    const evidenceOk = Boolean(step.ok);
-    const operatorStatus = stored.status || (evidenceOk ? 'ready' : 'pending');
+    const currentEvidenceOk = Boolean(step.ok);
+    const evidenceOk = Boolean(stored.evidenceOk || currentEvidenceOk);
+    const operatorStatus = ['done', 'blocked', 'skipped'].includes(stored.status)
+      ? stored.status
+      : stored.status || (evidenceOk ? 'ready' : 'pending');
     return {
       id: step.id || '',
       label: step.label || stored.label || step.id || '',
-      status: evidenceOk ? 'ready' : operatorStatus,
+      status: operatorStatus,
       evidenceOk,
+      currentEvidenceOk,
       operatorDone: stored.status === 'done',
       promptType: stored.promptType || '',
       prompt: stored.prompt || step.evidence?.prompt || '',
@@ -18136,6 +18270,8 @@ function realtimeDogfoodOperatorSessionView(session = null, evidence = realtimeV
   const counts = {
     total: steps.length,
     evidenceReady: steps.filter((step) => step.evidenceOk).length,
+    currentEvidenceReady: steps.filter((step) => step.currentEvidenceOk).length,
+    stickyEvidenceReady: steps.filter((step) => step.evidenceOk && !step.currentEvidenceOk).length,
     operatorDone: steps.filter((step) => step.operatorDone).length,
     pendingEvidence: steps.filter((step) => !step.evidenceOk).length,
   };
@@ -18151,6 +18287,14 @@ function realtimeDogfoodOperatorSessionView(session = null, evidence = realtimeV
     counts,
     steps,
     nextStep,
+    autoSync: {
+      enabled: true,
+      stickyEvidence: true,
+      lastSyncedAt: session.lastEvidenceSyncedAt || 0,
+      syncCount: Number(session.evidenceSyncCount || 0),
+      currentEvidenceReady: counts.currentEvidenceReady,
+      stickyEvidenceReady: counts.stickyEvidenceReady,
+    },
     prompt,
     monitor: {
       cui: 'npm run config -> V. Watch Realtime voice evidence',
@@ -18168,6 +18312,9 @@ function realtimeDogfoodOperatorSessionView(session = null, evidence = realtimeV
 
 function realtimeDogfoodOperatorSessionSnapshot(options = {}) {
   const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
+  const autoSync = syncRealtimeDogfoodOperatorSessionsWithEvidence(evidence, {
+    source: options.source || 'session_snapshot',
+  });
   const active = activeRealtimeDogfoodOperatorSession();
   const items = realtimeDogfoodOperatorSessionItems(options.limit || 10, options.status)
     .map((session) => realtimeDogfoodOperatorSessionView(session, evidence));
@@ -18179,6 +18326,7 @@ function realtimeDogfoodOperatorSessionSnapshot(options = {}) {
     counts: realtimeDogfoodOperatorSessionCounts(),
     active: realtimeDogfoodOperatorSessionView(active, evidence),
     items,
+    autoSync,
     evidence: {
       status: evidence.status,
       phase: evidence.phase,
@@ -18218,8 +18366,8 @@ function startRealtimeDogfoodOperatorSession(options = {}) {
     steps: (Array.isArray(drill.steps) ? drill.steps : []).map((step) => ({
       id: step.id,
       label: step.label,
-      status: step.ok ? 'ready' : 'pending',
-      evidenceOk: Boolean(step.ok),
+      status: 'pending',
+      evidenceOk: false,
       prompt: step.evidence?.prompt || '',
       updatedAt: now,
     })),
@@ -18228,20 +18376,26 @@ function startRealtimeDogfoodOperatorSession(options = {}) {
   });
   realtimeDogfoodOperatorSessions.set(session.id, session);
   persistRealtimeDogfoodOperatorSessions();
-  appendAudit('realtime.dogfood_operator_session_started', {
-    id: session.id,
-    source: session.source,
-    evidenceStatus: session.evidenceStatus,
-    evidencePhase: session.evidencePhase,
-    stepCount: session.steps.length,
+  const sync = syncRealtimeDogfoodOperatorSessionWithEvidence(session, evidence, {
+    source: options.source || 'api',
   });
-  const view = realtimeDogfoodOperatorSessionView(session, evidence);
+  const syncedSession = sync.session || session;
+  appendAudit('realtime.dogfood_operator_session_started', {
+    id: syncedSession.id,
+    source: syncedSession.source,
+    evidenceStatus: syncedSession.evidenceStatus,
+    evidencePhase: syncedSession.evidencePhase,
+    stepCount: syncedSession.steps.length,
+    autoSyncedSteps: sync.syncedSteps || 0,
+  });
+  const view = realtimeDogfoodOperatorSessionView(syncedSession, evidence);
   return {
     ok: true,
     manualOnly: true,
     startsMicrophone: false,
     session: view,
-    sessions: realtimeDogfoodOperatorSessionSnapshot({ evidence }),
+    autoSync: sync,
+    sessions: realtimeDogfoodOperatorSessionSnapshot({ evidence, source: options.source || 'api' }),
     evidence,
     prompt,
     output: view.output,
