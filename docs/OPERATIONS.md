@@ -218,6 +218,10 @@ curl -X POST http://127.0.0.1:3417/api/collaboration/claims/<claim-id>/heartbeat
 curl -X POST http://127.0.0.1:3417/api/collaboration/claims/<claim-id>/release \
   -H 'Content-Type: application/json' \
   -d '{"status":"done"}'
+npm run collab -- status
+npm run collab -- claim --agent claude-code --owner "Claude Code" --lane claude --scope "docs/OPERATIONS.md" --task "Update operations docs"
+npm run collab -- heartbeat <claim-id>
+npm run collab -- release <claim-id> --status done --result "Docs updated"
 curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -H 'Content-Type: application/json' \
   -d '{"intent":"search","query":"OpenAI Realtime API docs","mode":"quick"}'
@@ -254,6 +258,8 @@ curl -X POST http://127.0.0.1:3417/api/context/plan \
 `/api/collaboration` is for external workers that are not launched by JAVIS, such as a separate Claude Code session. A worker should create a claim before editing, heartbeat it during long work, and release it when finished. Claims expire automatically after `JAVIS_COLLABORATION_CLAIM_TTL_MS` if the worker disappears. Active write claims seed `/api/tasks/parallel`, so a later Codex/Claude/local task that overlaps the claimed scope is serialized instead of started in parallel.
 
 When Claude Code is working beside Codex, ask it to use the collaboration commands above before editing. The CUI option `26. Show collaboration claims` should show its active scope, and overlapping write scopes will be reported as conflicts instead of silently running competing agents on the same files.
+
+For local Claude Code/Codex sessions, prefer `npm run collab -- claim ...` over manual curl. It auto-discovers the local API token, prints the claim id, and gives the matching heartbeat/release commands.
 
 `/api/browser/workflow` supports `search`, `compare`, `review_result`, and `research` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages and capture those result pages. `review_result` opens one explicit URL or selected result link through the guarded `open_url` path, then reads the target page. `research` opens several explicit URLs or selected result links in sequence and synthesizes their read-only page snapshots. Browser workflows do not click page controls, type into arbitrary fields, submit forms, or make account changes by themselves.
 

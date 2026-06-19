@@ -1,4 +1,12 @@
 import { ok, warn, fail } from '../_client.mjs';
+import { execFile } from 'node:child_process';
+import path from 'node:path';
+import { promisify } from 'node:util';
+import url from 'node:url';
+
+const execFileAsync = promisify(execFile);
+const here = path.dirname(url.fileURLToPath(import.meta.url));
+const collabCli = path.join(here, '..', '..', 'collab.mjs');
 
 export default {
   lane: 'collaboration',
@@ -12,6 +20,22 @@ export default {
       return out;
     }
     out.push(ok('collaboration.read', 'Collaboration ledger', `${snapshot.counts?.active || 0} active claim(s), ${snapshot.counts?.conflicts || 0} conflict pair(s)`, { counts: snapshot.counts }));
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [collabCli, 'status', '--json'], {
+        timeout: 8000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      const cliSnapshot = JSON.parse(stdout);
+      out.push(
+        cliSnapshot?.collaboration?.counts
+          ? ok('collaboration.cli_status', 'Collaboration CLI status', `${cliSnapshot.collaboration.counts.active || 0} active claim(s) via npm run collab`)
+          : fail('collaboration.cli_status', 'Collaboration CLI status', 'missing collaboration counts', cliSnapshot),
+      );
+    } catch (error) {
+      out.push(fail('collaboration.cli_status', 'Collaboration CLI status', error instanceof Error ? error.message : String(error)));
+    }
 
     const scope = `eval/collaboration/${Date.now()}`;
     let claimId = '';

@@ -25,6 +25,7 @@
     "resident:uninstall": "node scripts/uninstall-launch-agent.cjs",
     "resident:restart": "npm run resident:uninstall && npm run resident:install",
     "doctor": "node scripts/doctor.mjs",
+    "collab": "node scripts/collab.mjs",
     "eval": "node scripts/eval/run.mjs",
     "eval:json": "node scripts/eval/run.mjs --json",
     "eval:routing": "node scripts/eval-routing.mjs",
