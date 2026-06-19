@@ -118,7 +118,7 @@ Codex and Claude Code delegation uses the `allow.code_agent` policy block. Faile
 `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot in `/api/jobs/<job-id>`, `/api/jobs/recovery`, `/api/work/progress`, and linked routing records, so JAVIS can
 diagnose missing commands, disabled local execution, policy blocks, approvals, timeouts, and retry paths
 without turning the first failure into a dead end.
-Recovery actions are also surfaced through `/api/briefing` and `/api/work/next`; low-risk diagnostic
+Recovery actions are also surfaced through `/api/briefing`, `/api/work/next`, and the Realtime `get_worker_recovery` tool; low-risk diagnostic
 actions can be reviewed there without opening a separate UI. Realtime voice dogfood blockers are
 surfaced there too: when `/api/realtime/evidence` is stuck at `needs_live_session`, running work-next
 uses the same summon/wake path as `Option+Space` and parks the pet at the notch for the live session.

@@ -14,6 +14,7 @@ const REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
+  'get_worker_recovery',
   'get_work_handoff',
   'get_collaboration_state',
   'search_local_skills',
@@ -118,6 +119,24 @@ export default {
         Array.isArray(browserActivityOutput.topHosts)
         ? ok('realtime.browser_activity_tool', 'Realtime browser activity tool', `${browserActivityOutput.recent.length} recent page context(s)`)
         : fail('realtime.browser_activity_tool', 'Realtime browser activity tool', `tool execute ${browserActivityTool.status}`, browserActivityTool.data),
+    );
+
+    const workerRecoveryTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_worker_recovery', arguments: { limit: 5, includeInternal: true } },
+    });
+    const workerRecoveryOutput = parseToolOutput(workerRecoveryTool);
+    out.push(
+      workerRecoveryTool.ok &&
+        workerRecoveryTool.data?.ok === true &&
+        workerRecoveryOutput?.ok === true &&
+        workerRecoveryOutput?.counts &&
+        typeof workerRecoveryOutput.counts.recoverable === 'number' &&
+        Array.isArray(workerRecoveryOutput.items) &&
+        typeof workerRecoveryOutput.summary === 'string' &&
+        typeof workerRecoveryOutput.nextAction === 'string'
+        ? ok('realtime.worker_recovery_tool', 'Realtime worker recovery tool', `${workerRecoveryOutput.counts.recoverable} recoverable failed job(s)`)
+        : fail('realtime.worker_recovery_tool', 'Realtime worker recovery tool', `tool execute ${workerRecoveryTool.status}`, workerRecoveryTool.data),
     );
 
     const shortcutList = await ctx.api('/api/tools/execute', {

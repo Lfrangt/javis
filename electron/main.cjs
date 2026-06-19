@@ -23135,6 +23135,16 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(progress) };
   }
 
+  if (name === 'get_worker_recovery') {
+    return {
+      ok: true,
+      output: JSON.stringify(jobRecoverySnapshot({
+        limit: args?.limit,
+        includeInternal: args?.includeInternal,
+      })),
+    };
+  }
+
   if (name === 'get_work_handoff') {
     const handoff = workHandoff({ ...(args || {}), source: 'voice' });
     return { ok: handoff.ok, output: JSON.stringify(handoff) };
@@ -23721,6 +23731,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. Executed actions verify the screen/UI state and return recovery hints unless verify:false is passed. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
+      'Use get_worker_recovery when the user asks which background jobs failed, why a worker failed, or what can recover automatically. It is read-only; use run_work_next only after the user explicitly asks to do or run the recovery step.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
       'Use get_collaboration_state when the user asks which agents are working, what Claude Code or Codex owns, or whether parallel agent work has conflicts.',
       'Use get_work_session when the user asks about the current work session.',
@@ -24208,6 +24219,19 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             jobLimit: { type: 'number' },
             workflowLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_worker_recovery',
+        description: 'Get read-only recovery evidence for failed background, Codex, Claude, and CLI jobs: failure kind, attempts, diagnostics, recovery child jobs, and recommended next actions.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+            includeInternal: { type: 'boolean' },
           },
           additionalProperties: false,
         },
@@ -25126,6 +25150,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
+  'get_worker_recovery',
   'get_work_handoff',
   'get_collaboration_state',
   'search_local_skills',
@@ -25160,6 +25185,7 @@ function realtimeInstructionChecks(instructions = '') {
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
+    workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
