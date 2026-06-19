@@ -119,15 +119,18 @@ Codex and Claude Code delegation uses the `allow.code_agent` policy block. Faile
 diagnose missing commands, disabled local execution, policy blocks, approvals, timeouts, and retry paths
 without turning the first failure into a dead end.
 Recovery actions are also surfaced through `/api/briefing` and `/api/work/next`; low-risk diagnostic
-actions can be reviewed there without opening a separate UI. Retryable failed jobs can be advanced
-from work-next into a narrower recovery job with the original task, attempts, diagnostics, and log tail
-attached. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs per failed parent job.
+actions can be reviewed there without opening a separate UI. Realtime voice dogfood blockers are
+surfaced there too: when `/api/realtime/evidence` is stuck at `needs_live_session`, running work-next
+uses the same summon/wake path as `Option+Space` and parks the pet at the notch for the live session.
+Retryable failed jobs can be advanced from work-next into a narrower recovery job with the original
+task, attempts, diagnostics, and log tail attached. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued
+recovery jobs per failed parent job.
 
 Use option `14. Show next work item` to preview the current `/api/work/next` action from the CUI.
 
 Use option `15. Run next work item` to preview and then execute the current workbench action after
 typing `RUN`. This is the manual path for recovering blocked jobs, processing the top Inbox item,
-checking progress, or delivering a completed workflow result without memorizing HTTP calls. Internal
+checking progress, summoning a real Realtime voice dogfood session, or delivering a completed workflow result without memorizing HTTP calls. Internal
 smoke/verification workflows are not offered as deliverable results.
 
 Use option `16. Show autopilot status` to see the resident overnight loop, last tick, last result,

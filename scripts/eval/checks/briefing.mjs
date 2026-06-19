@@ -22,6 +22,20 @@ export default {
         ? ok('briefing.next', 'Next actions', `${next.length} next action(s): ${next.map((n) => n.label || n.title || n.summary || n).slice(0, 2).join(' · ')}`)
         : warn('briefing.next', 'Next actions', 'briefing returned no next actions (idle is ok)'),
     );
+    const realtimeVoice = b.realtimeVoice || {};
+    const realtimeAction = next.find((action) => action.source === 'realtime_voice') || null;
+    const realtimePending = realtimeVoice.status && realtimeVoice.status !== 'ready';
+    out.push(
+      !realtimeVoice.status ||
+        (['ready', 'pending', 'blocked'].includes(realtimeVoice.status) &&
+          typeof realtimeVoice.phase === 'string' &&
+          (!realtimePending || (realtimeAction && realtimeAction.phase === realtimeVoice.phase && realtimeAction.blocker)))
+        ? ok('briefing.realtime_voice', 'Realtime voice next action', realtimePending ? `${realtimeVoice.status}/${realtimeVoice.phase}` : 'ready or not surfaced')
+        : fail('briefing.realtime_voice', 'Realtime voice next action', 'briefing did not expose a coherent realtime voice work-next blocker', {
+          realtimeVoice,
+          nextActions: next,
+        }),
+    );
 
     const wn = await ctx.api('/api/work/next');
     const workNext = wn.data?.next;

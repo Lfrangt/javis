@@ -14250,19 +14250,7 @@ function realtimeEvidencePhase(checks = {}, voiceHealth = {}) {
   return 'ready';
 }
 
-function realtimeVoiceEvidenceSnapshot() {
-  const conversation = conversationStateSnapshot();
-  const negotiation = conversation.lastRealtimeSessionNegotiation || null;
-  const injection = conversation.lastRealtimeProgressInjection || null;
-  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
-  const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
-  const checks = {
-    providerReady: voiceHealth.status === 'ready',
-    sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
-    progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
-    passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
-    spokenSummaryReady: Boolean(progress.spokenSummary && progress.spokenSummary.length <= 420),
-  };
+function realtimeEvidenceChecklist({ checks = {}, voiceHealth = {}, negotiation = null, injection = null, progress = null, includeSpokenSummary = true } = {}) {
   const checklist = [
     realtimeEvidenceStep({
       id: 'provider_ready',
@@ -14278,7 +14266,7 @@ function realtimeVoiceEvidenceSnapshot() {
       label: 'Renderer WebRTC session negotiated',
       ok: checks.sessionNegotiated,
       detail: checks.sessionNegotiated
-        ? `session ${negotiation.sessionId || '-'} · status ${negotiation.statusCode || '-'}`
+        ? `session ${negotiation?.sessionId || '-'} · status ${negotiation?.statusCode || '-'}`
         : 'No successful renderer WebRTC offer/answer receipt has been recorded.',
       nextAction: 'Start a real renderer/WebRTC voice session from the desktop pet or summon hotkey.',
       evidence: {
@@ -14293,7 +14281,7 @@ function realtimeVoiceEvidenceSnapshot() {
       label: 'Worker progress injected through renderer',
       ok: checks.progressInjectedFromRenderer,
       detail: checks.progressInjectedFromRenderer
-        ? `${injection.workerSummary || 'progress injected'} via ${injection.transport}`
+        ? `${injection?.workerSummary || 'progress injected'} via ${injection?.transport || '-'}`
         : 'No open WebRTC data-channel progress injection has been recorded from the renderer.',
       nextAction: 'Keep voice live while background worker progress changes.',
       evidence: {
@@ -14315,15 +14303,81 @@ function realtimeVoiceEvidenceSnapshot() {
         forcedResponse: Boolean(injection?.forcedResponse),
       },
     }),
-    realtimeEvidenceStep({
+  ];
+  if (includeSpokenSummary) {
+    checklist.push(realtimeEvidenceStep({
       id: 'spoken_summary_ready',
       label: 'Short spoken progress summary ready',
       ok: checks.spokenSummaryReady,
-      detail: progress.spokenSummary || 'No short spokenSummary available from /api/work/progress.',
+      detail: progress?.spokenSummary || 'No short spokenSummary available from /api/work/progress.',
       nextAction: 'Refresh /api/work/progress until it returns a short spokenSummary.',
-      evidence: { length: String(progress.spokenSummary || '').length },
-    }),
-  ];
+      evidence: { length: String(progress?.spokenSummary || '').length },
+    }));
+  }
+  return checklist;
+}
+
+function realtimeVoiceWorkbenchSnapshot() {
+  const conversation = conversationStateSnapshot();
+  const negotiation = conversation.lastRealtimeSessionNegotiation || null;
+  const injection = conversation.lastRealtimeProgressInjection || null;
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const checks = {
+    providerReady: voiceHealth.status === 'ready',
+    sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
+    progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
+    passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
+    spokenSummaryReady: true,
+  };
+  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, includeSpokenSummary: false });
+  const phase = realtimeEvidencePhase(checks, voiceHealth);
+  const status = phase === 'ready'
+    ? 'ready'
+    : phase === 'provider_blocked'
+      ? 'blocked'
+      : 'pending';
+  const blockerStep = checklist.find((step) => !step.ok) || null;
+  return {
+    ok: true,
+    status,
+    phase,
+    ready: status === 'ready',
+    checks,
+    checklist,
+    blocker: blockerStep
+      ? {
+        id: blockerStep.id,
+        label: blockerStep.label,
+        status: blockerStep.status,
+        summary: blockerStep.detail,
+        nextAction: blockerStep.nextAction,
+      }
+      : null,
+    nextAction: blockerStep?.nextAction || 'Ask in the live voice session: 后台现在怎么样',
+    conversation: {
+      status: conversation.status,
+      active: conversation.active,
+      sessionId: conversation.sessionId,
+      micMode: conversation.micMode,
+    },
+    voiceHealth,
+  };
+}
+
+function realtimeVoiceEvidenceSnapshot() {
+  const conversation = conversationStateSnapshot();
+  const negotiation = conversation.lastRealtimeSessionNegotiation || null;
+  const injection = conversation.lastRealtimeProgressInjection || null;
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
+  const checks = {
+    providerReady: voiceHealth.status === 'ready',
+    sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
+    progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
+    passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
+    spokenSummaryReady: Boolean(progress.spokenSummary && progress.spokenSummary.length <= 420),
+  };
+  const checklist = realtimeEvidenceChecklist({ checks, voiceHealth, negotiation, injection, progress });
   const phase = realtimeEvidencePhase(checks, voiceHealth);
   const status = phase === 'ready'
     ? 'ready'
@@ -15631,6 +15685,7 @@ function workflowBriefing(options = {}) {
   const latestDeliverableWorkflow = workflowContext.find(isDeliverableWorkflow) || null;
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
   const learning = learningStateSnapshot();
+  const realtimeWorkbench = realtimeVoiceWorkbenchSnapshot();
   const nextActions = [];
 
   if (readiness.primaryIssue) {
@@ -15729,6 +15784,20 @@ function workflowBriefing(options = {}) {
     });
   }
 
+  if (!realtimeWorkbench.ready) {
+    nextActions.push({
+      id: `realtime_voice:${realtimeWorkbench.phase}`,
+      priority: realtimeWorkbench.status === 'blocked' ? 1 : 3,
+      label: realtimeWorkbench.status === 'blocked' ? 'Fix Realtime voice' : 'Dogfood Realtime voice',
+      summary: realtimeWorkbench.blocker?.summary || realtimeWorkbench.nextAction,
+      source: 'realtime_voice',
+      phase: realtimeWorkbench.phase,
+      status: realtimeWorkbench.status,
+      blocker: realtimeWorkbench.blocker,
+      executable: realtimeWorkbench.phase === 'needs_live_session',
+    });
+  }
+
   if (latestDeliverableWorkflow?.result && !nextActions.some((action) => action.id === `copy:${latestDeliverableWorkflow.id}`)) {
     nextActions.push({
       id: `copy:${latestDeliverableWorkflow.id}`,
@@ -15788,8 +15857,10 @@ function workflowBriefing(options = {}) {
       recoveryActions: recoveryActions.length,
       blockedWorkflows: blockedWorkflows.length,
       resolvedBlockedWorkflows: resolvedBlockedWorkflows.length,
+      realtimeVoiceStatus: realtimeWorkbench.status,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
+    realtimeVoice: realtimeWorkbench,
     routingLedger,
     collaboration,
     laneContracts: laneContractSnapshot(),
@@ -16301,6 +16372,28 @@ async function workNextAction(options = {}) {
           `预览: ${result.preview}`,
         ].join('\n')
         : `这个 workflow 还没有可交付结果: ${workflow.title}`;
+    }
+  } else if (action.source === 'realtime_voice') {
+    const before = realtimeVoiceWorkbenchSnapshot();
+    if (execute && before.phase === 'needs_live_session') {
+      const summon = summonJavis(options.source || 'work_next');
+      const after = realtimeVoiceWorkbenchSnapshot();
+      result = { before, summon, after };
+      executed = true;
+      output = [
+        '已唤起 JAVIS 实时语音入口，并把宠物停回 notch。',
+        `当前阶段: ${after.status}/${after.phase}.`,
+        after.blocker?.summary ? `仍需: ${after.blocker.summary}` : '',
+        after.nextAction ? `下一步: ${after.nextAction}` : '',
+      ].filter(Boolean).join('\n');
+    } else {
+      result = { evidence: before };
+      output = [
+        `Realtime voice evidence: ${before.status}/${before.phase}.`,
+        before.blocker?.summary ? `阻塞: ${before.blocker.summary}` : '',
+        before.nextAction ? `下一步: ${before.nextAction}` : '',
+        before.phase === 'needs_live_session' ? '执行这个 work-next 会触发和 Option+Space 相同的 summon/wake 路径。' : '',
+      ].filter(Boolean).join('\n');
     }
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
