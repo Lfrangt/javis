@@ -55,4 +55,4 @@ Implications for JAVIS:
 - Treat "distilling the user" as two separate artifacts: inferred local memory for context and reviewable skills for repeatable workflows.
 - Do not silently turn passive observation into hidden instructions. Generate a `SKILL.md` draft that the user can inspect and explicitly export.
 - Keep raw screenshots, clipboard contents, page bodies, and secrets out of learned profiles and skill drafts.
-- Future true record/replay should capture short, complete, user-initiated workflows with clear variable inputs and verification steps.
+- Current JAVIS Record & Replay should capture short, complete, user-initiated workflows with clear variable inputs and verification steps, then expose safe replay plans, reviewable skill drafts, and Realtime evidence before any save or run.

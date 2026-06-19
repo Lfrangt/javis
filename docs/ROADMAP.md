@@ -45,6 +45,7 @@
 - Persist explicit local memories for user-approved preferences, project facts, and notes.
 - Persist a local inferred learning profile from passive ambient metadata, separate from explicit memory.
 - Generate reviewable Codex-style skill drafts from local learning, routing, and workflow evidence, with explicit export to user-level `~/.agents/skills`.
+- Expose explicit UI demonstration Record & Replay calls in Realtime evidence, including safe preview replay, skill drafting, confirmation gates, and no raw screenshot/clipboard storage.
 - Persist confirmed local skill shortcuts so repeated successful workflows can be recalled by phrase and managed from CUI/API/Realtime voice without turning the desktop pet into a dashboard.
 - Persist local Inbox captures for clipboard/manual follow-ups and include them in briefing.
 - Add read-only Inbox triage for priority sorting and lane suggestions.

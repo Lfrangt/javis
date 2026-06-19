@@ -80,6 +80,7 @@ This learning system is part of the product, not a hidden analytics feature:
 
 - Long-term tracking stays local by default. Raw runtime data, ambient metadata, learned summaries, and explicit memories live under the local JAVIS runtime directory unless the user explicitly exports or syncs them later.
 - Learning is layered. Explicit user-approved memory stores durable facts and preferences; passive learning distills app/window/browser/task/session patterns; workflow history records what was attempted, what succeeded, and what failed.
+- Repeatable UI workflows are explicit artifacts. A demonstrated workflow should leave a local demonstration record, safe replay preview, reviewable skill draft, Realtime evidence, and confirmation gates before any replay run or skill save.
 - The distilled profile should be compact and useful: work rhythms, commonly used apps/sites/folders, recurring task types, preferred response style, preferred automation aggressiveness, common blockers, and successful recovery strategies.
 - The profile should improve routing and behavior. Realtime should know when to stay short, background workers should know what evidence style the user expects, and local automation should learn preferred safe defaults without skipping approval boundaries.
 - Bionic evolution means measurable adaptation over time: JAVIS should compare recent behavior against older learned patterns, update confidence, forget stale habits, and explain what changed when asked.

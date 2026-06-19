@@ -1021,6 +1021,8 @@ function printRealtimeEvidence(result) {
   const attentionEvents = Array.isArray(attentionTools.recent) ? attentionTools.recent : [];
   const perceptionTools = evidence.perceptionTools || {};
   const perceptionEvents = Array.isArray(perceptionTools.recent) ? perceptionTools.recent : [];
+  const demonstrationTools = evidence.demonstrationTools || {};
+  const demonstrationEvents = Array.isArray(demonstrationTools.recent) ? demonstrationTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
   const drill = evidence.drill || dogfood.drill || {};
   const dogfoodStart = evidence.dogfoodStart || drill.dogfoodStart || {};
@@ -1171,6 +1173,26 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = perception.summary ? ` · ${compact(perception.summary, 180)}` : '';
     console.log(`- ${event.name || 'get_perception_consent'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nUI demonstration tools:');
+  console.log(`- observed ${Number(demonstrationTools.count || 0)} recent event(s) · actions ${(demonstrationTools.observedActions || []).join(', ') || '-'}`);
+  console.log(`- replay=${demonstrationTools.hasSafeReplayPlan ? 'safe-preview' : 'pending'} · draft=${demonstrationTools.hasDraft ? 'yes' : 'no'} · confirm-gate=${demonstrationTools.hasConfirmationGate ? 'yes' : 'no'} · raw=${demonstrationTools.noRawStored ? 'none' : 'check'}`);
+  console.log(`- next ${compact(demonstrationTools.nextAction || dogfood.demonstrationTools?.nextAction || 'Ask live voice to record a short UI demonstration and draft a local skill.', 220)}`);
+  for (const event of demonstrationEvents.slice(0, 4)) {
+    const demo = event.demonstration || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      demo.action || event.name || '-',
+      demo.demonstrationId ? `id=${compact(demo.demonstrationId, 10)}` : '',
+      demo.stepCount ? `steps=${demo.stepCount}` : '',
+      demo.skillName ? `skill=${compact(demo.skillName, 60)}` : '',
+      demo.previewOnly ? 'preview-only' : '',
+      demo.reobserveBeforeActing ? 'reobserve' : '',
+      demo.requiresConfirmation ? 'confirmation' : '',
+      demo.recordReplayInspired ? 'record-replay' : '',
+    ].filter(Boolean);
+    const summary = demo.output ? ` · ${compact(demo.output, 160)}` : '';
+    console.log(`- ${event.name || 'ui_demonstration'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nRecent realtime tool calls:');
   if (toolCalls.length) {

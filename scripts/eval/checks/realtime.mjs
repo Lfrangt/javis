@@ -170,6 +170,182 @@ export default {
         : fail('realtime.perception_consent_tool', 'Realtime perception consent tool', `tool execute ${perceptionTool.status}`, perceptionTool.data),
     );
 
+    let realtimeDemoId = '';
+    const existingDemos = await ctx.api('/api/demonstrations?limit=1');
+    const activeDemo = existingDemos.data?.demonstrations?.active || null;
+    if (activeDemo && activeDemo.source !== 'eval') {
+      out.push(warn(
+        'realtime.demonstration_tool_flow',
+        'Realtime UI demonstration tool flow',
+        `skipped because a user demonstration is already recording: ${activeDemo.title || activeDemo.id}`,
+      ));
+    } else {
+      try {
+        const demoStart = await ctx.api('/api/tools/execute', {
+          method: 'POST',
+          body: {
+            source: 'eval',
+            name: 'start_ui_demonstration',
+            arguments: {
+              title: 'Eval Realtime UI demonstration',
+              goal: 'Verify Realtime Record and Replay tool evidence',
+              captureInitial: false,
+            },
+          },
+        });
+        const demoStartOutput = parseToolOutput(demoStart);
+        realtimeDemoId = demoStartOutput?.demonstration?.id || '';
+        const demoCapture = realtimeDemoId
+          ? await ctx.api('/api/tools/execute', {
+            method: 'POST',
+            body: {
+              source: 'eval',
+              name: 'capture_ui_demonstration_step',
+              arguments: {
+                demonstrationId: realtimeDemoId,
+                instruction: 'Open the repeatable panel and confirm the saved state',
+                observation: {
+                  frontmost: { app: 'EvalApp', windowTitle: 'Realtime Demo Window', available: true },
+                  browser: { available: false },
+                  screen: { width: 1200, height: 800, privacyMode: 'private', source: 'eval' },
+                  accessibility: { available: true, app: 'EvalApp', windowTitle: 'Realtime Demo Window', nodeCount: 1, outline: '1 AXButton "Confirm"' },
+                },
+              },
+            },
+          })
+          : { ok: false, data: {} };
+        const demoCaptureOutput = parseToolOutput(demoCapture);
+        const demoFinish = realtimeDemoId
+          ? await ctx.api('/api/tools/execute', {
+            method: 'POST',
+            body: {
+              source: 'eval',
+              name: 'finish_ui_demonstration',
+              arguments: { demonstrationId: realtimeDemoId },
+            },
+          })
+          : { ok: false, data: {} };
+        const demoFinishOutput = parseToolOutput(demoFinish);
+        const demoList = await ctx.api('/api/tools/execute', {
+          method: 'POST',
+          body: {
+            source: 'eval',
+            name: 'get_ui_demonstrations',
+            arguments: { status: 'done', limit: 5 },
+          },
+        });
+        const demoListOutput = parseToolOutput(demoList);
+        const demoReplayPlan = realtimeDemoId
+          ? await ctx.api('/api/tools/execute', {
+            method: 'POST',
+            body: {
+              source: 'eval',
+              name: 'plan_ui_demonstration_replay',
+              arguments: { demonstrationId: realtimeDemoId, instruction: 'Prepare safe replay only' },
+            },
+          })
+          : { ok: false, data: {} };
+        const demoReplayPlanOutput = parseToolOutput(demoReplayPlan);
+        const demoReplayBlocked = realtimeDemoId
+          ? await ctx.api('/api/tools/execute', {
+            method: 'POST',
+            body: {
+              source: 'eval',
+              name: 'run_ui_demonstration_replay',
+              arguments: { demonstrationId: realtimeDemoId, instruction: 'Attempt replay without confirmation' },
+            },
+          })
+          : { ok: false, data: {} };
+        const demoReplayBlockedOutput = parseToolOutput(demoReplayBlocked);
+        const demoSkillDraft = realtimeDemoId
+          ? await ctx.api('/api/tools/execute', {
+            method: 'POST',
+            body: {
+              source: 'eval',
+              name: 'draft_ui_demonstration_skill',
+              arguments: { demonstrationId: realtimeDemoId, title: 'Eval Realtime demonstrated workflow skill' },
+            },
+          })
+          : { ok: false, data: {} };
+        const demoSkillDraftOutput = parseToolOutput(demoSkillDraft);
+        const demoSkillSaveBlocked = realtimeDemoId
+          ? await ctx.api('/api/tools/execute', {
+            method: 'POST',
+            body: {
+              source: 'eval',
+              name: 'save_ui_demonstration_skill',
+              arguments: { demonstrationId: realtimeDemoId, title: 'Eval Realtime demonstrated workflow skill' },
+            },
+          })
+          : { ok: false, data: {} };
+        const demoSkillSaveBlockedOutput = parseToolOutput(demoSkillSaveBlocked);
+
+        out.push(
+          demoStart.ok &&
+            demoStart.data?.ok === true &&
+            realtimeDemoId &&
+            demoCapture.ok &&
+            demoCapture.data?.ok === true &&
+            demoCaptureOutput?.step?.id &&
+            demoFinish.ok &&
+            demoFinish.data?.ok === true &&
+            demoFinishOutput?.demonstration?.status === 'done' &&
+            demoList.ok &&
+            Array.isArray(demoListOutput?.recent) &&
+            demoReplayPlan.ok &&
+            demoReplayPlan.data?.ok === true &&
+            demoReplayPlanOutput?.replayMode === 'safe_preview' &&
+            demoReplayPlanOutput?.execute === false &&
+            demoReplayPlanOutput?.safety?.reobserveBeforeActing === true &&
+            demoReplayPlanOutput?.safety?.noCoordinates === true &&
+            demoReplayBlocked.ok &&
+            demoReplayBlocked.data?.ok === false &&
+            demoReplayBlockedOutput?.confirmationRequired === true &&
+            demoSkillDraft.ok &&
+            demoSkillDraft.data?.ok === true &&
+            demoSkillDraftOutput?.recordReplayInspired === true &&
+            String(demoSkillDraftOutput?.skill?.markdown || '').includes('# Replay Plan') &&
+            demoSkillSaveBlocked.ok &&
+            demoSkillSaveBlocked.data?.ok === false &&
+            demoSkillSaveBlockedOutput?.requiresConfirmation === true
+            ? ok('realtime.demonstration_tool_flow', 'Realtime UI demonstration tool flow', `${realtimeDemoId} · replay preview + skill draft + confirmation gate`)
+            : fail('realtime.demonstration_tool_flow', 'Realtime UI demonstration tool flow', 'expected Record & Replay tool sequence with safe replay and save confirmation gate', {
+              start: demoStart.data,
+              capture: demoCapture.data,
+              finish: demoFinish.data,
+              replay: demoReplayPlan.data,
+              blocked: demoReplayBlocked.data,
+              draft: demoSkillDraft.data,
+              save: demoSkillSaveBlocked.data,
+            }),
+        );
+
+        const demoEvidence = await ctx.api('/api/realtime/evidence');
+        const demoToolEvidence = demoEvidence.data?.evidence?.demonstrationTools;
+        const demoToolEvents = Array.isArray(demoToolEvidence?.recent) ? demoToolEvidence.recent : [];
+        out.push(
+          demoEvidence.ok &&
+            demoToolEvidence?.hasSafeReplayPlan === true &&
+            demoToolEvidence?.hasDraft === true &&
+            demoToolEvidence?.hasConfirmationGate === true &&
+            demoToolEvidence?.localOnly === true &&
+            demoToolEvidence?.noRawStored === true &&
+            demoToolEvents.some((event) => event.name === 'plan_ui_demonstration_replay' && event.source === 'eval' && event.demonstration?.previewOnly === true && event.demonstration?.reobserveBeforeActing === true) &&
+            demoToolEvents.some((event) => event.name === 'draft_ui_demonstration_skill' && event.source === 'eval' && event.demonstration?.recordReplayInspired === true) &&
+            demoToolEvents.some((event) => event.name === 'save_ui_demonstration_skill' && event.source === 'eval' && event.demonstration?.requiresConfirmation === true)
+            ? ok('realtime.demonstration_tool_evidence', 'Realtime UI demonstration tool evidence', `actions=${(demoToolEvidence.observedActions || []).join(', ')}`)
+            : fail('realtime.demonstration_tool_evidence', 'Realtime UI demonstration tool evidence', 'expected UI demonstration calls to be visible in realtime evidence', demoToolEvidence),
+        );
+      } finally {
+        if (realtimeDemoId) {
+          await ctx.api(`/api/demonstrations/${encodeURIComponent(realtimeDemoId)}`, {
+            method: 'DELETE',
+            body: { source: 'eval_cleanup' },
+          });
+        }
+      }
+    }
+
     const workerRecoveryTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: { source: 'eval', name: 'get_worker_recovery', arguments: { limit: 5, includeInternal: true } },
@@ -661,6 +837,7 @@ export default {
           output.includes('Autopilot tool:') &&
           output.includes('Attention explanation tool:') &&
           output.includes('Perception consent tool:') &&
+          output.includes('UI demonstration tools:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Latency:') &&
           output.includes('Recent realtime tool calls:') &&
@@ -675,9 +852,10 @@ export default {
           output.includes('get_work_handoff') &&
           output.includes('get_autopilot_status') &&
           output.includes('get_attention_explanation') &&
-          output.includes('get_perception_consent')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
+          output.includes('get_perception_consent') &&
+          output.includes('draft_ui_demonstration_skill')
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, UI demonstration, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));

@@ -17595,6 +17595,16 @@ const REALTIME_DOGFOOD_SESSION_TOOL_NAMES = new Set([
   'mark_realtime_dogfood_step',
   'end_realtime_dogfood_session',
 ]);
+const REALTIME_DEMONSTRATION_TOOL_NAMES = new Set([
+  'get_ui_demonstrations',
+  'start_ui_demonstration',
+  'capture_ui_demonstration_step',
+  'finish_ui_demonstration',
+  'plan_ui_demonstration_replay',
+  'run_ui_demonstration_replay',
+  'draft_ui_demonstration_skill',
+  'save_ui_demonstration_skill',
+]);
 const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
 const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
@@ -17745,6 +17755,61 @@ function realtimePerceptionToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function demonstrationActionForToolCall(name, output = {}) {
+  if (name === 'get_ui_demonstrations') return 'list';
+  if (name === 'start_ui_demonstration') return 'start';
+  if (name === 'capture_ui_demonstration_step') return 'capture_step';
+  if (name === 'finish_ui_demonstration') return output?.demonstration?.status === 'cancelled' ? 'cancel' : 'finish';
+  if (name === 'plan_ui_demonstration_replay') return 'plan_replay';
+  if (name === 'run_ui_demonstration_replay') {
+    if (output?.confirmationRequired) return 'run_confirm_required';
+    return output?.executed ? 'run' : 'run_preview';
+  }
+  if (name === 'draft_ui_demonstration_skill') return 'draft_skill';
+  if (name === 'save_ui_demonstration_skill') return output?.requiresConfirmation ? 'save_confirm_required' : 'save_skill';
+  return '';
+}
+
+function realtimeDemonstrationToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_DEMONSTRATION_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const demonstrationsState = output.demonstrations || output;
+  const demo = output.demonstration || demonstrationsState.active || null;
+  const counts = demonstrationsState.counts || output.counts || {};
+  const replayPlan = output.plan || output.evidence?.replayPlan || output;
+  const draft = output.draft || output;
+  const skill = output.skill || draft.skill || {};
+  const action = demonstrationActionForToolCall(name, output);
+  const stepCount = boundedCount(
+    demo?.steps?.length ?? output.stepCount ?? replayPlan.stepCount ?? output.evidence?.demonstration?.stepCount,
+    1000,
+  );
+  return {
+    action,
+    demonstrationId: String(demo?.id || output.demonstrationId || args?.id || args?.demonstrationId || '').slice(0, 120),
+    title: compactRecordText(demo?.title || output.title || args?.title || args?.goal || '', 160),
+    status: compactRecordText(demo?.status || output.demonstrationStatus || output.status || '', 40),
+    stepId: compactRecordText(output.step?.id || args?.stepId || '', 80),
+    stepCount,
+    totalCount: boundedCount(counts.total, 1000),
+    recordingCount: boundedCount(counts.recording, 1000),
+    doneCount: boundedCount(counts.done, 1000),
+    replayMode: compactRecordText(output.replayMode || replayPlan.replayMode || '', 80),
+    previewOnly: output.safety?.previewOnly === true || replayPlan.safety?.previewOnly === true || output.execute === false,
+    executed: output.executed === true,
+    requiresConfirmation: output.requiresConfirmation === true || output.confirmationRequired === true,
+    recordReplayInspired: output.recordReplayInspired === true || draft.recordReplayInspired === true,
+    skillName: compactRecordText(skill.name || '', 120),
+    suggestedUserPath: compactRecordText(skill.suggestedUserPath || '', 220),
+    localOnly: true,
+    storesScreenshots: demonstrationsState.storage?.storesScreenshots === true ? true : false,
+    storesClipboardText: demonstrationsState.storage?.storesClipboardText === true ? true : false,
+    reobserveBeforeActing: output.safety?.reobserveBeforeActing === true || replayPlan.safety?.reobserveBeforeActing === true,
+    noCoordinates: output.safety?.noCoordinates === true || replayPlan.safety?.noCoordinates === true,
+    output: compactRecordText(output.output || '', 240),
+  };
+}
+
 function dogfoodSessionActionForToolCall(name) {
   if (name === 'get_realtime_dogfood_session') return 'snapshot';
   if (name === 'start_realtime_dogfood_session') return 'start';
@@ -17791,6 +17856,7 @@ function recordRealtimeToolCall(options = {}) {
   const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
+  const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
   const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
@@ -17807,6 +17873,7 @@ function recordRealtimeToolCall(options = {}) {
     autopilot,
     attention,
     perception,
+    demonstration,
     dogfoodSession,
   };
   realtimeToolCallEvents.unshift(event);
@@ -17839,6 +17906,15 @@ function recordRealtimeToolCall(options = {}) {
     perceptionBlockedCount: perception?.blockedCount || 0,
     perceptionLocalOnly: Boolean(perception?.localOnly),
     perceptionRequiresUserIntent: Boolean(perception?.requiresUserIntentForAction),
+    demonstrationAction: demonstration?.action || '',
+    demonstrationId: demonstration?.demonstrationId || '',
+    demonstrationStepCount: demonstration?.stepCount || 0,
+    demonstrationRequiresConfirmation: Boolean(demonstration?.requiresConfirmation),
+    demonstrationRecordReplayInspired: Boolean(demonstration?.recordReplayInspired),
+    demonstrationPreviewOnly: Boolean(demonstration?.previewOnly),
+    demonstrationReobserveBeforeActing: Boolean(demonstration?.reobserveBeforeActing),
+    demonstrationStoresScreenshots: Boolean(demonstration?.storesScreenshots),
+    demonstrationStoresClipboardText: Boolean(demonstration?.storesClipboardText),
     dogfoodSessionAction: dogfoodSession?.action || '',
     dogfoodSessionId: dogfoodSession?.sessionId || '',
     dogfoodSessionStatus: dogfoodSession?.sessionStatus || '',
@@ -17971,6 +18047,57 @@ function realtimePerceptionToolEvidence(limit = 8) {
     nextAction: hasConsent
       ? 'Ask live voice what JAVIS can currently see/control and confirm it answers from consent registry evidence.'
       : 'Ask the live voice session: 你现在能看到什么、能操作什么、哪些权限开着？',
+  };
+}
+
+function realtimeDemonstrationToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_DEMONSTRATION_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.demonstration?.action).filter(Boolean));
+  const hasSafeReplayPlan = recent.some((event) => (
+    event.ok &&
+    event.name === 'plan_ui_demonstration_replay' &&
+    event.demonstration?.previewOnly === true &&
+    event.demonstration?.reobserveBeforeActing === true &&
+    event.demonstration?.noCoordinates === true
+  ));
+  const hasDraft = recent.some((event) => (
+    event.ok &&
+    event.name === 'draft_ui_demonstration_skill' &&
+    event.demonstration?.recordReplayInspired === true &&
+    event.demonstration?.skillName
+  ));
+  const hasConfirmationGate = recent.some((event) => (
+    event.name === 'save_ui_demonstration_skill' &&
+    event.demonstration?.requiresConfirmation === true
+  )) || recent.some((event) => (
+    event.name === 'run_ui_demonstration_replay' &&
+    event.demonstration?.requiresConfirmation === true
+  ));
+  const localOnly = recent.every((event) => event.demonstration?.localOnly !== false);
+  const noRawStored = recent.every((event) => (
+    event.demonstration?.storesScreenshots !== true &&
+    event.demonstration?.storesClipboardText !== true
+  ));
+  return {
+    ok: recent.length > 0,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasList: actions.has('list'),
+    hasStart: actions.has('start'),
+    hasCapture: actions.has('capture_step'),
+    hasFinish: actions.has('finish'),
+    hasSafeReplayPlan,
+    hasDraft,
+    hasConfirmationGate,
+    localOnly,
+    noRawStored,
+    last: recent[0] || null,
+    recent,
+    nextAction: hasSafeReplayPlan && hasDraft && hasConfirmationGate
+      ? 'Ask live voice to teach a short repeatable UI workflow and confirm it can draft a local skill without saving until asked.'
+      : 'Ask live voice to record one short UI demonstration, finish it, draft a skill, and prove save/replay confirmation gates.',
   };
 }
 
@@ -19456,6 +19583,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const autopilotTools = realtimeAutopilotToolEvidence(8);
   const attentionTools = realtimeAttentionToolEvidence(8);
   const perceptionTools = realtimePerceptionToolEvidence(8);
+  const demonstrationTools = realtimeDemonstrationToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const liveAt = Number(conversation.liveAt || 0);
   const negotiationAt = Number(negotiation?.createdAt || 0);
@@ -19521,6 +19649,7 @@ function realtimeVoiceEvidenceSnapshot() {
     autopilotTools,
     attentionTools,
     perceptionTools,
+    demonstrationTools,
     progressSync,
     progress: {
       version: progress.version,
@@ -19662,6 +19791,16 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         observed: Boolean(evidence.perceptionTools?.hasConsent),
         count: Number(evidence.perceptionTools?.count || 0),
         nextAction: evidence.perceptionTools?.nextAction || '',
+      },
+      demonstrations: {
+        observed: Boolean(evidence.demonstrationTools?.ok),
+        count: Number(evidence.demonstrationTools?.count || 0),
+        observedActions: Array.isArray(evidence.demonstrationTools?.observedActions) ? evidence.demonstrationTools.observedActions : [],
+        hasSafeReplayPlan: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan),
+        hasDraft: Boolean(evidence.demonstrationTools?.hasDraft),
+        hasConfirmationGate: Boolean(evidence.demonstrationTools?.hasConfirmationGate),
+        noRawStored: Boolean(evidence.demonstrationTools?.noRawStored),
+        nextAction: evidence.demonstrationTools?.nextAction || '',
       },
     } : undefined,
   };
@@ -26417,6 +26556,7 @@ async function executeTool(name, args) {
       const result = await captureDemonstrationStep(args?.id || args?.demonstrationId || '', {
         note: args?.note || args?.text,
         instruction: args?.instruction || args?.action,
+        observation: args?.observation,
         includeAccessibility: args?.includeAccessibility,
         captureScreen: Boolean(args?.captureScreen),
         source: 'voice',
