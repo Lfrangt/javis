@@ -176,6 +176,7 @@ Local Express service on 127.0.0.1:3417
   /api/realtime/context -> silent preflight context for new voice sessions
   /api/realtime/evidence -> live voice dogfood checklist and sanitized tool-call evidence
   /api/realtime/dogfood/drill -> manual live-voice dogfood drill steps and prompts
+  /api/realtime/dogfood/start -> manual dogfood drill starter: summon pet and optionally prepare progress
   /api/context/plan    -> smart context assembly plan for a user request
   /api/wake/status      -> soft/local wake-word trigger state
   /api/wake/trigger     -> trigger voice start from a local wake engine

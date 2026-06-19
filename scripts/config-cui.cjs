@@ -279,6 +279,7 @@ async function printStatus() {
   console.log('12. Run doctor');
   console.log('13. Test wake trigger');
   console.log('V. Watch Realtime voice evidence');
+  console.log('D. Start Realtime dogfood drill');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
   console.log('16. Show autopilot status');
@@ -919,6 +920,9 @@ function printRealtimeEvidence(result) {
     console.log(`- start: ${dogfood.start?.petAction || 'Click the desktop pet or use the summon hotkey.'}`);
     console.log(`- hotkey: ${dogfood.start?.hotkey || 'Option+Space'}`);
     console.log(`- work-next: ${dogfood.start?.workNext?.method || 'POST'} ${dogfood.start?.workNext?.path || '/api/work/next'} · manual only`);
+    if (dogfood.startDrill?.path) {
+      console.log(`- start drill: ${dogfood.startDrill.method || 'POST'} ${dogfood.startDrill.path} · prepareProgress=${dogfood.startDrill.body?.prepareProgress !== false ? 'yes' : 'no'}`);
+    }
     if (dogfood.prepareProgress?.path) {
       console.log(`- prepare progress: ${dogfood.prepareProgress.method || 'POST'} ${dogfood.prepareProgress.path} · ${dogfood.prepareProgress.body?.durationMs || 45000}ms sample`);
     }
@@ -974,6 +978,27 @@ async function watchRealtimeEvidence(rl) {
     await sleep(Math.min(3000, Math.max(250, endAt - Date.now())));
   }
   if (lastError) throw lastError;
+}
+
+async function startRealtimeDogfoodDrillFromCui(rl) {
+  console.log('\nPreviewing Realtime dogfood drill start...');
+  const preview = await request('/api/realtime/dogfood/start', {
+    method: 'POST',
+    body: { execute: false, source: 'cui' },
+  });
+  if (preview.output) console.log(compact(preview.output, 900));
+  const answer = (await rl.question('Start drill now? Type RUN to summon JAVIS and prepare a progress sample: ')).trim();
+  if (answer !== 'RUN') {
+    console.log('\nNo drill started.');
+    return;
+  }
+  const result = await request('/api/realtime/dogfood/start', {
+    method: 'POST',
+    body: { execute: true, prepareProgress: true, durationMs: 45000, source: 'cui' },
+  });
+  console.log(`\nRealtime dogfood drill ${result.executed ? 'started' : 'reviewed'}.`);
+  if (result.output) console.log(compact(result.output, 1200));
+  console.log('Open CUI option V to watch the drill evidence update.');
 }
 
 async function movePetCorner(rl) {
@@ -1050,6 +1075,8 @@ async function main() {
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
       } else if (answer === 'v' || answer === 'voice' || answer === 'realtime') {
         await watchRealtimeEvidence(rl);
+      } else if (answer === 'd' || answer === 'dogfood' || answer === 'drill') {
+        await startRealtimeDogfoodDrillFromCui(rl);
       } else if (answer === '14') {
         await showWorkbenchNext();
       } else if (answer === '15') {

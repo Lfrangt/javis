@@ -16069,6 +16069,12 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
         manualOnlyReason: 'Starting microphone/live voice requires explicit user action.',
       },
     },
+    startDrill: {
+      method: 'POST',
+      path: '/api/realtime/dogfood/start',
+      body: { execute: true, prepareProgress: true, durationMs: 45000 },
+      manualOnlyReason: 'Starting microphone/live voice and preparing live progress dogfood requires explicit user action.',
+    },
     prepareProgress: {
       method: 'POST',
       path: '/api/realtime/dogfood/prepare',
@@ -16267,6 +16273,79 @@ async function prepareRealtimeDogfoodProgressSample(options = {}) {
     output: execute
       ? `Queued Realtime voice dogfood progress sample for ${Math.round(durationMs / 1000)}s. Keep voice live and watch /api/realtime/evidence.`
       : `Preview Realtime voice dogfood progress sample for ${Math.round(durationMs / 1000)}s.`,
+  };
+}
+
+async function startRealtimeDogfoodDrill(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const prepareProgress = options.prepareProgress !== false;
+  const durationMs = Math.max(5000, Math.min(120000, Number(options.durationMs || 45000)));
+  const before = realtimeVoiceEvidenceSnapshot();
+  const startInfo = {
+    hotkey: SUMMON_HOTKEY || 'Option+Space',
+    petAction: 'Click the desktop pet to start the live Realtime voice session.',
+    monitor: 'npm run config -> V. Watch Realtime voice evidence',
+  };
+
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      manualOnly: true,
+      autoEligible: false,
+      autopilotEligible: false,
+      requiresUserPresence: true,
+      start: startInfo,
+      drill: before.drill,
+      evidence: before,
+      output: [
+        'Preview Realtime voice dogfood drill.',
+        before.drill?.summary || '',
+        `Start: ${startInfo.petAction}`,
+        `Monitor: ${startInfo.monitor}`,
+      ].filter(Boolean).join('\n'),
+    };
+  }
+
+  const summon = summonJavis(options.source || 'realtime_dogfood_start');
+  let progressSample = null;
+  if (prepareProgress) {
+    progressSample = await prepareRealtimeDogfoodProgressSample({
+      execute: true,
+      durationMs,
+      source: 'realtime_dogfood_start',
+      parallelGroup: options.parallelGroup || `realtime-dogfood-start:${crypto.randomUUID()}`,
+    });
+  }
+  const after = realtimeVoiceEvidenceSnapshot();
+  appendAudit('realtime.dogfood_start', {
+    source: String(options.source || 'api').slice(0, 80),
+    prepareProgress,
+    durationMs,
+    beforePhase: before.phase,
+    afterPhase: after.phase,
+    drillStatus: after.drill?.status || '',
+  });
+  return {
+    ok: true,
+    executed: true,
+    manualOnly: true,
+    autoEligible: false,
+    autopilotEligible: false,
+    requiresUserPresence: true,
+    start: startInfo,
+    summon,
+    progressSample,
+    drill: after.drill,
+    before,
+    after,
+    output: [
+      '已启动 Realtime voice dogfood drill。',
+      '已唤起 JAVIS 实时语音入口，并把宠物停回 notch。',
+      prepareProgress && progressSample?.output ? progressSample.output : '',
+      `当前 drill: ${after.drill?.summary || `${after.status}/${after.phase}`}`,
+      after.drill?.pending?.[0]?.nextAction ? `下一步: ${after.drill.pending[0].nextAction}` : '',
+    ].filter(Boolean).join('\n'),
   };
 }
 
@@ -18313,27 +18392,14 @@ async function workNextAction(options = {}) {
         : `这个 workflow 还没有可交付结果: ${workflow.title}`;
     }
   } else if (action.source === 'realtime_voice') {
-    const before = realtimeVoiceWorkbenchSnapshot();
-    if (execute && before.phase === 'needs_live_session') {
-      const summon = summonJavis(options.source || 'work_next');
-      const after = realtimeVoiceWorkbenchSnapshot();
-      result = { before, summon, after };
-      executed = true;
-      output = [
-        '已唤起 JAVIS 实时语音入口，并把宠物停回 notch。',
-        `当前阶段: ${after.status}/${after.phase}.`,
-        after.blocker?.summary ? `仍需: ${after.blocker.summary}` : '',
-        after.nextAction ? `下一步: ${after.nextAction}` : '',
-      ].filter(Boolean).join('\n');
-    } else {
-      result = { evidence: before };
-      output = [
-        `Realtime voice evidence: ${before.status}/${before.phase}.`,
-        before.blocker?.summary ? `阻塞: ${before.blocker.summary}` : '',
-        before.nextAction ? `下一步: ${before.nextAction}` : '',
-        before.phase === 'needs_live_session' ? '执行这个 work-next 会触发和 Option+Space 相同的 summon/wake 路径。' : '',
-      ].filter(Boolean).join('\n');
-    }
+    result = await startRealtimeDogfoodDrill({
+      execute,
+      prepareProgress: execute,
+      durationMs: options.durationMs || 45000,
+      source: options.source || 'work_next',
+    });
+    executed = Boolean(result.executed);
+    output = result.output;
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
       source: options.source || 'work_next',
@@ -24575,6 +24641,18 @@ function startApiServer() {
       res.json({ drill: evidence.drill, evidence });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood drill failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/start', express.json({ limit: '128kb' }), async (req, res) => {
+    try {
+      const result = await startRealtimeDogfoodDrill({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_dogfood_start',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood drill start failed', error instanceof Error ? error.message : String(error));
     }
   });
 

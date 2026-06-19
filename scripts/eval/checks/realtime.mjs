@@ -382,6 +382,7 @@ export default {
         d.requiresUserPresence === true &&
         d.safety?.startsMicrophoneOnlyAfterUserAction === true &&
         d.start?.workNext?.path === '/api/work/next' &&
+        d.startDrill?.path === '/api/realtime/dogfood/start' &&
         d.prepareProgress?.path === '/api/realtime/dogfood/prepare' &&
         d.monitor?.endpoint === '/api/realtime/evidence' &&
         d.drill?.manualOnly === true &&
@@ -418,6 +419,26 @@ export default {
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
         ? ok('realtime.dogfood_drill', 'Realtime dogfood drill', `${drillData.status || 'pending'} · ${drillData.summary || ''}`)
         : fail('realtime.dogfood_drill', 'Realtime dogfood drill', `GET /api/realtime/dogfood/drill ${drill.status}`, drill.data),
+    );
+
+    const startPreview = await ctx.api('/api/realtime/dogfood/start', {
+      method: 'POST',
+      body: {
+        execute: false,
+        source: 'eval',
+      },
+    });
+    out.push(
+      startPreview.ok &&
+        startPreview.data?.manualOnly === true &&
+        startPreview.data?.executed === false &&
+        startPreview.data?.autoEligible === false &&
+        startPreview.data?.drill?.manualOnly === true &&
+        startPreview.data?.start?.hotkey &&
+        typeof startPreview.data?.output === 'string' &&
+        startPreview.data.output.includes('Preview Realtime voice dogfood drill')
+        ? ok('realtime.dogfood_start_preview', 'Realtime dogfood drill start preview', startPreview.data.drill.summary || 'preview ready')
+        : fail('realtime.dogfood_start_preview', 'Realtime dogfood drill start preview', `POST /api/realtime/dogfood/start ${startPreview.status}`, startPreview.data),
     );
 
     const prepare = await ctx.api('/api/realtime/dogfood/prepare', {
