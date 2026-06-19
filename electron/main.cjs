@@ -18365,9 +18365,10 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
+  const demonstrationTools = evidence.demonstrationTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
-    goal: 'Prove a real Realtime voice session can speak current progress, call get_work_handoff/get_autopilot_status, and leave evidence.',
+    goal: 'Prove a real Realtime voice session can speak current progress, call work/status/privacy tools, learn one demonstrated workflow as a safe replay/skill draft, and leave evidence.',
     manualOnly: true,
     requiresUserPresence: true,
     current: {
@@ -18397,6 +18398,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
+      '我来教你一个流程，开始记录这个 UI 流程',
     ],
     expectedEvidence: [
       {
@@ -18438,8 +18440,14 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         ok: Boolean(perceptionTools.hasConsent),
         tool: REALTIME_PERCEPTION_TOOL_NAME,
       },
+      {
+        id: 'demonstration_tool',
+        label: 'Realtime recorded a UI demonstration and drafted a skill safely',
+        ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
+        tool: 'draft_ui_demonstration_skill',
+      },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, and attention prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, and UI demonstration prompts.',
   };
 }
 
@@ -18450,6 +18458,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
+  const demonstrationTools = evidence.demonstrationTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
   const stepIds = [
@@ -18474,7 +18483,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, demonstrationTools });
   return {
     ok: true,
     status: ready ? 'ready' : evidence.status || 'pending',
@@ -18550,6 +18559,16 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasConsent: Boolean(perceptionTools.hasConsent),
       nextAction: perceptionTools.nextAction || 'Ask the live voice session what JAVIS can see/control and which permissions are active.',
     },
+    demonstrationTools: {
+      observed: Boolean(demonstrationTools.ok),
+      count: Number(demonstrationTools.count || 0),
+      observedActions: Array.isArray(demonstrationTools.observedActions) ? demonstrationTools.observedActions : [],
+      hasSafeReplayPlan: Boolean(demonstrationTools.hasSafeReplayPlan),
+      hasDraft: Boolean(demonstrationTools.hasDraft),
+      hasConfirmationGate: Boolean(demonstrationTools.hasConfirmationGate),
+      noRawStored: Boolean(demonstrationTools.noRawStored),
+      nextAction: demonstrationTools.nextAction || 'Ask the live voice session to record one short UI demonstration and draft a local skill safely.',
+    },
     drill,
     promptWhenReady: '后台现在怎么样',
     currentStep,
@@ -18581,6 +18600,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const autopilotTools = options.autopilotTools || evidence.autopilotTools || {};
   const attentionTools = options.attentionTools || evidence.attentionTools || {};
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
+  const demonstrationTools = options.demonstrationTools || evidence.demonstrationTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
   const steps = [
@@ -18679,6 +18699,31 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_PERCEPTION_TOOL_NAME, count: Number(perceptionTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'teach_ui_demonstration',
+      label: 'Teach one repeatable UI workflow',
+      ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
+      detail: demonstrationTools.hasDraft
+        ? 'UI demonstration evidence shows a safe replay plan, skill draft, and confirmation gate.'
+        : 'No complete UI demonstration Record & Replay tool sequence has been observed in recent Realtime evidence.',
+      nextAction: 'Ask voice to start recording a short UI workflow, capture one step, finish recording, plan replay, draft a skill, and try save without confirming.',
+      evidence: {
+        tools: [
+          'start_ui_demonstration',
+          'capture_ui_demonstration_step',
+          'finish_ui_demonstration',
+          'plan_ui_demonstration_replay',
+          'draft_ui_demonstration_skill',
+          'save_ui_demonstration_skill',
+        ],
+        count: Number(demonstrationTools.count || 0),
+        observedActions: Array.isArray(demonstrationTools.observedActions) ? demonstrationTools.observedActions : [],
+        hasSafeReplayPlan: Boolean(demonstrationTools.hasSafeReplayPlan),
+        hasDraft: Boolean(demonstrationTools.hasDraft),
+        hasConfirmationGate: Boolean(demonstrationTools.hasConfirmationGate),
+        noRawStored: Boolean(demonstrationTools.noRawStored),
+      },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'list_shortcuts',
       label: 'Ask voice to list saved shortcut phrases',
       ok: Boolean(shortcutTools.hasList),
@@ -18731,6 +18776,10 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
+      '我来教你一个流程，开始记录这个 UI 流程',
+      '记录这一步：观察当前窗口并记住我要确认保存状态',
+      '结束记录，并生成回放计划和 skill 草稿',
+      '试着保存这个 skill 草稿，但我还没有确认保存',
       '有哪些快捷短语?',
       '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
       '确认保存「测试贾维斯快捷短语」',
@@ -18800,6 +18849,23 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       prompt: '为什么你现在是绿色？为什么刚才没提醒我？',
       copyText: '为什么你现在是绿色？为什么刚才没提醒我？',
       reason: 'This verifies the Realtime session calls get_attention_explanation.',
+    },
+    ask_perception_consent: {
+      promptType: 'spoken',
+      prompt: '你现在能看到什么、能操作什么？',
+      copyText: '你现在能看到什么、能操作什么？',
+      reason: 'This verifies the Realtime session calls get_perception_consent.',
+    },
+    teach_ui_demonstration: {
+      promptType: 'spoken_sequence',
+      prompt: '我来教你一个流程，开始记录这个 UI 流程',
+      copyText: '我来教你一个流程，开始记录这个 UI 流程',
+      followUpPrompts: [
+        '记录这一步：观察当前窗口并记住我要确认保存状态',
+        '结束记录，并生成回放计划和 skill 草稿',
+        '试着保存这个 skill 草稿，但我还没有确认保存',
+      ],
+      reason: 'This verifies Realtime can learn an explicit demonstrated workflow, create a safe replay plan, draft a skill, and stop at confirmation before saving.',
     },
     list_shortcuts: {
       promptType: 'spoken',

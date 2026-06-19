@@ -1118,21 +1118,28 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
+        d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
         d.handoffTools?.hasHandoff === true &&
         d.autopilotTools?.hasStatus === true &&
         d.attentionTools?.hasExplanation === true &&
         d.perceptionTools?.hasConsent === true &&
+        d.demonstrationTools?.hasSafeReplayPlan === true &&
+        d.demonstrationTools?.hasDraft === true &&
+        d.demonstrationTools?.hasConfirmationGate === true &&
+        d.demonstrationTools?.noRawStored === true &&
         dogfoodGuide.start?.endpoint?.path === '/api/realtime/dogfood/start' &&
         dogfoodGuide.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(dogfoodGuide.prompts) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_autopilot_status') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
         typeof d.promptWhenReady === 'string' &&
@@ -1153,6 +1160,7 @@ export default {
       'ask_autopilot_status',
       'ask_attention_explanation',
       'ask_perception_consent',
+      'teach_ui_demonstration',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
@@ -1172,6 +1180,7 @@ export default {
         drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillData.prompts.some((prompt) => prompt.includes('能看到什么')) &&
+        drillData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
         ? ok('realtime.dogfood_drill', 'Realtime dogfood drill', `${drillData.status || 'pending'} · ${drillData.summary || ''}`)

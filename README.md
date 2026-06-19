@@ -18,7 +18,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, autopilot-status, attention-explanation, perception-consent, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
 - Realtime voice self-diagnostics through `get_realtime_evidence`, so voice can explain whether WebRTC/live progress is connected, what is blocked, and the next dogfood step.
 - Realtime attention explanations through `get_attention_explanation`, so voice can briefly explain pet color, quiet/notify decisions, cooldown, and recent attention history without opening a desktop dashboard.
-- Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, perception-consent, and shortcut list/save/recall/forget flows from CUI/API.
+- Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, perception-consent, UI-demonstration Record & Replay, and shortcut list/save/recall/forget flows from CUI/API.
 - Next Realtime dogfood prompt helper from CUI/API, with clipboard copy and dry-run support, so operators can manually dogfood live voice without starting microphone capture from automation.
 - Realtime dogfood operator session tracker from CUI/API, so a real spoken drill can be started, marked, ended, and audited without turning the desktop pet into a dashboard.
 - Realtime voice dogfood-session tools, so the live voice model can inspect, start, mark, and end the same operator drill record while CUI/API evidence proves it did not start microphone capture.
