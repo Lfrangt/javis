@@ -71,7 +71,7 @@ Renderer
 - Presence lane: read-only standby/watch/work/attention state that packages ambient context, wake status, local learning, active work, and intervention guardrails for CUI/API/voice use.
 - Fast text lane: lightweight Q&A.
 - No-model local command lane: deterministic status, Inbox, open-app/open-URL, and web-search commands that run before model routing.
-- Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories and a persisted `contextPlan` attached when model lanes are used.
+- Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories, recalled local skill procedures, a persisted `contextPlan`, and `skillRecallPlan` evidence attached when model lanes are used.
 - Background lane: slower higher-quality model work.
 - Delegation lane: hands code or long tasks to Codex or Claude Code with streamed logs, PID tracking, and cancellation.
 - Action lane: small local Mac actions, guarded by allowlists and confirmation.
@@ -105,7 +105,7 @@ Renderer
 - Workflow continuation lane: creates follow-up workflows from prior records, preserving parent workflow ids and target context.
 - Workflow delivery lane: copies completed workflow results back to the system clipboard in result-only or Markdown format.
 - Memory lane: user-approved local memories for durable preferences, project facts, and notes, with keyword search, task-context injection, and delete.
-- Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, routing evidence, Record & Replay-inspired `SKILL.md` draft generation, and read-only local skill recall for repeatable local workflows.
+- Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, routing evidence, Record & Replay-inspired `SKILL.md` draft generation, and read-only local skill recall that can change the routed plan without granting action permission.
 - Demonstration lane: explicit user-started UI demonstration records with sanitized app/browser/screen/accessibility summaries, deterministic manual-preview playbooks, safe replay plans, confirmation-gated replay runs, confirmation-gated local skill promotion, API/CUI/Realtime voice tools, and delete controls. It stores no screenshots or clipboard text.
 - Clipboard lane: local clipboard read/write, guarded by policy and audit logs.
 - File lane: local file list/read/search/write/create/copy/move, guarded by allowed roots, risk levels, approvals, local-execution enablement, and audit logs.

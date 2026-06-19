@@ -1,4 +1,49 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ok, warn, fail } from '../_client.mjs';
+
+const USER_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
+
+function writeEvalRoutingSkill() {
+  const name = `eval-routing-skill-${Date.now().toString(36)}`;
+  const dir = path.join(USER_SKILLS_DIR, name);
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, 'SKILL.md'), [
+    '---',
+    `name: ${name}`,
+    'description: Restore target panel saved state with an audited replay plan.',
+    '---',
+    '',
+    '# Purpose',
+    'Use this skill when a task mentions target panel saved state and needs a previewed plan before any action.',
+    '',
+    '# Triggers',
+    'target panel saved state',
+    '',
+    '# Workflow',
+    '1. Observe the current target panel instead of replaying old coordinates.',
+    '2. Compare current state with the saved state the user wants restored.',
+    '3. Produce a preview-only recovery plan with evidence before execution.',
+    '',
+    '# Replay Plan',
+    'Use current Accessibility or DOM refs, require explicit confirmation, and keep the replay in preview mode unless confirmed.',
+    '',
+    '# Evidence Snapshot',
+    'Demonstration id: eval-routing-demo',
+    'Source: explicit UI demonstration',
+    '',
+  ].join('\n'), 'utf8');
+  return { name, dir };
+}
+
+function cleanupEvalRoutingSkill(skill) {
+  const root = path.resolve(USER_SKILLS_DIR);
+  const dir = path.resolve(skill?.dir || '');
+  if (dir.startsWith(`${root}${path.sep}`) && path.basename(dir).startsWith('eval-routing-skill-')) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 export default {
   lane: 'routing',
@@ -49,6 +94,38 @@ export default {
         ? ok('routing.ledger', 'Routing ledger', `${ledger.data.records.length} recent route record(s) · ${ledger.data.counts?.total || 0} total`)
         : warn('routing.ledger', 'Routing ledger', `ledger ${ledger.status} ${ledger.error || ''}`),
     );
+
+    let evalSkill = null;
+    try {
+      evalSkill = writeEvalRoutingSkill();
+      const routedWithSkill = await ctx.api('/api/tasks/route', {
+        method: 'POST',
+        body: {
+          message: `Prepare the target panel saved state workflow with ${evalSkill.name}; preview only.`,
+          execute: false,
+          useMemory: true,
+          source: 'eval_skill_plan',
+          skillLimit: 5,
+        },
+      });
+      const skillPlan = routedWithSkill.data?.skillRecallPlan;
+      const recordPlan = routedWithSkill.data?.routing?.skillRecallPlan;
+      const tools = routedWithSkill.data?.contextPlan?.recommendedTools || [];
+      const matchedName = skillPlan?.primarySkill?.name || recordPlan?.primarySkill?.name || '';
+      out.push(
+        routedWithSkill.ok
+          && skillPlan?.applied === true
+          && recordPlan?.applied === true
+          && matchedName === evalSkill.name
+          && tools.includes('search_local_skills')
+          ? ok('routing.local_skill_plan', 'Local skill plan in routing', `${evalSkill.name} changed route plan with ${tools.length} tool hint(s)`)
+          : fail('routing.local_skill_plan', 'Local skill plan in routing', 'expected recalled local skill plan in preview route and ledger record', routedWithSkill.data),
+      );
+    } catch (error) {
+      out.push(fail('routing.local_skill_plan', 'Local skill plan in routing', error instanceof Error ? error.message : String(error)));
+    } finally {
+      cleanupEvalRoutingSkill(evalSkill);
+    }
 
     const briefing = await ctx.api('/api/briefing');
     const routeActions = (briefing.data?.briefing?.nextActions || []).filter((action) => action.source === 'routing');

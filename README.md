@@ -16,7 +16,7 @@ Local Mac-first realtime desktop buddy.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
-- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, and recall matching local skills during later task routing.
+- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, and attach recalled local skills as structured `skillRecallPlan` evidence during later task routing.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
@@ -29,7 +29,7 @@ Local Mac-first realtime desktop buddy.
 - Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
 - Current-state app workflow planning: observe frontmost app, Accessibility tree, and screen metadata to turn a natural request into previewable local workflow steps.
 - Creative app workflows: recognize video editing and music composition requests, choose a likely NLE/DAW such as Final Cut Pro, DaVinci Resolve, Premiere, iMovie, CapCut, Logic Pro, GarageBand, Ableton Live, FL Studio, or Pro Tools, return stage action packs, and execute one guarded action at a time with post-action screen/UI verification and recovery hints.
-- Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context.
+- Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context and recalled local skill plans.
 - OpenClaw-style lane contract registry for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, and risk boundaries.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
 - Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, and avoid overlapping write races.

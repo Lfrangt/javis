@@ -90,7 +90,7 @@ This learning system is part of the product, not a hidden analytics feature:
 - Codex and Claude handle repo-bound or code-heavy work: implementation, tests, review, documentation updates, issue investigation, and scoped edits with explicit ownership.
 - Browser, file, and Mac-app workers handle their own tool surfaces through scoped capabilities, audit logs, and policy checks.
 - Parallel execution is allowed only for independent work scopes: separate repos, separate files, separate research tracks, or read-only investigations. Shared files, secrets, irreversible actions, and user approvals serialize through one visible owner.
-- Next verifiable engineering task: connect recalled local skills and proven demonstration playbooks deeper into workflow execution, with shortcut promotion UX, evidence that a recalled procedure changed the plan, and the same confirmation gates before any action.
+- Next verifiable engineering task: drive real worker execution from persisted `skillRecallPlan` records, add shortcut promotion UX after confirmed successful repeats, and keep the same confirmation gates before any action.
 
 ## Scope
 

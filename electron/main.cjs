@@ -2163,6 +2163,57 @@ function normalizeContextPlan(value) {
   };
 }
 
+function normalizeSkillPlanSkill(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  return {
+    name: compactRecordText(raw.name || '', 120),
+    kind: ['demonstration', 'learning', 'user'].includes(String(raw.kind || '')) ? String(raw.kind) : 'user',
+    path: String(raw.path || '').slice(0, 500),
+    demonstrationId: String(raw.demonstrationId || '').slice(0, 120),
+    score: Math.max(0, Number(raw.score || 0)),
+    summary: compactRecordText(raw.summary || raw.description || raw.workflow || raw.replayPlan || '', 360),
+  };
+}
+
+function normalizeSkillRecallPlan(value) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const skills = Array.isArray(raw.skills)
+    ? raw.skills.map(normalizeSkillPlanSkill).filter((skill) => skill.name).slice(0, 5)
+    : [];
+  const primarySkill = raw.primarySkill
+    ? normalizeSkillPlanSkill(raw.primarySkill)
+    : skills[0] || normalizeSkillPlanSkill({});
+  const applied = Boolean(raw.applied || skills.length);
+  const shortcut = raw.shortcutCandidate && typeof raw.shortcutCandidate === 'object' ? raw.shortcutCandidate : {};
+  return {
+    version: 1,
+    applied,
+    matched: Math.max(skills.length, Number(raw.matched || 0)),
+    decisionEffect: compactRecordText(raw.decisionEffect || (applied ? 'attached_recalled_procedure_to_route_plan' : 'no_matching_local_skill'), 180),
+    summary: compactRecordText(raw.summary || '', 360),
+    primarySkill,
+    skills,
+    recommendedTools: Array.isArray(raw.recommendedTools)
+      ? Array.from(new Set(raw.recommendedTools.map((item) => String(item || '').trim()).filter(Boolean))).slice(0, 12)
+      : [],
+    planSteps: Array.isArray(raw.planSteps)
+      ? raw.planSteps.map((item) => compactRecordText(item, 260)).filter(Boolean).slice(0, 8)
+      : [],
+    confirmationRequired: applied ? raw.confirmationRequired !== false : Boolean(raw.confirmationRequired),
+    confirmationGates: Array.isArray(raw.confirmationGates)
+      ? raw.confirmationGates.map((item) => compactRecordText(item, 140)).filter(Boolean).slice(0, 8)
+      : applied
+        ? ['action_policy', 'control_mode', 'explicit_confirmation_for_replay_or_mutation']
+        : [],
+    shortcutCandidate: {
+      eligible: Boolean(shortcut.eligible),
+      reason: compactRecordText(shortcut.reason || '', 220),
+      nextAction: compactRecordText(shortcut.nextAction || '', 220),
+    },
+    generatedAt: raw.generatedAt || new Date().toISOString(),
+  };
+}
+
 function normalizePersistedRoutingRecord(record) {
   if (!record || typeof record !== 'object' || !record.id) return null;
   const lane = normalizeRoutingLane(record.lane);
@@ -2197,6 +2248,7 @@ function normalizePersistedRoutingRecord(record) {
     memoryMatches: Math.max(0, Number(record.memoryMatches || 0)),
     learningEvidence: normalizeLearningEvidence(record.learningEvidence),
     contextPlan: normalizeContextPlan(record.contextPlan),
+    skillRecallPlan: normalizeSkillRecallPlan(record.skillRecallPlan),
     createdAt: Number(record.createdAt || Date.now()),
     updatedAt: Number(record.updatedAt || Date.now()),
     completedAt,
@@ -4598,6 +4650,114 @@ function formatLocalSkillsForPrompt(list = []) {
       skill.path ? `Path: ${skill.path}` : '',
     ].filter(Boolean).join('\n'))
     .join('\n');
+}
+
+function skillToolHints(skill, contextPlan = {}) {
+  const tools = new Set(Array.isArray(contextPlan.recommendedTools) ? contextPlan.recommendedTools : []);
+  tools.add('search_local_skills');
+  const text = [
+    skill.name,
+    skill.description,
+    skill.purpose,
+    skill.triggers,
+    skill.workflow,
+    skill.replayPlan,
+    skill.evidence,
+  ].filter(Boolean).join('\n').toLowerCase();
+  if (/browser|webpage|网页|页面|标签页|url|link|链接/.test(text)) {
+    tools.add('get_browser_context');
+    tools.add('read_browser_page');
+  }
+  if (/dom|button|form|input|click|fill|submit|按钮|表单|点击|填写|输入/.test(text)) {
+    tools.add('read_browser_dom');
+    tools.add('run_browser_workflow');
+  }
+  if (/screen|accessibility|ui|window|app|hotkey|menu|屏幕|界面|窗口|应用|快捷键|菜单/.test(text)) {
+    tools.add('observe_now');
+    tools.add('read_accessibility_tree');
+    tools.add('plan_ui_action');
+  }
+  if (/file|folder|directory|path|repo|\.md\b|\.json\b|\.ts\b|\.tsx\b|\.js\b|文件|文件夹|目录|路径|仓库/.test(text)) {
+    tools.add('run_file_workflow');
+  }
+  if (/codex|claude|code|repo|test|lint|build|代码|测试|构建|仓库/.test(text)) {
+    tools.add('delegate_task');
+  }
+  return Array.from(tools).slice(0, 12);
+}
+
+function skillRecallPlanForTask(task, skills = [], contextPlan = {}) {
+  const matchedSkills = skills.slice(0, 5).map((skill) => ({
+    name: skill.name,
+    kind: skill.kind,
+    path: skill.path,
+    demonstrationId: skill.demonstrationId,
+    score: skill.score,
+    summary: skill.workflow || skill.replayPlan || skill.description || skill.purpose || 'Local skill procedure.',
+  }));
+  if (!matchedSkills.length) return normalizeSkillRecallPlan({ matched: 0, skills: [] });
+
+  const primary = skills[0];
+  const primarySummary = primary.workflow || primary.replayPlan || primary.description || primary.purpose || 'Local skill procedure.';
+  const isDemonstration = primary.kind === 'demonstration';
+  const recommendedTools = Array.from(new Set(skills.flatMap((skill) => skillToolHints(skill, contextPlan)))).slice(0, 12);
+  const planSteps = [
+    `Review recalled local skill "${primary.name}" before making a fresh plan.`,
+    isDemonstration
+      ? 'If the user asks to act, re-observe the current target and adapt the demonstration replay plan to current UI refs; never replay saved coordinates.'
+      : 'Adapt the saved workflow to the current task and cite the reused procedure in the worker plan.',
+    'Run only through the normal lane tools and action policy; do not treat a skill as permission.',
+    'After success, attach evidence and suggest shortcut promotion when the workflow is repeated.',
+  ];
+  return normalizeSkillRecallPlan({
+    applied: true,
+    matched: skills.length,
+    decisionEffect: 'attached_recalled_procedure_to_route_plan',
+    summary: `Recalled ${matchedSkills.length} local skill(s); primary procedure is ${primary.name}.`,
+    primarySkill: matchedSkills[0],
+    skills: matchedSkills,
+    recommendedTools,
+    planSteps,
+    confirmationRequired: true,
+    confirmationGates: ['action_policy', 'control_mode', 'explicit_confirmation_for_replay_or_mutation'],
+    shortcutCandidate: {
+      eligible: isDemonstration || Number(primary.score || 0) >= 2,
+      reason: isDemonstration
+        ? 'Demonstration-derived skill can become a visible shortcut after a confirmed successful replay.'
+        : 'Repeated skill match can be promoted after successful use is recorded.',
+      nextAction: 'Offer shortcut promotion only after the user sees the plan/evidence.',
+    },
+  });
+}
+
+function contextPlanWithSkillRecall(contextPlan, skillRecallPlan) {
+  const plan = normalizeContextPlan(contextPlan);
+  const skillPlan = normalizeSkillRecallPlan(skillRecallPlan);
+  if (!skillPlan.applied) return plan;
+  const reasons = [...plan.reasons];
+  contextPlanPushReason(reasons, `recalled local skill procedure: ${skillPlan.primarySkill.name}`);
+  return normalizeContextPlan({
+    ...plan,
+    summary: compactRecordText(`${plan.summary || 'Use task context.'} Reuse recalled skill plan before acting.`, 220),
+    needs: {
+      ...plan.needs,
+      localSkills: true,
+    },
+    reasons,
+    recommendedTools: Array.from(new Set([...plan.recommendedTools, ...skillPlan.recommendedTools])).slice(0, 12),
+  });
+}
+
+function formatSkillRecallPlanForPrompt(plan) {
+  const skillPlan = normalizeSkillRecallPlan(plan);
+  if (!skillPlan.applied) return '';
+  return [
+    'Skill recall execution plan:',
+    `Primary skill: [${skillPlan.primarySkill.kind}] ${skillPlan.primarySkill.name}`,
+    `Decision effect: ${skillPlan.decisionEffect}`,
+    skillPlan.planSteps.map((step, index) => `${index + 1}. ${step}`).join('\n'),
+    skillPlan.confirmationGates.length ? `Confirmation gates: ${skillPlan.confirmationGates.join(', ')}` : '',
+  ].filter(Boolean).join('\n');
 }
 
 function uniqueMemories(list) {
@@ -13266,6 +13426,15 @@ async function routeTask(options = {}) {
     mode: options.mode || options.lane,
     useMemory: options.useMemory !== false,
   });
+  const skillRecallPlan = skillRecallPlanForTask(task, memoryContext.skills, decision.contextPlan);
+  decision.contextPlan = contextPlanWithSkillRecall(decision.contextPlan, skillRecallPlan);
+  decision.skillRecallPlan = skillRecallPlan;
+  const taskInput = [
+    memoryContext.prompt,
+    formatSkillRecallPlanForPrompt(skillRecallPlan),
+    'Task:',
+    task,
+  ].filter(Boolean).join('\n\n');
 
   appendAudit('task_route.decided', {
     lane: decision.lane,
@@ -13275,6 +13444,7 @@ async function routeTask(options = {}) {
     chars: decision.features.chars,
     memoryMatches: memoryContext.matches.length,
     skillMatches: memoryContext.skills.length,
+    skillPlanApplied: skillRecallPlan.applied,
     learningEffect: memoryContext.learningEvidence.decisionEffect,
     contextMode: decision.contextPlan.mode,
   });
@@ -13292,14 +13462,19 @@ async function routeTask(options = {}) {
         skillCount: memoryContext.skills.length,
         learningEvidence: memoryContext.learningEvidence,
       },
+      skillRecallPlan,
       learningEvidence: memoryContext.learningEvidence,
       contextPlan: decision.contextPlan,
-      output: `Route: ${decision.label} · ${decision.reason}`,
+      output: [
+        `Route: ${decision.label} · ${decision.reason}`,
+        skillRecallPlan.applied ? `Skill plan: ${skillRecallPlan.summary}` : '',
+      ].filter(Boolean).join('\n'),
     }, {
       ...routingContext,
       decision,
       memoryMatches: memoryContext.matches.length,
       learningEvidence: memoryContext.learningEvidence,
+      skillRecallPlan,
       contextPlan: decision.contextPlan,
     });
   }
@@ -13308,7 +13483,7 @@ async function routeTask(options = {}) {
     try {
       const output = await answerQuickLane({
         message: task,
-        input: [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n'),
+        input: taskInput,
         includeScreen: Boolean(options.includeScreen),
         source: routingContext.source === 'router' ? 'task_route_quick' : routingContext.source,
       });
@@ -13324,6 +13499,7 @@ async function routeTask(options = {}) {
         skillCount: memoryContext.skills.length,
         learningEvidence: memoryContext.learningEvidence,
       },
+        skillRecallPlan,
         learningEvidence: memoryContext.learningEvidence,
         contextPlan: decision.contextPlan,
         output,
@@ -13332,6 +13508,7 @@ async function routeTask(options = {}) {
         decision,
         memoryMatches: memoryContext.matches.length,
         learningEvidence: memoryContext.learningEvidence,
+        skillRecallPlan,
         contextPlan: decision.contextPlan,
       });
     } catch (error) {
@@ -13347,6 +13524,7 @@ async function routeTask(options = {}) {
           skillCount: memoryContext.skills.length,
           learningEvidence: memoryContext.learningEvidence,
         },
+        skillRecallPlan,
         learningEvidence: memoryContext.learningEvidence,
         contextPlan: decision.contextPlan,
         output: error instanceof Error ? error.message : String(error),
@@ -13355,12 +13533,13 @@ async function routeTask(options = {}) {
         decision,
         memoryMatches: memoryContext.matches.length,
         learningEvidence: memoryContext.learningEvidence,
+        skillRecallPlan,
         contextPlan: decision.contextPlan,
       });
     }
   }
 
-  const jobTask = [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n');
+  const jobTask = taskInput;
   const job = createJob(jobTask, decision.lane === 'background' ? 'background' : decision.lane, 'router', { title: task });
   return finalizeRouteResult({
     ok: true,
@@ -13374,6 +13553,7 @@ async function routeTask(options = {}) {
       skillCount: memoryContext.skills.length,
       learningEvidence: memoryContext.learningEvidence,
     },
+    skillRecallPlan,
     learningEvidence: memoryContext.learningEvidence,
     contextPlan: decision.contextPlan,
     job,
@@ -13383,6 +13563,7 @@ async function routeTask(options = {}) {
     decision,
     memoryMatches: memoryContext.matches.length,
     learningEvidence: memoryContext.learningEvidence,
+    skillRecallPlan,
     contextPlan: decision.contextPlan,
   });
 }
@@ -16300,6 +16481,7 @@ function createRoutingRecord(options = {}) {
     memoryMatches: options.memoryMatches || 0,
     learningEvidence: normalizeLearningEvidence(options.learningEvidence),
     contextPlan: normalizeContextPlan(options.contextPlan || decision.contextPlan || options.result?.contextPlan),
+    skillRecallPlan: normalizeSkillRecallPlan(options.skillRecallPlan || decision.skillRecallPlan || options.result?.skillRecallPlan),
     createdAt: now,
     updatedAt: now,
     completedAt: ['done', 'failed', 'cancelled', 'blocked'].includes(options.status) ? now : 0,
@@ -16516,6 +16698,7 @@ function routingLedgerEntry(record) {
     memoryMatches: record.memoryMatches,
     learningEvidence: record.learningEvidence,
     contextPlan: record.contextPlan,
+    skillRecallPlan: record.skillRecallPlan,
     updatedAt: record.updatedAt,
   };
 }
@@ -16542,11 +16725,13 @@ function finalizeRouteResult(result, context = {}) {
     scope: context.scope,
     ownership: context.ownership,
     contextPlan,
+    skillRecallPlan: result.skillRecallPlan || context.skillRecallPlan,
     result,
   });
   return {
     ...result,
     contextPlan,
+    skillRecallPlan: normalizeSkillRecallPlan(result.skillRecallPlan || context.skillRecallPlan),
     routing: record,
     routeRecord: record,
   };
