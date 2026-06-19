@@ -16,7 +16,7 @@ Local Mac-first realtime desktop buddy.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
-- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, and run them only after explicit confirmation through normal app workflow gates.
+- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, and promote proven demonstrations into reviewable local skills after confirmation.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
@@ -147,6 +147,9 @@ Local Express service on 127.0.0.1:3417
   /api/learning/remember -> save the inferred learning profile into local memory
   /api/learning/skill-draft -> preview or generate a local Codex skill draft from learning evidence
   /api/learning/skill-draft/save -> explicitly export the draft to ~/.agents/skills
+  /api/demonstrations   -> explicit UI demonstration records for repeatable local workflows
+  /api/demonstrations/:id/replay/* -> safe replay planning and confirmation-gated execution
+  /api/demonstrations/:id/skill-draft* -> preview or confirm-save a local skill from a completed demonstration
   /api/inbox            -> local persistent capture inbox
   /api/inbox/capture-clipboard -> capture current clipboard text into Inbox
   /api/inbox/triage     -> read-only Inbox priority and lane suggestions

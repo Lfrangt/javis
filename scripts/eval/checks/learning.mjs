@@ -89,6 +89,18 @@ export default {
           body: { source: 'eval', execute: false, instruction: 'Preview confirmed run gate' },
         })
         : { ok: false, data: {} };
+      const demonstrationSkillDraft = demoId
+        ? await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/skill-draft`, {
+          method: 'POST',
+          body: { source: 'eval', title: 'Eval demonstrated workflow skill' },
+        })
+        : { ok: false, data: {} };
+      const demonstrationSkillSaveBlocked = demoId
+        ? await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/skill-draft/save`, {
+          method: 'POST',
+          body: { source: 'eval', title: 'Eval demonstrated workflow skill' },
+        })
+        : { ok: false, data: {} };
       out.push(
         captured.ok &&
           finished.ok &&
@@ -123,6 +135,18 @@ export default {
           replayRunPreview.data?.replayMode === 'confirmed_run_preview'
           ? ok('learning.demonstration_replay_run_gate', 'UI demonstration replay run gate', 'confirm:true required for execution; execute:false previews only')
           : fail('learning.demonstration_replay_run_gate', 'UI demonstration replay run gate', `blocked ${replayRunBlocked.status} preview ${replayRunPreview.status}`, { blocked: replayRunBlocked.data, preview: replayRunPreview.data }),
+      );
+      out.push(
+        demonstrationSkillDraft.ok &&
+          demonstrationSkillDraft.data?.source === 'demonstration_skill_draft' &&
+          demonstrationSkillDraft.data?.skill?.markdown &&
+          String(demonstrationSkillDraft.data.skill.markdown).includes('# Replay Plan') &&
+          String(demonstrationSkillDraft.data.skill.suggestedUserPath || '').includes('/.agents/skills/') &&
+          !demonstrationSkillSaveBlocked.ok &&
+          demonstrationSkillSaveBlocked.status === 409 &&
+          demonstrationSkillSaveBlocked.data?.requiresConfirmation === true
+          ? ok('learning.demonstration_skill_draft', 'UI demonstration skill draft', `${demonstrationSkillDraft.data.skill.name} · save requires confirmation`)
+          : fail('learning.demonstration_skill_draft', 'UI demonstration skill draft', `draft ${demonstrationSkillDraft.status} save ${demonstrationSkillSaveBlocked.status}`, { draft: demonstrationSkillDraft.data, save: demonstrationSkillSaveBlocked.data }),
       );
     } finally {
       if (demoId) {

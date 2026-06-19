@@ -15,6 +15,8 @@ const REQUIRED_TOOLS = [
   'finish_ui_demonstration',
   'plan_ui_demonstration_replay',
   'run_ui_demonstration_replay',
+  'draft_ui_demonstration_skill',
+  'save_ui_demonstration_skill',
   'read_browser_page',
   'run_browser_workflow',
   'route_task',

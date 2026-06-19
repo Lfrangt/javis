@@ -152,7 +152,7 @@ Use options `19`-`25` for local learning maintenance: refresh the inferred profi
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, preview
 a Codex-style skill draft, or export that draft to `~/.agents/skills` after typing `SAVE`.
 
-Use option `27. Show UI demonstrations` to inspect explicit local demonstrations. Demonstrations are user-started records for repeatable UI workflows; they store notes plus sanitized app/browser/screen/accessibility summaries and a manual-preview playbook, not screenshots or raw clipboard text.
+Use option `27. Show UI demonstrations` to inspect explicit local demonstrations. Demonstrations are user-started records for repeatable UI workflows; they store notes plus sanitized app/browser/screen/accessibility summaries and a manual-preview playbook, not screenshots or raw clipboard text. Completed demonstrations can become replay plans or reviewable local skill drafts; saving a draft to `~/.agents/skills` requires explicit confirmation.
 
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
@@ -266,6 +266,7 @@ For local Claude Code/Codex sessions, prefer `npm run collab -- claim ...` over 
 `/api/demonstrations` is the Record & Replay-style local learning surface. It is explicit and local: start a demonstration, capture one or more current UI states, finish it into a manual-preview playbook, and delete it when no longer useful.
 Realtime voice exposes the same surface through `get_ui_demonstrations`, `start_ui_demonstration`, `capture_ui_demonstration_step`, and `finish_ui_demonstration`; say “贾维斯，开始记录这个流程”, “记录这一步”, then “结束记录” while demonstrating the workflow.
 Completed demonstrations can also become safe replay plans through `/api/demonstrations/<id>/replay/plan` or the `plan_ui_demonstration_replay` voice tool. Run them only through `/api/demonstrations/<id>/replay/run` or `run_ui_demonstration_replay` after explicit confirmation. The replay never reuses coordinates and still passes through normal app workflow, action-policy, control-mode, approval, and audit gates.
+Completed demonstrations can also become reviewable local skills through `/api/demonstrations/<id>/skill-draft` or `draft_ui_demonstration_skill`. Save them only through `/api/demonstrations/<id>/skill-draft/save` or `save_ui_demonstration_skill` after explicit confirmation; saving writes a `SKILL.md` under `~/.agents/skills` and does not grant new permissions.
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/demonstrations/start \
@@ -286,6 +287,12 @@ curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/replay/run \
 curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/replay/run \
   -H 'Content-Type: application/json' \
   -d '{"execute":true,"confirm":true}'
+curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/skill-draft \
+  -H 'Content-Type: application/json' \
+  -d '{"title":"Invoice export skill"}'
+curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/skill-draft/save \
+  -H 'Content-Type: application/json' \
+  -d '{"confirm":true}'
 curl http://127.0.0.1:3417/api/demonstrations
 ```
 
