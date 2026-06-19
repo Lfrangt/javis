@@ -52,6 +52,7 @@ const MEMORIES_FILE = path.join(DATA_DIR, 'memories.json');
 const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const DEMONSTRATIONS_FILE = path.join(DATA_DIR, 'demonstrations.json');
+const SHORTCUTS_FILE = path.join(DATA_DIR, 'shortcuts.json');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
@@ -96,6 +97,7 @@ const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES |
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
 const MAX_PERSISTED_DEMONSTRATIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_DEMONSTRATIONS || 200)));
+const MAX_PERSISTED_SHORTCUTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_SHORTCUTS || 200)));
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
@@ -568,6 +570,7 @@ const memories = new Map();
 const inboxItems = new Map();
 const workSessions = new Map();
 const demonstrations = new Map();
+const shortcuts = new Map();
 const ambientEvents = [];
 const activeJobRuns = new Map();
 let learnedProfile = null;
@@ -662,6 +665,7 @@ loadPersistedMemories();
 loadPersistedInbox();
 loadPersistedSessions();
 loadPersistedDemonstrations();
+loadPersistedShortcuts();
 loadPersistedAmbient();
 loadPersistedLearning();
 appendAudit('process.start', {
@@ -2215,6 +2219,237 @@ function normalizeSkillRecallPlan(value) {
   };
 }
 
+function normalizeShortcutPhrase(value) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+function normalizeShortcutRecord(value = {}) {
+  const raw = value && typeof value === 'object' ? value : {};
+  const phrase = compactRecordText(raw.phrase || raw.trigger || raw.name || raw.title || '', 120);
+  const normalizedPhrase = normalizeShortcutPhrase(phrase);
+  const aliases = Array.isArray(raw.aliases)
+    ? raw.aliases.map((item) => compactRecordText(item, 120)).filter(Boolean).slice(0, 12)
+    : [];
+  const skillRecallPlan = normalizeSkillRecallPlan(raw.skillRecallPlan || raw.plan);
+  if (!normalizedPhrase || !skillRecallPlan.applied) return null;
+  const now = Date.now();
+  return {
+    id: String(raw.id || crypto.randomUUID()).slice(0, 120),
+    title: compactRecordText(raw.title || skillRecallPlan.primarySkill.name || phrase, 160),
+    phrase,
+    normalizedPhrase,
+    aliases,
+    normalizedAliases: aliases.map(normalizeShortcutPhrase).filter(Boolean),
+    enabled: raw.enabled !== false,
+    source: compactRecordText(raw.source || 'api', 80),
+    createdAt: Number(raw.createdAt || now),
+    updatedAt: Number(raw.updatedAt || now),
+    lastUsedAt: Number(raw.lastUsedAt || 0),
+    usedCount: Math.max(0, Number(raw.usedCount || 0)),
+    routeId: String(raw.routeId || '').slice(0, 120),
+    jobId: String(raw.jobId || '').slice(0, 120),
+    evidence: {
+      routeStatus: compactRecordText(raw.evidence?.routeStatus || raw.routeStatus || '', 40),
+      jobStatus: compactRecordText(raw.evidence?.jobStatus || raw.jobStatus || '', 40),
+      resultSummary: compactRecordText(raw.evidence?.resultSummary || raw.resultSummary || '', 500),
+    },
+    skillRecallPlan,
+  };
+}
+
+function shortcutSnapshot(limit = 50) {
+  const items = Array.from(shortcuts.values())
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(1, Math.min(200, Number(limit || 50))));
+  return {
+    ok: true,
+    file: SHORTCUTS_FILE,
+    counts: {
+      total: shortcuts.size,
+      enabled: Array.from(shortcuts.values()).filter((item) => item.enabled).length,
+      disabled: Array.from(shortcuts.values()).filter((item) => !item.enabled).length,
+    },
+    items,
+  };
+}
+
+function shortcutMatchesText(shortcut, task) {
+  if (!shortcut?.enabled) return false;
+  const text = normalizeShortcutPhrase(task);
+  if (!text) return false;
+  const phrases = [shortcut.normalizedPhrase, ...(shortcut.normalizedAliases || [])].filter(Boolean);
+  return phrases.some((phrase) => text === phrase || text.startsWith(`${phrase} `) || text.includes(` ${phrase} `));
+}
+
+function shortcutMatchForTask(task) {
+  const matches = Array.from(shortcuts.values())
+    .filter((shortcut) => shortcutMatchesText(shortcut, task))
+    .sort((a, b) => b.normalizedPhrase.length - a.normalizedPhrase.length || b.updatedAt - a.updatedAt);
+  return matches[0] || null;
+}
+
+function skillRecallPlanFromShortcut(shortcut) {
+  const plan = normalizeSkillRecallPlan(shortcut?.skillRecallPlan);
+  if (!shortcut || !plan.applied) return normalizeSkillRecallPlan();
+  return normalizeSkillRecallPlan({
+    ...plan,
+    decisionEffect: 'shortcut_phrase_matched',
+    summary: `Shortcut "${shortcut.phrase}" recalled ${plan.primarySkill.name}.`,
+  });
+}
+
+function shortcutCandidateFromRouteRecord(record) {
+  const route = record ? normalizePersistedRoutingRecord(record) : null;
+  const skillRecallPlan = normalizeSkillRecallPlan(route?.skillRecallPlan);
+  if (!route || !skillRecallPlan.applied || !skillRecallPlan.shortcutCandidate.eligible) return null;
+  if (route.status !== 'done') return null;
+  return {
+    source: 'routing',
+    routeId: route.id,
+    jobId: route.jobId || '',
+    title: skillRecallPlan.primarySkill.name || route.taskTitle,
+    phrase: skillRecallPlan.primarySkill.name || route.taskTitle,
+    taskTitle: route.taskTitle,
+    status: route.status,
+    eligible: true,
+    resultSummary: route.resultSummary,
+    skillRecallPlan,
+    updatedAt: route.updatedAt,
+  };
+}
+
+function shortcutCandidateFromJob(job) {
+  const skillRecallPlan = normalizeSkillRecallPlan(job?.skillRecallPlan);
+  if (!job || !skillRecallPlan.applied || !skillRecallPlan.shortcutCandidate.eligible) return null;
+  if (job.status !== 'done') return null;
+  return {
+    source: 'job',
+    jobId: job.id,
+    routeId: routeForWorkerJob(job)?.id || '',
+    title: skillRecallPlan.primarySkill.name || job.title,
+    phrase: skillRecallPlan.primarySkill.name || job.title,
+    taskTitle: job.title,
+    status: job.status,
+    eligible: true,
+    resultSummary: job.result || job.log || '',
+    skillRecallPlan,
+    updatedAt: job.updatedAt,
+  };
+}
+
+function shortcutPromotionCandidates(options = {}) {
+  const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
+  const routeCandidates = Array.from(routingRecords.values()).map(shortcutCandidateFromRouteRecord).filter(Boolean);
+  const jobCandidates = Array.from(jobs.values()).map(shortcutCandidateFromJob).filter(Boolean);
+  const seen = new Set();
+  const items = [...routeCandidates, ...jobCandidates]
+    .filter((candidate) => {
+      const key = `${candidate.skillRecallPlan.primarySkill.name}:${candidate.routeId}:${candidate.jobId}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, limit)
+    .map((candidate) => ({
+      ...candidate,
+      resultSummary: compactRecordText(candidate.resultSummary, 500),
+    }));
+  return {
+    ok: true,
+    count: items.length,
+    items,
+  };
+}
+
+function upsertShortcutFromPromotion(options = {}) {
+  const confirmed = options.confirm === true || String(options.confirm || '').toLowerCase() === 'true';
+  const route = options.routeId ? routingRecords.get(String(options.routeId)) || null : null;
+  const job = options.jobId ? jobs.get(String(options.jobId)) || null : null;
+  const routeCandidate = route ? shortcutCandidateFromRouteRecord(route) : null;
+  const jobCandidate = job ? shortcutCandidateFromJob(job) : null;
+  const explicitPlan = normalizeSkillRecallPlan(options.skillRecallPlan || options.plan);
+  const skillRecallPlan = normalizeSkillRecallPlan(
+    routeCandidate?.skillRecallPlan ||
+    jobCandidate?.skillRecallPlan ||
+    explicitPlan,
+  );
+  if (!skillRecallPlan.applied) throw new Error('Missing applied skillRecallPlan for shortcut promotion.');
+  const phrase = compactRecordText(options.phrase || routeCandidate?.phrase || jobCandidate?.phrase || skillRecallPlan.primarySkill.name, 120);
+  const candidate = {
+    routeId: String(options.routeId || routeCandidate?.routeId || jobCandidate?.routeId || ''),
+    jobId: String(options.jobId || routeCandidate?.jobId || jobCandidate?.jobId || ''),
+    title: options.title || routeCandidate?.title || jobCandidate?.title || skillRecallPlan.primarySkill.name,
+    phrase,
+    aliases: options.aliases,
+    source: options.source || 'api',
+    skillRecallPlan,
+    evidence: {
+      routeStatus: route?.status || routeCandidate?.status || '',
+      jobStatus: job?.status || jobCandidate?.status || '',
+      resultSummary: route?.resultSummary || job?.result || job?.log || routeCandidate?.resultSummary || jobCandidate?.resultSummary || '',
+    },
+  };
+  const shortcut = normalizeShortcutRecord(candidate);
+  if (!shortcut) throw new Error('Shortcut phrase and applied skillRecallPlan are required.');
+  if (!confirmed) {
+    return {
+      ok: false,
+      status: 409,
+      requiresConfirmation: true,
+      shortcut,
+      output: `Confirm before saving shortcut "${shortcut.phrase}".`,
+    };
+  }
+  const existing = Array.from(shortcuts.values()).find((item) => item.normalizedPhrase === shortcut.normalizedPhrase) || null;
+  const next = {
+    ...shortcut,
+    id: existing?.id || shortcut.id,
+    createdAt: existing?.createdAt || shortcut.createdAt,
+    usedCount: existing?.usedCount || 0,
+    lastUsedAt: existing?.lastUsedAt || 0,
+    updatedAt: Date.now(),
+  };
+  shortcuts.set(next.id, next);
+  persistShortcuts();
+  appendAudit('shortcut.promoted', {
+    id: next.id,
+    phrase: next.phrase,
+    primarySkill: next.skillRecallPlan.primarySkill.name,
+    routeId: next.routeId,
+    jobId: next.jobId,
+    source: next.source,
+  });
+  return {
+    ok: true,
+    shortcut: next,
+    shortcuts: shortcutSnapshot(20),
+    output: `Shortcut saved: "${next.phrase}" -> ${next.skillRecallPlan.primarySkill.name}.`,
+  };
+}
+
+function markShortcutUsed(shortcut, source = 'router') {
+  if (!shortcut?.id || !shortcuts.has(shortcut.id)) return shortcut;
+  const next = {
+    ...shortcut,
+    usedCount: Number(shortcut.usedCount || 0) + 1,
+    lastUsedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  shortcuts.set(next.id, next);
+  persistShortcuts();
+  appendAudit('shortcut.used', {
+    id: next.id,
+    phrase: next.phrase,
+    source: compactRecordText(source, 80),
+    usedCount: next.usedCount,
+  });
+  return next;
+}
+
 function normalizePersistedRoutingRecord(record) {
   if (!record || typeof record !== 'object' || !record.id) return null;
   const lane = normalizeRoutingLane(record.lane);
@@ -3197,6 +3432,23 @@ function loadPersistedDemonstrations() {
   }
 }
 
+function loadPersistedShortcuts() {
+  if (!fs.existsSync(SHORTCUTS_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(SHORTCUTS_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.shortcuts) ? parsed.shortcuts : [];
+    shortcuts.clear();
+    for (const rawShortcut of list) {
+      const shortcut = normalizeShortcutRecord(rawShortcut);
+      if (shortcut) shortcuts.set(shortcut.id, shortcut);
+    }
+    persistShortcuts();
+    appendAudit('shortcuts.loaded', { count: shortcuts.size });
+  } catch (error) {
+    appendAudit('shortcuts.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function loadPersistedAmbient() {
   if (!fs.existsSync(AMBIENT_FILE)) return;
   try {
@@ -3259,6 +3511,17 @@ function persistRouting() {
     version: 1,
     updatedAt: new Date().toISOString(),
     records: recordsForStorage,
+  });
+}
+
+function persistShortcuts() {
+  const shortcutsForStorage = Array.from(shortcuts.values())
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_PERSISTED_SHORTCUTS);
+  writeJsonAtomic(SHORTCUTS_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    shortcuts: shortcutsForStorage,
   });
 }
 
@@ -13449,7 +13712,14 @@ async function routeTask(options = {}) {
     mode: options.mode || options.lane,
     useMemory: options.useMemory !== false,
   });
-  const skillRecallPlan = skillRecallPlanForTask(task, memoryContext.skills, decision.contextPlan);
+  const matchedShortcut = options.useShortcuts === false ? null : shortcutMatchForTask(task);
+  const shortcutSkillRecallPlan = skillRecallPlanFromShortcut(matchedShortcut);
+  const skillRecallPlan = shortcutSkillRecallPlan.applied
+    ? shortcutSkillRecallPlan
+    : skillRecallPlanForTask(task, memoryContext.skills, decision.contextPlan);
+  const usedShortcut = matchedShortcut && shortcutSkillRecallPlan.applied
+    ? markShortcutUsed(matchedShortcut, routingContext.source)
+    : null;
   decision.contextPlan = contextPlanWithSkillRecall(decision.contextPlan, skillRecallPlan);
   decision.skillRecallPlan = skillRecallPlan;
   const taskInput = [
@@ -13468,6 +13738,7 @@ async function routeTask(options = {}) {
     memoryMatches: memoryContext.matches.length,
     skillMatches: memoryContext.skills.length,
     skillPlanApplied: skillRecallPlan.applied,
+    shortcutId: usedShortcut?.id || '',
     learningEffect: memoryContext.learningEvidence.decisionEffect,
     contextMode: decision.contextPlan.mode,
   });
@@ -13486,10 +13757,12 @@ async function routeTask(options = {}) {
         learningEvidence: memoryContext.learningEvidence,
       },
       skillRecallPlan,
+      shortcut: usedShortcut,
       learningEvidence: memoryContext.learningEvidence,
       contextPlan: decision.contextPlan,
       output: [
         `Route: ${decision.label} · ${decision.reason}`,
+        usedShortcut ? `Shortcut: ${usedShortcut.phrase}` : '',
         skillRecallPlan.applied ? `Skill plan: ${skillRecallPlan.summary}` : '',
       ].filter(Boolean).join('\n'),
     }, {
@@ -13523,6 +13796,7 @@ async function routeTask(options = {}) {
         learningEvidence: memoryContext.learningEvidence,
       },
         skillRecallPlan,
+        shortcut: usedShortcut,
         learningEvidence: memoryContext.learningEvidence,
         contextPlan: decision.contextPlan,
         output,
@@ -13548,6 +13822,7 @@ async function routeTask(options = {}) {
           learningEvidence: memoryContext.learningEvidence,
         },
         skillRecallPlan,
+        shortcut: usedShortcut,
         learningEvidence: memoryContext.learningEvidence,
         contextPlan: decision.contextPlan,
         output: error instanceof Error ? error.message : String(error),
@@ -13581,6 +13856,7 @@ async function routeTask(options = {}) {
       learningEvidence: memoryContext.learningEvidence,
     },
     skillRecallPlan,
+    shortcut: usedShortcut,
     learningEvidence: memoryContext.learningEvidence,
     contextPlan: decision.contextPlan,
     job,
@@ -18741,6 +19017,7 @@ function configCheckSnapshot() {
       screenPrivacyFile: SCREEN_PRIVACY_FILE,
       ambientFile: AMBIENT_FILE,
       learningFile: LEARNING_FILE,
+      shortcutsFile: SHORTCUTS_FILE,
       jobsFile: JOBS_FILE,
       workflowsFile: WORKFLOWS_FILE,
       collaborationFile: COLLABORATION_FILE,
@@ -18822,6 +19099,7 @@ function healthSnapshot() {
       screenPrivacyFile: SCREEN_PRIVACY_FILE,
       ambientFile: AMBIENT_FILE,
       learningFile: LEARNING_FILE,
+      shortcutsFile: SHORTCUTS_FILE,
       persistedJobs: jobs.size,
       persistedWorkflows: workflows.size,
       persistedRoutingRecords: routingRecords.size,
@@ -18832,6 +19110,7 @@ function healthSnapshot() {
       persistedSessions: workSessions.size,
       persistedAmbientEvents: ambientEvents.length,
       persistedLearningEvents: learningStateSnapshot().profile.sourceEventCount,
+      persistedShortcuts: shortcuts.size,
       maxPersistedJobs: MAX_PERSISTED_JOBS,
       maxPersistedWorkflows: MAX_PERSISTED_WORKFLOWS,
       maxPersistedRouting: MAX_PERSISTED_ROUTING,
@@ -18841,6 +19120,7 @@ function healthSnapshot() {
       maxPersistedSessions: MAX_PERSISTED_SESSIONS,
       maxPersistedAmbientEvents: MAX_PERSISTED_AMBIENT,
       maxLearningSourceEvents: MAX_LEARNING_SOURCE_EVENTS,
+      maxPersistedShortcuts: MAX_PERSISTED_SHORTCUTS,
     },
     actionPolicy: {
       dryRun: actionPolicy.dryRun,
@@ -23813,6 +24093,7 @@ function startApiServer() {
         recent: memorySnapshot(3),
       },
       learnedProfile: learningStateSnapshot().profile,
+      shortcuts: shortcutSnapshot(8),
       inbox: {
         counts: inboxCounts(),
         open: inboxSnapshot(5, 'open'),
@@ -23955,6 +24236,44 @@ function startApiServer() {
     } catch (error) {
       jsonError(res, 400, 'Local skill search failed', error instanceof Error ? error.message : String(error));
     }
+  });
+
+  api.get('/api/shortcuts', (req, res) => {
+    try {
+      res.json({ shortcuts: shortcutSnapshot(req.query.limit || 50) });
+    } catch (error) {
+      jsonError(res, 400, 'Shortcut list failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/shortcuts/candidates', (req, res) => {
+    try {
+      res.json({ candidates: shortcutPromotionCandidates({ limit: req.query.limit || 10 }) });
+    } catch (error) {
+      jsonError(res, 400, 'Shortcut candidate list failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/shortcuts/promote', express.json({ limit: '256kb' }), (req, res) => {
+    try {
+      const result = upsertShortcutFromPromotion({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(!result.ok && result.status ? result.status : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Shortcut promotion failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.delete('/api/shortcuts/:id', (req, res) => {
+    const id = String(req.params.id || '');
+    const existing = shortcuts.get(id);
+    if (!existing) {
+      jsonError(res, 404, 'Shortcut not found');
+      return;
+    }
+    shortcuts.delete(id);
+    persistShortcuts();
+    appendAudit('shortcut.removed', { id, phrase: existing.phrase, source: req.query.source || 'api' });
+    res.json({ ok: true, removed: existing, shortcuts: shortcutSnapshot(20) });
   });
 
   api.post('/api/skills/local/search', express.json({ limit: '128kb' }), (req, res) => {

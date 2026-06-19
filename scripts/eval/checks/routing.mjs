@@ -99,6 +99,7 @@ export default {
 
     let evalSkill = null;
     let evalWorkerJobId = '';
+    let evalShortcutId = '';
     try {
       evalSkill = writeEvalRoutingSkill();
       const routedWithSkill = await ctx.api('/api/tasks/route', {
@@ -123,6 +124,58 @@ export default {
           && tools.includes('search_local_skills')
           ? ok('routing.local_skill_plan', 'Local skill plan in routing', `${evalSkill.name} changed route plan with ${tools.length} tool hint(s)`)
           : fail('routing.local_skill_plan', 'Local skill plan in routing', 'expected recalled local skill plan in preview route and ledger record', routedWithSkill.data),
+      );
+
+      const shortcutPhrase = `eval shortcut ${Date.now().toString(36)}`;
+      const shortcutPreview = await ctx.api('/api/shortcuts/promote', {
+        method: 'POST',
+        body: {
+          source: 'eval_shortcut',
+          phrase: shortcutPhrase,
+          skillRecallPlan: skillPlan,
+        },
+        retries: 0,
+      });
+      out.push(
+        shortcutPreview.status === 409
+          && shortcutPreview.data?.requiresConfirmation === true
+          && shortcutPreview.data?.shortcut?.phrase === shortcutPhrase
+          ? ok('routing.shortcut_confirmation_gate', 'Shortcut promotion confirmation gate', 'shortcut save requires explicit confirmation')
+          : fail('routing.shortcut_confirmation_gate', 'Shortcut promotion confirmation gate', 'expected unconfirmed shortcut promotion to return 409 confirmation gate', shortcutPreview.data),
+      );
+
+      const shortcutSaved = await ctx.api('/api/shortcuts/promote', {
+        method: 'POST',
+        body: {
+          source: 'eval_shortcut',
+          confirm: true,
+          phrase: shortcutPhrase,
+          skillRecallPlan: skillPlan,
+        },
+        retries: 0,
+      });
+      evalShortcutId = shortcutSaved.data?.shortcut?.id || '';
+      const shortcutRoute = await ctx.api('/api/tasks/route', {
+        method: 'POST',
+        body: {
+          message: `${shortcutPhrase} for target panel saved state`,
+          execute: false,
+          useMemory: false,
+          source: 'eval_shortcut_route',
+        },
+      });
+      const shortcutPlan = shortcutRoute.data?.skillRecallPlan;
+      const shortcutTools = shortcutRoute.data?.contextPlan?.recommendedTools || [];
+      out.push(
+        shortcutSaved.ok
+          && evalShortcutId
+          && shortcutRoute.ok
+          && shortcutRoute.data?.shortcut?.phrase === shortcutPhrase
+          && shortcutPlan?.decisionEffect === 'shortcut_phrase_matched'
+          && shortcutPlan?.primarySkill?.name === evalSkill.name
+          && shortcutTools.includes('search_local_skills')
+          ? ok('routing.shortcut_recall', 'Shortcut phrase recalls skill plan', `${shortcutPhrase} recalled ${evalSkill.name} without memory search`)
+          : fail('routing.shortcut_recall', 'Shortcut phrase recalls skill plan', 'expected saved shortcut to recall skill plan with useMemory:false', { shortcutSaved: shortcutSaved.data, shortcutRoute: shortcutRoute.data }),
       );
 
       const routedWorker = await ctx.api('/api/tasks/route', {
@@ -166,6 +219,12 @@ export default {
         await ctx.api(`/api/jobs/${encodeURIComponent(evalWorkerJobId)}/cancel`, {
           method: 'POST',
           body: { reason: 'eval skill worker check complete' },
+          retries: 0,
+        });
+      }
+      if (evalShortcutId) {
+        await ctx.api(`/api/shortcuts/${encodeURIComponent(evalShortcutId)}?source=eval_cleanup`, {
+          method: 'DELETE',
           retries: 0,
         });
       }

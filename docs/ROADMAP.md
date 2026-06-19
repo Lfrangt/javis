@@ -43,6 +43,7 @@
 - Persist explicit local memories for user-approved preferences, project facts, and notes.
 - Persist a local inferred learning profile from passive ambient metadata, separate from explicit memory.
 - Generate reviewable Codex-style skill drafts from local learning, routing, and workflow evidence, with explicit export to user-level `~/.agents/skills`.
+- Persist confirmed local skill shortcuts so repeated successful workflows can be recalled by phrase without turning the desktop pet into a dashboard.
 - Persist local Inbox captures for clipboard/manual follow-ups and include them in briefing.
 - Add read-only Inbox triage for priority sorting and lane suggestions.
 - Add explicit process-next Inbox flow for doing one highest-priority capture at a time.
@@ -75,7 +76,7 @@
 - Wake-word or push-to-talk mode.
 - Better interruption handling.
 - Ongoing screen context with privacy zones: current build supports a global private/clear screen mode; next, add selectable app/window/region redaction.
-- Task memory scoped to the local machine: current build supports explicit local memories plus a controllable local inferred learning profile with pause/resume, prompt inclusion, exclusions, deletion, promotion to memory, routing evidence, reviewable skill draft generation, explicit UI demonstration records available from API/CUI/Realtime voice that turn sanitized app/browser/accessibility captures into manual-preview playbooks, safe replay plans, confirmation-gated replay runs, confirmation-gated local skill drafts, and read-only local skill recall that writes structured `skillRecallPlan` evidence into task routing and queued worker execution; next, add shortcut promotion UX after confirmed successful repeats.
+- Task memory scoped to the local machine: current build supports explicit local memories plus a controllable local inferred learning profile with pause/resume, prompt inclusion, exclusions, deletion, promotion to memory, routing evidence, reviewable skill draft generation, explicit UI demonstration records available from API/CUI/Realtime voice that turn sanitized app/browser/accessibility captures into manual-preview playbooks, safe replay plans, confirmation-gated replay runs, confirmation-gated local skill drafts, read-only local skill recall that writes structured `skillRecallPlan` evidence into task routing and queued worker execution, and confirmed local shortcut phrases for repeated successful skill plans; next, dogfood shortcut recall from live voice and add spoken save/forget controls.
 - Capture queue scoped to the local machine: current build supports persistent Inbox items, read-only triage, explicit process-next, and routing them into work lanes; next, add spoken confirmation policies and richer triage grouping.
 - Work sessions scoped to the local machine: current build supports start/resume/status/note/check-in/end plus automatic evidence from Inbox, jobs, workflows, and approvals; next, improve spoken handoff quality.
 - Long-running work status scoped to the local machine: current build supports deterministic progress check-ins over jobs and workflows; next, stream richer live updates into active voice sessions.

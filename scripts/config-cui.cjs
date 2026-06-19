@@ -183,11 +183,12 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor, autopilotResult, browserJs] = await Promise.all([
+    const [status, doctor, autopilotResult, browserJs, shortcutsResult] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
       request('/api/autopilot').catch(() => ({ autopilot: null })),
       request('/api/browser/javascript').catch((error) => ({ javascript: { enabled: false, error: error instanceof Error ? error.message : String(error) } })),
+      request('/api/shortcuts?limit=5').catch(() => ({ shortcuts: null })),
     ]);
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
@@ -224,6 +225,12 @@ async function printStatus() {
       const counts = status.demonstrations.counts || {};
       const active = status.demonstrations.active;
       console.log(`Demos: ${counts.total || 0} saved · ${counts.recording || 0} recording${active?.title ? ` · ${compact(active.title, 80)}` : ''}`);
+    }
+    const shortcuts = shortcutsResult.shortcuts || status.shortcuts;
+    if (shortcuts) {
+      const counts = shortcuts.counts || {};
+      const latest = shortcuts.items?.[0];
+      console.log(`Shortcuts: ${counts.enabled || 0} enabled / ${counts.total || 0} saved${latest?.phrase ? ` · latest "${compact(latest.phrase, 60)}"` : ''}`);
     }
     if (status.collaboration) {
       const counts = status.collaboration.counts || {};
@@ -286,7 +293,9 @@ async function printStatus() {
   console.log('25. Export learning skill');
   console.log('26. Show collaboration claims');
   console.log('27. Show UI demonstrations');
-  console.log('28. Quit');
+  console.log('28. Show skill shortcuts');
+  console.log('29. Promote shortcut candidate');
+  console.log('30. Quit');
 }
 
 async function setupAction(action) {
@@ -731,6 +740,80 @@ async function showDemonstrations() {
   printDemonstrations(result.demonstrations || {});
 }
 
+function printShortcuts(shortcuts) {
+  const counts = shortcuts?.counts || {};
+  console.log(`Shortcuts: ${counts.enabled || 0} enabled · ${counts.disabled || 0} disabled · ${counts.total || 0} total`);
+  const items = shortcuts?.items || [];
+  if (!items.length) {
+    console.log('Saved shortcuts: none');
+    return;
+  }
+  console.log('\nSaved shortcuts:');
+  for (const item of items.slice(0, 20)) {
+    const skill = item.skillRecallPlan?.primarySkill?.name || '-';
+    const used = item.usedCount ? ` · used ${item.usedCount}` : '';
+    const lastUsed = item.lastUsedAt ? ` · last ${formatTime(item.lastUsedAt)}` : '';
+    console.log(`- "${item.phrase}" -> ${skill}${item.enabled ? '' : ' · disabled'}${used}${lastUsed}`);
+    if (item.skillRecallPlan?.summary) console.log(`  ${compact(item.skillRecallPlan.summary, 160)}`);
+  }
+}
+
+async function showSkillShortcuts() {
+  const result = await request('/api/shortcuts?limit=20');
+  console.log('');
+  printShortcuts(result.shortcuts || {});
+}
+
+function printShortcutCandidate(candidate, index) {
+  const skill = candidate.skillRecallPlan?.primarySkill?.name || '-';
+  const title = candidate.taskTitle || candidate.title || candidate.phrase || '-';
+  console.log(`${index + 1}. ${candidate.source || 'candidate'} · ${skill} · ${compact(title, 100)}`);
+  if (candidate.resultSummary) console.log(`   ${compact(candidate.resultSummary, 180)}`);
+}
+
+async function promoteShortcutCandidate(rl) {
+  const result = await request('/api/shortcuts/candidates?limit=5');
+  const candidates = result.candidates?.items || [];
+  console.log('');
+  if (!candidates.length) {
+    console.log('No completed skill-plan candidates yet. Run a task that recalls a local skill, let it finish, then come back here.');
+    return;
+  }
+  console.log('Shortcut candidates:');
+  candidates.forEach(printShortcutCandidate);
+  const choice = (await rl.question(`Choose candidate [1-${candidates.length}]: `)).trim();
+  const selected = candidates[Number(choice) - 1];
+  if (!selected) {
+    console.log('\nNo shortcut saved.');
+    return;
+  }
+  const defaultPhrase = compact(selected.phrase || selected.title || selected.taskTitle || selected.skillRecallPlan?.primarySkill?.name || '', 80);
+  const phraseAnswer = (await rl.question(`Shortcut phrase [${defaultPhrase}]: `)).trim();
+  const phrase = phraseAnswer || defaultPhrase;
+  if (!phrase) {
+    console.log('\nNo shortcut saved.');
+    return;
+  }
+  console.log(`\nThis saves "${phrase}" as a local trigger for ${selected.skillRecallPlan?.primarySkill?.name || 'the recalled skill plan'}.`);
+  console.log('It changes future routing context only; it does not approve actions or expand permissions.');
+  const confirm = (await rl.question('Type SAVE to save this shortcut: ')).trim();
+  if (confirm !== 'SAVE') {
+    console.log('\nNo shortcut saved.');
+    return;
+  }
+  const saved = await request('/api/shortcuts/promote', {
+    method: 'POST',
+    body: {
+      source: 'cui',
+      confirm: true,
+      routeId: selected.routeId,
+      jobId: selected.jobId,
+      phrase,
+    },
+  });
+  console.log(`\n${saved.output || 'Shortcut saved.'}`);
+}
+
 function summarizeWorkerGroups(groups) {
   if (!Array.isArray(groups)) return `${Number(groups || 0)} group(s)`;
   if (!groups.length) return '0 group(s)';
@@ -960,7 +1043,11 @@ async function main() {
         await showCollaborationClaims();
       } else if (answer === '27') {
         await showDemonstrations();
-      } else if (answer === '28' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '28') {
+        await showSkillShortcuts();
+      } else if (answer === '29') {
+        await promoteShortcutCandidate(rl);
+      } else if (answer === '30' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

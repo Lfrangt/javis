@@ -88,7 +88,7 @@ npm run eval:json
 npm run eval:routing
 ```
 
-Current eval lanes cover resident health, Realtime voice configuration and preflight context, work briefing, explicit memory, Inbox, routing, four-task parallel ownership dogfood, collaboration claims, control-mode gates, browser snapshots, file read/search/plan previews, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `workers-live` and `realtime-live-dogfood` are intentionally opt-in because they queue real Codex, Claude, and local CLI read-only jobs. Those opt-in checks request `/api/work/progress?includeInternal=true` so internal dogfood batches can be verified without leaking `eval_` or dogfood jobs into the default user-facing voice/pet progress surface. `realtime-live-dogfood` additionally keeps a temporary live conversation state, records a Realtime progress-injection receipt, and verifies the short `spokenSummary` used for voice progress answers. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
+Current eval lanes cover resident health, Realtime voice configuration and preflight context, work briefing, explicit memory, Inbox, routing, local skill shortcut confirmation/recall, four-task parallel ownership dogfood, collaboration claims, control-mode gates, browser snapshots, file read/search/plan previews, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `workers-live` and `realtime-live-dogfood` are intentionally opt-in because they queue real Codex, Claude, and local CLI read-only jobs. Those opt-in checks request `/api/work/progress?includeInternal=true` so internal dogfood batches can be verified without leaking `eval_` or dogfood jobs into the default user-facing voice/pet progress surface. `realtime-live-dogfood` additionally keeps a temporary live conversation state, records a Realtime progress-injection receipt, and verifies the short `spokenSummary` used for voice progress answers. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
 
 Routine maintenance lives in the terminal CUI instead of the desktop pet:
 
@@ -153,6 +153,8 @@ explicit local memory, pause/resume learning, manage exclusions, delete inferred
 a Codex-style skill draft, or export that draft to `~/.agents/skills` after typing `SAVE`.
 
 Use option `27. Show UI demonstrations` to inspect explicit local demonstrations. Demonstrations are user-started records for repeatable UI workflows; they store notes plus sanitized app/browser/screen/accessibility summaries and a manual-preview playbook, not screenshots or raw clipboard text. Completed demonstrations can become replay plans or reviewable local skill drafts; saving a draft to `~/.agents/skills` requires explicit confirmation.
+
+Use option `28. Show skill shortcuts` to inspect saved local trigger phrases for recalled skill plans. Use option `29. Promote shortcut candidate` to turn a completed, successful `skillRecallPlan` route/job into a shortcut after typing `SAVE`. Shortcuts affect future routing context only; action policy and confirmation gates stay unchanged.
 
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
@@ -269,6 +271,8 @@ Completed demonstrations can also become safe replay plans through `/api/demonst
 Completed demonstrations can also become reviewable local skills through `/api/demonstrations/<id>/skill-draft` or `draft_ui_demonstration_skill`. Save them only through `/api/demonstrations/<id>/skill-draft/save` or `save_ui_demonstration_skill` after explicit confirmation; saving writes a `SKILL.md` under `~/.agents/skills` and does not grant new permissions.
 Saved local skills can be recalled through `/api/skills/local`, `/api/learning/skills`, or `search_local_skills`. JAVIS also attaches matching skill summaries and a structured `skillRecallPlan` to later task routing prompts, queued worker prompts, job logs, and ledger records when memory use is enabled, so a repeated demonstrated workflow can influence execution without skipping confirmation gates.
 
+Confirmed skill shortcuts live in `shortcuts.json` and are managed through `/api/shortcuts`. `/api/shortcuts/candidates` only lists completed route/job evidence that already carried an eligible `skillRecallPlan`; `/api/shortcuts/promote` returns a confirmation-required response unless `confirm:true` is supplied. A later task that includes the saved phrase recalls the plan even with `"useMemory":false`, but it still does not execute a replay, approve a mutation, or expand local permissions.
+
 ```bash
 curl -X POST http://127.0.0.1:3417/api/demonstrations/start \
   -H 'Content-Type: application/json' \
@@ -295,6 +299,11 @@ curl -X POST http://127.0.0.1:3417/api/demonstrations/<id>/skill-draft/save \
   -H 'Content-Type: application/json' \
   -d '{"confirm":true}'
 curl 'http://127.0.0.1:3417/api/skills/local?query=invoice%20export&kind=demonstration'
+curl http://127.0.0.1:3417/api/shortcuts
+curl http://127.0.0.1:3417/api/shortcuts/candidates
+curl -X POST http://127.0.0.1:3417/api/shortcuts/promote \
+  -H 'Content-Type: application/json' \
+  -d '{"routeId":"<route-id>","phrase":"invoice export","confirm":true}'
 curl http://127.0.0.1:3417/api/demonstrations
 ```
 
