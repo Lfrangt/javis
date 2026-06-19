@@ -24,6 +24,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime dogfood operator session tracker from CUI/API, so a real spoken drill can be started, marked, ended, and audited without turning the desktop pet into a dashboard.
 - Realtime voice dogfood-session tools, so the live voice model can inspect, start, mark, and end the same operator drill record while CUI/API evidence proves it did not start microphone capture.
 - Realtime dogfood session auto-sync, so evidence-proven drill steps are persisted as sticky progress even after the live voice session disconnects.
+- Realtime dogfood archive export from CUI/API/voice tools, saving the current brief, evidence, session tracker, and related audit trail as a local JSON packet without starting microphone capture or storing raw audio.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
@@ -101,7 +102,7 @@ Use the terminal CUI to paste `OPENAI_API_KEY` locally. It hides the input, writ
 
 The same CUI can explicitly toggle `JAVIS_ENABLE_LOCAL_EXEC` for Level 3 local actions after typing `ENABLE` or `DISABLE`.
 It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowledges that automatic Level 3 local actions are intentional while Level 4 sends, purchases, deletes, form submissions, and account changes still require confirmation.
-The CUI also exposes microphone permission recovery, explicit control-mode switching, Realtime evidence watching or one-shot printing, voice-ready work handoff printing, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh, inferred-memory save, learning skill draft preview/export, local skill shortcut review/promotion, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
+The CUI also exposes microphone permission recovery, explicit control-mode switching, Realtime evidence watching or one-shot printing, Realtime dogfood brief/prompt/session/archive controls, voice-ready work handoff printing, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh, inferred-memory save, learning skill draft preview/export, local skill shortcut review/promotion, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
 
 Use `npm run verify:ax` as a read-only Accessibility targeting smoke test. For the strict Chrome/Gemini side-pane case, focus Chrome and run `npm run verify:ax -- --require-chromium`.
 
@@ -202,6 +203,8 @@ Local Express service on 127.0.0.1:3417
   /api/realtime/dogfood/prompt -> next manual live-voice dogfood prompt
   /api/realtime/dogfood/prompt/copy -> copy the next dogfood prompt, with dry-run support
   /api/realtime/dogfood/session -> manual operator session tracker for real live-voice dogfood
+  /api/realtime/dogfood/archive -> preview or save a local dogfood evidence archive
+  /api/realtime/dogfood/archives -> list saved local dogfood evidence archives
   /api/realtime/dogfood/start -> manual dogfood drill starter: summon pet and optionally prepare progress after voice is live
   /api/context/plan    -> smart context assembly plan for a user request
   /api/wake/status      -> soft/local wake-word trigger state

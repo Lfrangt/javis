@@ -54,6 +54,7 @@ const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const DEMONSTRATIONS_FILE = path.join(DATA_DIR, 'demonstrations.json');
 const SHORTCUTS_FILE = path.join(DATA_DIR, 'shortcuts.json');
 const REALTIME_DOGFOOD_SESSIONS_FILE = path.join(DATA_DIR, 'realtime-dogfood-sessions.json');
+const REALTIME_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'realtime-dogfood-archives');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
@@ -103,6 +104,7 @@ const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS |
 const MAX_PERSISTED_DEMONSTRATIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_DEMONSTRATIONS || 200)));
 const MAX_PERSISTED_SHORTCUTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_SHORTCUTS || 200)));
 const MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS || 120)));
+const MAX_REALTIME_DOGFOOD_ARCHIVES = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_REALTIME_DOGFOOD_ARCHIVES || 120)));
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
@@ -1753,6 +1755,7 @@ function createMenuBarTray() {
 
 function ensureRuntimeStorage() {
   fs.mkdirSync(DATA_DIR, { recursive: true });
+  fs.mkdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR, { recursive: true });
   const legacyJobsFile = path.join(APP_SUPPORT_DIR, 'jobs.json');
   const legacyAuditFile = path.join(APP_SUPPORT_DIR, 'audit.jsonl');
   if (!process.env.JAVIS_DATA_DIR && fs.existsSync(legacyJobsFile) && !fs.existsSync(JOBS_FILE)) {
@@ -19076,6 +19079,267 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   };
 }
 
+function realtimeDogfoodArchiveFilename(generatedAt, id) {
+  const timestamp = String(generatedAt || new Date().toISOString())
+    .replace(/[:.]/g, '-')
+    .replace(/[^0-9A-Za-zTZ_-]/g, '-');
+  const suffix = String(id || crypto.randomUUID()).replace(/[^0-9A-Za-z_-]/g, '').slice(0, 8) || 'archive';
+  return `${timestamp}-${suffix}.json`;
+}
+
+function realtimeDogfoodArchiveAuditEvents(limit = 50) {
+  const max = Math.max(1, Math.min(100, Number(limit || 50)));
+  const wantedPrefixes = [
+    'realtime.',
+    'conversation.',
+    'work_progress.',
+    'tool.',
+    'shortcut.',
+    'demonstration.',
+    'collaboration.',
+  ];
+  return readRecentAudit(Math.min(200, Math.max(max * 4, 80)))
+    .filter((event) => wantedPrefixes.some((prefix) => String(event.type || '').startsWith(prefix)))
+    .slice(-max);
+}
+
+function realtimeDogfoodArchiveSummary(archive = {}) {
+  const counts = archive.counts || {};
+  const ready = Number(counts.ready || counts.stepsReady || 0);
+  const total = Number(counts.steps || counts.stepsTotal || 0);
+  const toolsReady = Number(counts.evidenceToolsReady || 0);
+  const toolsTotal = Number(counts.evidenceToolsTotal || 0);
+  const next = archive.nextPrompt?.copyText || archive.nextPrompt?.prompt || archive.currentStep?.label || archive.evidence?.nextAction || '';
+  return [
+    `Realtime dogfood archive ${archive.status || 'pending'}/${archive.phase || '-'}.`,
+    total ? `${ready}/${total} drill step(s) ready.` : '',
+    toolsTotal ? `${toolsReady}/${toolsTotal} evidence tool gate(s) ready.` : '',
+    next ? `Next: ${compactRecordText(next, 180)}` : '',
+  ].filter(Boolean).join(' ');
+}
+
+function realtimeDogfoodArchiveMetadata(archive = {}, filePath = '') {
+  const counts = archive.counts || {};
+  const prompt = archive.nextPrompt || {};
+  const currentStep = archive.currentStep || {};
+  return {
+    id: archive.id || '',
+    generatedAt: archive.generatedAt || archive.savedAt || '',
+    savedAt: archive.savedAt || '',
+    source: archive.source || '',
+    status: archive.status || 'pending',
+    phase: archive.phase || '',
+    ready: Boolean(archive.ready),
+    manualOnly: archive.manualOnly !== false,
+    startsMicrophone: Boolean(archive.startsMicrophone),
+    requiresUserPresence: archive.requiresUserPresence !== false,
+    summary: archive.archiveSummary || archive.summary || realtimeDogfoodArchiveSummary(archive),
+    file: filePath || archive.file?.path || '',
+    filename: filePath ? path.basename(filePath) : archive.file?.filename || '',
+    nextPrompt: prompt.copyText || prompt.prompt || '',
+    currentStep: currentStep.label || currentStep.id || '',
+    counts: {
+      steps: Number(counts.steps || 0),
+      ready: Number(counts.ready || 0),
+      pending: Number(counts.pending || 0),
+      evidenceToolsReady: Number(counts.evidenceToolsReady || 0),
+      evidenceToolsTotal: Number(counts.evidenceToolsTotal || 0),
+      auditEvents: Number(counts.auditEvents || 0),
+      recentToolCalls: Number(counts.recentToolCalls || 0),
+      activeSessions: Number(counts.sessionsActive || 0),
+    },
+  };
+}
+
+function realtimeDogfoodArchiveList(options = {}) {
+  fs.mkdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR, { recursive: true });
+  const limit = Math.max(1, Math.min(100, Number(options.limit || 10)));
+  const files = fs.readdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => {
+      const filePath = path.join(REALTIME_DOGFOOD_ARCHIVES_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { name, filePath, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, limit);
+
+  const items = files.map((file) => {
+    try {
+      const archive = JSON.parse(fs.readFileSync(file.filePath, 'utf8'));
+      return {
+        ...realtimeDogfoodArchiveMetadata(archive, file.filePath),
+        bytes: file.bytes,
+      };
+    } catch (error) {
+      return {
+        id: '',
+        generatedAt: '',
+        savedAt: '',
+        source: '',
+        status: 'unreadable',
+        phase: '',
+        ready: false,
+        manualOnly: true,
+        startsMicrophone: false,
+        requiresUserPresence: true,
+        summary: error instanceof Error ? error.message : String(error),
+        file: file.filePath,
+        filename: file.name,
+        nextPrompt: '',
+        currentStep: '',
+        counts: {},
+        bytes: file.bytes,
+      };
+    }
+  });
+  return {
+    ok: true,
+    archiveDir: REALTIME_DOGFOOD_ARCHIVES_DIR,
+    maxArchives: MAX_REALTIME_DOGFOOD_ARCHIVES,
+    count: items.length,
+    items,
+  };
+}
+
+function pruneRealtimeDogfoodArchives() {
+  fs.mkdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR, { recursive: true });
+  const files = fs.readdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => {
+      const filePath = path.join(REALTIME_DOGFOOD_ARCHIVES_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { filePath, mtimeMs: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const stale = files.slice(MAX_REALTIME_DOGFOOD_ARCHIVES);
+  for (const file of stale) {
+    try {
+      fs.unlinkSync(file.filePath);
+    } catch {}
+  }
+  return stale.length;
+}
+
+function realtimeDogfoodArchiveSnapshot(options = {}) {
+  const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
+  const brief = realtimeDogfoodBriefSnapshot({
+    evidence,
+    promptLimit: options.promptLimit || 20,
+    sessionLimit: options.sessionLimit || 6,
+  });
+  const sessions = realtimeDogfoodOperatorSessionSnapshot({
+    evidence,
+    limit: options.sessionLimit || 6,
+    status: options.sessionStatus || '',
+    source: options.source || 'archive_snapshot',
+  });
+  const auditEvents = realtimeDogfoodArchiveAuditEvents(options.auditLimit || 50);
+  const id = String(options.id || crypto.randomUUID());
+  const generatedAt = new Date().toISOString();
+  const filename = realtimeDogfoodArchiveFilename(generatedAt, id);
+  const archive = {
+    ok: true,
+    version: 1,
+    kind: 'realtime_dogfood_archive',
+    id,
+    generatedAt,
+    source: String(options.source || 'api').slice(0, 80),
+    saved: false,
+    manualOnly: true,
+    startsMicrophone: false,
+    requiresUserPresence: true,
+    status: evidence.status || 'pending',
+    phase: evidence.phase || '',
+    ready: Boolean(evidence.readyForVoiceProgressQuestion || brief.ready),
+    summary: brief.summary || evidence.drill?.summary || '',
+    currentStep: brief.currentStep,
+    nextPrompt: brief.nextPrompt,
+    prompts: brief.prompts,
+    counts: {
+      ...(brief.counts || {}),
+      auditEvents: auditEvents.length,
+      recentToolCalls: Array.isArray(evidence.toolCalls) ? evidence.toolCalls.length : 0,
+    },
+    archiveSummary: '',
+    file: {
+      archiveDir: REALTIME_DOGFOOD_ARCHIVES_DIR,
+      filename,
+      path: path.join(REALTIME_DOGFOOD_ARCHIVES_DIR, filename),
+    },
+    brief,
+    sessions: {
+      counts: sessions.counts,
+      active: sessions.active,
+      items: sessions.items,
+      autoSync: sessions.autoSync,
+      startsMicrophone: Boolean(sessions.startsMicrophone),
+      manualOnly: sessions.manualOnly !== false,
+    },
+    evidence,
+    recentAudit: auditEvents,
+    safety: {
+      startsMicrophone: false,
+      archiveOnly: true,
+      rawAudioStored: false,
+      screenImageIncluded: false,
+      writesLocalJsonOnly: true,
+      recordReplayRequiresConfirmation: true,
+      actionsStillUsePolicyGates: true,
+    },
+  };
+  archive.archiveSummary = realtimeDogfoodArchiveSummary(archive);
+  archive.output = [
+    archive.archiveSummary,
+    `File: ${archive.file.path}`,
+    'This archive does not start microphone capture and stores no raw audio.',
+  ].join('\n');
+  return archive;
+}
+
+function saveRealtimeDogfoodArchive(options = {}) {
+  fs.mkdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR, { recursive: true });
+  const archive = realtimeDogfoodArchiveSnapshot({
+    ...(options || {}),
+    source: options.source || 'api_realtime_dogfood_archive',
+  });
+  const savedAt = new Date().toISOString();
+  const filePath = archive.file.path;
+  const nextArchive = {
+    ...archive,
+    saved: true,
+    savedAt,
+    file: {
+      ...archive.file,
+      path: filePath,
+    },
+  };
+  writeJsonAtomic(filePath, nextArchive);
+  const pruned = pruneRealtimeDogfoodArchives();
+  appendAudit('realtime.dogfood_archive_saved', {
+    id: nextArchive.id,
+    source: nextArchive.source,
+    status: nextArchive.status,
+    phase: nextArchive.phase,
+    ready: nextArchive.ready,
+    file: filePath,
+    pruned,
+    startsMicrophone: false,
+  });
+  return {
+    ok: true,
+    saved: true,
+    archive: nextArchive,
+    metadata: realtimeDogfoodArchiveMetadata(nextArchive, filePath),
+    archives: realtimeDogfoodArchiveList({ limit: options.limit || 5 }),
+    output: [
+      `Saved Realtime dogfood archive: ${filePath}`,
+      nextArchive.archiveSummary,
+      'It did not start microphone capture or bypass action policy.',
+    ].join('\n'),
+  };
+}
+
 function realtimeDogfoodOperatorSessionCounts() {
   return Array.from(realtimeDogfoodOperatorSessions.values()).reduce(
     (counts, session) => {
@@ -26430,6 +26694,14 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(realtimeVoiceEvidenceToolSnapshot(args || {})) };
   }
 
+  if (name === 'save_realtime_dogfood_archive') {
+    const result = saveRealtimeDogfoodArchive({
+      ...(args || {}),
+      source: 'voice',
+    });
+    return { ok: true, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_realtime_dogfood_session') {
     return { ok: true, output: JSON.stringify(realtimeDogfoodOperatorSessionSnapshot({ ...(args || {}), source: 'voice' })) };
   }
@@ -27081,6 +27353,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
+      'Use save_realtime_dogfood_archive only when the user asks to save, export, archive, or keep the current Realtime dogfood evidence. It writes a local JSON evidence packet and never starts microphone capture.',
       'Use get_realtime_dogfood_session when the user asks about the dogfood session tracker, current drill record, next prompt, or which operator steps are recorded.',
       'Use start_realtime_dogfood_session only when the user asks to start tracking a real voice dogfood drill. It creates a local dogfood session tracker but does not start microphone capture.',
       'Use mark_realtime_dogfood_step when the user says a dogfood step is done, blocked, skipped, or when local evidence visibly proves that step. It only updates the local tracker.',
@@ -27623,6 +27896,20 @@ function createRealtimeSessionConfig(options = {}) {
             includeChecklist: { type: 'boolean' },
             includeRecentTools: { type: 'boolean' },
             promptLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'save_realtime_dogfood_archive',
+        description: 'Save the current Realtime dogfood evidence, brief, dogfood session tracker, and recent related audit events as a local JSON archive. Does not start microphone capture or bypass action policy.',
+        parameters: {
+          type: 'object',
+          properties: {
+            promptLimit: { type: 'number' },
+            sessionLimit: { type: 'number' },
+            auditLimit: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -28656,6 +28943,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
+  'save_realtime_dogfood_archive',
   'get_realtime_dogfood_session',
   'start_realtime_dogfood_session',
   'mark_realtime_dogfood_step',
@@ -28700,6 +28988,7 @@ function realtimeInstructionChecks(instructions = '') {
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
+    realtimeArchive: /save_realtime_dogfood_archive|Realtime dogfood evidence.*local JSON|save, export, archive/i.test(text),
     realtimeDogfoodSession: /get_realtime_dogfood_session|start_realtime_dogfood_session|mark_realtime_dogfood_step|end_realtime_dogfood_session|dogfood session tracker/i.test(text),
     workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
     autopilotStatus: /get_autopilot_status|autopilot did|unattended work|can continue by itself|autopilot is waiting/i.test(text),
@@ -29527,6 +29816,42 @@ function startApiServer() {
       res.json({ brief: realtimeDogfoodBriefSnapshot({ promptLimit: req.query.promptLimit }) });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood brief failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/archives', (req, res) => {
+    try {
+      res.json({ archives: realtimeDogfoodArchiveList({ limit: req.query.limit }) });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood archive list failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/archive', (req, res) => {
+    try {
+      const archive = realtimeDogfoodArchiveSnapshot({
+        promptLimit: req.query.promptLimit,
+        sessionLimit: req.query.sessionLimit,
+        auditLimit: req.query.auditLimit,
+        source: 'api_preview',
+      });
+      res.json({
+        archive,
+        archives: realtimeDogfoodArchiveList({ limit: req.query.limit || 5 }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood archive preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/archive', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      res.json(saveRealtimeDogfoodArchive({
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+      }));
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood archive save failed', error instanceof Error ? error.message : String(error));
     }
   });
 

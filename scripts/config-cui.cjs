@@ -298,6 +298,7 @@ async function printStatus() {
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
   console.log('B. Show Realtime dogfood brief');
+  console.log('A. Save Realtime dogfood archive');
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
@@ -1441,6 +1442,34 @@ function printRealtimeDogfoodBrief(result) {
   console.log(`- prompt helper: ${brief.monitor?.prompt || 'npm run config -- --print-realtime-dogfood-prompt'}`);
 }
 
+function printRealtimeDogfoodArchive(result) {
+  const archive = result?.archive || result || {};
+  const metadata = result?.metadata || {};
+  const counts = archive.counts || metadata.counts || {};
+  const prompt = archive.nextPrompt || {};
+  const step = archive.currentStep || {};
+  const file = archive.file || {};
+  console.log('JAVIS Realtime Dogfood Archive');
+  console.log('==============================');
+  console.log(`Mode: ${archive.saved ? 'saved' : 'preview'} · status ${archive.status || metadata.status || 'pending'} · phase ${archive.phase || metadata.phase || '-'}`);
+  console.log(`Manual only=yes · starts microphone=${archive.startsMicrophone ? 'yes' : 'no'} · raw audio stored=${archive.safety?.rawAudioStored ? 'yes' : 'no'}`);
+  console.log(`Ready: ${Number(counts.ready || 0)}/${Number(counts.steps || 0)} step(s) · tools ${Number(counts.evidenceToolsReady || 0)}/${Number(counts.evidenceToolsTotal || 0)} · audit ${Number(counts.auditEvents || 0)}`);
+  console.log(`Summary: ${compact(archive.archiveSummary || metadata.summary || archive.summary || '-', 420)}`);
+  console.log(`File: ${file.path || metadata.file || '-'}`);
+  console.log(`Current step: ${step.status || 'pending'} ${step.label || step.id || metadata.currentStep || '-'}`);
+  console.log(`Next prompt: ${prompt.copyText || prompt.prompt || metadata.nextPrompt || '-'}`);
+  if (Array.isArray(archive.prompts) && archive.prompts.length) {
+    console.log(`Prompt script: ${archive.prompts.slice(0, 5).join(' | ')}`);
+  }
+  const recent = result?.archives?.items || [];
+  if (recent.length) {
+    console.log('\nRecent archives:');
+    for (const item of recent.slice(0, 5)) {
+      console.log(`- ${item.savedAt || item.generatedAt || '-'} · ${item.status || '-'} · ${item.filename || item.file || '-'} · ${compact(item.summary || '', 160)}`);
+    }
+  }
+}
+
 async function showRealtimeDogfoodPrompt(options = {}) {
   if (options.copy) {
     const result = await request('/api/realtime/dogfood/prompt/copy', {
@@ -1458,6 +1487,14 @@ async function showRealtimeDogfoodPrompt(options = {}) {
 async function showRealtimeDogfoodBrief() {
   const result = await request('/api/realtime/dogfood/brief');
   printRealtimeDogfoodBrief(result);
+}
+
+async function showRealtimeDogfoodArchive(options = {}) {
+  const result = await request('/api/realtime/dogfood/archive', {
+    method: options.save ? 'POST' : 'GET',
+    body: options.save ? { source: 'cui' } : undefined,
+  });
+  printRealtimeDogfoodArchive(result);
 }
 
 function printRealtimeDogfoodSession(result) {
@@ -1575,6 +1612,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-realtime-dogfood-archive') || process.argv.includes('--realtime-dogfood-archive')) {
+    await showRealtimeDogfoodArchive();
+    return;
+  }
+
+  if (process.argv.includes('--save-realtime-dogfood-archive')) {
+    await showRealtimeDogfoodArchive({ save: true });
+    return;
+  }
+
   if (process.argv.includes('--copy-realtime-dogfood-prompt')) {
     await showRealtimeDogfoodPrompt({ copy: true });
     return;
@@ -1670,6 +1717,8 @@ async function main() {
         await startRealtimeDogfoodDrillFromCui(rl);
       } else if (answer === 'b' || answer === 'brief' || answer === 'dogfood brief') {
         await showRealtimeDogfoodBrief();
+      } else if (answer === 'a' || answer === 'archive' || answer === 'dogfood archive') {
+        await showRealtimeDogfoodArchive({ save: true });
       } else if (answer === 'p' || answer === 'prompt' || answer === 'dogfood prompt') {
         await showRealtimeDogfoodPrompt({ copy: true });
       } else if (answer === 't' || answer === 'track' || answer === 'dogfood session') {

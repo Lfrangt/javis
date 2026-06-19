@@ -19,6 +19,7 @@ const REQUIRED_TOOLS = [
   'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
+  'save_realtime_dogfood_archive',
   'get_realtime_dogfood_session',
   'start_realtime_dogfood_session',
   'mark_realtime_dogfood_step',
@@ -1266,6 +1267,100 @@ export default {
       );
     } catch (error) {
       out.push(fail('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', error instanceof Error ? error.message : String(error)));
+    }
+
+    const archivePreview = await ctx.api('/api/realtime/dogfood/archive?limit=3&auditLimit=12');
+    const archivePreviewData = archivePreview.data?.archive;
+    out.push(
+      archivePreview.ok &&
+        archivePreviewData?.manualOnly === true &&
+        archivePreviewData?.startsMicrophone === false &&
+        archivePreviewData?.requiresUserPresence === true &&
+        archivePreviewData?.saved === false &&
+        archivePreviewData?.safety?.rawAudioStored === false &&
+        archivePreviewData?.safety?.screenImageIncluded === false &&
+        archivePreviewData?.file?.path?.includes('realtime-dogfood-archives') &&
+        archivePreviewData?.brief?.startsMicrophone === false &&
+        archivePreviewData?.evidence?.checks &&
+        Array.isArray(archivePreviewData?.recentAudit) &&
+        Array.isArray(archivePreview.data?.archives?.items)
+        ? ok('realtime.dogfood_archive_preview', 'Realtime dogfood archive preview', `${archivePreviewData.status}/${archivePreviewData.phase} · ${archivePreviewData.archiveSummary || ''}`)
+        : fail('realtime.dogfood_archive_preview', 'Realtime dogfood archive preview', `GET /api/realtime/dogfood/archive ${archivePreview.status}`, archivePreview.data),
+    );
+
+    const archiveSave = await ctx.api('/api/realtime/dogfood/archive', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        auditLimit: 12,
+      },
+    });
+    const savedArchive = archiveSave.data?.archive;
+    let savedArchiveDisk = null;
+    if (savedArchive?.file?.path && fs.existsSync(savedArchive.file.path)) {
+      try {
+        savedArchiveDisk = JSON.parse(fs.readFileSync(savedArchive.file.path, 'utf8'));
+      } catch {
+        savedArchiveDisk = null;
+      }
+    }
+    out.push(
+      archiveSave.ok &&
+        archiveSave.data?.saved === true &&
+        savedArchive?.saved === true &&
+        savedArchive?.manualOnly === true &&
+        savedArchive?.startsMicrophone === false &&
+        savedArchive?.safety?.writesLocalJsonOnly === true &&
+        savedArchive?.file?.path?.includes('realtime-dogfood-archives') &&
+        fs.existsSync(savedArchive.file.path) &&
+        savedArchiveDisk?.id === savedArchive.id &&
+        savedArchiveDisk?.safety?.rawAudioStored === false &&
+        archiveSave.data?.metadata?.startsMicrophone === false &&
+        Array.isArray(archiveSave.data?.archives?.items)
+        ? ok('realtime.dogfood_archive_save', 'Realtime dogfood archive save', savedArchive.file.path)
+        : fail('realtime.dogfood_archive_save', 'Realtime dogfood archive save', `POST /api/realtime/dogfood/archive ${archiveSave.status}`, archiveSave.data),
+    );
+
+    const archiveTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'save_realtime_dogfood_archive',
+        arguments: { auditLimit: 5 },
+      },
+    });
+    const archiveToolOutput = parseToolOutput(archiveTool);
+    out.push(
+      archiveTool.ok &&
+        archiveTool.data?.ok === true &&
+        archiveToolOutput?.ok === true &&
+        archiveToolOutput?.saved === true &&
+        archiveToolOutput?.archive?.startsMicrophone === false &&
+        archiveToolOutput?.archive?.file?.path &&
+        fs.existsSync(archiveToolOutput.archive.file.path)
+        ? ok('realtime.dogfood_archive_tool', 'Realtime dogfood archive voice tool', archiveToolOutput.archive.file.path)
+        : fail('realtime.dogfood_archive_tool', 'Realtime dogfood archive voice tool', `tool execute ${archiveTool.status}`, archiveTool.data),
+    );
+
+    try {
+      const archiveCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-archive'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${archiveCui.stdout || ''}\n${archiveCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Realtime Dogfood Archive') &&
+          output.includes('starts microphone=no') &&
+          output.includes('raw audio stored=no') &&
+          output.includes('File:') &&
+          output.includes('realtime-dogfood-archives')
+          ? ok('realtime.cui_dogfood_archive', 'Realtime CUI dogfood archive', 'config CUI previews the local dogfood evidence archive without starting voice')
+          : fail('realtime.cui_dogfood_archive', 'Realtime CUI dogfood archive', 'expected CUI archive output to print file path and no-mic safety', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_dogfood_archive', 'Realtime CUI dogfood archive', error instanceof Error ? error.message : String(error)));
     }
 
     const dogfoodSessionBefore = await ctx.api('/api/realtime/dogfood/session');
