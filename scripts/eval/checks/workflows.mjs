@@ -55,7 +55,31 @@ export default {
       );
     }
 
-    const followUpResponse = await ctx.api('/api/workflows/follow-ups?limit=3');
+    const browserResearchPreview = await ctx.api('/api/browser/workflow', {
+      method: 'POST',
+      body: {
+        intent: 'research',
+        mode: 'quick',
+        execute: false,
+        instruction: 'Research two JAVIS browser handoff references.',
+        urls: [
+          'https://example.test/javis/workflow-a',
+          'https://example.test/javis/workflow-b',
+        ],
+        maxPages: 2,
+      },
+    });
+    const browserWorkflowId = browserResearchPreview.data?.workflow?.id || '';
+    out.push(
+      browserResearchPreview.ok &&
+        browserResearchPreview.data?.ok === true &&
+        browserResearchPreview.data?.executed === false &&
+        browserResearchPreview.data?.workflow?.continuation?.nextActions?.length >= 1
+        ? ok('workflows.browser_research_seed', 'Browser research follow-up seed', `${browserWorkflowId} has persisted continuation action(s)`)
+        : fail('workflows.browser_research_seed', 'Browser research follow-up seed', 'browser research preview did not persist a continuation action', browserResearchPreview.data),
+    );
+
+    const followUpResponse = await ctx.api('/api/workflows/follow-ups?limit=5');
     const followUps = followUpResponse.data?.followUps;
     out.push(
       followUpResponse.ok && Array.isArray(followUps)
@@ -92,6 +116,37 @@ export default {
           String(next.output || '').includes('Preview continuation')
           ? ok('workflows.followups_worknext', 'Workflow follow-up work-next preview', String(next.output).slice(0, 140))
           : fail('workflows.followups_worknext', 'Workflow follow-up work-next preview', 'work-next did not preview the selected follow-up without execution', workNext.data),
+      );
+    }
+
+    const browserFollowUp = Array.isArray(followUps)
+      ? followUps.find((item) => item.workflowId === browserWorkflowId)
+      : null;
+    const browserBody = browserFollowUp?.browserWorkflow?.body || {};
+    out.push(
+      browserFollowUp &&
+        browserFollowUp.workflowAction === 'continue' &&
+        browserFollowUp.continuation?.browserResearch === true &&
+        Array.isArray(browserBody.urls) &&
+        browserBody.urls.length === 2 &&
+        browserBody.parentWorkflowId === browserWorkflowId
+        ? ok('workflows.browser_research_followup', 'Browser research follow-up action', `${browserFollowUp.id} can continue ${browserBody.urls.length} URL(s)`)
+        : fail('workflows.browser_research_followup', 'Browser research follow-up action', 'follow-ups did not expose persisted browser research continuation metadata', { browserWorkflowId, followUps }),
+    );
+
+    if (browserFollowUp) {
+      const browserWorkNext = await ctx.api(`/api/work/next?actionId=${encodeURIComponent(browserFollowUp.id)}`);
+      const browserNext = browserWorkNext.data?.next || {};
+      out.push(
+        browserWorkNext.ok &&
+          browserNext.ok === true &&
+          browserNext.executed === false &&
+          browserNext.action?.id === browserFollowUp.id &&
+          browserNext.result?.preview === true &&
+          browserNext.result?.browserWorkflow?.body?.urls?.length === 2 &&
+          String(browserNext.output || '').includes('Preview continuation for browser research')
+          ? ok('workflows.browser_research_worknext', 'Browser research work-next preview', String(browserNext.output).slice(0, 140))
+          : fail('workflows.browser_research_worknext', 'Browser research work-next preview', 'work-next did not expose browser research continuation without execution', browserWorkNext.data),
       );
     }
 

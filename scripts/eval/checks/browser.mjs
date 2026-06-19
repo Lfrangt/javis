@@ -182,10 +182,12 @@ export default {
         researchPreview.data?.continuation?.status === 'preview' &&
         researchPreview.data?.continuation?.selectedLinks?.length === 2 &&
         researchPreview.data?.continuation?.summary?.includes('2 page') &&
+        researchPreview.data?.workflow?.continuation?.status === 'preview' &&
+        researchPreview.data?.workflow?.continuation?.selectedLinks?.length === 2 &&
         researchPreview.data?.workflow?.target?.resultCount === 2 &&
         researchPreview.data?.routing?.status === 'done' &&
         !JSON.stringify(researchPreview.data || {}).includes('Private fixture token')
-        ? ok('browser.research_continuation_preview', 'Browser research continuation preview', 'preview returns selected links plus structured continuation metadata')
+        ? ok('browser.research_continuation_preview', 'Browser research continuation preview', 'preview persists selected links plus structured continuation metadata')
         : fail('browser.research_continuation_preview', 'Browser research continuation preview', `POST /api/browser/workflow ${researchPreview.status}`, researchPreview.data),
     );
 

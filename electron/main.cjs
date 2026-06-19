@@ -3007,6 +3007,91 @@ function redactUrlForStorage(value) {
   }
 }
 
+function normalizeWorkflowContinuationLink(link = {}, index = 0) {
+  const href = normalizeBrowserHref(link?.href || link?.url);
+  if (!href) return null;
+  let host = '';
+  try {
+    host = new URL(href).hostname.replace(/^www\./i, '');
+  } catch {
+    return null;
+  }
+  const normalized = {
+    index: Math.max(1, Math.min(999, Number(link.index || index + 1))),
+    text: compactRecordText(link.text || link.title || link.label || href, 180) || href,
+    href,
+    host,
+    sameHost: Boolean(link.sameHost),
+  };
+  if (link.sourceTitle) normalized.sourceTitle = compactRecordText(link.sourceTitle, 180);
+  if (link.sourceUrl) normalized.sourceUrl = redactUrlForStorage(link.sourceUrl).slice(0, 2000);
+  return normalized;
+}
+
+function normalizeWorkflowContinuationLinks(value, limit = 8) {
+  return (Array.isArray(value) ? value : [])
+    .map((link, index) => normalizeWorkflowContinuationLink(link, index))
+    .filter(Boolean)
+    .slice(0, Math.max(0, Math.min(12, Number(limit || 8))));
+}
+
+function normalizeWorkflowContinuationAction(action = {}, index = 0) {
+  if (!action || typeof action !== 'object') return null;
+  const rawArguments = action.arguments && typeof action.arguments === 'object' ? action.arguments : {};
+  const urls = normalizeBrowserResearchUrls({ urls: rawArguments.urls }, 5);
+  const query = compactRecordText(rawArguments.query || '', 240);
+  const maxPages = Math.max(1, Math.min(5, Number(rawArguments.maxPages || urls.length || 3)));
+  if (!urls.length && !query) return null;
+  const args = {
+    intent: 'research',
+    mode: normalizeBrowserWorkflowMode(rawArguments.mode || action.mode || 'quick'),
+    maxPages,
+  };
+  if (urls.length) args.urls = urls;
+  if (query) args.query = query;
+  const openWaitMs = Number(rawArguments.openWaitMs || rawArguments.waitMsAfterOpen || 0);
+  if (Number.isFinite(openWaitMs) && openWaitMs > 0) {
+    args.openWaitMs = Math.max(500, Math.min(8000, Math.floor(openWaitMs)));
+  }
+  return {
+    type: compactRecordText(action.type || `action_${index + 1}`, 80),
+    label: compactRecordText(action.label || 'Continue browser research', 180),
+    reason: compactRecordText(action.reason || '', 360),
+    arguments: args,
+  };
+}
+
+function normalizeWorkflowContinuation(value = {}) {
+  if (!value || typeof value !== 'object') return null;
+  const selectedLinks = normalizeWorkflowContinuationLinks(value.selectedLinks, 12);
+  const remainingSearchCandidates = normalizeWorkflowContinuationLinks(value.remainingSearchCandidates, 8);
+  const failedLinks = normalizeWorkflowContinuationLinks(value.failedLinks, 8);
+  const followUpLinks = normalizeWorkflowContinuationLinks(value.followUpLinks, 8);
+  const nextActions = (Array.isArray(value.nextActions) ? value.nextActions : [])
+    .map((action, index) => normalizeWorkflowContinuationAction(action, index))
+    .filter(Boolean)
+    .slice(0, 5);
+  const status = compactRecordText(value.status || '', 80);
+  const summary = compactRecordText(value.summary || '', 700);
+  const normalized = {
+    status,
+    summary,
+    reviewedCount: Math.max(0, Number(value.reviewedCount || 0)),
+    failedCount: Math.max(0, Number(value.failedCount || 0)),
+    selectedCount: Math.max(0, Number(value.selectedCount || selectedLinks.length || 0)),
+    remainingCandidateCount: Math.max(0, Number(value.remainingCandidateCount || remainingSearchCandidates.length || 0)),
+    followUpLinkCount: Math.max(0, Number(value.followUpLinkCount || followUpLinks.length || 0)),
+    selectedLinks,
+    remainingSearchCandidates,
+    failedLinks,
+    followUpLinks,
+    nextActions,
+  };
+  const hasMeaningfulData = status || summary || selectedLinks.length || remainingSearchCandidates.length
+    || failedLinks.length || followUpLinks.length || nextActions.length;
+  return hasMeaningfulData ? normalized : null;
+}
+
 function normalizePersistedWorkflow(workflow, fromDisk = false) {
   if (!workflow || typeof workflow !== 'object' || !workflow.id) return null;
   const status = ['queued', 'running', 'done', 'failed', 'cancelled', 'blocked'].includes(workflow.status)
@@ -3050,6 +3135,7 @@ function normalizePersistedWorkflow(workflow, fromDisk = false) {
       confirmationRequired: Boolean(target.confirmationRequired),
     },
     jobId: String(workflow.jobId || ''),
+    continuation: normalizeWorkflowContinuation(workflow.continuation),
     createdAt: Number(workflow.createdAt || Date.now()),
     updatedAt: interrupted ? Date.now() : Number(workflow.updatedAt || Date.now()),
     completedAt: interrupted ? Date.now() : Number(workflow.completedAt || 0),
@@ -12523,6 +12609,34 @@ function browserResearchContinuationPlan({
   const followUpLinks = browserResearchFollowUpLinks(pages, selected, Math.max(1, Math.min(5, Number(maxPages || 3))));
   const nextActions = [];
 
+  if (!executed && selected.length) {
+    nextActions.push({
+      type: 'research_selected_links',
+      label: 'Run prepared browser research links',
+      reason: `${selected.length} selected research link(s) are ready to open and review.`,
+      arguments: {
+        intent: 'research',
+        mode,
+        urls: selected.map((link) => link.href),
+        maxPages: selected.length,
+      },
+    });
+  }
+
+  if (!executed && !selected.length && query) {
+    nextActions.push({
+      type: 'research_search_query',
+      label: 'Run prepared browser research search',
+      reason: 'A search query is ready to run for browser research.',
+      arguments: {
+        intent: 'research',
+        mode,
+        query,
+        maxPages,
+      },
+    });
+  }
+
   if (remainingSearchCandidates.length) {
     nextActions.push({
       type: 'research_more',
@@ -14407,6 +14521,7 @@ async function runBrowserResearchWorkflow(options = {}) {
       intent: 'research',
       mode,
       request,
+      parentWorkflowId: options.parentWorkflowId || '',
       target: {
         app: 'Browser',
         title: urls.length ? 'URL research preview' : 'Search research preview',
@@ -14419,6 +14534,7 @@ async function runBrowserResearchWorkflow(options = {}) {
       result: urls.length
         ? `Preview only. Would open and review ${urls.length} URL(s).`
         : `Preview only. Would search "${query}" and review up to ${maxPages} result page(s).`,
+      continuation,
     });
     const routing = createRoutingRecordForWorkflow({
       task: request,
@@ -14453,6 +14569,7 @@ async function runBrowserResearchWorkflow(options = {}) {
     intent: 'research',
     mode,
     request,
+    parentWorkflowId: options.parentWorkflowId || '',
     target: {
       app: 'Browser',
       title: query || urls[0],
@@ -14568,6 +14685,7 @@ async function runBrowserResearchWorkflow(options = {}) {
           reviewedCount: availablePages.length,
           failedCount: pages.length - availablePages.length,
         },
+        continuation,
       });
       const job = createJob(prompt, mode === 'background' ? 'background' : mode, 'browser_research_workflow', { workflowId: workflow.id });
       const finalWorkflow = setWorkflow(workflow.id, { jobId: job.id });
@@ -14616,6 +14734,7 @@ async function runBrowserResearchWorkflow(options = {}) {
       status: quickLaneOutputOk(output) ? 'done' : 'blocked',
       result: resultSummary,
       completedAt: Date.now(),
+      continuation,
       target: {
         ...latestPage,
         query,
@@ -14669,6 +14788,7 @@ async function runBrowserResearchWorkflow(options = {}) {
       status: 'blocked',
       result: resultSummary,
       completedAt: Date.now(),
+      continuation,
       target: {
         ...(workflow.target || {}),
         query,
@@ -24371,6 +24491,55 @@ function workflowFollowUpInstruction(workflow) {
   return 'Continue from this workflow and produce the next concrete useful step.';
 }
 
+function workflowBrowserResearchContinuation(workflow) {
+  const stored = workflow?.continuation;
+  const kind = String(workflow?.kind || '').toLowerCase();
+  const intent = String(workflow?.intent || '').toLowerCase();
+  if (!stored?.nextActions?.length || kind !== 'browser' || intent !== 'research') return null;
+  const nextAction = stored.nextActions.find((action) => (
+    action?.arguments?.query || (Array.isArray(action?.arguments?.urls) && action.arguments.urls.length)
+  ));
+  if (!nextAction) return null;
+  const args = nextAction.arguments || {};
+  const urls = normalizeBrowserResearchUrls({ urls: args.urls }, 5);
+  const query = compactRecordText(args.query || '', 240);
+  if (!urls.length && !query) return null;
+  const mode = normalizeBrowserWorkflowMode(args.mode || workflow.mode || 'quick');
+  const maxPages = Math.max(1, Math.min(5, Number(args.maxPages || urls.length || 3)));
+  const instruction = compactRecordText([
+    `Continue browser research from workflow "${workflow.title}".`,
+    nextAction.label ? `Next: ${nextAction.label}.` : '',
+    nextAction.reason ? `Reason: ${nextAction.reason}` : '',
+  ].filter(Boolean).join(' '), 700);
+  const body = {
+    intent: 'research',
+    mode,
+    maxPages,
+    instruction,
+    parentWorkflowId: workflow.id,
+    source: 'workflow_browser_research_continue',
+    scope: 'workflow:browser:research_continue',
+  };
+  if (urls.length) body.urls = urls;
+  if (query) body.query = query;
+  if (args.openWaitMs) body.openWaitMs = args.openWaitMs;
+  return {
+    action: nextAction,
+    instruction,
+    body,
+    summary: compactRecordText(nextAction.reason || stored.summary || '', 360),
+    mode,
+    status: stored.status || '',
+    nextActionType: nextAction.type || '',
+    nextActionCount: stored.nextActions.length,
+    reviewedCount: Number(stored.reviewedCount || 0),
+    selectedCount: Number(stored.selectedCount || stored.selectedLinks?.length || 0),
+    failedCount: Number(stored.failedCount || 0),
+    remainingCandidateCount: Number(stored.remainingCandidateCount || stored.remainingSearchCandidates?.length || 0),
+    followUpLinkCount: Number(stored.followUpLinkCount || stored.followUpLinks?.length || 0),
+  };
+}
+
 function workflowFollowUpSuggestions(workflowContext = workflowSnapshot(80), options = {}) {
   const limit = Math.max(1, Math.min(10, Number(options.limit || 5)));
   const candidates = workflowContext
@@ -24385,7 +24554,8 @@ function workflowFollowUpSuggestions(workflowContext = workflowSnapshot(80), opt
     })
     .slice(0, limit);
   return candidates.map((workflow, index) => {
-    const instruction = workflowFollowUpInstruction(workflow);
+    const browserContinuation = workflowBrowserResearchContinuation(workflow);
+    const instruction = browserContinuation?.instruction || workflowFollowUpInstruction(workflow);
     const continuation = workflowContinuationContext(workflow, instruction, {
       preview: true,
       execute: false,
@@ -24393,15 +24563,19 @@ function workflowFollowUpSuggestions(workflowContext = workflowSnapshot(80), opt
       skillLimit: options.skillLimit || 2,
       workflowLimit: options.workflowLimit || 3,
     });
-    return {
+    const suggestion = {
       id: `continue:${workflow.id}`,
       priority: 3 + index,
-      label: workflow.status === 'done' ? 'Continue recent workflow' : 'Follow up workflow blocker',
-      summary: `${workflow.title}: ${instruction}`,
+      label: browserContinuation
+        ? 'Continue browser research'
+        : workflow.status === 'done' ? 'Continue recent workflow' : 'Follow up workflow blocker',
+      summary: browserContinuation
+        ? `${workflow.title}: ${browserContinuation.action.label || browserContinuation.summary || instruction}`
+        : `${workflow.title}: ${instruction}`,
       source: 'workflows',
       workflowAction: 'continue',
       workflowId: workflow.id,
-      mode: options.mode || 'background',
+      mode: browserContinuation?.mode || options.mode || 'background',
       instruction,
       executable: true,
       autoEligible: false,
@@ -24425,6 +24599,27 @@ function workflowFollowUpSuggestions(workflowContext = workflowSnapshot(80), opt
         result: compactRecordText(workflow.result || '', 360),
       },
     };
+    if (browserContinuation) {
+      suggestion.reason = 'Generated from persisted browser research continuation metadata and local workflow context.';
+      suggestion.continuation = {
+        ...suggestion.continuation,
+        browserResearch: true,
+        browserStatus: browserContinuation.status,
+        nextActionType: browserContinuation.nextActionType,
+        nextActionCount: browserContinuation.nextActionCount,
+        reviewedCount: browserContinuation.reviewedCount,
+        selectedCount: browserContinuation.selectedCount,
+        failedCount: browserContinuation.failedCount,
+        remainingCandidateCount: browserContinuation.remainingCandidateCount,
+        followUpLinkCount: browserContinuation.followUpLinkCount,
+      };
+      suggestion.browserWorkflow = {
+        method: 'POST',
+        path: '/api/browser/workflow',
+        body: browserContinuation.body,
+      };
+    }
+    return suggestion;
   });
 }
 
@@ -25376,6 +25571,39 @@ async function workNextAction(options = {}) {
     if (!workflow) {
       result = { workflow: null, action };
       output = '没有找到要继续的 workflow。';
+    } else if (action.continuation?.browserResearch && action.browserWorkflow?.body) {
+      const browserBody = {
+        ...action.browserWorkflow.body,
+        parentWorkflowId: workflow.id,
+        source: action.browserWorkflow.body.source || options.source || 'work_next_browser_research_continue',
+      };
+      if (execute) {
+        result = await runBrowserWorkflow({
+          ...browserBody,
+          execute: true,
+        });
+        executed = Boolean(result?.executed);
+        output = result.output || `已继续浏览器研究: ${workflow.title}`;
+      } else {
+        result = {
+          ok: true,
+          preview: true,
+          execute: false,
+          workflow,
+          browserWorkflow: {
+            ...action.browserWorkflow,
+            body: {
+              ...browserBody,
+              execute: true,
+            },
+          },
+          continuation: action.continuation,
+        };
+        const target = browserBody.urls?.length
+          ? `${browserBody.urls.length} URL(s)`
+          : browserBody.query ? `search "${browserBody.query}"` : 'browser research target';
+        output = `Preview continuation for browser research ${workflow.title}: ${target}.`;
+      }
     } else {
       result = await continueWorkflow({
         workflowId: workflow.id,
@@ -25517,6 +25745,7 @@ function createWorkflowRecord(value = {}) {
     parentWorkflowId: value.parentWorkflowId || '',
     target: value.target || {},
     jobId: value.jobId || '',
+    continuation: value.continuation || null,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     completedAt: ['done', 'failed', 'cancelled', 'blocked'].includes(value.status) ? Date.now() : 0,
