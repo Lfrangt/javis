@@ -16898,6 +16898,98 @@ function realtimeVoiceEvidenceSnapshot() {
   return snapshot;
 }
 
+function realtimeVoiceEvidenceToolSnapshot(options = {}) {
+  const evidence = realtimeVoiceEvidenceSnapshot();
+  const includeChecklist = options.includeChecklist !== false;
+  const includeRecentTools = options.includeRecentTools === true || String(options.includeRecentTools || '').toLowerCase() === 'true';
+  const promptLimit = Math.max(1, Math.min(8, Number(options.promptLimit || 3)));
+  const checklist = includeChecklist
+    ? (evidence.checklist || []).map((step) => ({
+        id: step.id,
+        label: step.label,
+        status: step.status,
+        ok: Boolean(step.ok),
+        detail: step.detail,
+        nextAction: step.nextAction,
+      }))
+    : [];
+  const drill = evidence.drill || {};
+  const pending = Array.isArray(drill.pending) ? drill.pending.slice(0, 4) : [];
+  const prompts = Array.isArray(drill.prompts) ? drill.prompts.slice(0, promptLimit) : [];
+  return {
+    ok: true,
+    generatedAt: evidence.generatedAt,
+    status: evidence.status,
+    phase: evidence.phase,
+    readyForVoiceProgressQuestion: Boolean(evidence.readyForVoiceProgressQuestion),
+    summary: evidence.blocker
+      ? `Realtime voice is ${evidence.status}/${evidence.phase}. Blocker: ${evidence.blocker.label}. ${evidence.blocker.summary}`
+      : `Realtime voice is ${evidence.status}/${evidence.phase}. Ready for: ${evidence.nextAction}`,
+    blocker: evidence.blocker,
+    nextAction: evidence.nextAction,
+    conversation: evidence.conversation ? {
+      status: evidence.conversation.status,
+      active: Boolean(evidence.conversation.active),
+      sessionId: evidence.conversation.sessionId,
+      micMode: evidence.conversation.micMode,
+    } : null,
+    voiceHealth: {
+      status: evidence.voiceHealth?.status || '',
+      kind: evidence.voiceHealth?.kind || '',
+      summary: evidence.voiceHealth?.summary || '',
+      next: evidence.voiceHealth?.next || '',
+      hasOpenAiKey: Boolean(evidence.voiceHealth?.hasOpenAiKey),
+    },
+    checks: evidence.checks,
+    checklist,
+    progressSync: evidence.progressSync ? {
+      ok: Boolean(evidence.progressSync.ok),
+      status: evidence.progressSync.status,
+      detail: evidence.progressSync.detail,
+      currentSequence: evidence.progressSync.currentSequence,
+      injectedSequence: evidence.progressSync.injectedSequence,
+      behindBy: evidence.progressSync.behindBy,
+      nextAction: evidence.progressSync.nextAction,
+    } : null,
+    progress: {
+      spokenSummary: evidence.progress?.spokenSummary || '',
+      workerSummary: evidence.progress?.workerSummary || '',
+      activeJobs: Number(evidence.progress?.activeJobs || 0),
+      blockedWorkflows: Number(evidence.progress?.blockedWorkflows || 0),
+    },
+    dogfood: {
+      manualOnly: true,
+      requiresUserPresence: true,
+      status: drill.status || evidence.status,
+      summary: drill.summary || '',
+      prompts,
+      pending: pending.map((step) => ({
+        id: step.id,
+        label: step.label,
+        status: step.status,
+        nextAction: step.nextAction,
+      })),
+      monitor: {
+        endpoint: '/api/realtime/evidence',
+        cui: 'npm run config -> V. Watch Realtime voice evidence',
+      },
+    },
+    tools: includeRecentTools ? {
+      handoff: {
+        observed: Boolean(evidence.handoffTools?.hasHandoff),
+        count: Number(evidence.handoffTools?.count || 0),
+        nextAction: evidence.handoffTools?.nextAction || '',
+      },
+      shortcuts: {
+        observed: Boolean(evidence.shortcutTools?.ok),
+        count: Number(evidence.shortcutTools?.count || 0),
+        observedActions: Array.isArray(evidence.shortcutTools?.observedActions) ? evidence.shortcutTools.observedActions : [],
+        nextAction: evidence.shortcutTools?.nextAction || '',
+      },
+    } : undefined,
+  };
+}
+
 function conversationStateSnapshot() {
   const now = Date.now();
   const activeStatus = conversationState.status === 'connecting' || conversationState.status === 'live';
@@ -23135,6 +23227,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(progress) };
   }
 
+  if (name === 'get_realtime_evidence') {
+    return { ok: true, output: JSON.stringify(realtimeVoiceEvidenceToolSnapshot(args || {})) };
+  }
+
   if (name === 'get_worker_recovery') {
     return {
       ok: true,
@@ -23731,6 +23827,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. Executed actions verify the screen/UI state and return recovery hints unless verify:false is passed. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
+      'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
       'Use get_worker_recovery when the user asks which background jobs failed, why a worker failed, or what can recover automatically. It is read-only; use run_work_next only after the user explicitly asks to do or run the recovery step.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
       'Use get_collaboration_state when the user asks which agents are working, what Claude Code or Codex owns, or whether parallel agent work has conflicts.',
@@ -24219,6 +24316,20 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             jobLimit: { type: 'number' },
             workflowLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_realtime_evidence',
+        description: 'Get read-only voice-friendly evidence for the live Realtime/WebRTC session: provider health, current blocker, progress sync, dogfood checklist, and next action.',
+        parameters: {
+          type: 'object',
+          properties: {
+            includeChecklist: { type: 'boolean' },
+            includeRecentTools: { type: 'boolean' },
+            promptLimit: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -25150,6 +25261,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
+  'get_realtime_evidence',
   'get_worker_recovery',
   'get_work_handoff',
   'get_collaboration_state',
@@ -25185,6 +25297,7 @@ function realtimeInstructionChecks(instructions = '') {
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
+    realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),

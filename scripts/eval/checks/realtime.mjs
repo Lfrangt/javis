@@ -14,6 +14,7 @@ const REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
+  'get_realtime_evidence',
   'get_worker_recovery',
   'get_work_handoff',
   'get_collaboration_state',
@@ -137,6 +138,36 @@ export default {
         typeof workerRecoveryOutput.nextAction === 'string'
         ? ok('realtime.worker_recovery_tool', 'Realtime worker recovery tool', `${workerRecoveryOutput.counts.recoverable} recoverable failed job(s)`)
         : fail('realtime.worker_recovery_tool', 'Realtime worker recovery tool', `tool execute ${workerRecoveryTool.status}`, workerRecoveryTool.data),
+    );
+
+    const realtimeEvidenceTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_realtime_evidence',
+        arguments: { includeChecklist: true, includeRecentTools: true, promptLimit: 2 },
+      },
+    });
+    const realtimeEvidenceOutput = parseToolOutput(realtimeEvidenceTool);
+    const realtimeEvidenceChecklistIds = new Set((realtimeEvidenceOutput?.checklist || []).map((step) => step.id));
+    out.push(
+      realtimeEvidenceTool.ok &&
+        realtimeEvidenceTool.data?.ok === true &&
+        realtimeEvidenceOutput?.ok === true &&
+        ['ready', 'pending', 'blocked'].includes(realtimeEvidenceOutput.status) &&
+        typeof realtimeEvidenceOutput.phase === 'string' &&
+        typeof realtimeEvidenceOutput.summary === 'string' &&
+        typeof realtimeEvidenceOutput.nextAction === 'string' &&
+        realtimeEvidenceOutput.voiceHealth?.hasOpenAiKey === true &&
+        ['providerReady', 'sessionNegotiated', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof realtimeEvidenceOutput.checks?.[key] === 'boolean') &&
+        realtimeEvidenceChecklistIds.has('session_negotiated') &&
+        realtimeEvidenceChecklistIds.has('worker_progress_injected') &&
+        realtimeEvidenceOutput.dogfood?.monitor?.endpoint === '/api/realtime/evidence' &&
+        Array.isArray(realtimeEvidenceOutput.dogfood?.prompts) &&
+        realtimeEvidenceOutput.tools?.handoff &&
+        realtimeEvidenceOutput.tools?.shortcuts
+        ? ok('realtime.evidence_tool', 'Realtime evidence voice tool', `${realtimeEvidenceOutput.status}/${realtimeEvidenceOutput.phase} · ${realtimeEvidenceOutput.nextAction}`)
+        : fail('realtime.evidence_tool', 'Realtime evidence voice tool', `tool execute ${realtimeEvidenceTool.status}`, realtimeEvidenceTool.data),
     );
 
     const shortcutList = await ctx.api('/api/tools/execute', {

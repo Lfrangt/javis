@@ -318,7 +318,7 @@ curl http://127.0.0.1:3417/api/demonstrations
 
 `/api/browser/workflow` supports `search`, `compare`, `review_result`, and `research` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages and capture those result pages. `review_result` opens one explicit URL or selected result link through the guarded `open_url` path, then reads the target page. `research` opens several explicit URLs or selected result links in sequence and synthesizes their read-only page snapshots. Browser workflows do not click page controls, type into arbitrary fields, submit forms, or make account changes by themselves.
 
-`/api/work/next` turns the top briefing action into one safe step. GET previews the selected action; POST runs exactly one step, such as opening the next setup target, showing approvals, checking session/progress state, processing the next Inbox item, or manually summoning the Realtime dogfood drill. Realtime next actions include a structured dogfood guide instead of a vague blocker. It does not approve actions or batch-run tasks.
+`/api/work/next` turns the top briefing action into one safe step. GET previews the selected action; POST runs exactly one step, such as opening the next setup target, showing approvals, checking session/progress state, processing the next Inbox item, or manually summoning the Realtime dogfood drill. Realtime next actions include a structured dogfood guide instead of a vague blocker. Voice can also call the read-only `get_realtime_evidence` tool to explain the current WebRTC/session/progress blocker and next dogfood step. It does not approve actions or batch-run tasks.
 
 The terminal CUI and API surface the same briefing. The desktop pet should not show briefing chips or operational controls.
 
@@ -340,8 +340,8 @@ curl http://127.0.0.1:3417/api/realtime/dogfood
 curl -X POST http://127.0.0.1:3417/api/realtime/dogfood/prepare \
   -H 'Content-Type: application/json' \
   -d '{"execute":true,"durationMs":45000}'
-# /api/realtime/evidence returns status/phase/checklist/blocker and a manual-only dogfood runbook
-# so CUI, eval, and future voice work-next flows can tell which real-session dogfood step is missing.
+# /api/realtime/evidence returns status/phase/checklist/blocker and a manual-only dogfood runbook.
+# Realtime voice exposes the same evidence through get_realtime_evidence when asked why live voice is stuck.
 curl -X POST http://127.0.0.1:3417/api/realtime/session-negotiation \
   -H 'Content-Type: application/json' \
   -d '{"dryRun":true,"source":"manual","micMode":"open","offerBytes":1200,"answerBytes":2200,"statusCode":200,"ok":true,"durationMs":300}'
