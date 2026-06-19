@@ -1,4 +1,9 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { ok, warn, fail } from '../_client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 // Screen privacy mode (README: "Private screen mode that downscales/blurs frames
 // before they leave the renderer"). Read-only — reads the mode, never changes it.
@@ -19,6 +24,122 @@ export default {
         ? ok('screen.privacy', 'Screen privacy mode', `mode=${mode}${mode === 'private' ? ' (frames downscaled/blurred before leaving renderer — safe default)' : ''}`, { mode })
         : warn('screen.privacy', 'Screen privacy mode', `privacy state present but no mode field (${Object.keys(privacy).slice(0, 6).join(',')})`, { privacy }),
     );
+
+    const originalRules = Array.isArray(privacy.rules) ? privacy.rules : [];
+    const privacyWithRules = await ctx.api('/api/screen/privacy', {
+      method: 'PUT',
+      body: {
+        source: 'eval_screen_privacy_rules',
+        mode,
+        rules: [
+          ...originalRules.filter((rule) => !String(rule.id || '').startsWith('eval_screen_privacy_')),
+          {
+            id: 'eval_screen_privacy_app',
+            kind: 'app',
+            value: 'Secret Notes',
+            match: 'exact',
+            effect: 'exclude',
+            label: 'Eval Secret Notes',
+          },
+          {
+            id: 'eval_screen_privacy_window',
+            kind: 'window',
+            value: 'Bank Login',
+            match: 'contains',
+            effect: 'exclude',
+            label: 'Eval Bank Window',
+          },
+          {
+            id: 'eval_screen_privacy_region',
+            kind: 'region',
+            effect: 'blur',
+            label: 'Eval top-right region',
+            region: { unit: 'percent', x: 75, y: 0, width: 25, height: 25 },
+          },
+        ],
+      },
+    });
+    const withRules = privacyWithRules.data?.privacy || {};
+    const appCheck = await ctx.api('/api/screen/privacy/check', {
+      method: 'POST',
+      body: {
+        context: {
+          frontmost: { app: 'Secret Notes', windowTitle: 'Daily note' },
+        },
+      },
+    });
+    const windowCheck = await ctx.api('/api/screen/privacy/check', {
+      method: 'POST',
+      body: {
+        context: {
+          frontmost: { app: 'Safari', windowTitle: 'Bank Login - Example' },
+        },
+      },
+    });
+    const safeCheck = await ctx.api('/api/screen/privacy/check', {
+      method: 'POST',
+      body: {
+        context: {
+          frontmost: { app: 'Finder', windowTitle: 'Documents' },
+        },
+      },
+    });
+    out.push(
+      privacyWithRules.ok &&
+        withRules.ruleCounts?.enabled >= 3 &&
+        withRules.enforcement?.appWindowContextFilter === true &&
+        withRules.enforcement?.regionRendererMaskStatus === 'pending_renderer_mask' &&
+        appCheck.ok &&
+        appCheck.data?.policy?.blocked === true &&
+        appCheck.data?.policy?.reason?.includes('eval_screen_privacy_app') &&
+        windowCheck.ok &&
+        windowCheck.data?.policy?.blocked === true &&
+        windowCheck.data?.policy?.reason?.includes('eval_screen_privacy_window') &&
+        safeCheck.ok &&
+        safeCheck.data?.policy?.allowed === true &&
+        safeCheck.data?.policy?.regionRuleCount >= 1
+        ? ok('screen.privacy_rules', 'Screen privacy rules', 'app/window exclusions block model screen context; region rule is tracked for renderer masking')
+        : fail('screen.privacy_rules', 'Screen privacy rules', 'screen privacy rule policy did not match expected app/window/region behavior', {
+          privacy: withRules,
+          appCheck: appCheck.data,
+          windowCheck: windowCheck.data,
+          safeCheck: safeCheck.data,
+        }),
+    );
+
+    const restore = await ctx.api('/api/screen/privacy', {
+      method: 'PUT',
+      body: {
+        source: 'eval_screen_privacy_restore',
+        mode,
+        rules: originalRules,
+      },
+    });
+    out.push(
+      restore.ok &&
+        JSON.stringify(restore.data?.privacy?.rules || []) === JSON.stringify(originalRules)
+        ? ok('screen.privacy_restore', 'Screen privacy restore', `${originalRules.length} original rule(s) restored`)
+        : fail('screen.privacy_restore', 'Screen privacy restore', 'failed to restore original screen privacy rules after eval', restore.data),
+    );
+
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-screen-privacy'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      out.push(
+        output.includes('Screen Privacy') &&
+          output.includes('Mode:') &&
+          output.includes('Enforcement:')
+          ? ok('screen.privacy_cui', 'Screen privacy CUI', 'config CUI prints screen privacy mode, rules, and enforcement')
+          : fail('screen.privacy_cui', 'Screen privacy CUI', 'expected --print-screen-privacy to print mode/rules/enforcement', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('screen.privacy_cui', 'Screen privacy CUI', error instanceof Error ? error.message : String(error)));
+    }
 
     return out;
   },

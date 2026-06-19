@@ -94,8 +94,11 @@ export default {
     );
 
     out.push(
-      realtime.screenPrivacy?.realtimeAllowed
-        ? ok('realtime.screen.allowed', 'Screen context allowed', `${realtime.screenPrivacy.mode || 'mode?'} allows realtime screen context`)
+      realtime.screenPrivacy?.realtimeAllowed &&
+        realtime.screenPrivacy?.enforcement?.appWindowContextFilter === true &&
+        realtime.screenPrivacy?.ruleCounts &&
+        typeof realtime.screenPrivacy?.rulesSummary === 'string'
+        ? ok('realtime.screen.allowed', 'Screen context allowed', `${realtime.screenPrivacy.mode || 'mode?'} allows realtime screen context with ${realtime.screenPrivacy.ruleCounts.enabled || 0} privacy rule(s)`)
         : fail('realtime.screen.allowed', 'Screen context allowed', `screen privacy mode ${realtime.screenPrivacy?.mode || 'unknown'} blocks realtime screen context`, realtime.screenPrivacy),
     );
 

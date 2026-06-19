@@ -2200,6 +2200,8 @@ function evaluateControlModeRisk(plan, options = {}) {
 function normalizeScreenPrivacy(value = {}) {
   const mode = String(value.mode || DEFAULT_SCREEN_PRIVACY.mode) === 'clear' ? 'clear' : 'private';
   const privateMode = mode === 'private';
+  const rules = normalizeScreenPrivacyRules(value.rules);
+  const ruleCounts = screenPrivacyRuleCounts(rules);
   return {
     version: 1,
     mode,
@@ -2208,7 +2210,202 @@ function normalizeScreenPrivacy(value = {}) {
     blurPx: privateMode ? 5 : 0,
     jpegQuality: privateMode ? 0.46 : 0.72,
     realtimeAllowed: true,
+    rules,
+    ruleCounts,
+    rulesSummary: screenPrivacyRulesSummary(rules),
+    enforcement: {
+      globalTransform: privateMode ? 'downscale_blur' : 'clear_frame',
+      appWindowContextFilter: true,
+      browserHostContextFilter: true,
+      regionRendererMask: false,
+      regionRendererMaskStatus: ruleCounts.region ? 'pending_renderer_mask' : 'not_configured',
+    },
     updatedAt: Number(value.updatedAt || Date.now()),
+  };
+}
+
+function screenPrivacyRuleCounts(rules = []) {
+  return rules.reduce((counts, rule) => {
+    counts.total += 1;
+    if (rule.enabled) counts.enabled += 1;
+    counts[rule.kind] = (counts[rule.kind] || 0) + 1;
+    counts[rule.effect] = (counts[rule.effect] || 0) + 1;
+    return counts;
+  }, { total: 0, enabled: 0 });
+}
+
+function screenPrivacyRulesSummary(rules = []) {
+  const enabled = rules.filter((rule) => rule.enabled);
+  if (!enabled.length) return 'No app/window/browser/region privacy rules configured.';
+  const counts = screenPrivacyRuleCounts(enabled);
+  const parts = [
+    counts.app ? `${counts.app} app` : '',
+    counts.window ? `${counts.window} window` : '',
+    counts.browser_host ? `${counts.browser_host} browser host` : '',
+    counts.region ? `${counts.region} region` : '',
+  ].filter(Boolean);
+  return `${enabled.length} enabled privacy rule(s): ${parts.join(', ') || 'custom rules'}.`;
+}
+
+function normalizeScreenPrivacyMatch(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['exact', 'prefix', 'suffix'].includes(normalized)) return normalized;
+  return 'contains';
+}
+
+function normalizeScreenPrivacyEffect(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (['blur', 'mask'].includes(normalized)) return 'blur';
+  return 'exclude';
+}
+
+function normalizeScreenPrivacyRuleKind(value) {
+  const normalized = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
+  if (['app', 'window', 'browser_host', 'region'].includes(normalized)) return normalized;
+  if (['host', 'site', 'domain', 'browser'].includes(normalized)) return 'browser_host';
+  return 'app';
+}
+
+function normalizeScreenPrivacyRegion(value = {}) {
+  const unit = String(value.unit || '').trim().toLowerCase() === 'px' ? 'px' : 'percent';
+  const clamp = (raw, min, max) => {
+    const parsed = Number(raw);
+    if (!Number.isFinite(parsed)) return min;
+    return Math.max(min, Math.min(max, parsed));
+  };
+  const max = unit === 'px' ? 100000 : 100;
+  return {
+    unit,
+    x: clamp(value.x, 0, max),
+    y: clamp(value.y, 0, max),
+    width: clamp(value.width, 1, max),
+    height: clamp(value.height, 1, max),
+  };
+}
+
+function normalizeScreenPrivacyRules(value = []) {
+  const rules = Array.isArray(value) ? value : [];
+  const now = Date.now();
+  const seen = new Set();
+  return rules
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const kind = normalizeScreenPrivacyRuleKind(item.kind || item.type);
+      const label = compactRecordText(item.label || item.name || '', 120);
+      const rawValue = kind === 'region' ? '' : compactRecordText(item.value || item.pattern || item.app || item.window || item.host || '', 180);
+      const region = kind === 'region' ? normalizeScreenPrivacyRegion(item.region || item) : null;
+      if (kind !== 'region' && !rawValue) return null;
+      const idBase = compactRecordText(item.id || `${kind}_${rawValue || `${region.x}_${region.y}_${region.width}_${region.height}`}_${index}`, 120)
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '_')
+        .replace(/^_+|_+$/g, '') || `rule_${index}`;
+      let id = idBase;
+      let suffix = 2;
+      while (seen.has(id)) {
+        id = `${idBase}_${suffix}`;
+        suffix += 1;
+      }
+      seen.add(id);
+      return {
+        id,
+        enabled: item.enabled !== false,
+        kind,
+        effect: normalizeScreenPrivacyEffect(item.effect || item.action),
+        match: kind === 'region' ? 'region' : normalizeScreenPrivacyMatch(item.match),
+        value: rawValue,
+        label: label || (kind === 'region' ? `Region ${index + 1}` : rawValue),
+        region,
+        appliesTo: Array.isArray(item.appliesTo) && item.appliesTo.length
+          ? item.appliesTo.map((target) => compactRecordText(target, 40)).filter(Boolean).slice(0, 8)
+          : kind === 'region'
+            ? ['renderer_mask', 'screen_context']
+            : ['model_context', 'realtime', 'vision', 'ambient'],
+        createdAt: Number(item.createdAt || now),
+        updatedAt: Number(item.updatedAt || item.createdAt || now),
+      };
+    })
+    .filter(Boolean)
+    .slice(0, 40);
+}
+
+function screenPrivacyComparable(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function screenPrivacyValueMatches(actual, expected, match = 'contains') {
+  const left = screenPrivacyComparable(actual);
+  const right = screenPrivacyComparable(expected);
+  if (!left || !right) return false;
+  if (match === 'exact') return left === right;
+  if (match === 'prefix') return left.startsWith(right);
+  if (match === 'suffix') return left.endsWith(right);
+  return left.includes(right);
+}
+
+function screenPrivacyContextFields(context = {}) {
+  const frontmost = context.frontmost || context.mac?.frontmost || {};
+  const browser = context.browser || context.mac?.browser || {};
+  return {
+    app: frontmost.app || context.app || '',
+    window: frontmost.windowTitle || context.windowTitle || context.title || '',
+    browserHost: browser.host || context.browserHost || '',
+    browserTitle: browser.title || '',
+    browserUrl: browser.url || '',
+  };
+}
+
+function screenPrivacyMatchingRules(context = {}, rules = screenPrivacy?.rules || []) {
+  const fields = screenPrivacyContextFields(context);
+  return (Array.isArray(rules) ? rules : []).filter((rule) => {
+    if (!rule.enabled) return false;
+    if (rule.kind === 'region') return false;
+    if (rule.kind === 'app') return screenPrivacyValueMatches(fields.app, rule.value, rule.match);
+    if (rule.kind === 'window') return screenPrivacyValueMatches(fields.window, rule.value, rule.match);
+    if (rule.kind === 'browser_host') {
+      const host = fields.browserHost || (() => {
+        try {
+          return fields.browserUrl ? new URL(fields.browserUrl).hostname.replace(/^www\./i, '') : '';
+        } catch {
+          return '';
+        }
+      })();
+      return screenPrivacyValueMatches(host, rule.value, rule.match)
+        || screenPrivacyValueMatches(fields.browserTitle, rule.value, rule.match);
+    }
+    return false;
+  });
+}
+
+function screenPrivacyContextPolicy(context = {}) {
+  const privacy = screenPrivacySnapshot();
+  const matchingRules = screenPrivacyMatchingRules(context, privacy.rules);
+  const excluded = matchingRules.filter((rule) => rule.effect === 'exclude');
+  const blurred = matchingRules.filter((rule) => rule.effect === 'blur');
+  const regionRules = (privacy.rules || []).filter((rule) => rule.enabled && rule.kind === 'region');
+  return {
+    ok: true,
+    allowed: excluded.length === 0,
+    blocked: excluded.length > 0,
+    reason: excluded.length
+      ? `screen_context_excluded_by_${excluded.map((rule) => rule.id).join(',')}`
+      : blurred.length
+        ? `screen_context_blur_requested_by_${blurred.map((rule) => rule.id).join(',')}`
+        : '',
+    matchingRules: matchingRules.map((rule) => ({
+      id: rule.id,
+      kind: rule.kind,
+      effect: rule.effect,
+      label: rule.label,
+      value: rule.value,
+    })),
+    regionRuleCount: regionRules.length,
+    rendererRegionMask: privacy.enforcement?.regionRendererMask === true,
+    rendererRegionMaskStatus: privacy.enforcement?.regionRendererMaskStatus || 'not_configured',
+    summary: excluded.length
+      ? `Screen model context blocked by ${excluded.length} privacy rule(s).`
+      : blurred.length
+        ? `Screen model context allowed, but ${blurred.length} blur/mask rule(s) need renderer enforcement.`
+        : 'Screen model context allowed by configured privacy rules.',
   };
 }
 
@@ -2237,14 +2434,62 @@ function screenPrivacySnapshot() {
 }
 
 function updateScreenPrivacy(options = {}) {
-  screenPrivacy = normalizeScreenPrivacy({
+  const nextInput = {
     ...screenPrivacy,
-    mode: options.mode,
+    mode: Object.prototype.hasOwnProperty.call(options, 'mode') ? options.mode : screenPrivacy.mode,
+    rules: Object.prototype.hasOwnProperty.call(options, 'rules') ? options.rules : screenPrivacy.rules,
     updatedAt: Date.now(),
+  };
+  screenPrivacy = normalizeScreenPrivacy({
+    ...nextInput,
+    rules: options.clearRules === true ? [] : nextInput.rules,
   });
   persistScreenPrivacy();
   appendAudit('screen_privacy.updated', {
     mode: screenPrivacy.mode,
+    rules: screenPrivacy.ruleCounts?.enabled || 0,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return screenPrivacySnapshot();
+}
+
+function addScreenPrivacyRule(rule = {}, options = {}) {
+  const existing = Array.isArray(screenPrivacy.rules) ? screenPrivacy.rules : [];
+  const normalized = normalizeScreenPrivacyRules([{
+    ...rule,
+    id: rule.id || `${rule.kind || rule.type || 'rule'}_${Date.now().toString(36)}`,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }])[0];
+  if (!normalized) throw new Error('Invalid screen privacy rule.');
+  screenPrivacy = normalizeScreenPrivacy({
+    ...screenPrivacy,
+    rules: [...existing.filter((item) => item.id !== normalized.id), normalized],
+    updatedAt: Date.now(),
+  });
+  persistScreenPrivacy();
+  appendAudit('screen_privacy.rule_added', {
+    id: normalized.id,
+    kind: normalized.kind,
+    effect: normalized.effect,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return normalized;
+}
+
+function removeScreenPrivacyRule(id, options = {}) {
+  const ruleId = String(id || '').trim();
+  const existing = Array.isArray(screenPrivacy.rules) ? screenPrivacy.rules : [];
+  const nextRules = existing.filter((rule) => rule.id !== ruleId);
+  if (nextRules.length === existing.length) throw new Error('Screen privacy rule not found.');
+  screenPrivacy = normalizeScreenPrivacy({
+    ...screenPrivacy,
+    rules: nextRules,
+    updatedAt: Date.now(),
+  });
+  persistScreenPrivacy();
+  appendAudit('screen_privacy.rule_removed', {
+    id: ruleId,
     source: String(options.source || 'api').slice(0, 80),
   });
   return screenPrivacySnapshot();
@@ -14607,7 +14852,13 @@ function buildContextPlan(message, options = {}) {
       reasons: ['missing task text'],
       recommendedTools: [],
       observeOptions: { maxNodes: 80, maxDepth: 5 },
-      privacy: { screenMode: screenPrivacy?.mode || 'private', rationale: 'No screen context requested.' },
+      privacy: {
+        screenMode: screenPrivacy?.mode || 'private',
+        screenRules: screenPrivacy?.ruleCounts || { total: 0, enabled: 0 },
+        screenRulesSummary: screenPrivacy?.rulesSummary || '',
+        enforcement: screenPrivacy?.enforcement || {},
+        rationale: 'No screen context requested.',
+      },
     });
   }
 
@@ -14751,6 +15002,9 @@ function buildContextPlan(message, options = {}) {
     },
     privacy: {
       screenMode: screenPrivacy?.mode || 'private',
+      screenRules: screenPrivacy?.ruleCounts || { total: 0, enabled: 0 },
+      screenRulesSummary: screenPrivacy?.rulesSummary || '',
+      enforcement: screenPrivacy?.enforcement || {},
       rationale: needs.screen
         ? 'Use current configured screen privacy before model context.'
         : 'Do not capture screen unless the task asks for visible context.',
@@ -15206,12 +15460,36 @@ function routeTaskDecision(message, options = {}) {
 async function answerQuickLane(options = {}) {
   const task = String(options.message || options.task || '').trim();
   if (!task) throw new Error('Missing message');
+  let imageDataUrl;
+  if (options.includeScreen && latestScreen?.imageDataUrl) {
+    try {
+      const macContext = await macContextSnapshot({ includeClipboardText: false });
+      const screenPolicy = screenPrivacyContextPolicy(macContext);
+      if (screenPolicy.allowed) {
+        imageDataUrl = latestScreen.imageDataUrl;
+      } else {
+        appendAudit('screen_privacy.context_blocked', {
+          source: options.source || 'quick_lane',
+          reason: screenPolicy.reason,
+          matchingRules: screenPolicy.matchingRules.map((rule) => rule.id),
+        });
+      }
+    } catch (error) {
+      const hasPrivacyRules = Number(screenPrivacySnapshot().ruleCounts?.enabled || 0) > 0;
+      appendAudit('screen_privacy.context_check_failed', {
+        source: options.source || 'quick_lane',
+        error: error instanceof Error ? error.message : String(error),
+        blocked: hasPrivacyRules,
+      });
+      if (!hasPrivacyRules) imageDataUrl = latestScreen.imageDataUrl;
+    }
+  }
   return callOpenAIResponsesWithFallback({
     model: models.fast,
     instructions:
       'You are the fast lane inside JAVIS. Answer simple questions quickly in Chinese. If the task is complex, recommend sending it to the background lane.',
     input: String(options.input || task),
-    imageDataUrl: options.includeScreen ? latestScreen?.imageDataUrl : undefined,
+    imageDataUrl,
     maxOutputTokens: Math.max(80, Math.min(900, Number(options.maxOutputTokens || 500))),
   }, {
     source: options.source || 'quick_lane',
@@ -17365,22 +17643,26 @@ function perceptionConsentSnapshot(options = {}) {
       },
       controls: [
         { label: 'Screen privacy', endpoint: '/api/screen/privacy', method: 'GET/PUT' },
+        { label: 'Screen privacy rules', endpoint: '/api/screen/privacy/rules', method: 'POST/DELETE' },
         { label: 'Capture now', endpoint: '/api/screen/capture-now', method: 'POST' },
         { label: 'Open Screen Recording settings', cui: 'npm run config -> 3' },
       ],
-      auditTypes: ['screen.frame_captured', 'screen.frame_received', 'screen.frame_cleared', 'screen_privacy.updated', 'ambient.screen_failed'],
+      auditTypes: ['screen.frame_captured', 'screen.frame_received', 'screen.frame_cleared', 'screen_privacy.updated', 'screen_privacy.rule_added', 'screen_privacy.rule_removed', 'screen_privacy.context_blocked', 'ambient.screen_failed'],
       evidence: {
         privacyMode: screenPrivacy.mode,
+        privacyRules: screenPrivacy.ruleCounts || { total: 0, enabled: 0 },
+        rulesSummary: screenPrivacy.rulesSummary,
+        enforcement: screenPrivacy.enforcement,
         width: screenFrame?.width || 0,
         height: screenFrame?.height || 0,
         ageMs: Number.isFinite(latestScreenAgeMs()) ? latestScreenAgeMs() : null,
         source: screenFrame?.source || '',
       },
       summary: screenFrame
-        ? `Latest ${screenFrame.width}x${screenFrame.height} ${screenPrivacy.mode} screen frame is available.`
+        ? `Latest ${screenFrame.width}x${screenFrame.height} ${screenPrivacy.mode} screen frame is available. ${screenPrivacy.rulesSummary}`
         : screenBlocked
           ? `macOS screen permission is ${screenStatus}.`
-          : 'No screen frame is cached yet.',
+          : `No screen frame is cached yet. ${screenPrivacy.rulesSummary}`,
       nextAction: screenFrame
         ? 'Keep private mode for normal use; switch to clear only when precision matters.'
         : screenBlocked
@@ -17832,6 +18114,8 @@ function presenceStateSnapshot(options = {}) {
         height: latestScreen.height,
         source: latestScreen.source || '',
         privacyMode: latestScreen.privacy?.mode || '',
+        privacyRules: screenPrivacySnapshot().ruleCounts || { total: 0, enabled: 0 },
+        privacyRulesSummary: screenPrivacySnapshot().rulesSummary || '',
         ageMs: Number.isFinite(screenAge) ? screenAge : null,
         updatedAt: latestScreen.updatedAt,
       }
@@ -17841,6 +18125,8 @@ function presenceStateSnapshot(options = {}) {
         height: 0,
         source: '',
         privacyMode: screenPrivacySnapshot().mode,
+        privacyRules: screenPrivacySnapshot().ruleCounts || { total: 0, enabled: 0 },
+        privacyRulesSummary: screenPrivacySnapshot().rulesSummary || '',
         ageMs: null,
         updatedAt: 0,
       };
@@ -18073,6 +18359,8 @@ function petPresenceSnapshot(options = {}) {
             height: latestScreenFrame.height,
             source: latestScreenFrame.source || '',
             privacyMode: latestScreenFrame.privacy?.mode || '',
+            privacyRules: screenPrivacySnapshot().ruleCounts || { total: 0, enabled: 0 },
+            privacyRulesSummary: screenPrivacySnapshot().rulesSummary || '',
             ageMs: Number.isFinite(screenAge) ? screenAge : null,
             updatedAt: latestScreenFrame.updatedAt,
           }
@@ -18082,6 +18370,8 @@ function petPresenceSnapshot(options = {}) {
             height: 0,
             source: '',
             privacyMode: screenPrivacySnapshot().mode,
+            privacyRules: screenPrivacySnapshot().ruleCounts || { total: 0, enabled: 0 },
+            privacyRulesSummary: screenPrivacySnapshot().rulesSummary || '',
             ageMs: null,
             updatedAt: 0,
           },
@@ -18203,6 +18493,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
     pendingApprovals: [],
   }));
   const screenFrame = latestScreenSnapshot();
+  const screenPrivacyPolicy = screenPrivacyContextPolicy(mac);
   const latest = presence.observing?.latest || {};
   const nextActions = (briefing.nextActions || []).slice(0, 3);
   const activeJobs = presence.work?.activeJobs || [];
@@ -18224,7 +18515,11 @@ async function realtimePreflightContextSnapshot(options = {}) {
         currentApp ? `Current app/window: ${compactRecordText(currentApp, 220)}` : '',
         currentBrowser ? `Current browser: ${compactRecordText(currentBrowser, 260)}` : '',
         browserActivity.current ? `Recent browser activity: ${compactRecordText(browserActivity.summary, 360)}` : '',
-        screenFrame ? `Latest resident screen frame: ${screenFrame.width}x${screenFrame.height}, privacy ${screenFrame.privacy?.mode || 'unknown'}, age ${Math.round(latestScreenAgeMs() / 1000)}s.` : 'No resident screen frame is cached yet.',
+        screenFrame && screenPrivacyPolicy.allowed
+          ? `Latest resident screen frame: ${screenFrame.width}x${screenFrame.height}, privacy ${screenFrame.privacy?.mode || 'unknown'}, age ${Math.round(latestScreenAgeMs() / 1000)}s. ${screenFrame.privacy?.rulesSummary || ''}`
+          : screenFrame && screenPrivacyPolicy.blocked
+            ? `Resident screen frame exists but is excluded from model context by screen privacy rule(s): ${screenPrivacyPolicy.matchingRules.map((rule) => rule.label || rule.id).join(', ')}.`
+            : `No resident screen frame is cached yet. ${screenPrivacySnapshot().rulesSummary || ''}`,
         learningSummary ? `Local inferred profile: ${compactRecordText(learningSummary, 360)}` : '',
         activeJobs.length ? `Background work: ${activeJobs.map((job) => `${job.mode}/${job.status} ${compactRecordText(job.title, 80)}`).join('; ')}` : 'Background work: none active.',
         activeRoutes.length ? `Routed work: ${activeRoutes.map((route) => `${route.lane}/${route.status} ${route.owner} ${compactRecordText(route.taskTitle, 80)} next=${compactRecordText(route.nextAction || 'check progress', 80)}`).join('; ')}` : 'Routed work: none active.',
@@ -18241,7 +18536,8 @@ async function realtimePreflightContextSnapshot(options = {}) {
     enabled: REALTIME_PREFLIGHT_CONTEXT_ENABLED,
     presenceMode: presence.mode,
     promptLength: prompt.length,
-    hasScreen: Boolean(screenFrame),
+    hasScreen: Boolean(screenFrame && screenPrivacyPolicy.allowed),
+    screenPrivacyBlocked: Boolean(screenFrame && screenPrivacyPolicy.blocked),
     nextActions: nextActions.length,
   });
   return {
@@ -18257,6 +18553,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
     },
     mac,
     screen: screenFrame,
+    screenPrivacyPolicy,
     browserActivity,
     briefing: {
       summary: briefing.summary,
@@ -22365,7 +22662,7 @@ async function observeNow(options = {}) {
   const screenMaxAgeMs = Math.max(1000, Math.min(60000, Number(options.screenMaxAgeMs ?? 12000)));
   const accessibilityMaxAgeMs = Math.max(0, Math.min(60000, Number(options.accessibilityMaxAgeMs ?? 6000)));
   const captureScreenMode = options.captureScreen;
-  const captureScreen =
+  let captureScreen =
     captureScreenMode === true ||
     captureScreenMode === 'always' ||
     (captureScreenMode !== false && !hasFreshLatestScreen(screenMaxAgeMs));
@@ -22375,7 +22672,7 @@ async function observeNow(options = {}) {
   const maxDepth = Math.max(1, Math.min(8, Number(options.maxDepth || 5)));
   const errors = [];
 
-  const [macContext, treeResult, screenResult] = await Promise.all([
+  const [macContext, treeResult] = await Promise.all([
     macContextSnapshot({ includeClipboardText }),
     includeAccessibility
       ? cachedAccessibilityTreeSnapshot({ maxNodes, maxDepth, maxAgeMs: accessibilityMaxAgeMs, useCache: options.useCache }).catch((error) => {
@@ -22383,16 +22680,31 @@ async function observeNow(options = {}) {
           return null;
         })
       : Promise.resolve(null),
-    captureScreen
+  ]);
+
+  const screenPrivacyPolicy = screenPrivacyContextPolicy(macContext);
+  if (screenPrivacyPolicy.blocked) {
+    captureScreen = false;
+    errors.push(`screen_privacy: ${screenPrivacyPolicy.reason}`);
+    appendAudit('screen_privacy.context_blocked', {
+      source: options.source || 'observe',
+      reason: screenPrivacyPolicy.reason,
+      matchingRules: screenPrivacyPolicy.matchingRules.map((rule) => rule.id),
+    });
+  }
+
+  const screenResult = screenPrivacyPolicy.allowed
+    ? (captureScreen
       ? captureResidentScreen({ source: String(options.source || 'observe') }).catch((error) => {
           errors.push(`screen: ${error instanceof Error ? error.message : String(error)}`);
           return latestScreenSnapshot();
         })
-      : Promise.resolve(latestScreenSnapshot()),
-  ]);
+      : Promise.resolve(latestScreenSnapshot()))
+    : Promise.resolve(null);
+  const resolvedScreenResult = await screenResult;
 
   let screenDescription = '';
-  if (describeScreen) {
+  if (describeScreen && screenPrivacyPolicy.allowed) {
     try {
       if (!latestScreen || !hasFreshLatestScreen(screenMaxAgeMs)) {
         await captureResidentScreen({ source: String(options.source || 'observe_vision') });
@@ -22408,13 +22720,16 @@ async function observeNow(options = {}) {
     } catch (error) {
       errors.push(`vision: ${error instanceof Error ? error.message : String(error)}`);
     }
+  } else if (describeScreen && screenPrivacyPolicy.blocked) {
+    errors.push('vision: blocked_by_screen_privacy_rule');
   }
 
   const observation = {
     ok: true,
     generatedAt: new Date().toISOString(),
     mac: macContext,
-    screen: screenResult || latestScreenSnapshot(),
+    screen: resolvedScreenResult,
+    screenPrivacyPolicy,
     accessibility: compactObserveTree(treeResult),
     vision: screenDescription ? { output: screenDescription } : null,
     errors,
@@ -32870,6 +33185,33 @@ function startApiServer() {
     }
   });
 
+  api.post('/api/screen/privacy/rules', (req, res) => {
+    try {
+      const rule = addScreenPrivacyRule(req.body || {}, { source: req.body?.source || 'api' });
+      res.json({ ok: true, rule, privacy: screenPrivacySnapshot(), privacyFile: SCREEN_PRIVACY_FILE });
+    } catch (error) {
+      jsonError(res, 400, 'Screen privacy rule add failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.delete('/api/screen/privacy/rules/:id', (req, res) => {
+    try {
+      const privacy = removeScreenPrivacyRule(req.params.id, { source: req.body?.source || 'api' });
+      res.json({ ok: true, privacy, privacyFile: SCREEN_PRIVACY_FILE });
+    } catch (error) {
+      jsonError(res, 404, 'Screen privacy rule remove failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/screen/privacy/check', (req, res) => {
+    try {
+      const policy = screenPrivacyContextPolicy(req.body?.context || req.body || {});
+      res.json({ ok: true, policy, privacy: screenPrivacySnapshot() });
+    } catch (error) {
+      jsonError(res, 400, 'Screen privacy check failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.post('/api/screen/frame', (req, res) => {
     const imageDataUrl = String(req.body?.imageDataUrl || '');
     if (!imageDataUrl.startsWith('data:image/')) {
@@ -32910,6 +33252,22 @@ function startApiServer() {
 
   api.post('/api/screen/describe', async (req, res) => {
     try {
+      const macContext = await macContextSnapshot({ includeClipboardText: false });
+      const screenPrivacyPolicy = screenPrivacyContextPolicy(macContext);
+      if (screenPrivacyPolicy.blocked) {
+        appendAudit('screen_privacy.context_blocked', {
+          source: req.body?.source || 'screen_describe',
+          reason: screenPrivacyPolicy.reason,
+          matchingRules: screenPrivacyPolicy.matchingRules.map((rule) => rule.id),
+        });
+        res.status(409).json({
+          ok: false,
+          error: 'Screen analysis blocked by screen privacy rule',
+          screenPrivacyPolicy,
+          screen: null,
+        });
+        return;
+      }
       if (!latestScreen || req.body?.capture === true) {
         await captureResidentScreen({ source: 'describe' });
       }
@@ -32921,7 +33279,7 @@ function startApiServer() {
         imageDataUrl: latestScreen.imageDataUrl,
         maxOutputTokens: 520,
       });
-      res.json({ output, screen: latestScreenSnapshot() });
+      res.json({ output, screen: latestScreenSnapshot(), screenPrivacyPolicy });
     } catch (error) {
       jsonError(res, 500, 'Screen analysis failed', error instanceof Error ? error.message : String(error));
     }

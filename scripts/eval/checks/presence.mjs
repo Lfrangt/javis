@@ -142,6 +142,7 @@ export default {
     const consent = perception.data?.perception;
     const surfaces = Array.isArray(consent?.surfaces) ? consent.surfaces : [];
     const surfaceIds = new Set(surfaces.map((surface) => surface.id));
+    const screenSurface = surfaces.find((surface) => surface.id === 'screen_context') || {};
     const requiredSurfaces = [
       'screen_context',
       'voice_microphone',
@@ -168,6 +169,9 @@ export default {
           surface.consent &&
           typeof surface.consent === 'object'
         )) &&
+        screenSurface.evidence?.privacyRules &&
+        typeof screenSurface.evidence.rulesSummary === 'string' &&
+        screenSurface.evidence.enforcement?.appWindowContextFilter === true &&
         consent.policy?.passiveByDefault === true &&
         consent.policy?.requiresUserIntentForAction === true
         ? ok('presence.perception_consent_api', 'Perception consent API', `${surfaces.length} surface(s), ${consent.summary || ''}`)

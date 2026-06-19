@@ -67,7 +67,7 @@ Renderer
 - Config CUI lane: terminal-first setup surface for `.env`, permissions, doctor output, and parking the pet.
 - Notification lane: macOS notifications for completed, failed, or cancelled background work plus policy-gated attention alerts for approvals, setup blockers, and Realtime voice errors. Recent sent/suppressed attention history is exposed to the operator API/CUI, not the desktop pet.
 - Vision lane: analyzes the latest permitted screen frame.
-- Screen privacy lane: stores the resident screen privacy mode and makes the renderer downscale/blur frames before posting them to the API or Realtime.
+- Screen privacy lane: stores the resident screen privacy mode plus app/window/browser-host/region privacy rules. Private mode downscales/blurs frames before API/Realtime delivery; app/window/browser-host exclusion rules also filter screen images out of server-side model context, and region rules are exposed for renderer-side pixel masking. Until region masking is implemented, the renderer refuses full Realtime screen-image pushes when enabled region rules exist.
 - Live screen-context lane: sends periodic screen image messages into the active Realtime conversation without triggering standalone replies.
 - Smart context assembly lane: creates a deterministic per-request context plan before expensive capture, deciding whether to gather resident state, Mac context, screen/vision, Accessibility, browser page/DOM, clipboard text, files, memory, learning, or delegated-worker context.
 - Observe lane: combined low-latency voice snapshot over Mac context, optional resident screen capture, optional vision summary, Accessibility outline, jobs, and approvals.

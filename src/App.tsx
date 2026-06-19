@@ -276,6 +276,18 @@ type ScreenPrivacy = {
   blurPx: number
   jpegQuality: number
   realtimeAllowed: boolean
+  rules?: Array<{
+    id: string
+    enabled: boolean
+    kind: string
+    effect: string
+    match: string
+    value: string
+    label: string
+  }>
+  ruleCounts?: Record<string, number>
+  rulesSummary?: string
+  enforcement?: Record<string, unknown>
   updatedAt: number
 }
 
@@ -1227,6 +1239,10 @@ function App() {
   const pushRealtimeScreenContext = useCallback(
     (imageDataUrl: string, width: number, height: number, force = false) => {
       if (!realtimeScreenContext) return false
+      const regionRuleCount = Number(screenPrivacy.ruleCounts?.region || 0)
+      if (regionRuleCount > 0 && screenPrivacy.enforcement?.regionRendererMask !== true) {
+        return false
+      }
       const now = Date.now()
       if (!force && now - lastRealtimeScreenSyncRef.current < 15000) return false
 
@@ -1242,8 +1258,9 @@ function App() {
                 `Silent Mac screen context update at ${new Date(now).toLocaleTimeString()}.`,
                 `Frame size: ${width}x${height}.`,
                 `Screen privacy mode: ${screenPrivacy.mode}.`,
+                screenPrivacy.rulesSummary ? `Screen privacy rules: ${screenPrivacy.rulesSummary}.` : '',
                 'Use this as the latest visible screen context. Do not answer this update by itself.',
-              ].join(' '),
+              ].filter(Boolean).join(' '),
             },
             {
               type: 'input_image',
@@ -1260,7 +1277,7 @@ function App() {
       }
       return sent
     },
-    [realtimeScreenContext, screenPrivacy.mode, sendRealtimeEvent],
+    [realtimeScreenContext, screenPrivacy, sendRealtimeEvent],
   )
 
   const refreshStatus = useCallback(async () => {

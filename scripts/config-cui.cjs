@@ -322,7 +322,8 @@ async function printStatus() {
   console.log('30. Show browser activity');
   console.log('31. Show attention policy');
   console.log('32. Show perception consent');
-  console.log('33. Quit');
+  console.log('33. Show screen privacy');
+  console.log('34. Quit');
 }
 
 async function setupAction(action) {
@@ -932,6 +933,11 @@ function printPerceptionConsent(result) {
     console.log(`- ${surface.id} · ${surface.label}: ${surface.status} · enabled=${surface.enabled ? 'yes' : 'no'} · raw stored=${surface.rawContentStored ? 'yes' : 'no'}`);
     console.log(`  data=${surface.dataClass || '-'} · retention=${compact(surface.retention || '-', 160)}`);
     console.log(`  consent=${consent.policyGate || '-'} · system=${consent.systemPermission ?? '-'} · user action=${consent.explicitUserActionRequired ? 'yes' : 'no'} · audit=${lastAudit}`);
+    if (surface.id === 'screen_context' && surface.evidence?.rulesSummary) {
+      console.log(`  privacy rules=${surface.evidence.rulesSummary}`);
+      const enforcement = surface.evidence.enforcement || {};
+      console.log(`  enforcement=global:${enforcement.globalTransform || '-'} · app/window filter=${enforcement.appWindowContextFilter ? 'yes' : 'no'} · region mask=${enforcement.regionRendererMask ? 'yes' : enforcement.regionRendererMaskStatus || 'no'}`);
+    }
     if (surface.nextAction) console.log(`  next=${compact(surface.nextAction, 180)}`);
   }
 }
@@ -940,6 +946,36 @@ async function showPerceptionConsent() {
   const result = await request('/api/perception/consent?limit=8');
   console.log('');
   printPerceptionConsent(result);
+}
+
+function printScreenPrivacy(result) {
+  const privacy = result?.privacy || {};
+  const counts = privacy.ruleCounts || {};
+  console.log('Screen Privacy');
+  console.log('==============');
+  console.log(`Mode: ${privacy.mode || '-'} · ${privacy.label || '-'}`);
+  console.log(`Transform: maxWidth=${privacy.maxWidth || 0} · blur=${privacy.blurPx || 0}px · jpeg=${privacy.jpegQuality || 0}`);
+  console.log(`Rules: ${counts.enabled || 0}/${counts.total || 0} enabled · ${privacy.rulesSummary || '-'}`);
+  const enforcement = privacy.enforcement || {};
+  console.log(`Enforcement: global=${enforcement.globalTransform || '-'} · app/window filter=${enforcement.appWindowContextFilter ? 'yes' : 'no'} · browser host filter=${enforcement.browserHostContextFilter ? 'yes' : 'no'} · region mask=${enforcement.regionRendererMask ? 'yes' : enforcement.regionRendererMaskStatus || 'no'}`);
+  const rules = Array.isArray(privacy.rules) ? privacy.rules : [];
+  if (!rules.length) {
+    console.log('\nRules: none');
+    return;
+  }
+  console.log('\nRules:');
+  for (const rule of rules.slice(0, 30)) {
+    const target = rule.kind === 'region'
+      ? `${rule.region?.x},${rule.region?.y} ${rule.region?.width}x${rule.region?.height} ${rule.region?.unit || 'percent'}`
+      : `${rule.match || 'contains'} "${rule.value || ''}"`;
+    console.log(`- ${rule.id} · ${rule.enabled ? 'on' : 'off'} · ${rule.kind}/${rule.effect} · ${target}`);
+  }
+}
+
+async function showScreenPrivacy() {
+  const result = await request('/api/screen/privacy');
+  console.log('');
+  printScreenPrivacy(result);
 }
 
 function printShortcutCandidate(candidate, index) {
@@ -1744,6 +1780,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-screen-privacy') || process.argv.includes('--screen-privacy')) {
+    await showScreenPrivacy();
+    return;
+  }
+
   if (process.argv.includes('--print-inbox-triage') || process.argv.includes('--inbox-triage')) {
     await showInboxTriage();
     return;
@@ -1859,7 +1900,9 @@ async function main() {
         await showAttentionPolicy();
       } else if (answer === '32') {
         await showPerceptionConsent();
-      } else if (answer === '33' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '33') {
+        await showScreenPrivacy();
+      } else if (answer === '34' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');
