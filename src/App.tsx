@@ -111,6 +111,21 @@ type ConversationState = {
   activeForMs: number | null
   staleAfterMs: number
   realtimeProgressInjectionCount?: number
+  realtimeSessionNegotiationCount?: number
+  lastRealtimeSessionNegotiation?: null | {
+    source: string
+    sessionId: string
+    micMode: MicMode
+    model: string
+    voice: string
+    offerBytes: number
+    answerBytes: number
+    statusCode: number
+    ok: boolean
+    durationMs: number
+    error: string
+    createdAt: number
+  }
   lastRealtimeProgressInjection?: null | {
     source: string
     sessionId: string

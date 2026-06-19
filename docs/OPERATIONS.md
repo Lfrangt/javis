@@ -263,6 +263,9 @@ curl -X POST http://127.0.0.1:3417/api/screen/capture-now \
 curl http://127.0.0.1:3417/api/presence
 curl http://127.0.0.1:3417/api/conversation/state
 curl http://127.0.0.1:3417/api/realtime/context
+curl -X POST http://127.0.0.1:3417/api/realtime/session-negotiation \
+  -H 'Content-Type: application/json' \
+  -d '{"dryRun":true,"source":"manual","micMode":"open","offerBytes":1200,"answerBytes":2200,"statusCode":200,"ok":true,"durationMs":300}'
 curl -X POST http://127.0.0.1:3417/api/realtime/progress-injection \
   -H 'Content-Type: application/json' \
   -d '{"dryRun":true,"source":"manual","transport":"webrtc-datachannel","dataChannelReadyState":"open","eventType":"conversation.item.create","forcedResponse":false,"contextLength":120,"contextPreview":"Worker summary: ...","workerSummary":"1 worker group(s)"}'

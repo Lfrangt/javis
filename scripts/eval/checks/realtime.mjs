@@ -94,6 +94,34 @@ export default {
         : warn('realtime.progress_spoken', 'Spoken progress summary', 'progress response did not include a short spokenSummary', { spokenSummary: p?.spokenSummary }),
     );
 
+    const negotiation = await ctx.api('/api/realtime/session-negotiation', {
+      method: 'POST',
+      body: {
+        dryRun: true,
+        source: 'eval',
+        sessionId: 'eval-negotiation',
+        micMode: 'open',
+        offerBytes: 1234,
+        answerBytes: 2345,
+        statusCode: 200,
+        ok: true,
+        durationMs: 345,
+      },
+    });
+    const n = negotiation.data?.negotiation;
+    out.push(
+      negotiation.ok &&
+        n?.source === 'eval' &&
+        n?.sessionId === 'eval-negotiation' &&
+        n?.micMode === 'open' &&
+        n?.offerBytes === 1234 &&
+        n?.answerBytes === 2345 &&
+        n?.statusCode === 200 &&
+        n?.ok === true
+        ? ok('realtime.negotiation_evidence', 'Realtime negotiation evidence', 'session negotiation receipt normalizes WebRTC offer/answer metadata')
+        : fail('realtime.negotiation_evidence', 'Realtime negotiation evidence', `POST /api/realtime/session-negotiation ${negotiation.status}`, negotiation.data),
+    );
+
     return out;
   },
 };

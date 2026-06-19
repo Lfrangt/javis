@@ -634,6 +634,8 @@ let conversationState = {
   transitionCount: 0,
   realtimeProgressInjectionCount: 0,
   lastRealtimeProgressInjection: null,
+  realtimeSessionNegotiationCount: 0,
+  lastRealtimeSessionNegotiation: null,
 };
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
@@ -13799,6 +13801,50 @@ function normalizeConversationMicMode(value) {
   return String(value || '').trim().toLowerCase() === 'push' ? 'push' : 'open';
 }
 
+function normalizeRealtimeSessionNegotiation(options = {}) {
+  return {
+    source: compactRecordText(options.source || 'api', 80),
+    sessionId: String(options.sessionId || conversationState.sessionId || '').slice(0, 120),
+    micMode: normalizeConversationMicMode(options.micMode),
+    model: compactRecordText(options.model || models.realtime, 80),
+    voice: compactRecordText(options.voice || models.realtimeVoice, 80),
+    offerBytes: boundedCount(options.offerBytes, 10_000_000),
+    answerBytes: boundedCount(options.answerBytes, 10_000_000),
+    statusCode: boundedCount(options.statusCode, 999),
+    ok: Boolean(options.ok),
+    durationMs: boundedCount(options.durationMs, 600000),
+    error: compactRecordText(options.error || '', 300),
+    createdAt: Date.now(),
+  };
+}
+
+function recordRealtimeSessionNegotiation(options = {}) {
+  const negotiation = normalizeRealtimeSessionNegotiation(options);
+  if (options.dryRun === true) {
+    return { ok: true, dryRun: true, negotiation, conversation: conversationStateSnapshot() };
+  }
+  conversationState = {
+    ...conversationState,
+    realtimeSessionNegotiationCount: Number(conversationState.realtimeSessionNegotiationCount || 0) + 1,
+    lastRealtimeSessionNegotiation: negotiation,
+    updatedAt: Date.now(),
+  };
+  appendAudit('realtime.session_negotiation', {
+    sessionId: negotiation.sessionId,
+    source: negotiation.source,
+    micMode: negotiation.micMode,
+    model: negotiation.model,
+    voice: negotiation.voice,
+    offerBytes: negotiation.offerBytes,
+    answerBytes: negotiation.answerBytes,
+    statusCode: negotiation.statusCode,
+    ok: negotiation.ok,
+    durationMs: negotiation.durationMs,
+    error: negotiation.error,
+  });
+  return { ok: true, negotiation, conversation: conversationStateSnapshot() };
+}
+
 function boundedCount(value, max = 100000) {
   return Math.max(0, Math.min(max, Number(value || 0)));
 }
@@ -13963,6 +14009,8 @@ function updateConversationState(options = {}) {
     next.lastHeartbeatAt = 0;
     next.realtimeProgressInjectionCount = 0;
     next.lastRealtimeProgressInjection = null;
+    next.realtimeSessionNegotiationCount = 0;
+    next.lastRealtimeSessionNegotiation = null;
     next.error = '';
   }
   if (requestedStatus === 'live') {
@@ -13987,6 +14035,10 @@ function updateConversationState(options = {}) {
   if (options.clearRealtimeProgressInjection === true) {
     next.realtimeProgressInjectionCount = 0;
     next.lastRealtimeProgressInjection = null;
+  }
+  if (options.clearRealtimeSessionNegotiation === true) {
+    next.realtimeSessionNegotiationCount = 0;
+    next.lastRealtimeSessionNegotiation = null;
   }
 
   next.updatedAt = now;
@@ -21569,6 +21621,15 @@ function startApiServer() {
     }
   });
 
+  api.post('/api/realtime/session-negotiation', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const result = recordRealtimeSessionNegotiation(req.body || {});
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime session negotiation record failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.get('/api/mac/context', async (req, res) => {
     try {
       const context = await macContextSnapshot({
@@ -21916,13 +21977,27 @@ function startApiServer() {
 
   api.post('/api/realtime/session', express.text({ type: ['application/sdp', 'text/plain'], limit: '4mb' }), async (req, res) => {
     if (!OPENAI_API_KEY) {
+      recordRealtimeSessionNegotiation({
+        source: 'renderer',
+        sessionId: conversationState.sessionId,
+        micMode: req.query.micMode,
+        offerBytes: Buffer.byteLength(String(req.body || ''), 'utf8'),
+        answerBytes: 0,
+        statusCode: 400,
+        ok: false,
+        durationMs: 0,
+        error: 'missing_openai_api_key',
+      });
       jsonError(res, 400, 'Missing OPENAI_API_KEY');
       return;
     }
 
+    const startedAt = Date.now();
+    const micMode = normalizeConversationMicMode(req.query.micMode);
+    const offerBytes = Buffer.byteLength(String(req.body || ''), 'utf8');
     const fd = new FormData();
     fd.set('sdp', req.body);
-    fd.set('session', JSON.stringify(createRealtimeSessionConfig({ micMode: req.query.micMode })));
+    fd.set('session', JSON.stringify(createRealtimeSessionConfig({ micMode })));
 
     try {
       const response = await fetch('https://api.openai.com/v1/realtime/calls', {
@@ -21934,12 +22009,34 @@ function startApiServer() {
         body: fd,
       });
       const sdp = await response.text();
+      recordRealtimeSessionNegotiation({
+        source: 'renderer',
+        sessionId: conversationState.sessionId,
+        micMode,
+        offerBytes,
+        answerBytes: Buffer.byteLength(sdp, 'utf8'),
+        statusCode: response.status,
+        ok: response.ok,
+        durationMs: Date.now() - startedAt,
+        error: response.ok ? '' : compactRecordText(sdp, 240),
+      });
       if (!response.ok) {
         res.status(response.status).send(sdp);
         return;
       }
       res.type('application/sdp').send(sdp);
     } catch (error) {
+      recordRealtimeSessionNegotiation({
+        source: 'renderer',
+        sessionId: conversationState.sessionId,
+        micMode,
+        offerBytes,
+        answerBytes: 0,
+        statusCode: 500,
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      });
       jsonError(res, 500, 'Failed to create realtime session', String(error));
     }
   });
