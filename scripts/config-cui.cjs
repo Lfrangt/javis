@@ -1180,6 +1180,7 @@ function printRealtimeEvidence(result) {
   console.log('\nUI demonstration tools:');
   console.log(`- observed ${Number(demonstrationTools.count || 0)} recent event(s) · actions ${(demonstrationTools.observedActions || []).join(', ') || '-'}`);
   console.log(`- replay=${demonstrationTools.hasSafeReplayPlan ? 'safe-preview' : 'pending'} · draft=${demonstrationTools.hasDraft ? 'yes' : 'no'} · confirm-gate=${demonstrationTools.hasConfirmationGate ? 'yes' : 'no'} · raw=${demonstrationTools.noRawStored ? 'none' : 'check'}`);
+  console.log('- expected tools start_ui_demonstration, capture_ui_demonstration_step, finish_ui_demonstration, plan_ui_demonstration_replay, draft_ui_demonstration_skill, save_ui_demonstration_skill');
   console.log(`- next ${compact(demonstrationTools.nextAction || dogfood.demonstrationTools?.nextAction || 'Ask live voice to record a short UI demonstration and draft a local skill.', 220)}`);
   for (const event of demonstrationEvents.slice(0, 4)) {
     const demo = event.demonstration || {};

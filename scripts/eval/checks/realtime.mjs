@@ -173,7 +173,18 @@ export default {
 
     let realtimeDemoId = '';
     const existingDemos = await ctx.api('/api/demonstrations?limit=1');
-    const activeDemo = existingDemos.data?.demonstrations?.active || null;
+    let activeDemo = existingDemos.data?.demonstrations?.active || null;
+    const activeDemoIsEvalArtifact =
+      activeDemo &&
+      activeDemo.title === 'Eval Realtime UI demonstration' &&
+      activeDemo.goal === 'Verify Realtime Record and Replay tool evidence';
+    if (activeDemoIsEvalArtifact) {
+      await ctx.api(`/api/demonstrations/${encodeURIComponent(activeDemo.id)}`, {
+        method: 'DELETE',
+        body: { source: 'eval_stale_recording_cleanup' },
+      });
+      activeDemo = null;
+    }
     if (activeDemo && activeDemo.source !== 'eval') {
       out.push(warn(
         'realtime.demonstration_tool_flow',
