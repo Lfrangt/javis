@@ -1058,6 +1058,33 @@ export default {
           }),
     );
 
+    const rendererDogfoodHandlerIndex = rendererSource.indexOf('const handleRendererDogfood =');
+    const rendererDogfoodListenerIndex = rendererSource.indexOf("window.addEventListener('javis:realtime-dogfood'", rendererDogfoodHandlerIndex);
+    const rendererDogfoodEffectEndIndex = rendererSource.indexOf('  }, [])', rendererDogfoodListenerIndex);
+    const rendererDogfoodListener =
+      rendererDogfoodHandlerIndex >= 0 && rendererDogfoodListenerIndex >= 0 && rendererDogfoodEffectEndIndex >= 0
+        ? rendererSource.slice(rendererDogfoodHandlerIndex, rendererDogfoodEffectEndIndex + '  }, [])'.length)
+        : '';
+    const rendererDogfoodListenerStable =
+      rendererDogfoodListener.includes('voiceStatusRef.current') &&
+      rendererDogfoodListener.includes('screenLiveRef.current') &&
+      rendererDogfoodListener.includes('postRendererDogfoodEventRef.current') &&
+      rendererDogfoodListener.includes("voiceStatusRef.current === 'error'") &&
+      rendererDogfoodListener.includes("type: voiceErrored ? 'voice_error' : 'timeout'") &&
+      !rendererDogfoodListener.includes('beginAssistantSession()') &&
+      !/\}, \[[^\]]*voiceStatus[^\]]*\]\)/.test(rendererDogfoodListener);
+    out.push(
+      rendererDogfoodListenerStable
+        ? ok('realtime.renderer_dogfood_listener_stability', 'Renderer dogfood listener stability', 'renderer dogfood wait survives voice status transitions during startup')
+        : fail('realtime.renderer_dogfood_listener_stability', 'Renderer dogfood listener stability', 'renderer dogfood listener can be cancelled by its own voice startup state changes', {
+            hasVoiceStatusRef: rendererDogfoodListener.includes('voiceStatusRef.current'),
+            hasScreenLiveRef: rendererDogfoodListener.includes('screenLiveRef.current'),
+            hasStableTelemetryRef: rendererDogfoodListener.includes('postRendererDogfoodEventRef.current'),
+            hasVoiceErrorFastPath: rendererDogfoodListener.includes("voiceStatusRef.current === 'error'"),
+            callsBeginAssistantSession: rendererDogfoodListener.includes('beginAssistantSession()'),
+          }),
+    );
+
     const evidence = await ctx.api('/api/realtime/evidence');
     const e = evidence.data?.evidence;
     const checklistIds = new Set((Array.isArray(e?.checklist) ? e.checklist : []).map((step) => step.id));

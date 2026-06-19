@@ -1088,6 +1088,8 @@ function App() {
   const lastRealtimeWorkProgressSequenceRef = useRef(0)
   const realtimeVoiceLiveStartedAtRef = useRef(0)
   const realtimeLatencyRef = useRef<RealtimeLatencyTimeline>(emptyRealtimeLatencyTimeline())
+  const voiceStatusRef = useRef<VoiceStatus>('idle')
+  const screenLiveRef = useRef(false)
 
   const jobs = status?.queue || []
   const workflows = status?.workflows || []
@@ -1121,6 +1123,14 @@ function App() {
   useEffect(() => {
     realtimeScreenContextRef.current = realtimeScreenContext
   }, [realtimeScreenContext])
+
+  useEffect(() => {
+    voiceStatusRef.current = voiceStatus
+  }, [voiceStatus])
+
+  useEffect(() => {
+    screenLiveRef.current = screenLive
+  }, [screenLive])
 
   const loadDoctorReport = useCallback(async () => {
     const doctor = await fetchDoctorReport()
@@ -1496,6 +1506,7 @@ function App() {
     realtimeLatencyRef.current = emptyRealtimeLatencyTimeline()
     voiceSessionIdRef.current = ''
     setIsPushingToTalk(false)
+    voiceStatusRef.current = 'idle'
     setVoiceStatus('idle')
     if (options.report !== false) {
       void apiJson('/api/speech/stop', {
@@ -1640,6 +1651,7 @@ function App() {
     voiceSessionIdRef.current = voiceSessionId
     realtimeLatencyRef.current = { ...emptyRealtimeLatencyTimeline(), startedAt }
     setLastError('')
+    voiceStatusRef.current = 'connecting'
     setVoiceStatus('connecting')
     await updateResidentConversation({ status: 'connecting', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
     void recordRealtimeLatency({
@@ -1691,6 +1703,7 @@ function App() {
         const dataChannelOpenAt = Date.now()
         realtimeVoiceLiveStartedAtRef.current = dataChannelOpenAt
         realtimeLatencyRef.current = { ...realtimeLatencyRef.current, dataChannelOpenAt }
+        voiceStatusRef.current = 'live'
         setVoiceStatus('live')
         void updateResidentConversation({ status: 'live', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
         void recordRealtimeLatency({
@@ -1742,7 +1755,11 @@ function App() {
           stage: 'ended',
           endedAt,
         }).catch(() => null)
-        setVoiceStatus((current) => (current === 'live' ? 'idle' : current))
+        setVoiceStatus((current) => {
+          const next = current === 'live' ? 'idle' : current
+          voiceStatusRef.current = next
+          return next
+        })
         voiceSessionIdRef.current = ''
         realtimeVoiceLiveStartedAtRef.current = 0
         realtimeLatencyRef.current = emptyRealtimeLatencyTimeline()
@@ -1831,6 +1848,7 @@ function App() {
         errorAt,
       }).catch(() => null)
       stopVoice({ report: false })
+      voiceStatusRef.current = 'error'
       setVoiceStatus('error')
       if (negotiationStartedAt && !negotiationRecorded) {
         await recordRealtimeNegotiation({
@@ -2078,6 +2096,20 @@ function App() {
     await startVoice({ screenLive: true })
   }, [screenLive, startScreen, startVoice, voiceStatus])
 
+  const postRendererDogfoodEventRef = useRef(postRendererDogfoodEvent)
+  const sendRealtimeUserTextRef = useRef(sendRealtimeUserText)
+  const startScreenRef = useRef(startScreen)
+  const startVoiceRef = useRef(startVoice)
+  const stopVoiceRef = useRef(stopVoice)
+
+  useEffect(() => {
+    postRendererDogfoodEventRef.current = postRendererDogfoodEvent
+    sendRealtimeUserTextRef.current = sendRealtimeUserText
+    startScreenRef.current = startScreen
+    startVoiceRef.current = startVoice
+    stopVoiceRef.current = stopVoice
+  }, [postRendererDogfoodEvent, sendRealtimeUserText, startScreen, startVoice, stopVoice])
+
   useEffect(() => {
     let disposed = false
 
@@ -2085,6 +2117,7 @@ function App() {
       const deadline = Date.now() + Math.max(1000, timeoutMs)
       while (!disposed && Date.now() < deadline) {
         if (dataChannelRef.current?.readyState === 'open') return true
+        if (voiceStatusRef.current === 'error') return false
         await sleep(500)
       }
       return false
@@ -2101,7 +2134,7 @@ function App() {
       const stopAfterMs = Math.max(0, Math.min(300000, Number(detail.stopAfterMs || 0)))
 
       void (async () => {
-        await postRendererDogfoodEvent({
+        await postRendererDogfoodEventRef.current({
           runId,
           type: 'received',
           status: 'starting',
@@ -2109,23 +2142,29 @@ function App() {
           sessionId: voiceSessionIdRef.current,
         })
         try {
-          if (voiceStatus !== 'live' && voiceStatus !== 'connecting') {
-            await beginAssistantSession()
+          if (voiceStatusRef.current !== 'live' && voiceStatusRef.current !== 'connecting') {
+            if (!screenLiveRef.current) {
+              void startScreenRef.current({ describe: false })
+            }
+            await startVoiceRef.current({ screenLive: true })
           }
 
           const live = await waitForDataChannel(90000)
           if (!live) {
-            await postRendererDogfoodEvent({
+            const voiceErrored = voiceStatusRef.current === 'error'
+            await postRendererDogfoodEventRef.current({
               runId,
-              type: 'timeout',
-              status: 'timeout',
-              detail: 'Timed out waiting for Realtime data channel to open.',
+              type: voiceErrored ? 'voice_error' : 'timeout',
+              status: voiceErrored ? 'error' : 'timeout',
+              detail: voiceErrored
+                ? 'Realtime voice entered error before the data channel opened.'
+                : 'Timed out waiting for Realtime data channel to open.',
               sessionId: voiceSessionIdRef.current,
             })
             return
           }
 
-          await postRendererDogfoodEvent({
+          await postRendererDogfoodEventRef.current({
             runId,
             type: 'live',
             status: 'live',
@@ -2136,8 +2175,8 @@ function App() {
           if (promptDelayMs) await sleep(promptDelayMs)
           for (const prompt of prompts) {
             if (disposed || dataChannelRef.current?.readyState !== 'open') break
-            const sent = sendRealtimeUserText(prompt)
-            await postRendererDogfoodEvent({
+            const sent = sendRealtimeUserTextRef.current(prompt)
+            await postRendererDogfoodEventRef.current({
               runId,
               type: sent ? 'prompt_sent' : 'prompt_failed',
               status: sent ? 'prompt_sent' : 'error',
@@ -2149,7 +2188,7 @@ function App() {
             await sleep(betweenPromptsMs)
           }
 
-          await postRendererDogfoodEvent({
+          await postRendererDogfoodEventRef.current({
             runId,
             type: 'prompts_complete',
             status: 'prompts_complete',
@@ -2160,15 +2199,15 @@ function App() {
           if (stopAfterMs) {
             await sleep(stopAfterMs)
             if (!disposed && dataChannelRef.current?.readyState === 'open') {
-              await postRendererDogfoodEvent({
+              await postRendererDogfoodEventRef.current({
                 runId,
                 type: 'stopping',
                 status: 'stopping',
                 detail: 'Stopping Realtime dogfood session after requested delay.',
                 sessionId: voiceSessionIdRef.current,
               })
-              stopVoice()
-              await postRendererDogfoodEvent({
+              stopVoiceRef.current()
+              await postRendererDogfoodEventRef.current({
                 runId,
                 type: 'stopped',
                 status: 'stopped',
@@ -2178,7 +2217,7 @@ function App() {
             }
           }
         } catch (error) {
-          await postRendererDogfoodEvent({
+          await postRendererDogfoodEventRef.current({
             runId,
             type: 'error',
             status: 'error',
@@ -2194,7 +2233,7 @@ function App() {
       disposed = true
       window.removeEventListener('javis:realtime-dogfood', handleRendererDogfood as EventListener)
     }
-  }, [beginAssistantSession, postRendererDogfoodEvent, sendRealtimeUserText, stopVoice, voiceStatus])
+  }, [])
 
   const startAssistantSession = useCallback(async () => {
     if (voiceStatus === 'connecting') return

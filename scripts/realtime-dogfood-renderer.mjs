@@ -58,6 +58,17 @@ function summarizeEvidence(evidence = {}) {
   ].join(' ');
 }
 
+function evidenceBlockerLine(evidence = {}) {
+  const blocker = evidence.blocker || {};
+  const summary = String(blocker.summary || '').trim();
+  const nextAction = String(blocker.nextAction || evidence.nextAction || '').trim();
+  if (!summary && !nextAction) return '';
+  return [
+    summary ? `blocker=${summary}` : '',
+    nextAction ? `next=${nextAction}` : '',
+  ].filter(Boolean).join(' · ');
+}
+
 async function pollRun(ctx, runId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let latest = null;
@@ -72,8 +83,14 @@ async function pollRun(ctx, runId, timeoutMs) {
     const live = lastEvent(rendererDogfood, 'live');
     const promptSent = lastEvent(rendererDogfood, 'prompt_sent');
     const terminal = ['stopped', 'done', 'error', 'timeout'].includes(rendererDogfood.status);
-    console.log(`${new Date().toLocaleTimeString()} run=${runId.slice(0, 8)} renderer=${rendererDogfood.status || '-'} prompt=${promptSent ? 'sent' : 'pending'} ${summarizeEvidence(evidence)}`);
-    if (rendererDogfood.status === 'error' || rendererDogfood.status === 'timeout') return { ok: false, timeout: false, ...latest };
+    const blockerLine = evidence.phase === 'provider_attention' ? evidenceBlockerLine(evidence) : '';
+    console.log([
+      `${new Date().toLocaleTimeString()} run=${runId.slice(0, 8)} renderer=${rendererDogfood.status || '-'} prompt=${promptSent ? 'sent' : 'pending'} ${summarizeEvidence(evidence)}`,
+      blockerLine,
+    ].filter(Boolean).join(' · '));
+    if (rendererDogfood.status === 'error' || rendererDogfood.status === 'timeout') {
+      return { ok: false, timeout: false, providerBlocked: evidence.phase === 'provider_attention', ...latest };
+    }
     if (live && promptSent && evidence.checks?.sessionNegotiated && evidence.checks?.voiceSessionLive && evidence.checks?.progressInjectedFromRenderer) {
       return { ok: true, timeout: false, ...latest };
     }
@@ -150,6 +167,10 @@ async function main() {
     console.log(`Archive: ${archivePath}`);
   }
   if (!result.ok) {
+    const blockerLine = evidenceBlockerLine(result.evidence);
+    if (result.providerBlocked && blockerLine) {
+      console.error(`Realtime provider blocked: ${blockerLine}`);
+    }
     console.error(result.timeout ? 'Timed out waiting for renderer dogfood evidence.' : 'Renderer dogfood did not reach ready evidence.');
     process.exitCode = 1;
     return;
