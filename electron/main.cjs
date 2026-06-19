@@ -662,6 +662,8 @@ let conversationState = {
   lastRealtimeProgressInjection: null,
   realtimeSessionNegotiationCount: 0,
   lastRealtimeSessionNegotiation: null,
+  realtimeLatencyReceiptCount: 0,
+  lastRealtimeLatencyReceipt: null,
 };
 let realtimeDogfoodStartState = {
   active: false,
@@ -16873,6 +16875,102 @@ function recordRealtimeSessionNegotiation(options = {}) {
   return { ok: true, negotiation, conversation: conversationStateSnapshot() };
 }
 
+function normalizeRealtimeLatencyTimestamp(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return 0;
+  return Math.max(0, Math.min(4102444800000, number));
+}
+
+function realtimeLatencyDelta(start, end, max = 600000) {
+  const left = normalizeRealtimeLatencyTimestamp(start);
+  const right = normalizeRealtimeLatencyTimestamp(end);
+  if (!left || !right || right < left) return 0;
+  return Math.max(0, Math.min(max, right - left));
+}
+
+function realtimeLatencyQuality(latency = {}) {
+  const startToLiveMs = Number(latency.startToLiveMs || 0);
+  if (!startToLiveMs) return latency.ok === false ? 'failed_before_live' : 'pending_live';
+  if (startToLiveMs <= 4000) return 'fast';
+  if (startToLiveMs <= 8000) return 'usable';
+  return 'slow';
+}
+
+function normalizeRealtimeLatencyReceipt(options = {}) {
+  const startedAt = normalizeRealtimeLatencyTimestamp(options.startedAt || options.startAt);
+  const micReadyAt = normalizeRealtimeLatencyTimestamp(options.micReadyAt);
+  const offerCreatedAt = normalizeRealtimeLatencyTimestamp(options.offerCreatedAt);
+  const negotiationStartedAt = normalizeRealtimeLatencyTimestamp(options.negotiationStartedAt);
+  const answerReceivedAt = normalizeRealtimeLatencyTimestamp(options.answerReceivedAt);
+  const remoteDescriptionAt = normalizeRealtimeLatencyTimestamp(options.remoteDescriptionAt);
+  const dataChannelOpenAt = normalizeRealtimeLatencyTimestamp(options.dataChannelOpenAt || options.liveAt);
+  const firstProgressInjectionAt = normalizeRealtimeLatencyTimestamp(options.firstProgressInjectionAt);
+  const endedAt = normalizeRealtimeLatencyTimestamp(options.endedAt);
+  const errorAt = normalizeRealtimeLatencyTimestamp(options.errorAt);
+  const liveAt = dataChannelOpenAt;
+  const receipt = {
+    source: compactRecordText(options.source || 'renderer', 80),
+    sessionId: String(options.sessionId || conversationState.sessionId || '').slice(0, 120),
+    micMode: normalizeConversationMicMode(options.micMode),
+    screenLive: Boolean(options.screenLive),
+    ok: options.ok !== false,
+    status: compactRecordText(options.status || (errorAt ? 'error' : endedAt ? 'ended' : liveAt ? 'live' : 'starting'), 40),
+    stage: compactRecordText(options.stage || (errorAt ? 'error' : endedAt ? 'ended' : firstProgressInjectionAt ? 'progress_injected' : liveAt ? 'live' : answerReceivedAt ? 'answer_received' : negotiationStartedAt ? 'negotiating' : micReadyAt ? 'mic_ready' : 'starting'), 80),
+    model: compactRecordText(options.model || models.realtime, 80),
+    voice: compactRecordText(options.voice || models.realtimeVoice, 80),
+    startedAt,
+    micReadyAt,
+    offerCreatedAt,
+    negotiationStartedAt,
+    answerReceivedAt,
+    remoteDescriptionAt,
+    dataChannelOpenAt,
+    firstProgressInjectionAt,
+    endedAt,
+    errorAt,
+    micReadyMs: realtimeLatencyDelta(startedAt, micReadyAt),
+    offerReadyMs: realtimeLatencyDelta(startedAt, offerCreatedAt),
+    negotiationMs: realtimeLatencyDelta(negotiationStartedAt, answerReceivedAt),
+    answerToRemoteDescriptionMs: realtimeLatencyDelta(answerReceivedAt, remoteDescriptionAt),
+    remoteDescriptionToLiveMs: realtimeLatencyDelta(remoteDescriptionAt, liveAt),
+    startToLiveMs: realtimeLatencyDelta(startedAt, liveAt),
+    liveToFirstProgressMs: realtimeLatencyDelta(liveAt, firstProgressInjectionAt),
+    totalSessionMs: realtimeLatencyDelta(startedAt, endedAt || errorAt || 0, 12 * 60 * 60 * 1000),
+    error: compactRecordText(options.error || '', 300),
+    createdAt: Date.now(),
+  };
+  receipt.quality = realtimeLatencyQuality(receipt);
+  return receipt;
+}
+
+function recordRealtimeLatencyReceipt(options = {}) {
+  const latency = normalizeRealtimeLatencyReceipt(options);
+  if (options.dryRun === true) {
+    return { ok: true, dryRun: true, latency, conversation: conversationStateSnapshot() };
+  }
+  conversationState = {
+    ...conversationState,
+    realtimeLatencyReceiptCount: Number(conversationState.realtimeLatencyReceiptCount || 0) + 1,
+    lastRealtimeLatencyReceipt: latency,
+    updatedAt: Date.now(),
+  };
+  appendAudit('realtime.latency', {
+    sessionId: latency.sessionId,
+    source: latency.source,
+    stage: latency.stage,
+    status: latency.status,
+    quality: latency.quality,
+    ok: latency.ok,
+    micReadyMs: latency.micReadyMs,
+    negotiationMs: latency.negotiationMs,
+    startToLiveMs: latency.startToLiveMs,
+    liveToFirstProgressMs: latency.liveToFirstProgressMs,
+    totalSessionMs: latency.totalSessionMs,
+    error: latency.error,
+  });
+  return { ok: true, latency, conversation: conversationStateSnapshot() };
+}
+
 function boundedCount(value, max = 100000) {
   return Math.max(0, Math.min(max, Number(value || 0)));
 }
@@ -17516,6 +17614,7 @@ function realtimeVoiceWorkbenchSnapshot() {
   const conversation = conversationStateSnapshot();
   const negotiation = conversation.lastRealtimeSessionNegotiation || null;
   const injection = conversation.lastRealtimeProgressInjection || null;
+  const latency = conversation.lastRealtimeLatencyReceipt || null;
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const progressSync = realtimeProgressSyncEvidence({ injection });
   const liveAt = Number(conversation.liveAt || 0);
@@ -18754,6 +18853,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const conversation = conversationStateSnapshot();
   const negotiation = conversation.lastRealtimeSessionNegotiation || null;
   const injection = conversation.lastRealtimeProgressInjection || null;
+  const latency = conversation.lastRealtimeLatencyReceipt || null;
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
   const progressSync = realtimeProgressSyncEvidence({ currentVersion: progress.version, injection });
@@ -18816,7 +18916,9 @@ function realtimeVoiceEvidenceSnapshot() {
       micMode: conversation.micMode,
       lastRealtimeSessionNegotiation: negotiation,
       lastRealtimeProgressInjection: injection,
+      lastRealtimeLatencyReceipt: latency,
     },
+    latency,
     voiceHealth,
     dogfoodStart,
     toolCalls,
@@ -18895,6 +18997,21 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
       behindBy: evidence.progressSync.behindBy,
       nextAction: evidence.progressSync.nextAction,
     } : null,
+    voiceLatency: evidence.latency ? {
+      observed: true,
+      quality: evidence.latency.quality || '',
+      stage: evidence.latency.stage || '',
+      status: evidence.latency.status || '',
+      startToLiveMs: Number(evidence.latency.startToLiveMs || 0),
+      negotiationMs: Number(evidence.latency.negotiationMs || 0),
+      liveToFirstProgressMs: Number(evidence.latency.liveToFirstProgressMs || 0),
+      nextAction: evidence.latency.startToLiveMs
+        ? 'Use CUI evidence during real dogfood to watch latency regressions.'
+        : 'Start a real voice session to capture start-to-live latency.',
+    } : {
+      observed: false,
+      nextAction: 'Start a real voice session to capture start-to-live latency.',
+    },
     progress: {
       spokenSummary: evidence.progress?.spokenSummary || '',
       workerSummary: evidence.progress?.workerSummary || '',
@@ -19014,6 +19131,8 @@ function updateConversationState(options = {}) {
     next.lastRealtimeProgressInjection = null;
     next.realtimeSessionNegotiationCount = 0;
     next.lastRealtimeSessionNegotiation = null;
+    next.realtimeLatencyReceiptCount = 0;
+    next.lastRealtimeLatencyReceipt = null;
     next.error = '';
   }
   if (requestedStatus === 'live') {
@@ -28347,6 +28466,15 @@ function startApiServer() {
       res.status(result.ok ? 200 : 409).json(result);
     } catch (error) {
       jsonError(res, 400, 'Realtime progress injection record failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/latency', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const result = recordRealtimeLatencyReceipt(req.body || {});
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime latency record failed', error instanceof Error ? error.message : String(error));
     }
   });
 

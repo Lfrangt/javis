@@ -35,6 +35,54 @@ type BrowserWorkflowIntent = 'summarize' | 'extract_actions' | 'draft' | 'ask' |
 type BrowserWorkflowMode = 'quick' | JobMode
 type VoiceStatus = 'idle' | 'connecting' | 'live' | 'error'
 type MicMode = 'open' | 'push'
+
+type RealtimeLatencyTimeline = {
+  startedAt: number
+  micReadyAt: number
+  offerCreatedAt: number
+  negotiationStartedAt: number
+  answerReceivedAt: number
+  remoteDescriptionAt: number
+  dataChannelOpenAt: number
+  firstProgressInjectionAt: number
+  endedAt: number
+  errorAt: number
+}
+
+type RealtimeLatencyReceipt = RealtimeLatencyTimeline & {
+  source: string
+  sessionId: string
+  micMode: MicMode
+  screenLive: boolean
+  ok: boolean
+  status: string
+  stage: string
+  quality: string
+  micReadyMs: number
+  offerReadyMs: number
+  negotiationMs: number
+  answerToRemoteDescriptionMs: number
+  remoteDescriptionToLiveMs: number
+  startToLiveMs: number
+  liveToFirstProgressMs: number
+  totalSessionMs: number
+  error: string
+  createdAt: number
+}
+
+const emptyRealtimeLatencyTimeline = (): RealtimeLatencyTimeline => ({
+  startedAt: 0,
+  micReadyAt: 0,
+  offerCreatedAt: 0,
+  negotiationStartedAt: 0,
+  answerReceivedAt: 0,
+  remoteDescriptionAt: 0,
+  dataChannelOpenAt: 0,
+  firstProgressInjectionAt: 0,
+  endedAt: 0,
+  errorAt: 0,
+})
+
 type SetupAction =
   | 'prepare_env_file'
   | 'open_screen_settings'
@@ -112,6 +160,7 @@ type ConversationState = {
   staleAfterMs: number
   realtimeProgressInjectionCount?: number
   realtimeSessionNegotiationCount?: number
+  realtimeLatencyReceiptCount?: number
   lastRealtimeSessionNegotiation?: null | {
     source: string
     sessionId: string
@@ -126,6 +175,7 @@ type ConversationState = {
     error: string
     createdAt: number
   }
+  lastRealtimeLatencyReceipt?: null | RealtimeLatencyReceipt
   lastRealtimeProgressInjection?: null | {
     source: string
     sessionId: string
@@ -1018,6 +1068,7 @@ function App() {
   const lastRealtimeWorkProgressSyncAtRef = useRef(0)
   const lastRealtimeWorkProgressSequenceRef = useRef(0)
   const realtimeVoiceLiveStartedAtRef = useRef(0)
+  const realtimeLatencyRef = useRef<RealtimeLatencyTimeline>(emptyRealtimeLatencyTimeline())
 
   const jobs = status?.queue || []
   const workflows = status?.workflows || []
@@ -1328,8 +1379,43 @@ function App() {
     [],
   )
 
+  const recordRealtimeLatency = useCallback(
+    async (patch: Record<string, unknown> = {}) => {
+      const timeline = realtimeLatencyRef.current
+      const sessionId = String(patch.sessionId || voiceSessionIdRef.current || '')
+      if (!sessionId && !timeline.startedAt && !patch.startedAt) return null
+      const result = await apiJson<{ latency: RealtimeLatencyReceipt; conversation: ConversationState }>('/api/realtime/latency', {
+        method: 'POST',
+        body: JSON.stringify({
+          source: 'renderer',
+          sessionId,
+          micMode,
+          screenLive,
+          ...timeline,
+          ...patch,
+        }),
+      })
+      setStatus((current) => (current ? { ...current, conversation: result.conversation } : current))
+      return result
+    },
+    [micMode, screenLive],
+  )
+
   const stopVoice = useCallback((options: { report?: boolean } = {}) => {
     const voiceSessionId = voiceSessionIdRef.current
+    if (options.report !== false && voiceSessionId && realtimeLatencyRef.current.startedAt) {
+      const endedAt = Date.now()
+      realtimeLatencyRef.current = { ...realtimeLatencyRef.current, endedAt }
+      void recordRealtimeLatency({
+        sessionId: voiceSessionId,
+        status: 'ended',
+        stage: 'ended',
+        endedAt,
+        screenLive: false,
+      }).catch(() => {
+        // Latency evidence is best-effort and should not block cleanup.
+      })
+    }
     if (initialScreenContextTimeoutRef.current !== null) {
       window.clearTimeout(initialScreenContextTimeoutRef.current)
       initialScreenContextTimeoutRef.current = null
@@ -1344,6 +1430,7 @@ function App() {
     previousPushStateRef.current = false
     responseActiveRef.current = false
     realtimeVoiceLiveStartedAtRef.current = 0
+    realtimeLatencyRef.current = emptyRealtimeLatencyTimeline()
     voiceSessionIdRef.current = ''
     setIsPushingToTalk(false)
     setVoiceStatus('idle')
@@ -1356,7 +1443,7 @@ function App() {
       })
       void updateResidentConversation({ status: 'idle', sessionId: voiceSessionId, screenLive: false })
     }
-  }, [updateResidentConversation])
+  }, [recordRealtimeLatency, updateResidentConversation])
 
   const runRealtimeTool = useCallback(
     async (event: Record<string, unknown>) => {
@@ -1486,10 +1573,22 @@ function App() {
   const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
     const intendedScreenLive = options.screenLive ?? screenLive
     const voiceSessionId = crypto.randomUUID()
+    const startedAt = Date.now()
     voiceSessionIdRef.current = voiceSessionId
+    realtimeLatencyRef.current = { ...emptyRealtimeLatencyTimeline(), startedAt }
     setLastError('')
     setVoiceStatus('connecting')
-    void updateResidentConversation({ status: 'connecting', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
+    await updateResidentConversation({ status: 'connecting', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
+    void recordRealtimeLatency({
+      sessionId: voiceSessionId,
+      micMode,
+      screenLive: intendedScreenLive,
+      status: 'connecting',
+      stage: 'starting',
+      startedAt,
+    }).catch(() => {
+      // Latency evidence is best-effort; voice startup should not wait for it.
+    })
     let negotiationStartedAt = 0
     let negotiationRecorded = false
     let offerBytes = 0
@@ -1507,6 +1606,16 @@ function App() {
 
       const micStream = await navigator.mediaDevices.getUserMedia({ audio: true })
       micStreamRef.current = micStream
+      const micReadyAt = Date.now()
+      realtimeLatencyRef.current = { ...realtimeLatencyRef.current, micReadyAt }
+      void recordRealtimeLatency({
+        sessionId: voiceSessionId,
+        micMode,
+        screenLive: intendedScreenLive,
+        status: 'connecting',
+        stage: 'mic_ready',
+        micReadyAt,
+      }).catch(() => null)
       micStream.getAudioTracks().forEach((track) => {
         track.enabled = micMode === 'open'
       })
@@ -1516,9 +1625,19 @@ function App() {
       dataChannelRef.current = dataChannel
       dataChannel.addEventListener('open', () => {
         if (dataChannelRef.current !== dataChannel || voiceSessionIdRef.current !== voiceSessionId) return
-        realtimeVoiceLiveStartedAtRef.current = Date.now()
+        const dataChannelOpenAt = Date.now()
+        realtimeVoiceLiveStartedAtRef.current = dataChannelOpenAt
+        realtimeLatencyRef.current = { ...realtimeLatencyRef.current, dataChannelOpenAt }
         setVoiceStatus('live')
         void updateResidentConversation({ status: 'live', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
+        void recordRealtimeLatency({
+          sessionId: voiceSessionId,
+          micMode,
+          screenLive: intendedScreenLive,
+          status: 'live',
+          stage: 'live',
+          dataChannelOpenAt,
+        }).catch(() => null)
         addMessage('system', 'Voice link live.')
         apiJson<{ context: RealtimePreflightContext }>('/api/realtime/context?source=renderer')
           .then((result) => {
@@ -1550,16 +1669,39 @@ function App() {
       dataChannel.addEventListener('message', handleRealtimeEvent)
       dataChannel.addEventListener('close', () => {
         if (dataChannelRef.current !== dataChannel || voiceSessionIdRef.current !== voiceSessionId) return
+        const endedAt = Date.now()
+        realtimeLatencyRef.current = { ...realtimeLatencyRef.current, endedAt }
+        void recordRealtimeLatency({
+          sessionId: voiceSessionId,
+          micMode,
+          screenLive: false,
+          status: 'ended',
+          stage: 'ended',
+          endedAt,
+        }).catch(() => null)
         setVoiceStatus((current) => (current === 'live' ? 'idle' : current))
         voiceSessionIdRef.current = ''
         realtimeVoiceLiveStartedAtRef.current = 0
+        realtimeLatencyRef.current = emptyRealtimeLatencyTimeline()
         void updateResidentConversation({ status: 'idle', sessionId: voiceSessionId, micMode, screenLive: false })
       })
 
       const offer = await peer.createOffer()
       await peer.setLocalDescription(offer)
+      const offerCreatedAt = Date.now()
+      realtimeLatencyRef.current = { ...realtimeLatencyRef.current, offerCreatedAt }
       offerBytes = utf8Bytes(offer.sdp || '')
       negotiationStartedAt = Date.now()
+      realtimeLatencyRef.current = { ...realtimeLatencyRef.current, negotiationStartedAt }
+      void recordRealtimeLatency({
+        sessionId: voiceSessionId,
+        micMode,
+        screenLive: intendedScreenLive,
+        status: 'connecting',
+        stage: 'negotiating',
+        offerCreatedAt,
+        negotiationStartedAt,
+      }).catch(() => null)
       const response = await fetch(`${API_BASE}/api/realtime/session?micMode=${micMode}`, {
         method: 'POST',
         body: offer.sdp,
@@ -1567,6 +1709,8 @@ function App() {
       })
       statusCode = response.status
       const answerSdp = await response.text()
+      const answerReceivedAt = Date.now()
+      realtimeLatencyRef.current = { ...realtimeLatencyRef.current, answerReceivedAt }
       answerBytes = utf8Bytes(answerSdp)
       if (!response.ok) {
         await recordRealtimeNegotiation({
@@ -1583,6 +1727,17 @@ function App() {
         throw new Error(answerSdp || response.statusText)
       }
       await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp })
+      const remoteDescriptionAt = Date.now()
+      realtimeLatencyRef.current = { ...realtimeLatencyRef.current, remoteDescriptionAt }
+      void recordRealtimeLatency({
+        sessionId: voiceSessionId,
+        micMode,
+        screenLive: intendedScreenLive,
+        status: 'connecting',
+        stage: 'answer_received',
+        answerReceivedAt,
+        remoteDescriptionAt,
+      }).catch(() => null)
       await recordRealtimeNegotiation({
         sessionId: voiceSessionId,
         micMode,
@@ -1599,9 +1754,21 @@ function App() {
           addMessage('tool', `Realtime negotiation evidence failed: ${recordError instanceof Error ? recordError.message : String(recordError)}`)
         })
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      const errorAt = Date.now()
+      realtimeLatencyRef.current = { ...realtimeLatencyRef.current, errorAt }
+      await recordRealtimeLatency({
+        sessionId: voiceSessionId,
+        micMode,
+        screenLive: intendedScreenLive,
+        status: 'error',
+        stage: 'error',
+        ok: false,
+        error: message,
+        errorAt,
+      }).catch(() => null)
       stopVoice({ report: false })
       setVoiceStatus('error')
-      const message = error instanceof Error ? error.message : String(error)
       if (negotiationStartedAt && !negotiationRecorded) {
         await recordRealtimeNegotiation({
           sessionId: voiceSessionId,
@@ -1619,7 +1786,7 @@ function App() {
       addMessage('system', message)
       void runLocalVoiceFallback()
     }
-  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, recordRealtimeNegotiation, runLocalVoiceFallback, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
+  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, recordRealtimeLatency, recordRealtimeNegotiation, runLocalVoiceFallback, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return undefined
@@ -1647,7 +1814,7 @@ function App() {
         if (now - lastRealtimeWorkProgressSyncAtRef.current < minGapMs) return false
         if (pushRealtimeTextContext(contextText)) {
           const dataChannelReadyState = dataChannelRef.current?.readyState || ''
-          void apiJson<{ conversation: ConversationState }>('/api/realtime/progress-injection', {
+          void apiJson<{ ok?: boolean; conversation: ConversationState }>('/api/realtime/progress-injection', {
             method: 'POST',
             body: JSON.stringify({
               source: reason === 'progress_version' ? 'renderer_progress_version' : 'renderer',
@@ -1667,6 +1834,18 @@ function App() {
           })
             .then((injectionResult) => {
               setStatus((current) => (current ? { ...current, conversation: injectionResult.conversation } : current))
+              if (injectionResult.ok !== false && !realtimeLatencyRef.current.firstProgressInjectionAt) {
+                const firstProgressInjectionAt = Date.now()
+                realtimeLatencyRef.current = { ...realtimeLatencyRef.current, firstProgressInjectionAt }
+                void recordRealtimeLatency({
+                  sessionId: voiceSessionIdRef.current,
+                  micMode,
+                  screenLive,
+                  status: 'live',
+                  stage: 'progress_injected',
+                  firstProgressInjectionAt,
+                }).catch(() => null)
+              }
             })
             .catch(() => {
               // Runtime evidence is best-effort; Realtime context should keep flowing.
@@ -1680,7 +1859,7 @@ function App() {
       }
       return false
     },
-    [micMode, pushRealtimeTextContext, screenLive, voiceStatus],
+    [micMode, pushRealtimeTextContext, recordRealtimeLatency, screenLive, voiceStatus],
   )
 
   useEffect(() => {

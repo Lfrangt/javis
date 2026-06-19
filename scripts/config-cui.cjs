@@ -968,6 +968,7 @@ function printRealtimeEvidence(result) {
   const voiceHealth = evidence.voiceHealth || {};
   const negotiation = conversation.lastRealtimeSessionNegotiation || {};
   const injection = conversation.lastRealtimeProgressInjection || {};
+  const latency = evidence.latency || conversation.lastRealtimeLatencyReceipt || {};
   const progress = evidence.progress || {};
   const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = evidence.shortcutTools || {};
@@ -1015,6 +1016,13 @@ function printRealtimeEvidence(result) {
     for (const item of evidence.missing.slice(0, 4)) {
       console.log(`- ${item}`);
     }
+  }
+  console.log('\nLatency:');
+  if (latency.createdAt) {
+    console.log(`- ${latency.quality || '-'} · stage ${latency.stage || '-'} · start-live ${Number(latency.startToLiveMs || 0)}ms · negotiation ${Number(latency.negotiationMs || 0)}ms · live-progress ${Number(latency.liveToFirstProgressMs || 0)}ms`);
+    console.log(`- mic ${Number(latency.micReadyMs || 0)}ms · offer ${Number(latency.offerReadyMs || 0)}ms · remote-live ${Number(latency.remoteDescriptionToLiveMs || 0)}ms`);
+  } else {
+    console.log('- none yet · start a real voice session to capture click-to-live timing.');
   }
   if (Array.isArray(drill.steps) && drill.steps.length) {
     console.log('\nDogfood drill:');

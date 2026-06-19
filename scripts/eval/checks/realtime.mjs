@@ -276,6 +276,8 @@ export default {
         realtimeEvidenceChecklistIds.has('worker_progress_injected') &&
         realtimeEvidenceOutput.dogfood?.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(realtimeEvidenceOutput.dogfood?.prompts) &&
+        realtimeEvidenceOutput.voiceLatency &&
+        typeof realtimeEvidenceOutput.voiceLatency.nextAction === 'string' &&
         realtimeEvidenceOutput.tools?.handoff &&
         realtimeEvidenceOutput.tools?.autopilot &&
         realtimeEvidenceOutput.tools?.shortcuts &&
@@ -601,6 +603,7 @@ export default {
           output.includes('Autopilot tool:') &&
           output.includes('Attention explanation tool:') &&
           output.includes('Dogfood drill:') &&
+          output.includes('Latency:') &&
           output.includes('Recent realtime tool calls:') &&
           output.includes('- sync ') &&
           output.includes('confirm_required') &&
@@ -736,6 +739,41 @@ export default {
         : fail('realtime.negotiation_evidence', 'Realtime negotiation evidence', `POST /api/realtime/session-negotiation ${negotiation.status}`, negotiation.data),
     );
 
+    const latencyBase = Date.now();
+    const latencyRecord = await ctx.api('/api/realtime/latency', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        sessionId: 'eval-latency',
+        micMode: 'open',
+        screenLive: false,
+        startedAt: latencyBase,
+        micReadyAt: latencyBase + 120,
+        offerCreatedAt: latencyBase + 240,
+        negotiationStartedAt: latencyBase + 260,
+        answerReceivedAt: latencyBase + 760,
+        remoteDescriptionAt: latencyBase + 820,
+        dataChannelOpenAt: latencyBase + 1100,
+        firstProgressInjectionAt: latencyBase + 1900,
+        status: 'live',
+        stage: 'progress_injected',
+        ok: true,
+      },
+    });
+    const latency = latencyRecord.data?.latency;
+    out.push(
+      latencyRecord.ok &&
+        latency?.source === 'eval' &&
+        latency?.sessionId === 'eval-latency' &&
+        latency?.startToLiveMs === 1100 &&
+        latency?.negotiationMs === 500 &&
+        latency?.liveToFirstProgressMs === 800 &&
+        latency?.quality === 'fast' &&
+        latencyRecord.data?.conversation?.lastRealtimeLatencyReceipt?.sessionId === 'eval-latency'
+        ? ok('realtime.latency_evidence', 'Realtime voice latency evidence', 'latency receipt normalizes click-to-live and progress timing')
+        : fail('realtime.latency_evidence', 'Realtime voice latency evidence', `POST /api/realtime/latency ${latencyRecord.status}`, latencyRecord.data),
+    );
+
     const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
     const rendererNegotiationEvidenceOk =
       rendererSource.includes('/api/realtime/session-negotiation') &&
@@ -752,6 +790,21 @@ export default {
         : fail('realtime.renderer_negotiation_evidence', 'Renderer negotiation evidence reporter', 'renderer no longer records WebRTC negotiation evidence', {
             hasEndpoint: rendererSource.includes('/api/realtime/session-negotiation'),
             hasRecorder: rendererSource.includes('recordRealtimeNegotiation'),
+          }),
+    );
+
+    const rendererLatencyEvidenceOk =
+      rendererSource.includes('/api/realtime/latency') &&
+      rendererSource.includes('recordRealtimeLatency') &&
+      rendererSource.includes('dataChannelOpenAt') &&
+      rendererSource.includes('firstProgressInjectionAt') &&
+      rendererSource.includes('startToLiveMs');
+    out.push(
+      rendererLatencyEvidenceOk
+        ? ok('realtime.renderer_latency_evidence', 'Renderer latency evidence reporter', 'renderer records real WebRTC start-to-live and first-progress timing')
+        : fail('realtime.renderer_latency_evidence', 'Renderer latency evidence reporter', 'renderer no longer records Realtime voice latency evidence', {
+            hasEndpoint: rendererSource.includes('/api/realtime/latency'),
+            hasRecorder: rendererSource.includes('recordRealtimeLatency'),
           }),
     );
 
@@ -790,6 +843,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
         e.handoffTools?.hasHandoff === true &&
         e.autopilotTools?.hasStatus === true &&
+        e.latency?.quality === 'fast' &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
         : fail('realtime.evidence_checklist', 'Realtime evidence checklist', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),

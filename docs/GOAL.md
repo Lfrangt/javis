@@ -60,6 +60,7 @@ These are not marketing comparisons. They are goals JAVIS should implement.
 ## Operating Principles
 
 - Voice smoothness comes first. The realtime lane keeps conversation flowing with short spoken responses, lightweight screen awareness, and immediate status updates.
+- Speed claims must be measured. Realtime dogfood records click-to-live, negotiation, and live-to-progress latency in CUI/API evidence before changing models or architecture.
 - Hard work runs behind the voice. Research, coding, browser workflows, file organization, and multi-step automations should move to background lanes without blocking conversation.
 - The router chooses a lane before choosing a model. Simple answers use fast models or deterministic local commands; deep work uses stronger models, Codex, Claude Code, browser workers, or file/app workflows.
 - Workers should be adversarial and persistent. When a task is possible, the worker should search, inspect evidence, retry, try alternate tools, and produce a useful result instead of giving up early.
