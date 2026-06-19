@@ -162,6 +162,32 @@ export default {
         : fail('realtime.evidence_checklist', 'Realtime evidence checklist', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),
     );
 
+    const dogfood = await ctx.api('/api/realtime/dogfood');
+    const d = dogfood.data?.dogfood;
+    const dogfoodStepIds = new Set((Array.isArray(d?.steps) ? d.steps : []).map((step) => step.id));
+    const dogfoodRequiredSteps = [
+      'provider_ready',
+      'session_negotiated',
+      'worker_progress_injected',
+      'passive_context_only',
+      'spoken_summary_ready',
+    ];
+    out.push(
+      dogfood.ok &&
+        d &&
+        d.manualOnly === true &&
+        d.autoEligible === false &&
+        d.autopilotEligible === false &&
+        d.requiresUserPresence === true &&
+        d.safety?.startsMicrophoneOnlyAfterUserAction === true &&
+        d.start?.workNext?.path === '/api/work/next' &&
+        d.monitor?.endpoint === '/api/realtime/evidence' &&
+        typeof d.promptWhenReady === 'string' &&
+        dogfoodRequiredSteps.every((id) => dogfoodStepIds.has(id))
+        ? ok('realtime.dogfood_runbook', 'Realtime dogfood runbook', `${d.status}/${d.phase || '-'} · manual-only · ${d.nextAction || ''}`)
+        : fail('realtime.dogfood_runbook', 'Realtime dogfood runbook', `GET /api/realtime/dogfood ${dogfood.status}`, dogfood.data),
+    );
+
     return out;
   },
 };

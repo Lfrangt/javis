@@ -721,6 +721,7 @@ function summarizeNextActions(actions) {
 
 function printRealtimeEvidence(result) {
   const evidence = result?.evidence || result || {};
+  const dogfood = evidence.dogfood || {};
   const checks = evidence.checks || {};
   const conversation = evidence.conversation || {};
   const voiceHealth = evidence.voiceHealth || {};
@@ -757,6 +758,17 @@ function printRealtimeEvidence(result) {
     console.log('\nMissing:');
     for (const item of evidence.missing.slice(0, 4)) {
       console.log(`- ${item}`);
+    }
+  }
+  if (dogfood.manualOnly) {
+    console.log('\nManual dogfood:');
+    console.log(`- start: ${dogfood.start?.petAction || 'Click the desktop pet or use the summon hotkey.'}`);
+    console.log(`- hotkey: ${dogfood.start?.hotkey || 'Option+Space'}`);
+    console.log(`- work-next: ${dogfood.start?.workNext?.method || 'POST'} ${dogfood.start?.workNext?.path || '/api/work/next'} · manual only`);
+    console.log(`- monitor: ${dogfood.monitor?.cui || 'npm run config -> V'} · ${dogfood.monitor?.endpoint || '/api/realtime/evidence'}`);
+    console.log(`- ask when READY: ${dogfood.promptWhenReady || '后台现在怎么样'}`);
+    if (dogfood.currentStep?.label) {
+      console.log(`- current step: ${dogfood.currentStep.status || 'pending'} ${dogfood.currentStep.label} · ${compact(dogfood.currentStep.nextAction || dogfood.currentStep.detail || '-', 220)}`);
     }
   }
   console.log('\nVoice session:');

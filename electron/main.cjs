@@ -14368,6 +14368,72 @@ function realtimeVoiceWorkbenchSnapshot() {
   };
 }
 
+function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
+  const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
+  const stepById = new Map(checklist.map((step) => [step.id, step]));
+  const stepIds = [
+    'provider_ready',
+    'session_negotiated',
+    'worker_progress_injected',
+    'passive_context_only',
+    'spoken_summary_ready',
+  ];
+  const steps = stepIds.map((id) => {
+    const step = stepById.get(id) || {};
+    return {
+      id,
+      label: step.label || id,
+      status: step.status || (step.ok ? 'ready' : 'pending'),
+      ok: Boolean(step.ok),
+      detail: compactRecordText(step.detail || '', 220),
+      nextAction: compactRecordText(step.nextAction || '', 220),
+    };
+  });
+  const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
+  const currentStep = steps.find((step) => !step.ok) || null;
+  return {
+    ok: true,
+    status: ready ? 'ready' : evidence.status || 'pending',
+    phase: evidence.phase || '',
+    ready,
+    manualOnly: true,
+    autoEligible: false,
+    autopilotEligible: false,
+    requiresUserPresence: true,
+    safety: {
+      startsMicrophoneOnlyAfterUserAction: true,
+      passiveProgressContextOnly: true,
+      desktopPetDiagnostics: false,
+    },
+    start: {
+      hotkey: SUMMON_HOTKEY || 'Option+Space',
+      petAction: 'Click the desktop pet to start the live Realtime voice session.',
+      workNext: {
+        method: 'POST',
+        path: '/api/work/next',
+        body: { execute: true },
+        manualOnlyReason: 'Starting microphone/live voice requires explicit user action.',
+      },
+    },
+    monitor: {
+      endpoint: '/api/realtime/evidence',
+      cui: 'npm run config -> V. Watch Realtime voice evidence',
+      pollMs: 3000,
+    },
+    promptWhenReady: '后台现在怎么样',
+    currentStep,
+    steps,
+    nextAction: ready
+      ? 'Ask in the live voice session: 后台现在怎么样'
+      : currentStep?.nextAction || evidence.nextAction || 'Start a real voice session and keep it open while background work changes.',
+  };
+}
+
+function realtimeDogfoodRunbookSnapshot() {
+  const evidence = realtimeVoiceEvidenceSnapshot();
+  return realtimeDogfoodRunbookFromEvidence(evidence);
+}
+
 function realtimeVoiceEvidenceSnapshot() {
   const conversation = conversationStateSnapshot();
   const negotiation = conversation.lastRealtimeSessionNegotiation || null;
@@ -14402,7 +14468,7 @@ function realtimeVoiceEvidenceSnapshot() {
     ...checklist.filter((step) => !step.ok).map((step) => step.nextAction || step.detail),
   ].filter(Boolean);
   const readyForVoiceProgressQuestion = Object.values(checks).every(Boolean);
-  return {
+  const snapshot = {
     ok: true,
     generatedAt: new Date().toISOString(),
     status,
@@ -14433,6 +14499,8 @@ function realtimeVoiceEvidenceSnapshot() {
       nextActions: progress.nextActions,
     },
   };
+  snapshot.dogfood = realtimeDogfoodRunbookFromEvidence(snapshot);
+  return snapshot;
 }
 
 function conversationStateSnapshot() {
@@ -22210,6 +22278,14 @@ function startApiServer() {
       res.json({ evidence: realtimeVoiceEvidenceSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Realtime evidence failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood', (_req, res) => {
+    try {
+      res.json({ dogfood: realtimeDogfoodRunbookSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood runbook failed', error instanceof Error ? error.message : String(error));
     }
   });
 
