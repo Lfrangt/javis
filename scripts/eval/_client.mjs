@@ -33,26 +33,39 @@ export function resolveToken() {
 export function makeContext() {
   const baseUrl = resolveBaseUrl();
   const token = resolveToken();
-  async function api(pathname, { method = 'GET', body, timeoutMs = 10000 } = {}) {
+  async function api(pathname, { method = 'GET', body, timeoutMs = 10000, retries = 1 } = {}) {
     const headers = {};
     if (token) headers['X-JAVIS-Token'] = token;
     if (body) headers['Content-Type'] = 'application/json';
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-      const response = await fetch(`${baseUrl}${pathname}`, {
-        method,
-        headers,
-        body: body ? JSON.stringify(body) : undefined,
-        signal: controller.signal,
-      });
-      const data = await response.json().catch(() => null);
-      return { status: response.status, ok: response.ok, data };
-    } catch (error) {
-      return { status: 0, ok: false, data: null, error: error?.name === 'AbortError' ? `timeout after ${timeoutMs}ms` : String(error?.message || error) };
-    } finally {
-      clearTimeout(timer);
+    let lastError = '';
+    // Retry once on connection-level failure (e.g. JAVIS restarting mid-run during
+    // active development) — but not on timeouts, which mean the server is alive
+    // yet slow. A connection-refused request never reached the server, so re-sending
+    // a mutating call is safe.
+    for (let attempt = 0; attempt <= retries; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        const response = await fetch(`${baseUrl}${pathname}`, {
+          method,
+          headers,
+          body: body ? JSON.stringify(body) : undefined,
+          signal: controller.signal,
+        });
+        const data = await response.json().catch(() => null);
+        return { status: response.status, ok: response.ok, data };
+      } catch (error) {
+        const isTimeout = error?.name === 'AbortError';
+        lastError = isTimeout ? `timeout after ${timeoutMs}ms` : String(error?.message || error);
+        if (isTimeout || attempt >= retries) {
+          return { status: 0, ok: false, data: null, error: lastError };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      } finally {
+        clearTimeout(timer);
+      }
     }
+    return { status: 0, ok: false, data: null, error: lastError };
   }
   return { baseUrl, token, api };
 }
