@@ -90,7 +90,7 @@ This learning system is part of the product, not a hidden analytics feature:
 - Codex and Claude handle repo-bound or code-heavy work: implementation, tests, review, documentation updates, issue investigation, and scoped edits with explicit ownership.
 - Browser, file, and Mac-app workers handle their own tool surfaces through scoped capabilities, audit logs, and policy checks.
 - Parallel execution is allowed only for independent work scopes: separate repos, separate files, separate research tracks, or read-only investigations. Shared files, secrets, irreversible actions, and user approvals serialize through one visible owner.
-- Next verifiable engineering task: turn the existing ambient learning profile into a controllable local user-distillation loop with CUI/API view, pause/resume, delete, promote-to-memory, excluded app/site/folder controls, and prompt/routing evidence that shows how learned habits affected a decision.
+- Next verifiable engineering task: connect recalled local skills and proven demonstration playbooks deeper into workflow execution, with shortcut promotion UX, evidence that a recalled procedure changed the plan, and the same confirmation gates before any action.
 
 ## Scope
 

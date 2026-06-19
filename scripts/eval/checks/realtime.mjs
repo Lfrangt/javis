@@ -9,6 +9,7 @@ const REQUIRED_TOOLS = [
   'get_control_mode',
   'get_work_progress',
   'get_collaboration_state',
+  'search_local_skills',
   'get_ui_demonstrations',
   'start_ui_demonstration',
   'capture_ui_demonstration_step',

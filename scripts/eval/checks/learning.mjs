@@ -1,4 +1,7 @@
 import { ok, warn, fail } from '../_client.mjs';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
 
 export default {
   lane: 'learning',
@@ -35,6 +38,7 @@ export default {
     );
 
     let demoId = '';
+    let savedSkillPath = '';
     try {
       const started = await ctx.api('/api/demonstrations/start', {
         method: 'POST',
@@ -101,6 +105,20 @@ export default {
           body: { source: 'eval', title: 'Eval demonstrated workflow skill' },
         })
         : { ok: false, data: {} };
+      const evalSkillName = `eval-demonstration-skill-${String(demoId).slice(0, 8)}`;
+      const demonstrationSkillSaved = demoId
+        ? await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/skill-draft/save`, {
+          method: 'POST',
+          body: {
+            source: 'eval',
+            title: 'Eval demonstrated workflow skill',
+            name: evalSkillName,
+            confirm: true,
+          },
+        })
+        : { ok: false, data: {} };
+      savedSkillPath = demonstrationSkillSaved.data?.path || '';
+      const skillSearch = await ctx.api('/api/skills/local?query=target%20panel%20saved%20state&kind=demonstration&limit=5&source=eval');
       out.push(
         captured.ok &&
           finished.ok &&
@@ -148,7 +166,20 @@ export default {
           ? ok('learning.demonstration_skill_draft', 'UI demonstration skill draft', `${demonstrationSkillDraft.data.skill.name} · save requires confirmation`)
           : fail('learning.demonstration_skill_draft', 'UI demonstration skill draft', `draft ${demonstrationSkillDraft.status} save ${demonstrationSkillSaveBlocked.status}`, { draft: demonstrationSkillDraft.data, save: demonstrationSkillSaveBlocked.data }),
       );
+      out.push(
+        demonstrationSkillSaved.ok &&
+          String(savedSkillPath).includes(`/.agents/skills/${evalSkillName}/SKILL.md`) &&
+          skillSearch.ok &&
+          Array.isArray(skillSearch.data?.skills?.results) &&
+          skillSearch.data.skills.results.some((skill) => skill.name === evalSkillName && skill.kind === 'demonstration')
+          ? ok('learning.local_skill_recall', 'Local skill recall', `${evalSkillName} recalled from ${skillSearch.data.skills.returned} match(es)`)
+          : fail('learning.local_skill_recall', 'Local skill recall', `save ${demonstrationSkillSaved.status} search ${skillSearch.status}`, { saved: demonstrationSkillSaved.data, search: skillSearch.data }),
+      );
     } finally {
+      const safeRoot = path.join(os.homedir(), '.agents', 'skills');
+      if (savedSkillPath && savedSkillPath.startsWith(`${safeRoot}${path.sep}eval-demonstration-skill-`)) {
+        fs.rmSync(path.dirname(savedSkillPath), { recursive: true, force: true });
+      }
       if (demoId) {
         await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}`, {
           method: 'DELETE',

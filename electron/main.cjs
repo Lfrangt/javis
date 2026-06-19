@@ -2122,6 +2122,7 @@ function normalizeContextPlan(value) {
     files: Boolean(rawNeeds.files),
     memory: Boolean(rawNeeds.memory),
     learning: Boolean(rawNeeds.learning),
+    localSkills: Boolean(rawNeeds.localSkills),
     delegatedWorkerContext: Boolean(rawNeeds.delegatedWorkerContext),
     localExecution: Boolean(rawNeeds.localExecution),
   };
@@ -4421,6 +4422,184 @@ function searchMemories(options = {}) {
   };
 }
 
+function parseSkillFrontmatter(markdown = '') {
+  const text = String(markdown || '');
+  const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
+  const frontmatter = {};
+  if (!match) return { frontmatter, body: text };
+  for (const line of match[1].split(/\r?\n/)) {
+    const pair = line.match(/^([A-Za-z0-9_-]+):\s*(.*)$/);
+    if (!pair) continue;
+    let value = pair[2].trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      try {
+        value = JSON.parse(value);
+      } catch {
+        value = value.slice(1, -1);
+      }
+    }
+    frontmatter[pair[1]] = String(value || '').trim();
+  }
+  return { frontmatter, body: text.slice(match[0].length) };
+}
+
+function markdownSection(markdown = '', headings = []) {
+  const wanted = new Set(headings.map((heading) => String(heading || '').trim().toLowerCase()).filter(Boolean));
+  if (!wanted.size) return '';
+  const lines = String(markdown || '').split(/\r?\n/);
+  let capturing = false;
+  const section = [];
+  for (const line of lines) {
+    const heading = line.match(/^#\s+(.+?)\s*$/);
+    if (heading) {
+      if (capturing) break;
+      capturing = wanted.has(heading[1].trim().toLowerCase());
+      continue;
+    }
+    if (capturing) section.push(line);
+  }
+  return section.join('\n').trim();
+}
+
+function compactMarkdownSection(markdown = '', headings = [], maxLength = 700) {
+  return compactRecordText(
+    markdownSection(markdown, headings)
+      .replace(/^[-*]\s+/gm, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+    maxLength,
+  );
+}
+
+function localSkillKind(markdown = '', frontmatter = {}) {
+  const text = `${frontmatter.name || ''}\n${frontmatter.description || ''}\n${markdown}`.toLowerCase();
+  if (/source:\s*explicit ui demonstration|demonstration id:|demonstrated local ui workflow|# replay plan/i.test(markdown)) return 'demonstration';
+  if (/source observations:|inferred local ambient profile|local working style|learning_skill_draft/i.test(text)) return 'learning';
+  return 'user';
+}
+
+function localSkillRecordFromPath(skillPath) {
+  try {
+    const stat = fs.statSync(skillPath);
+    if (!stat.isFile()) return null;
+    const markdown = fs.readFileSync(skillPath, 'utf8').slice(0, 120000);
+    const parsed = parseSkillFrontmatter(markdown);
+    const frontmatter = parsed.frontmatter;
+    const name = compactRecordText(frontmatter.name || path.basename(path.dirname(skillPath)), 120);
+    const description = compactRecordText(frontmatter.description || '', 360);
+    const kind = localSkillKind(markdown, frontmatter);
+    const demonstrationId = (markdown.match(/Demonstration id:\s*([A-Za-z0-9_-]+)/i) || [])[1] || '';
+    return {
+      name,
+      title: compactRecordText(frontmatter.title || name, 160),
+      description,
+      kind,
+      path: skillPath,
+      relativePath: path.relative(USER_SKILLS_DIR, skillPath),
+      generatedByJavis: kind !== 'user' || /JAVIS|javis/i.test(markdown),
+      demonstrationId,
+      purpose: compactMarkdownSection(markdown, ['Purpose'], 700),
+      triggers: compactMarkdownSection(markdown, ['Triggers'], 600),
+      workflow: compactMarkdownSection(markdown, ['Workflow'], 900),
+      replayPlan: compactMarkdownSection(markdown, ['Replay Plan'], 700),
+      evidence: compactMarkdownSection(markdown, ['Evidence Snapshot'], 600),
+      updatedAt: Number(stat.mtimeMs || 0),
+      size: Number(stat.size || 0),
+    };
+  } catch (error) {
+    appendAudit('skills.local_read_failed', {
+      path: compactRecordText(skillPath, 240),
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+function localSkillSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(300, Number(options.limit || 200)));
+  const kind = String(options.kind || '').trim();
+  if (!fs.existsSync(USER_SKILLS_DIR)) {
+    return {
+      ok: true,
+      root: USER_SKILLS_DIR,
+      total: 0,
+      returned: 0,
+      skills: [],
+      output: `No local user skills directory found at ${USER_SKILLS_DIR}.`,
+    };
+  }
+  const skills = fs.readdirSync(USER_SKILLS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => localSkillRecordFromPath(path.join(USER_SKILLS_DIR, entry.name, 'SKILL.md')))
+    .filter(Boolean)
+    .filter((skill) => !kind || skill.kind === kind)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, limit);
+  return {
+    ok: true,
+    root: USER_SKILLS_DIR,
+    total: skills.length,
+    returned: skills.length,
+    skills,
+    output: `${skills.length} local skill(s) found in ${USER_SKILLS_DIR}.`,
+  };
+}
+
+function localSkillSearchScore(skill, queryTokens) {
+  if (!queryTokens.length) return 1;
+  const haystack = [
+    skill.name,
+    skill.title,
+    skill.description,
+    skill.kind,
+    skill.purpose,
+    skill.triggers,
+    skill.workflow,
+    skill.replayPlan,
+    skill.evidence,
+    skill.demonstrationId,
+  ].filter(Boolean).join('\n').toLowerCase();
+  return queryTokens.reduce((score, token) => score + (haystack.includes(token) ? 1 : 0), 0);
+}
+
+function searchLocalSkills(options = {}) {
+  const query = String(options.query || options.message || options.task || '').trim();
+  const kind = String(options.kind || '').trim();
+  const limit = Math.max(1, Math.min(50, Number(options.limit || 8)));
+  const queryTokens = memoryQueryTokens(query);
+  const snapshot = localSkillSnapshot({ kind, limit: 300 });
+  const results = snapshot.skills
+    .map((skill) => ({ skill, score: localSkillSearchScore(skill, queryTokens) }))
+    .filter((item) => !queryTokens.length || item.score > 0)
+    .sort((a, b) => b.score - a.score || b.skill.updatedAt - a.skill.updatedAt)
+    .slice(0, limit)
+    .map((item) => ({ ...item.skill, score: item.score }));
+  return {
+    ok: true,
+    query,
+    kind,
+    root: USER_SKILLS_DIR,
+    total: snapshot.skills.length,
+    returned: results.length,
+    results,
+    output: results.length
+      ? `Found ${results.length} matching local skill(s).`
+      : `No local skills matched ${query || kind || 'the request'}.`,
+  };
+}
+
+function formatLocalSkillsForPrompt(list = []) {
+  return list
+    .slice(0, 3)
+    .map((skill, index) => [
+      `${index + 1}. [${skill.kind}] ${skill.name}: ${skill.description || skill.purpose || 'Local skill.'}`,
+      skill.workflow ? `Workflow: ${compactRecordText(skill.workflow, 320)}` : '',
+      skill.replayPlan ? `Replay: ${compactRecordText(skill.replayPlan, 260)}` : '',
+      skill.path ? `Path: ${skill.path}` : '',
+    ].filter(Boolean).join('\n'))
+    .join('\n');
+}
+
 function uniqueMemories(list) {
   const seen = new Set();
   return list.filter((memory) => {
@@ -4445,6 +4624,7 @@ function memoryContextForTask(task, options = {}) {
   if (options.useMemory === false) {
     return {
       matches: [],
+      skills: [],
       learning: null,
       learningEvidence: learningEvidenceForTask(task, { useMemory: false, usedInPrompt: false }),
       prompt: '',
@@ -4455,15 +4635,22 @@ function memoryContextForTask(task, options = {}) {
     .filter((memory) => memory.kind === 'preference')
     .slice(0, 2);
   const matches = uniqueMemories([...queryMatches, ...recentPreferences]).slice(0, Number(options.memoryLimit || 5));
+  const skillMatches = options.useSkills === false
+    ? []
+    : searchLocalSkills({ query: task, limit: Number(options.skillLimit || 3) }).results;
   const learningPrompt = learningContextForPrompt();
   const memoryPrompt = matches.length
     ? ['Relevant local memories. User-sourced memories are explicit; learning-sourced memories are inferred local context:', formatMemoriesForPrompt(matches)].join('\n')
     : '';
+  const skillPrompt = skillMatches.length
+    ? ['Relevant local skills from the user skills directory. They are reusable procedures, not automatic permission to act:', formatLocalSkillsForPrompt(skillMatches)].join('\n')
+    : '';
   return {
     matches,
+    skills: skillMatches,
     learning: learningPrompt ? learningStateSnapshot().profile : null,
     learningEvidence: learningEvidenceForTask(task, { usedInPrompt: Boolean(learningPrompt) }),
-    prompt: [learningPrompt, memoryPrompt].filter(Boolean).join('\n\n'),
+    prompt: [learningPrompt, memoryPrompt, skillPrompt].filter(Boolean).join('\n\n'),
   };
 }
 
@@ -12321,6 +12508,7 @@ function contextPlanRecommendedTools(needs) {
   if (needs.browserDom) tools.push('read_browser_dom');
   if (needs.files) tools.push('run_file_workflow');
   if (needs.memory) tools.push('search_memory');
+  if (needs.localSkills) tools.push('search_local_skills');
   if (needs.delegatedWorkerContext) tools.push('delegate_task');
   return Array.from(new Set(tools));
 }
@@ -12364,6 +12552,7 @@ function buildContextPlan(message, options = {}) {
     files: false,
     memory: options.useMemory !== false && !localCommand,
     learning: options.useMemory !== false && !localCommand && learningRuntimeEnabled() && currentLearningControls().includeInPrompts !== false,
+    localSkills: options.useMemory !== false && !localCommand,
     delegatedWorkerContext: false,
     localExecution: false,
   };
@@ -12442,6 +12631,7 @@ function buildContextPlan(message, options = {}) {
   if (localCommand) {
     needs.memory = false;
     needs.learning = false;
+    needs.localSkills = false;
     contextPlanPushReason(reasons, `deterministic local command matched first: ${localCommand}`);
     if (['observe_now', 'describe_screen'].includes(localCommand)) {
       needs.macContext = true;
@@ -13068,6 +13258,7 @@ async function routeTask(options = {}) {
   const memoryContext = memoryContextForTask(task, {
     useMemory: options.useMemory !== false,
     memoryLimit: options.memoryLimit,
+    skillLimit: options.skillLimit,
   });
   const decision = routeTaskDecision(task, {
     execute,
@@ -13083,6 +13274,7 @@ async function routeTask(options = {}) {
     execute,
     chars: decision.features.chars,
     memoryMatches: memoryContext.matches.length,
+    skillMatches: memoryContext.skills.length,
     learningEffect: memoryContext.learningEvidence.decisionEffect,
     contextMode: decision.contextPlan.mode,
   });
@@ -13096,6 +13288,8 @@ async function routeTask(options = {}) {
       memory: {
         matches: memoryContext.matches,
         count: memoryContext.matches.length,
+        skills: memoryContext.skills,
+        skillCount: memoryContext.skills.length,
         learningEvidence: memoryContext.learningEvidence,
       },
       learningEvidence: memoryContext.learningEvidence,
@@ -13124,10 +13318,12 @@ async function routeTask(options = {}) {
         queued: false,
         decision,
         memory: {
-          matches: memoryContext.matches,
-          count: memoryContext.matches.length,
-          learningEvidence: memoryContext.learningEvidence,
-        },
+        matches: memoryContext.matches,
+        count: memoryContext.matches.length,
+        skills: memoryContext.skills,
+        skillCount: memoryContext.skills.length,
+        learningEvidence: memoryContext.learningEvidence,
+      },
         learningEvidence: memoryContext.learningEvidence,
         contextPlan: decision.contextPlan,
         output,
@@ -13147,6 +13343,8 @@ async function routeTask(options = {}) {
         memory: {
           matches: memoryContext.matches,
           count: memoryContext.matches.length,
+          skills: memoryContext.skills,
+          skillCount: memoryContext.skills.length,
           learningEvidence: memoryContext.learningEvidence,
         },
         learningEvidence: memoryContext.learningEvidence,
@@ -13172,6 +13370,8 @@ async function routeTask(options = {}) {
     memory: {
       matches: memoryContext.matches,
       count: memoryContext.matches.length,
+      skills: memoryContext.skills,
+      skillCount: memoryContext.skills.length,
       learningEvidence: memoryContext.learningEvidence,
     },
     learningEvidence: memoryContext.learningEvidence,
@@ -20946,6 +21146,15 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(result) };
   }
 
+  if (name === 'search_local_skills') {
+    const result = searchLocalSkills({
+      ...(args || {}),
+      query: args?.query || args?.message || args?.task || args?.instruction,
+      source: 'voice',
+    });
+    return { ok: true, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_learning_profile') {
     return { ok: true, output: JSON.stringify(learningStateSnapshot()) };
   }
@@ -21393,6 +21602,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_recent_workflows when the user asks what you just did, wants to continue prior work, or references the last task.',
       'Use remember_memory only when the user explicitly asks you to remember a preference, durable fact, or project note.',
       'Use search_memory when the user asks what you remember or when a task may depend on prior remembered local preferences.',
+      'Use search_local_skills when the user asks to repeat, adapt, recall, or use a previously learned local workflow or demonstration-derived skill. Local skills are procedures, not permission to act without confirmation.',
       'Use get_learning_profile when the user asks what you have learned from passive local observation, recent app/browser focus, or inferred work patterns.',
       'Treat the learning profile as local inferred context, not as user-confirmed memory or a reason to act without being asked.',
       'Use draft_learning_skill when the user asks to turn learned habits, repeated workflows, or a demonstrated local process into a reviewable Codex-style skill draft. This does not save files.',
@@ -22045,6 +22255,23 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'search_local_skills',
+        description: 'Search local user skills in ~/.agents/skills, including JAVIS demonstration-derived and learning-derived skills. Read-only; returns reusable procedures, not action permission.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            message: { type: 'string' },
+            task: { type: 'string' },
+            instruction: { type: 'string' },
+            kind: { type: 'string', enum: ['demonstration', 'learning', 'user'] },
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_learning_profile',
         description: 'Get the local inferred learning profile distilled from passive ambient app/window/browser metadata. This is not explicit user-approved memory.',
         parameters: {
@@ -22507,6 +22734,7 @@ function createRealtimeSessionConfig(options = {}) {
             includeScreen: { type: 'boolean' },
             useMemory: { type: 'boolean' },
             memoryLimit: { type: 'number' },
+            skillLimit: { type: 'number' },
             lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             scope: { type: 'string' },
             parallelGroup: { type: 'string' },
@@ -22674,6 +22902,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_control_mode',
   'get_work_progress',
   'get_collaboration_state',
+  'search_local_skills',
   'get_ui_demonstrations',
   'start_ui_demonstration',
   'capture_ui_demonstration_step',
@@ -22700,7 +22929,7 @@ function realtimeInstructionChecks(instructions = '') {
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
-    demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|UI demonstrations/i.test(text),
+    demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
     localExecution: /run_cli_tool|run_mac_action|run_file_action/i.test(text),
     confirmationStops: /purchases|logins|deletes|sends|irreversible|confirmation/i.test(text),
@@ -23464,6 +23693,40 @@ function startApiServer() {
       res.json({ tick: result, autopilot: autopilotStateSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Autopilot tick failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/skills/local', (req, res) => {
+    try {
+      res.json({ skills: searchLocalSkills({
+        query: req.query.query || req.query.q || '',
+        kind: req.query.kind,
+        limit: req.query.limit,
+        source: req.query.source || 'api',
+      }) });
+    } catch (error) {
+      jsonError(res, 400, 'Local skill search failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/skills/local/search', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      res.json({ skills: searchLocalSkills({ ...(req.body || {}), source: req.body?.source || 'api' }) });
+    } catch (error) {
+      jsonError(res, 400, 'Local skill search failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/learning/skills', (req, res) => {
+    try {
+      res.json({ skills: searchLocalSkills({
+        query: req.query.query || req.query.q || '',
+        kind: req.query.kind,
+        limit: req.query.limit,
+        source: req.query.source || 'api',
+      }) });
+    } catch (error) {
+      jsonError(res, 400, 'Learning skill search failed', error instanceof Error ? error.message : String(error));
     }
   });
 
