@@ -873,7 +873,15 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -d '{"intent":"extract_actions","mode":"background","instruction":"Find deadlines and follow-up tasks.","maxChars":30000}'
 ```
 
-Supported intents: `summarize`, `extract_actions`, `draft`, and `ask`.
+Supported intents: `summarize`, `extract_actions`, `draft`, `ask`, `act`, `fill_draft`, `search`, `compare`, `review_result`, and `research`.
+
+For form-fill drafts, JAVIS matches supplied fields against visible DOM controls and previews the fill/select plan. Execution requires `execute:true` and `confirm:true`, and fixture DOM can only preview:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/browser/fill-draft \
+  -H 'Content-Type: application/json' \
+  -d '{"fields":{"Name":"Haoge","Email":"haoge@example.com"},"execute":false}'
+```
 
 For webpage controls:
 

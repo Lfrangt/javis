@@ -520,7 +520,7 @@ function printNextAction(next) {
   const action = next?.action || next?.next?.action || next?.next?.briefing?.nextActions?.[0] || next?.briefing?.nextActions?.[0];
   if (!action) {
     console.log('Next action: none');
-    return;
+    return false;
   }
   const auto = action.manualOnly || action.autopilotEligible === false
     ? 'manual-only'
@@ -529,6 +529,10 @@ function printNextAction(next) {
   if (action.summary) console.log(`Summary: ${compact(action.summary, 260)}`);
   if (action.manualOnlyReason) console.log(`Manual reason: ${compact(action.manualOnlyReason, 220)}`);
   const guide = action.dogfoodGuide || action.guide || {};
+  return printDogfoodGuide(guide);
+}
+
+function printDogfoodGuide(guide = {}) {
   if (guide.goal) {
     const prompts = Array.isArray(guide.prompts) ? guide.prompts : [];
     const evidenceTools = (Array.isArray(guide.expectedEvidence) ? guide.expectedEvidence : [])
@@ -540,13 +544,17 @@ function printNextAction(next) {
     if (guide.monitor?.cui) console.log(`Monitor: ${guide.monitor.cui}`);
     if (prompts.length) console.log(`Ask: ${prompts.join(' / ')}`);
     if (evidenceTools.length) console.log(`Evidence tools: ${evidenceTools.join(', ')}`);
+    return true;
   }
+  return false;
 }
 
 async function showWorkbenchNext() {
   const preview = await request('/api/work/next?workflowLimit=6&jobLimit=6');
   console.log('');
-  printNextAction(preview);
+  const printedGuide = printNextAction(preview);
+  const realtimeGuide = preview?.next?.briefing?.realtimeVoice?.dogfoodGuide || preview?.briefing?.realtimeVoice?.dogfoodGuide || {};
+  if (!printedGuide) printDogfoodGuide(realtimeGuide);
   if (preview.next?.output) console.log(compact(preview.next.output, 700));
 }
 

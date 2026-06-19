@@ -88,7 +88,7 @@ Renderer
 - Browser activity lane: summarizes recent supported-browser host/title metadata from ambient observations for presence, Realtime preflight context, API, and CUI. It does not store page text and applies the same local learning exclusion controls before summarizing.
 - Browser page lane: read-only extraction of selected text, headings, and visible page text from supported active tabs.
 - Browser DOM lane: read-only visible control extraction plus guarded one-step click/fill/select actions inside supported active tabs, using browser Apple Events first and Chrome DevTools on `JAVIS_CHROME_DEBUG_PORT` as a fallback.
-- Browser workflow lane: page-aware summarize, action extraction, drafting, and Q&A routed through quick or background lanes.
+- Browser workflow lane: page-aware summarize, action extraction, drafting, Q&A, search/research, and guarded form-fill draft planning routed through quick or background lanes.
 - Accessibility tree lane: read-only frontmost App UI structure for operating non-browser Mac apps through the accessibility model.
 - UI planning lane: dry-run target selection and next-action plans from the current accessibility tree.
 - Current-app control lane: voice/API wrapper that plans one UI target and executes a press or value write through the guarded local action path.

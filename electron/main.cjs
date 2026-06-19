@@ -11679,8 +11679,15 @@ async function executeBrowserControl(args = {}, options = {}) {
 }
 
 function normalizeBrowserWorkflowIntent(value) {
-  const intent = String(value || '').trim();
-  if (['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare', 'review_result', 'research'].includes(intent)) return intent;
+  const raw = String(value || '').trim();
+  const aliases = {
+    fill_form: 'fill_draft',
+    form_fill: 'fill_draft',
+    form_draft: 'fill_draft',
+    draft_fill: 'fill_draft',
+  };
+  const intent = aliases[raw] || raw;
+  if (['summarize', 'extract_actions', 'draft', 'ask', 'act', 'fill_draft', 'search', 'compare', 'review_result', 'research'].includes(intent)) return intent;
   return 'summarize';
 }
 
@@ -12409,6 +12416,307 @@ function formatBrowserTaskResults(results) {
   return results
     .map((result, index) => `${index + 1}. ${result.status}: ${result.label} · ${compactRecordText(result.output, 220)}`)
     .join('\n');
+}
+
+function normalizeBrowserFillDraftFields(options = {}) {
+  const raw = [];
+  const objects = [options.fields, options.values, options.fieldValues]
+    .filter((item) => item && typeof item === 'object' && !Array.isArray(item));
+  for (const item of objects) {
+    for (const [name, value] of Object.entries(item)) {
+      raw.push({ name, value });
+    }
+  }
+  const arrays = [options.items, options.entries, options.fieldEntries]
+    .filter(Array.isArray);
+  for (const list of arrays) {
+    for (const item of list) {
+      if (Array.isArray(item) && item.length >= 2) raw.push({ name: item[0], value: item[1] });
+      else if (item && typeof item === 'object') raw.push({
+        name: item.name || item.field || item.label || item.query,
+        value: item.value ?? item.content ?? item.text,
+      });
+    }
+  }
+  const singleName = String(options.field || options.name || options.query || '').trim();
+  if (singleName && options.value !== undefined) raw.push({ name: singleName, value: options.value });
+  return raw
+    .map((item) => ({
+      name: compactRecordText(item.name, 120),
+      value: String(item.value ?? '').slice(0, 4000),
+    }))
+    .filter((item) => item.name && item.value);
+}
+
+function normalizeBrowserFillDraftFixturePage(value = {}) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    available: value.available !== false,
+    supported: value.supported !== false,
+    app: String(value.app || 'Browser'),
+    title: String(value.title || ''),
+    url: String(value.url || ''),
+    selectedText: String(value.selectedText || ''),
+    text: String(value.text || ''),
+    textLength: Number(value.textLength || String(value.text || '').length),
+    returnedLength: Number(value.returnedLength || String(value.text || '').length),
+    truncated: Boolean(value.truncated),
+    headings: Array.isArray(value.headings) ? value.headings : [],
+    links: Array.isArray(value.links) ? value.links : [],
+    error: String(value.error || ''),
+  };
+}
+
+function normalizeBrowserFillDraftFixtureDom(value = {}) {
+  if (!value || typeof value !== 'object') return null;
+  const elements = Array.isArray(value.elements) ? value.elements : Array.isArray(value.controls) ? value.controls : [];
+  return {
+    available: value.available !== false,
+    supported: value.supported !== false,
+    bridge: String(value.bridge || 'fixture'),
+    app: String(value.app || 'Browser'),
+    title: String(value.title || ''),
+    url: String(value.url || ''),
+    count: Number(value.count || elements.length),
+    elements,
+    error: String(value.error || ''),
+  };
+}
+
+function browserFillDraftSensitiveField(field = {}) {
+  const text = `${field.name}\n${field.value}`.toLowerCase();
+  return /\b(password|passcode|otp|2fa|security code|cvv|cvc|credit card|card number|ssn|sin)\b|密码|验证码|信用卡|银行卡|安全码|身份证/.test(text);
+}
+
+function browserFillDraftElementForField(field = {}, dom = {}) {
+  const select = findBrowserTaskElement(dom, field.name, 'select');
+  if (select) return { element: select, action: 'select' };
+  const fill = findBrowserTaskElement(dom, field.name, 'fill');
+  if (fill) return { element: fill, action: 'fill' };
+  return { element: null, action: '' };
+}
+
+function buildBrowserFillDraftPlan(fields = [], dom = {}, maxFields = 8) {
+  const steps = [];
+  const blocked = [];
+  for (const [index, field] of fields.slice(0, maxFields).entries()) {
+    if (browserFillDraftSensitiveField(field)) {
+      blocked.push({
+        field: field.name,
+        reason: 'sensitive_field_requires_explicit_manual_handling',
+      });
+      continue;
+    }
+    const { element, action } = browserFillDraftElementForField(field, dom);
+    if (!element?.selector || !action) {
+      blocked.push({
+        field: field.name,
+        reason: 'no_matching_fillable_control',
+      });
+      continue;
+    }
+    steps.push({
+      index,
+      action,
+      selector: element.selector,
+      query: field.name,
+      value: field.value,
+      reason: `Matched ${element.label || element.placeholder || element.name || element.selector}.`,
+      field: field.name,
+      valuePreview: compactRecordText(field.value, 100),
+    });
+  }
+  return {
+    summary: steps.length
+      ? `Prepared ${steps.length} browser form field draft${steps.length === 1 ? '' : 's'}${blocked.length ? `; ${blocked.length} field(s) need review` : ''}.`
+      : 'No safe browser form field drafts could be prepared.',
+    successCheck: 'Read the page/DOM after execution and confirm each drafted field value is visible in the matching control.',
+    source: 'deterministic_dom_match',
+    steps,
+    blocked,
+  };
+}
+
+function redactedBrowserFillDraftPlan(plan = {}) {
+  return {
+    ...plan,
+    steps: (plan.steps || []).map((step) => ({
+      ...step,
+      value: step.value ? `[redacted ${Buffer.byteLength(String(step.value), 'utf8')} bytes]` : '',
+      valuePreview: compactRecordText(step.valuePreview || step.value, 80),
+    })),
+  };
+}
+
+async function runBrowserFillDraftWorkflow(options = {}) {
+  const instruction = String(options.instruction || options.goal || 'Draft browser form fills.').trim();
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const confirmed = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  const maxFields = Math.max(1, Math.min(12, Number(options.maxFields || options.maxSteps || 8)));
+  const fixturePage = normalizeBrowserFillDraftFixturePage(options.page);
+  const fixtureDom = normalizeBrowserFillDraftFixtureDom(options.dom);
+  const live = !fixturePage && !fixtureDom;
+  const page = fixturePage || await browserPageSnapshot({ app: options.app, maxChars: normalizeBrowserMaxChars(options.maxChars || 10000) });
+  const pageSummary = browserWorkflowPageSummary(page);
+  const workflowTitle = `fill_draft · ${page.title || page.url || instruction}`.slice(0, 180);
+  if (!page.available) {
+    const workflow = createWorkflowRecord({
+      kind: 'browser',
+      source: 'browser_fill_draft',
+      status: 'failed',
+      title: workflowTitle,
+      intent: 'fill_draft',
+      mode: 'quick',
+      request: instruction,
+      target: pageSummary,
+      result: page.error || 'No supported browser page is available.',
+    });
+    const routing = createRoutingRecordForWorkflow({
+      task: instruction,
+      workflow,
+      mode: 'quick',
+      source: options.source || 'browser_fill_draft',
+      scope: options.scope || 'browser:fill_draft',
+      parallelGroup: options.parallelGroup || options.group || 'browser:quick',
+      resultSummary: workflow.result,
+    });
+    return { ok: false, executed: false, intent: 'fill_draft', workflow, routing, page: pageSummary, output: workflow.result };
+  }
+  const dom = fixtureDom || await browserDomSnapshot({ app: options.app, limit: options.domLimit || 100 });
+  const fields = normalizeBrowserFillDraftFields(options);
+  const workflow = createWorkflowRecord({
+    kind: 'browser',
+    source: 'browser_fill_draft',
+    status: 'running',
+    title: workflowTitle,
+    intent: 'fill_draft',
+    mode: 'quick',
+    request: instruction,
+    target: {
+      ...pageSummary,
+      resultCount: dom.elements?.length || 0,
+    },
+  });
+  appendAudit('browser_fill_draft.requested', {
+    app: page.app,
+    title: page.title,
+    url: page.url,
+    fields: fields.length,
+    execute,
+    confirmed,
+    live,
+    domCount: dom.elements?.length || 0,
+  });
+
+  const plan = buildBrowserFillDraftPlan(fields, dom, maxFields);
+  const confirmationRequired = execute && !confirmed;
+  const fixtureExecutionBlocked = execute && !live;
+  const results = [];
+  if (execute && confirmed && !fixtureExecutionBlocked) {
+    for (const step of plan.steps) {
+      try {
+        const result = await runBrowserTaskStep(step, true, {
+          app: options.app,
+          approvalContext: {
+            type: 'browser_fill_draft',
+            workflowId: workflow.id,
+            title: workflowTitle,
+            instruction,
+            stepIndex: step.index,
+          },
+        });
+        results.push({ index: step.index, field: step.field, ...result, reason: step.reason });
+        if (['blocked', 'approval_required'].includes(result.status)) break;
+        if (result.status === 'executed') await waitMs(300);
+      } catch (error) {
+        results.push({
+          index: step.index,
+          field: step.field,
+          status: 'blocked',
+          action: step.action,
+          label: browserTaskStepLabel(step),
+          output: error instanceof Error ? error.message : String(error),
+          reason: step.reason,
+        });
+        break;
+      }
+    }
+  } else {
+    for (const step of plan.steps) {
+      results.push({
+        index: step.index,
+        field: step.field,
+        status: confirmationRequired ? 'confirmation_required' : fixtureExecutionBlocked ? 'blocked' : 'previewed',
+        action: step.action,
+        label: browserTaskStepLabel(step),
+        output: confirmationRequired
+          ? 'Requires confirm:true before filling browser fields.'
+          : fixtureExecutionBlocked
+            ? 'Fixture DOM can only preview; execute against a live browser page.'
+            : `Would ${step.action} ${step.field}.`,
+        reason: step.reason,
+      });
+    }
+  }
+  const blocked = confirmationRequired || fixtureExecutionBlocked || plan.blocked.length > 0 || results.some((result) => ['blocked', 'approval_required'].includes(result.status));
+  const output = [
+    `Browser fill draft: ${instruction}`,
+    `Plan: ${plan.summary}`,
+    plan.blocked.length ? `Review needed: ${plan.blocked.map((item) => `${item.field} (${item.reason})`).join('; ')}` : '',
+    results.length ? formatBrowserTaskResults(results) : 'No matching fillable fields were found.',
+    confirmationRequired ? 'Execution paused: pass confirm:true after reviewing the field draft.' : '',
+    fixtureExecutionBlocked ? 'Execution blocked: fixture DOM is preview-only.' : '',
+  ].filter(Boolean).join('\n');
+  const finalWorkflow = setWorkflow(workflow.id, {
+    status: blocked ? 'blocked' : 'done',
+    result: output,
+    completedAt: Date.now(),
+    target: {
+      ...pageSummary,
+      resultCount: results.length,
+      plannedFieldCount: plan.steps.length,
+      blockedFieldCount: plan.blocked.length,
+      fixture: !live,
+      confirmed,
+    },
+  });
+  appendAudit('browser_fill_draft.completed', {
+    workflowId: workflow.id,
+    status: finalWorkflow?.status,
+    planned: plan.steps.length,
+    blocked: plan.blocked.length,
+    results: results.length,
+    execute,
+    confirmed,
+    live,
+  });
+  const routing = createRoutingRecordForWorkflow({
+    task: instruction,
+    workflow: finalWorkflow,
+    mode: 'quick',
+    source: options.source || 'browser_fill_draft',
+    scope: options.scope || 'browser:fill_draft',
+    parallelGroup: options.parallelGroup || options.group || 'browser:quick',
+    resultSummary: output,
+  });
+  return {
+    ok: !blocked,
+    executed: execute && confirmed && !fixtureExecutionBlocked,
+    confirmed,
+    mode: 'quick',
+    intent: 'fill_draft',
+    workflow: finalWorkflow,
+    routing,
+    page: pageSummary,
+    dom: { ...dom, elements: (dom.elements || []).slice(0, 40) },
+    fields: fields.map((field) => ({
+      name: field.name,
+      valuePreview: browserFillDraftSensitiveField(field) ? '[sensitive]' : compactRecordText(field.value, 80),
+    })),
+    plan: redactedBrowserFillDraftPlan(plan),
+    results,
+    output,
+  };
 }
 
 async function runBrowserTaskWorkflow(options = {}) {
@@ -13358,6 +13666,7 @@ async function runBrowserResearchWorkflow(options = {}) {
 async function runBrowserWorkflow(options = {}) {
   const intent = normalizeBrowserWorkflowIntent(options.intent);
   if (intent === 'act') return runBrowserTaskWorkflow(options);
+  if (intent === 'fill_draft') return runBrowserFillDraftWorkflow(options);
   if (intent === 'review_result') return runBrowserResultReviewWorkflow(options);
   if (intent === 'research') return runBrowserResearchWorkflow(options);
   if (intent === 'search' || intent === 'compare') return runBrowserSearchWorkflow({ ...options, intent });
@@ -22865,7 +23174,7 @@ function maintenanceActionCandidate(workflowContext = workflowSnapshot(80), opti
   const minutes = Math.round(AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS / 60000);
   return {
     id: 'maintenance:resident_snapshot',
-    priority: 5,
+    priority: force ? 0 : 5,
     label: 'Run maintenance snapshot',
     summary: state.lastSnapshotAt
       ? `Read-only resident maintenance snapshot is due; last ran ${progressAgeLabel(state.lastSnapshotAt)}.`
@@ -23134,7 +23443,7 @@ function workflowBriefing(options = {}) {
 
   if (includeMaintenance) {
     const maintenance = maintenanceActionCandidate(workflowContext, { force: forceMaintenance });
-    if (maintenance && !firstAutopilotExecutableAction(nextActions)) {
+    if (maintenance && (forceMaintenance || !firstAutopilotExecutableAction(nextActions))) {
       nextActions.push(maintenance);
     }
   }
@@ -28564,7 +28873,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use read_browser_page when the user asks to summarize or use the content, headings, or links of the current webpage.',
       'Use read_browser_dom when the user asks what controls are visible on the current webpage or when a browser DOM target is needed.',
       'Use control_browser_dom for guarded webpage element click/fill/select actions after the target is clear.',
-      'Use run_browser_workflow for webpage summarization, action extraction, drafting, page-specific questions, web search, search-result review, or multi-page research. Use intent:research when the user asks you to look something up, inspect multiple sources, or synthesize web evidence; use background/Codex/Claude mode for longer work.',
+      'Use run_browser_workflow for webpage summarization, action extraction, drafting, page-specific questions, safe form-fill drafts, web search, search-result review, or multi-page research. Use intent:fill_draft to prepare browser field fills from current DOM and supplied fields; it previews by default and requires execute:true plus confirm:true before filling. Use intent:research when the user asks you to look something up, inspect multiple sources, or synthesize web evidence; use background/Codex/Claude mode for longer work.',
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, semantic text-conversion previews, or non-destructive copy-convert previews.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
@@ -29832,14 +30141,18 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_browser_workflow',
-        description: 'Run a practical workflow over the current browser page, search/compare result pages, open and review one selected result, or synthesize multiple result pages. Browser research uses guarded search/open_url plus read-only page snapshots; it does not click page controls or submit forms.',
+        description: 'Run a practical workflow over the current browser page, safe form-fill drafts, search/compare result pages, open and review one selected result, or synthesize multiple result pages. Browser research uses guarded search/open_url plus read-only page snapshots; form-fill drafts preview DOM field matches before any fill.',
         parameters: {
           type: 'object',
           properties: {
             app: { type: 'string' },
-            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask', 'act', 'search', 'compare', 'review_result', 'research'] },
+            intent: { type: 'string', enum: ['summarize', 'extract_actions', 'draft', 'ask', 'act', 'fill_draft', 'search', 'compare', 'review_result', 'research'] },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             query: { type: 'string' },
+            fields: { type: 'object', additionalProperties: { type: 'string' } },
+            values: { type: 'object', additionalProperties: { type: 'string' } },
+            field: { type: 'string' },
+            value: { type: 'string' },
             queries: {
               type: 'array',
               items: { type: 'string' },
@@ -29852,6 +30165,7 @@ function createRealtimeSessionConfig(options = {}) {
             instruction: { type: 'string' },
             maxChars: { type: 'number' },
             maxSteps: { type: 'number' },
+            maxFields: { type: 'number' },
             maxPages: { type: 'number' },
             limit: { type: 'number' },
             resultCount: { type: 'number' },
@@ -29865,6 +30179,7 @@ function createRealtimeSessionConfig(options = {}) {
             openWaitMs: { type: 'number' },
             waitMsAfterOpen: { type: 'number' },
             execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
             scope: { type: 'string' },
             parallelGroup: { type: 'string' },
           },
@@ -31801,6 +32116,15 @@ function startApiServer() {
         return;
       }
       jsonError(res, 400, 'Browser DOM action failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/browser/fill-draft', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await runBrowserFillDraftWorkflow({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Browser fill draft failed', error instanceof Error ? error.message : String(error));
     }
   });
 
