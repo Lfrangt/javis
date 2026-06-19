@@ -531,11 +531,15 @@ function printNextAction(next) {
   const guide = action.dogfoodGuide || action.guide || {};
   if (guide.goal) {
     const prompts = Array.isArray(guide.prompts) ? guide.prompts : [];
+    const evidenceTools = (Array.isArray(guide.expectedEvidence) ? guide.expectedEvidence : [])
+      .map((item) => item?.tool)
+      .filter(Boolean);
     console.log(`Guide: ${compact(guide.goal, 260)}`);
     if (guide.start?.petAction) console.log(`Start: ${compact(guide.start.petAction, 220)}`);
     if (guide.start?.hotkey) console.log(`Hotkey: ${guide.start.hotkey}`);
     if (guide.monitor?.cui) console.log(`Monitor: ${guide.monitor.cui}`);
     if (prompts.length) console.log(`Ask: ${prompts.join(' / ')}`);
+    if (evidenceTools.length) console.log(`Evidence tools: ${evidenceTools.join(', ')}`);
   }
 }
 
