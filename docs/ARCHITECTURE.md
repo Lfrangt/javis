@@ -65,7 +65,7 @@ Renderer
 - Capture hotkey lane: saves current clipboard text into local Inbox without opening desktop UI.
 - Menu bar lane: resident macOS status item for opening the terminal CUI, parking the pet, seeing current blockers, and jumping to setup locations.
 - Config CUI lane: terminal-first setup surface for `.env`, permissions, doctor output, and parking the pet.
-- Notification lane: macOS notifications for pending approvals and completed, failed, or cancelled background work.
+- Notification lane: macOS notifications for completed, failed, or cancelled background work plus policy-gated attention alerts for approvals, setup blockers, and Realtime voice errors.
 - Vision lane: analyzes the latest permitted screen frame.
 - Screen privacy lane: stores the resident screen privacy mode and makes the renderer downscale/blur frames before posting them to the API or Realtime.
 - Live screen-context lane: sends periodic screen image messages into the active Realtime conversation without triggering standalone replies.

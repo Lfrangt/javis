@@ -680,6 +680,12 @@ const notificationState = {
   sent: 0,
   skipped: 0,
   last: null,
+  attention: {
+    sent: 0,
+    skipped: 0,
+    last: null,
+    lastNotificationAt: 0,
+  },
 };
 
 ensureRuntimeStorage();
@@ -914,8 +920,35 @@ function notificationSnapshot() {
     sent: notificationState.sent,
     skipped: notificationState.skipped,
     last: notificationState.last,
+    attentionNotifications: notificationState.attention,
     attention: attentionPolicySnapshot(),
   };
+}
+
+function latestAttentionNotificationAuditAt(limit = 120) {
+  try {
+    const events = readRecentAudit(limit);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index] || {};
+      if (event.type !== 'notification.sent') continue;
+      const data = event.data || {};
+      if (data.attention !== true) continue;
+      return Number(data.createdAt || 0) || Date.parse(event.ts || '') || 0;
+    }
+  } catch {
+    return 0;
+  }
+  return 0;
+}
+
+function lastAttentionNotificationAt() {
+  const inMemory = Number(notificationState.attention.lastNotificationAt || 0);
+  if (inMemory) return inMemory;
+  const audited = latestAttentionNotificationAuditAt();
+  if (audited) {
+    notificationState.attention.lastNotificationAt = audited;
+  }
+  return audited;
 }
 
 function attentionDurationLabel(ms) {
@@ -1066,7 +1099,7 @@ function attentionPolicySnapshot(options = {}) {
 
   reasons.sort((a, b) => attentionSeverityRank(b.severity) - attentionSeverityRank(a.severity) || b.count - a.count || a.id.localeCompare(b.id));
   const top = reasons[0] || null;
-  const lastNotificationAt = Number(notificationState.last?.createdAt || 0);
+  const lastNotificationAt = lastAttentionNotificationAt();
   const elapsed = lastNotificationAt ? now - lastNotificationAt : Infinity;
   const cooldownRemainingMs = Number.isFinite(elapsed)
     ? Math.max(0, ATTENTION_NOTIFICATION_COOLDOWN_MS - elapsed)
@@ -1126,19 +1159,77 @@ function attentionPolicySnapshot(options = {}) {
   };
 }
 
-function notifyResident(title, body, data = {}) {
+function attentionNotificationDecision(options = {}) {
+  const attention = options.attention || attentionPolicySnapshot();
+  const candidate = attention.notifyCandidate || null;
+  let reason = '';
+  if (!candidate) {
+    reason = 'no_candidate';
+  } else if (!attention.enabled) {
+    reason = 'disabled';
+  } else if (!attention.supported) {
+    reason = 'unsupported';
+  } else if (attention.cooldown?.active) {
+    reason = 'cooldown';
+  } else if (!attention.shouldNotify) {
+    reason = 'policy';
+  }
+  return {
+    ok: true,
+    shouldNotify: Boolean(attention.shouldNotify),
+    wouldNotify: Boolean(attention.shouldNotify),
+    reason,
+    candidate,
+    candidateId: candidate?.id || '',
+    level: attention.level,
+    petState: attention.petState,
+    cooldown: attention.cooldown,
+    attention,
+  };
+}
+
+function recordSuppressedAttentionNotification(title, body, data, decision) {
+  const record = {
+    title: String(title || 'JAVIS').slice(0, 80),
+    body: compactRecordText(body || '', 180),
+    data,
+    attention: true,
+    attentionReason: decision.candidateId || '',
+    attentionLevel: decision.level || 'quiet',
+    cooldownRemainingMs: Number(decision.cooldown?.remainingMs || 0),
+    createdAt: Date.now(),
+    delivered: false,
+    reason: decision.reason || 'attention_policy',
+  };
+  notificationState.skipped += 1;
+  notificationState.last = record;
+  notificationState.attention.skipped += 1;
+  notificationState.attention.last = record;
+  appendAudit('notification.attention_suppressed', record);
+  return record;
+}
+
+function notifyResident(title, body, data = {}, options = {}) {
   const cleanTitle = String(title || 'JAVIS').slice(0, 80);
   const cleanBody = compactRecordText(body || '', 180);
+  const isAttention = options.attention === true;
   const record = {
     title: cleanTitle,
     body: cleanBody,
     data,
+    attention: isAttention,
+    attentionReason: options.attentionReason || options.attentionPolicy?.notifyCandidate?.id || '',
+    attentionLevel: options.attentionPolicy?.level || '',
     createdAt: Date.now(),
   };
 
   if (!NOTIFICATIONS_ENABLED || !notificationSupported()) {
     notificationState.skipped += 1;
     notificationState.last = { ...record, delivered: false, reason: NOTIFICATIONS_ENABLED ? 'unsupported' : 'disabled' };
+    if (isAttention) {
+      notificationState.attention.skipped += 1;
+      notificationState.attention.last = notificationState.last;
+    }
     appendAudit('notification.skipped', notificationState.last);
     return false;
   }
@@ -1155,6 +1246,11 @@ function notifyResident(title, body, data = {}) {
     notification.show();
     notificationState.sent += 1;
     notificationState.last = { ...record, delivered: true };
+    if (isAttention) {
+      notificationState.attention.sent += 1;
+      notificationState.attention.last = notificationState.last;
+      notificationState.attention.lastNotificationAt = record.createdAt;
+    }
     appendAudit('notification.sent', notificationState.last);
     return true;
   } catch (error) {
@@ -1164,9 +1260,65 @@ function notifyResident(title, body, data = {}) {
       delivered: false,
       reason: error instanceof Error ? error.message : String(error),
     };
+    if (isAttention) {
+      notificationState.attention.skipped += 1;
+      notificationState.attention.last = notificationState.last;
+    }
     appendAudit('notification.failed', notificationState.last);
     return false;
   }
+}
+
+function notifyCurrentAttention(source = 'attention', options = {}) {
+  const decision = attentionNotificationDecision(options);
+  const candidate = decision.candidate || null;
+  const title = compactRecordText(options.title || (candidate ? `JAVIS ${candidate.label}` : 'JAVIS attention check'), 80);
+  const body = compactRecordText(options.body || candidate?.summary || 'No high-priority attention item is waiting.', 180);
+  const data = {
+    type: 'attention',
+    source: compactRecordText(source, 80),
+    ...(options.data || {}),
+    attentionReason: decision.candidateId,
+    attentionLevel: decision.level,
+  };
+  if (options.dryRun === true) {
+    return {
+      ok: true,
+      dryRun: true,
+      delivered: false,
+      suppressed: !decision.shouldNotify,
+      reason: decision.reason,
+      decision,
+      notifications: notificationSnapshot(),
+    };
+  }
+  if (!decision.shouldNotify) {
+    const record = options.recordSuppressed === false && decision.reason === 'no_candidate'
+      ? null
+      : recordSuppressedAttentionNotification(title, body, data, decision);
+    return {
+      ok: true,
+      delivered: false,
+      suppressed: true,
+      reason: decision.reason,
+      decision,
+      record,
+      notifications: notificationSnapshot(),
+    };
+  }
+  const delivered = notifyResident(title, body, data, {
+    attention: true,
+    attentionReason: decision.candidateId,
+    attentionPolicy: decision.attention,
+  });
+  return {
+    ok: delivered,
+    delivered,
+    suppressed: false,
+    reason: delivered ? '' : 'notification_failed',
+    decision,
+    notifications: notificationSnapshot(),
+  };
 }
 
 function applyWindowMode(mode, options = {}) {
@@ -6562,11 +6714,15 @@ function createActionApproval(plan, reason, continuation = null) {
     id: approval.id,
     status: approval.status,
   });
-  notifyResident('JAVIS approval needed', approval.summary, {
-    type: 'approval',
-    id: approval.id,
-    action: approval.action,
-    riskLevel: approval.riskLevel,
+  notifyCurrentAttention('approval_created', {
+    title: 'JAVIS approval needed',
+    body: approval.summary,
+    data: {
+      type: 'approval',
+      id: approval.id,
+      action: approval.action,
+      riskLevel: approval.riskLevel,
+    },
   });
   return approval;
 }
@@ -17976,6 +18132,17 @@ function updateConversationState(options = {}) {
   } else if (snapshot.status === 'live') {
     maybeQueueRealtimeDogfoodProgressForLive(snapshot);
   }
+  if (snapshot.status === 'error' && transitioned) {
+    notifyCurrentAttention('voice_error', {
+      title: 'JAVIS voice needs attention',
+      body: snapshot.error || 'The Realtime voice session failed.',
+      data: {
+        type: 'voice_error',
+        sessionId: snapshot.sessionId || '',
+        source: snapshot.source || '',
+      },
+    });
+  }
   return snapshot;
 }
 
@@ -18051,6 +18218,12 @@ function startWakeEngine() {
     wakeEngineProcess = null;
   });
   return wakeStatusSnapshot();
+}
+
+function scheduleStartupAttentionCheck() {
+  setTimeout(() => {
+    notifyCurrentAttention('startup', { recordSuppressed: false });
+  }, 2500).unref?.();
 }
 
 function stopWakeEngine() {
@@ -26928,6 +27101,20 @@ function startApiServer() {
     res.json({ attention: attentionPolicySnapshot() });
   });
 
+  api.post('/api/attention/notify', express.json({ limit: '64kb' }), (req, res) => {
+    const result = notifyCurrentAttention(req.body?.source || 'api', {
+      title: req.body?.title,
+      body: req.body?.body,
+      dryRun: req.body?.dryRun === true,
+      recordSuppressed: req.body?.recordSuppressed !== false,
+      data: {
+        type: 'attention',
+        source: req.body?.source || 'api',
+      },
+    });
+    res.json(result);
+  });
+
   api.get('/api/conversation/state', (_req, res) => {
     res.json({ conversation: conversationStateSnapshot() });
   });
@@ -28360,6 +28547,7 @@ app.whenReady().then(async () => {
     startLearningMonitor();
     startAutopilotMonitor();
     startWakeEngine();
+    scheduleStartupAttentionCheck();
   } catch (error) {
     handleStartupError(error);
   }

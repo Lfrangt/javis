@@ -40,10 +40,47 @@ export default {
           typeof attention.petState === 'string' &&
           attention.cooldown &&
           typeof attention.cooldown.remainingMs === 'number' &&
+          typeof attention.cooldown.lastNotificationAt === 'number' &&
           Array.isArray(attention.reasons) &&
           intervention.attentionLevel === attention.level
           ? ok('presence.attention_policy', 'Attention policy', `${attention.level} · pet=${attention.petState} · notify=${attention.shouldNotify ? 'yes' : 'no'}`)
           : fail('presence.attention_policy', 'Attention policy', 'presence must expose quiet attention policy and cooldown state', attention),
+      );
+
+      const notifyPreview = await ctx.api('/api/attention/notify', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          dryRun: true,
+          title: 'JAVIS attention preview',
+          body: 'Dry-run attention notification preview.',
+        },
+      });
+      const decision = notifyPreview.data?.decision || {};
+      out.push(
+        notifyPreview.ok &&
+          notifyPreview.data?.dryRun === true &&
+          typeof notifyPreview.data?.delivered === 'boolean' &&
+          typeof notifyPreview.data?.suppressed === 'boolean' &&
+          typeof decision.shouldNotify === 'boolean' &&
+          typeof decision.reason === 'string' &&
+          decision.attention?.ok === true
+          ? ok('presence.attention_notify_gate', 'Attention notification gate', `dry-run=${decision.shouldNotify ? 'would notify' : `suppressed:${decision.reason || 'policy'}`}`)
+          : fail('presence.attention_notify_gate', 'Attention notification gate', 'dry-run attention notification gate must expose decision evidence without sending', notifyPreview.data),
+      );
+
+      const notifications = await ctx.api('/api/notifications/state');
+      const notificationState = notifications.data?.notifications || {};
+      out.push(
+        notifications.ok &&
+          notificationState.attentionNotifications &&
+          typeof notificationState.attentionNotifications.sent === 'number' &&
+          typeof notificationState.attentionNotifications.skipped === 'number' &&
+          typeof notificationState.attentionNotifications.lastNotificationAt === 'number' &&
+          notificationState.attention?.cooldown &&
+          notificationState.attention.cooldown.lastNotificationAt === notificationState.attentionNotifications.lastNotificationAt
+          ? ok('presence.attention_notification_state', 'Attention notification state', `${notificationState.attentionNotifications.sent} attention notification(s), cooldown=${notificationState.attention.cooldown.remainingLabel || 'now'}`)
+          : fail('presence.attention_notification_state', 'Attention notification state', 'notifications state must separate attention notifications from ordinary notifications', notificationState),
       );
 
       const browserActivity = p.observing?.browserActivity || {};

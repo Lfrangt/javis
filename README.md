@@ -22,7 +22,7 @@ Local Mac-first realtime desktop buddy.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
 - Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, attach recalled local skills as structured `skillRecallPlan` evidence during later task routing, promote confirmed repeats into local skill shortcuts, manage those shortcuts from CUI/API/Realtime voice tools, and pass recalled plans into queued background/Codex/Claude workers.
-- Resident presence state: standby/watching/wake/work/attention status with the latest passive context, quiet attention policy, notification cooldown, and intervention guardrails.
+- Resident presence state: standby/watching/wake/work/attention status with the latest passive context, quiet attention policy, attention-notification throttling, and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser activity: local recent browser host/title timeline from ambient metadata, exposed through API/CUI/presence/Realtime tools without storing page text.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
@@ -70,7 +70,7 @@ Local Mac-first realtime desktop buddy.
 - Global pet park hotkey, defaulting to `Control+Shift+Space`.
 - Global tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Space` on Mac), which wakes JAVIS and parks it at the Dynamic Island/notch position.
 - Global clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`.
-- Resident system notifications for approvals and background task completion.
+- Resident system notifications for approvals and background task completion, with approval/setup/voice attention alerts gated by the quiet attention policy.
 - Voice mode defaults to open mic from the pet, with push-to-talk plumbing still available internally.
 - Setup/config diagnostics for `.env`, permissions, resident mode, policy, and local workers.
 - Local evaluation harness for product-lane regression checks across health, Realtime voice configuration, briefing, memory, Inbox, routing, parallel multi-agent ownership, collaboration, browser, file, control, worker, Accessibility, and learning surfaces.
@@ -184,6 +184,7 @@ Local Express service on 127.0.0.1:3417
   /api/learning/skill-draft -> build a reviewable SKILL.md draft from inferred local patterns
   /api/presence         -> resident standby/watch/work state, attention policy, and latest passive context
   /api/attention        -> quiet attention policy for pet color, notifications, cooldown, and reasons
+  /api/attention/notify -> apply the attention notification gate, with dry-run support for testing
   /api/conversation/state -> resident voice conversation lifecycle state
   /api/realtime/context -> silent preflight context for new voice sessions
   /api/realtime/evidence -> live voice dogfood checklist and sanitized tool-call evidence
