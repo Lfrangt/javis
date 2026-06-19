@@ -187,12 +187,27 @@ export default {
         body: {
           source: 'eval_realtime_live_dogfood',
           sessionId,
+          transport: 'eval-simulated-live',
+          dataChannelReadyState: 'open',
+          eventType: 'conversation.item.create',
+          eventRole: 'user',
+          contentType: 'input_text',
+          forcedResponse: false,
+          responseActive: false,
+          voiceStatus: 'live',
+          micMode: 'open',
+          screenLive: false,
           ...evidence,
         },
       });
       const recorded = record.data?.conversation?.lastRealtimeProgressInjection;
       out.push(
-        record.ok && recorded?.sessionId === sessionId && recorded?.workerSummary === evidence.workerSummary
+        record.ok &&
+          recorded?.sessionId === sessionId &&
+          recorded?.workerSummary === evidence.workerSummary &&
+          recorded?.transport === 'eval-simulated-live' &&
+          recorded?.dataChannelReadyState === 'open' &&
+          recorded?.forcedResponse === false
           ? ok('realtime_live_dogfood.injection_evidence', 'Realtime injection evidence', `recorded ${recorded.workerSummary}`)
           : fail('realtime_live_dogfood.injection_evidence', 'Realtime injection evidence', `record failed ${record.status}`, record.data),
       );

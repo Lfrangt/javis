@@ -141,11 +141,25 @@ export default {
           source: 'eval-dry-run',
           sessionId: conversation.sessionId,
           dryRun: true,
+          transport: 'eval-simulated',
+          dataChannelReadyState: 'open',
+          eventType: 'conversation.item.create',
+          eventRole: 'user',
+          contentType: 'input_text',
+          forcedResponse: false,
+          responseActive: false,
+          voiceStatus: conversation.status,
+          micMode: conversation.micMode || 'open',
+          screenLive: Boolean(conversation.screenLive),
           ...evidence,
         },
       });
       out.push(
-        dryRun.ok && dryRun.data?.injection?.workerSummary === evidence.workerSummary
+        dryRun.ok &&
+          dryRun.data?.injection?.workerSummary === evidence.workerSummary &&
+          dryRun.data?.injection?.transport === 'eval-simulated' &&
+          dryRun.data?.injection?.eventType === 'conversation.item.create' &&
+          dryRun.data?.injection?.forcedResponse === false
           ? ok('realtime_injection.runtime_dry_run', 'Runtime injection evidence', 'active user session detected; dry-run normalization passed')
           : fail('realtime_injection.runtime_dry_run', 'Runtime injection evidence', `dry-run failed ${dryRun.status}`, dryRun.data),
       );
@@ -167,6 +181,16 @@ export default {
         body: {
           source: 'eval',
           sessionId,
+          transport: 'eval-simulated',
+          dataChannelReadyState: 'open',
+          eventType: 'conversation.item.create',
+          eventRole: 'user',
+          contentType: 'input_text',
+          forcedResponse: false,
+          responseActive: false,
+          voiceStatus: 'live',
+          micMode: 'open',
+          screenLive: false,
           ...evidence,
         },
       });
@@ -177,7 +201,11 @@ export default {
           record.data?.conversation?.realtimeProgressInjectionCount >= 1 &&
           recorded?.sessionId === sessionId &&
           recorded?.workerSummary === evidence.workerSummary &&
-          recorded?.contextPreview === evidence.contextPreview
+          recorded?.contextPreview === evidence.contextPreview &&
+          recorded?.transport === 'eval-simulated' &&
+          recorded?.dataChannelReadyState === 'open' &&
+          recorded?.eventType === 'conversation.item.create' &&
+          recorded?.forcedResponse === false
           ? ok('realtime_injection.runtime_record', 'Runtime injection evidence', 'resident recorded the live progress injection summary')
           : fail('realtime_injection.runtime_record', 'Runtime injection evidence', `record failed ${record.status}`, record.data),
       );

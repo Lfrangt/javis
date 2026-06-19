@@ -115,6 +115,16 @@ type ConversationState = {
     source: string
     sessionId: string
     status: string
+    transport?: string
+    dataChannelReadyState?: string
+    eventType?: string
+    eventRole?: string
+    contentType?: string
+    forcedResponse?: boolean
+    responseActive?: boolean
+    voiceStatus?: string
+    micMode?: MicMode
+    screenLive?: boolean
     contextLength: number
     contextPreview: string
     workerSummary: string
@@ -1474,11 +1484,22 @@ function App() {
         const now = Date.now()
         if (now - lastRealtimeWorkProgressSyncAtRef.current < 10000) return
         if (pushRealtimeTextContext(contextText)) {
+          const dataChannelReadyState = dataChannelRef.current?.readyState || ''
           void apiJson<{ conversation: ConversationState }>('/api/realtime/progress-injection', {
             method: 'POST',
             body: JSON.stringify({
               source: 'renderer',
               sessionId: voiceSessionIdRef.current,
+              transport: 'webrtc-datachannel',
+              dataChannelReadyState,
+              eventType: 'conversation.item.create',
+              eventRole: 'user',
+              contentType: 'input_text',
+              forcedResponse: false,
+              responseActive: responseActiveRef.current,
+              voiceStatus,
+              micMode,
+              screenLive,
               ...realtimeProgressInjectionEvidence(result.progress, contextText),
             }),
           })
@@ -1503,7 +1524,7 @@ function App() {
       window.clearTimeout(timeout)
       window.clearInterval(interval)
     }
-  }, [pushRealtimeTextContext, voiceStatus])
+  }, [micMode, pushRealtimeTextContext, screenLive, voiceStatus])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return
