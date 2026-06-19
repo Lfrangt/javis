@@ -106,7 +106,7 @@ Renderer
 - Workflow delivery lane: copies completed workflow results back to the system clipboard in result-only or Markdown format.
 - Memory lane: user-approved local memories for durable preferences, project facts, and notes, with keyword search, task-context injection, and delete.
 - Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, routing evidence, and Record & Replay-inspired `SKILL.md` draft generation for repeatable local workflows.
-- Demonstration lane: explicit user-started UI demonstration records with sanitized app/browser/screen/accessibility summaries, deterministic manual-preview playbooks, and delete controls. It stores no screenshots or clipboard text.
+- Demonstration lane: explicit user-started UI demonstration records with sanitized app/browser/screen/accessibility summaries, deterministic manual-preview playbooks, API/CUI/Realtime voice tools, and delete controls. It stores no screenshots or clipboard text.
 - Clipboard lane: local clipboard read/write, guarded by policy and audit logs.
 - File lane: local file list/read/search/write/create/copy/move, guarded by allowed roots, risk levels, approvals, local-execution enablement, and audit logs.
 

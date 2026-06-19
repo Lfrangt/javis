@@ -3528,7 +3528,7 @@ function demonstrationStateSnapshot(options = {}) {
   return {
     counts: demonstrationCounts(),
     active: activeDemonstration(),
-    recent: demonstrationSnapshot({ limit: options.limit || 8 }),
+    recent: demonstrationSnapshot({ limit: options.limit || 8, status: options.status }),
     file: DEMONSTRATIONS_FILE,
     storage: {
       localOnly: true,
@@ -20573,6 +20573,63 @@ async function executeTool(name, args) {
     }
   }
 
+  if (name === 'get_ui_demonstrations') {
+    return {
+      ok: true,
+      output: JSON.stringify(demonstrationStateSnapshot({
+        limit: Math.max(1, Math.min(20, Number(args?.limit || 8))),
+        status: args?.status,
+      })),
+    };
+  }
+
+  if (name === 'start_ui_demonstration') {
+    try {
+      const result = await startDemonstration({
+        title: args?.title,
+        goal: args?.goal || args?.title,
+        tags: args?.tags,
+        captureInitial: Boolean(args?.captureInitial),
+        note: args?.note,
+        instruction: args?.instruction,
+        includeAccessibility: args?.includeAccessibility,
+        captureScreen: Boolean(args?.captureScreen),
+        source: 'voice',
+      });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'capture_ui_demonstration_step') {
+    try {
+      const result = await captureDemonstrationStep(args?.id || args?.demonstrationId || '', {
+        note: args?.note || args?.text,
+        instruction: args?.instruction || args?.action,
+        includeAccessibility: args?.includeAccessibility,
+        captureScreen: Boolean(args?.captureScreen),
+        source: 'voice',
+      });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'finish_ui_demonstration') {
+    try {
+      const result = finishDemonstration(args?.id || args?.demonstrationId || '', {
+        status: args?.status,
+        cancel: Boolean(args?.cancel),
+        source: 'voice',
+      });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_inbox') {
     const status = String(args?.status || 'open');
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 5)));
@@ -20861,6 +20918,11 @@ function createRealtimeSessionConfig(options = {}) {
       'Use set_learning_controls when the user asks to pause, resume, or stop using inferred local learning in prompts.',
       'Use update_learning_exclusion when the user asks JAVIS not to learn from a specific app, website, domain, folder, or path.',
       'Use delete_learning_profile when the user explicitly asks to delete local inferred learning data.',
+      'Use get_ui_demonstrations when the user asks what UI workflows have been demonstrated or recorded.',
+      'Use start_ui_demonstration when the user explicitly asks JAVIS to watch or record a workflow they are about to demonstrate.',
+      'Use capture_ui_demonstration_step when the user says this step, now, record this part, or capture the current step during an active UI demonstration.',
+      'Use finish_ui_demonstration when the user says they are done recording, or wants to cancel a UI demonstration.',
+      'UI demonstrations are explicit local learning records; they store user notes plus sanitized app/browser/screen/accessibility summaries, never screenshots or raw clipboard text. Replay must re-observe the live UI before acting.',
       'Use get_inbox when the user asks what is waiting, what they captured, or which Inbox items are open.',
       'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory.',
       'Use process_next_inbox only when the user explicitly asks to process, do, run, or start the next Inbox item.',
@@ -21589,6 +21651,76 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'get_ui_demonstrations',
+        description: 'List explicit local UI demonstration records and the current active recording. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            status: { type: 'string', enum: ['recording', 'done', 'cancelled'] },
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'start_ui_demonstration',
+        description: 'Start an explicit local UI demonstration recording from a user request. Stores notes and sanitized context, not screenshots or raw clipboard text.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            goal: { type: 'string' },
+            note: { type: 'string' },
+            instruction: { type: 'string' },
+            captureInitial: { type: 'boolean' },
+            includeAccessibility: { type: 'boolean' },
+            captureScreen: { type: 'boolean' },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+          },
+          required: ['goal'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'capture_ui_demonstration_step',
+        description: 'Capture one explicit step in the active UI demonstration by observing the current Mac app/browser/accessibility context.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            demonstrationId: { type: 'string' },
+            note: { type: 'string' },
+            text: { type: 'string' },
+            instruction: { type: 'string' },
+            action: { type: 'string' },
+            includeAccessibility: { type: 'boolean' },
+            captureScreen: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'finish_ui_demonstration',
+        description: 'Finish or cancel the active explicit UI demonstration and generate a manual-preview playbook that re-observes live UI before replay.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            demonstrationId: { type: 'string' },
+            status: { type: 'string', enum: ['done', 'cancelled'] },
+            cancel: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_inbox',
         description: 'List local Inbox captures and counts. Defaults to open items.',
         parameters: {
@@ -21990,6 +22122,10 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_control_mode',
   'get_work_progress',
   'get_collaboration_state',
+  'get_ui_demonstrations',
+  'start_ui_demonstration',
+  'capture_ui_demonstration_step',
+  'finish_ui_demonstration',
   'read_browser_page',
   'run_browser_workflow',
   'route_task',
@@ -22008,6 +22144,7 @@ function realtimeInstructionChecks(instructions = '') {
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
+    demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
     localExecution: /run_cli_tool|run_mac_action|run_file_action/i.test(text),
     confirmationStops: /purchases|logins|deletes|sends|irreversible|confirmation/i.test(text),

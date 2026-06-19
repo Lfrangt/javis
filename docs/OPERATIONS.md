@@ -264,6 +264,7 @@ When Claude Code is working beside Codex, ask it to use the collaboration comman
 For local Claude Code/Codex sessions, prefer `npm run collab -- claim ...` over manual curl. It auto-discovers the local API token, prints the claim id, and gives the matching heartbeat/release commands.
 
 `/api/demonstrations` is the Record & Replay-style local learning surface. It is explicit and local: start a demonstration, capture one or more current UI states, finish it into a manual-preview playbook, and delete it when no longer useful.
+Realtime voice exposes the same surface through `get_ui_demonstrations`, `start_ui_demonstration`, `capture_ui_demonstration_step`, and `finish_ui_demonstration`; say “贾维斯，开始记录这个流程”, “记录这一步”, then “结束记录” while demonstrating the workflow.
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/demonstrations/start \
