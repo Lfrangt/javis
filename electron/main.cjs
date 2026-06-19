@@ -11697,6 +11697,32 @@ function normalizeBrowserWorkflowMode(value) {
   return 'quick';
 }
 
+function normalizeBrowserWorkflowFixturePage(value, maxChars = 12000) {
+  if (!value || typeof value !== 'object') return null;
+  const rawText = String(value.text || value.body || '');
+  const rawSelectedText = String(value.selectedText || '');
+  const limit = normalizeBrowserMaxChars(maxChars);
+  const text = rawText.slice(0, limit);
+  const selectedText = rawSelectedText.slice(0, limit);
+  const url = String(value.url || '');
+  return {
+    available: value.available !== false,
+    supported: value.supported !== false,
+    app: String(value.app || 'FixtureBrowser'),
+    title: String(value.title || ''),
+    url,
+    selectedText,
+    text,
+    textLength: Number(value.textLength || rawText.length || selectedText.length),
+    truncated: Boolean(value.truncated) || rawText.length > text.length || rawSelectedText.length > selectedText.length,
+    headings: Array.isArray(value.headings) ? value.headings.map((item) => compactRecordText(item, 180)).filter(Boolean).slice(0, 40) : [],
+    metaDescription: compactRecordText(value.metaDescription || value.description || '', 500),
+    links: normalizeBrowserLinks(Array.isArray(value.links) ? value.links : [], url),
+    fallback: String(value.fallback || 'fixture'),
+    error: String(value.error || ''),
+  };
+}
+
 function browserWorkflowPageSummary(page) {
   return {
     available: Boolean(page.available),
@@ -14010,7 +14036,8 @@ async function runBrowserWorkflow(options = {}) {
   const mode = normalizeBrowserWorkflowMode(options.mode);
   const instruction = String(options.instruction || '').trim();
   const maxChars = normalizeBrowserMaxChars(options.maxChars || (mode === 'quick' ? 12000 : 30000));
-  const page = await browserPageSnapshot({ app: options.app, maxChars });
+  const fixturePage = normalizeBrowserWorkflowFixturePage(options.page, maxChars);
+  const page = fixturePage || await browserPageSnapshot({ app: options.app, maxChars });
   const pageSummary = browserWorkflowPageSummary(page);
   const request = instruction || {
     summarize: 'Summarize current page.',
@@ -14049,6 +14076,52 @@ async function runBrowserWorkflow(options = {}) {
       routing,
       page: pageSummary,
       output: page.error || 'No supported browser page is available.',
+    };
+  }
+
+  const preview = options.execute === false || options.preview === true;
+  if (preview) {
+    const workflow = createWorkflowRecord({
+      kind: 'browser',
+      source: options.source || 'browser_workflow',
+      status: 'done',
+      title: workflowTitle,
+      intent,
+      mode,
+      request,
+      target: pageSummary,
+      result: `Preview only. Would run ${mode} browser ${intent} workflow for ${page.title || page.url || 'current page'}.`,
+    });
+    appendAudit('browser_workflow.previewed', {
+      intent,
+      mode,
+      app: page.app,
+      title: page.title,
+      url: page.url,
+      textLength: page.textLength,
+      truncated: page.truncated,
+      fixture: Boolean(fixturePage),
+    });
+    const routing = createRoutingRecordForWorkflow({
+      task: request,
+      workflow,
+      mode,
+      source: options.source || 'browser_workflow',
+      scope: options.scope || `browser:${intent}`,
+      parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
+      resultSummary: workflow.result,
+    });
+    return {
+      ok: true,
+      mode,
+      intent,
+      preview: true,
+      executed: false,
+      queued: false,
+      workflow,
+      routing,
+      page: pageSummary,
+      output: workflow.result,
     };
   }
 
@@ -30478,7 +30551,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_browser_workflow',
-        description: 'Run a practical workflow over the current browser page, safe form-fill drafts, search/compare result pages, open and review one selected result, or synthesize multiple result pages. Browser research uses guarded search/open_url plus read-only page snapshots; form-fill drafts preview DOM field matches before any fill.',
+        description: 'Run a practical workflow over the current browser page, safe form-fill drafts, search/compare result pages, open and review one selected result, or synthesize multiple result pages. Pass execute:false to preview generic page workflows without a model call, queue, or page action. Browser research uses guarded search/open_url plus read-only page snapshots; form-fill drafts preview DOM field matches before any fill.',
         parameters: {
           type: 'object',
           properties: {

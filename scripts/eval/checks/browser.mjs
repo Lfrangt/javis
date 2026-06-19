@@ -108,6 +108,55 @@ export default {
         : fail('browser.fill_draft_fixture_gate', 'Browser fill draft fixture gate', `POST /api/browser/fill-draft ${fixtureExecute.status}`, fixtureExecute.data),
     );
 
+    const workflowFixturePage = {
+      available: true,
+      supported: true,
+      app: 'FixtureBrowser',
+      title: 'JAVIS Launch Notes',
+      url: 'https://example.test/javis-launch',
+      metaDescription: 'Internal launch checklist for a browser-enabled local agent.',
+      headings: ['Launch Plan', 'Follow-up Actions'],
+      text: [
+        'JAVIS launch checklist.',
+        'Owner: resident browser lane.',
+        'Action: verify live browser fill dogfood before broadening browser automation.',
+        'Action: keep the desktop pet quiet while workflow logs stay in CUI.',
+        'Deadline: Friday.',
+        'Private fixture token: sk-test-secret-do-not-return.',
+      ].join('\n'),
+      links: [
+        { text: 'Operator runbook', href: 'https://example.test/runbook' },
+      ],
+    };
+    const workflowPreview = await ctx.api('/api/browser/workflow', {
+      method: 'POST',
+      body: {
+        intent: 'extract_actions',
+        mode: 'quick',
+        execute: false,
+        instruction: 'Extract follow-up actions from this page.',
+        page: workflowFixturePage,
+      },
+    });
+    const workflowPreviewBody = JSON.stringify(workflowPreview.data || {});
+    out.push(
+      workflowPreview.ok &&
+        workflowPreview.data?.ok === true &&
+        workflowPreview.data?.preview === true &&
+        workflowPreview.data?.executed === false &&
+        workflowPreview.data?.queued === false &&
+        workflowPreview.data?.intent === 'extract_actions' &&
+        workflowPreview.data?.workflow?.status === 'done' &&
+        workflowPreview.data?.routing?.status === 'done' &&
+        workflowPreview.data?.page?.title === 'JAVIS Launch Notes' &&
+        workflowPreview.data?.page?.returnedLength > 100 &&
+        workflowPreview.data?.page?.linkCount === 1 &&
+        /Preview only/.test(String(workflowPreview.data?.output || '')) &&
+        !workflowPreviewBody.includes('sk-test-secret-do-not-return')
+        ? ok('browser.workflow_preview_fixture', 'Browser workflow preview fixture', 'previewed extract_actions without model call, queue, or page-text echo')
+        : fail('browser.workflow_preview_fixture', 'Browser workflow preview fixture', `POST /api/browser/workflow ${workflowPreview.status}`, workflowPreview.data),
+    );
+
     return out;
   },
 };
