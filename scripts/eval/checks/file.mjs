@@ -103,12 +103,41 @@ export default {
           : fail('file.rename_apply_gate', 'Batch rename apply gate', `POST /api/files/plan/apply ${renameApplyPreview.status}`, renameApplyPreview.data),
       );
 
+      const gamma = path.join(fixtureDir, 'Gamma Draft.txt');
+      fs.writeFileSync(gamma, 'gamma\n', 'utf8');
+      const renameApply = await ctx.api('/api/files/plan/apply', {
+        method: 'POST',
+        body: {
+          path: fixtureDir,
+          intent: 'rename',
+          extensions: ['.txt'],
+          nameIncludes: 'Gamma',
+          prefix: 'renamed-',
+          caseStyle: 'kebab',
+          maxFiles: 1,
+          confirm: true,
+        },
+      });
+      out.push(
+        renameApply.ok &&
+          renameApply.data?.confirmed === true &&
+          renameApply.data?.counts?.executed === 1 &&
+          renameApply.data?.counts?.verified === 1 &&
+          renameApply.data?.counts?.verification_failed === 0 &&
+          renameApply.data?.results?.[0]?.verification?.ok === true &&
+          !fs.existsSync(gamma) &&
+          fs.existsSync(path.join(fixtureDir, 'renamed-gamma-draft.txt'))
+          ? ok('file.rename_apply_verified', 'Batch rename verification', 'confirmed rename verified destination content and source removal')
+          : fail('file.rename_apply_verified', 'Batch rename verification', `POST /api/files/plan/apply ${renameApply.status}`, renameApply.data),
+      );
+
       const convertPlan = await ctx.api('/api/files/plan', {
         method: 'POST',
         body: {
           path: fixtureDir,
           intent: 'convert',
           extensions: ['.txt'],
+          nameIncludes: 'Alpha',
           targetExtension: '.md',
           maxFiles: 1,
         },
@@ -133,6 +162,7 @@ export default {
           path: fixtureDir,
           intent: 'convert',
           extensions: ['.txt'],
+          nameIncludes: 'Alpha',
           targetExtension: '.md',
           maxFiles: 1,
           confirm: true,
@@ -141,13 +171,16 @@ export default {
       const generatedMarkdown = fs.readdirSync(fixtureDir).find((name) => name.endsWith('.md'));
       const generatedMarkdownText = generatedMarkdown ? fs.readFileSync(path.join(fixtureDir, generatedMarkdown), 'utf8') : '';
       out.push(
-        convertApply.ok &&
+          convertApply.ok &&
           convertApply.data?.confirmed === true &&
           convertApply.data?.counts?.executed === 1 &&
+          convertApply.data?.counts?.verified === 1 &&
+          convertApply.data?.counts?.verification_failed === 0 &&
+          convertApply.data?.results?.[0]?.verification?.ok === true &&
           generatedMarkdown &&
           /^# .+ Draft/m.test(generatedMarkdownText) &&
-          /alpha|beta/.test(generatedMarkdownText)
-          ? ok('file.convert_apply', 'Semantic convert apply', 'confirmed plan wrote Markdown through file action policy')
+          /alpha/.test(generatedMarkdownText)
+          ? ok('file.convert_apply', 'Semantic convert apply', 'confirmed plan wrote and verified Markdown through file action policy')
           : fail('file.convert_apply', 'Copy-convert apply', `POST /api/files/plan/apply ${convertApply.status}`, convertApply.data),
       );
 
@@ -157,6 +190,7 @@ export default {
           path: fixtureDir,
           intent: 'convert',
           extensions: ['.txt'],
+          nameIncludes: 'Beta',
           targetExtension: '.copy',
           conversionMode: 'copy',
           maxFiles: 1,
@@ -171,6 +205,31 @@ export default {
           String(copyConvertStep.plan?.args?.destinationPath || '').endsWith('.copy')
           ? ok('file.convert_copy_mode', 'Copy-convert mode', 'conversionMode:copy still generates a non-destructive copy_file step')
           : fail('file.convert_copy_mode', 'Copy-convert mode', `POST /api/files/plan ${copyConvertPlan.status}`, copyConvertPlan.data),
+      );
+
+      const copyConvertApply = await ctx.api('/api/files/plan/apply', {
+        method: 'POST',
+        body: {
+          path: fixtureDir,
+          intent: 'convert',
+          extensions: ['.txt'],
+          nameIncludes: 'Beta',
+          targetExtension: '.copy',
+          conversionMode: 'copy',
+          maxFiles: 1,
+          confirm: true,
+        },
+      });
+      out.push(
+        copyConvertApply.ok &&
+          copyConvertApply.data?.confirmed === true &&
+          copyConvertApply.data?.counts?.executed === 1 &&
+          copyConvertApply.data?.counts?.verified === 1 &&
+          copyConvertApply.data?.counts?.verification_failed === 0 &&
+          copyConvertApply.data?.results?.[0]?.verification?.ok === true &&
+          fs.existsSync(path.join(fixtureDir, 'Beta Draft.copy'))
+          ? ok('file.convert_copy_apply_verified', 'Copy-convert verification', 'confirmed copy-convert verified destination content')
+          : fail('file.convert_copy_apply_verified', 'Copy-convert verification', `POST /api/files/plan/apply ${copyConvertApply.status}`, copyConvertApply.data),
       );
     } finally {
       fs.rmSync(fixtureDir, { recursive: true, force: true });

@@ -43,7 +43,7 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 - Demonstration skill promotion (`draft_ui_demonstration_skill` or `/api/demonstrations/:id/skill-draft`) is preview-only. Saving (`save_ui_demonstration_skill` or `/api/demonstrations/:id/skill-draft/save`) requires `confirm:true`, writes only to the local user skills directory, stores no screenshots or raw clipboard text, and does not grant new automation permissions.
 - Guarded UI action requests go through the same `/api/actions/execute` path. They do not bypass preview, action policy, local execution, or macOS permission checks.
 - File workflows reuse policy-guarded list/read/search actions for read-only context. Organization, batch-rename, semantic text-conversion, and copy-convert workflows produce preview plans first; they do not move, copy, or write files by themselves.
-- Applying a file plan requires an explicit `confirm:true` request and still goes through the same Level 3 file-action gates.
+- Applying a file plan requires an explicit `confirm:true` request and still goes through the same Level 3 file-action gates. Executed steps record post-action verification for destination existence, bytes/hash matches, and source removal for moves.
 - File mutation actions (`write_file`, `create_directory`, `copy_file`, `move_file`) are Level 3. They require local execution enablement, approval when policy requires it, allowed roots, and audit logging.
 - Workflow history is stored locally in the runtime directory and may include page titles, URLs, user requests, linked job ids, and generated results.
 - Workflow continuation uses local history to create a new answer or queued task; it does not replay actions or execute prior steps automatically.

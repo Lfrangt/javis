@@ -608,6 +608,8 @@ curl -X POST http://127.0.0.1:3417/api/files/plan/apply \
   -d '{"path":".","intent":"organize","maxMoves":10,"confirm":true}'
 ```
 
+Apply results include per-step `verification` evidence. Directory creation checks that the directory exists, writes compare generated content hashes, copies compare destination bytes and hashes with the source, and moves also verify that the source path disappeared.
+
 With `JAVIS_ENABLE_LOCAL_EXEC=false`, the apply endpoint reports blocked steps and does not move files.
 
 Low-risk setup actions are also available:

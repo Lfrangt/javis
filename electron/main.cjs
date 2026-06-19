@@ -15846,10 +15846,154 @@ function filePlanExecutableSteps(plan) {
     .map((step) => step.executionArgs || step.plan.args);
 }
 
+function fileVerificationStats(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) {
+    return { exists: false, isFile: false, isDirectory: false, bytes: 0 };
+  }
+  const stats = fs.statSync(filePath);
+  return {
+    exists: true,
+    isFile: stats.isFile(),
+    isDirectory: stats.isDirectory(),
+    bytes: stats.size,
+    modifiedAt: stats.mtime.toISOString(),
+  };
+}
+
+function fileVerificationHash(filePath) {
+  return crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+}
+
+function buildFileActionVerificationExpectation(args = {}) {
+  const plan = buildFileActionPlan(args);
+  if (plan.action === 'create_directory') {
+    return {
+      action: plan.action,
+      targetPath: plan.args.path,
+      expectedType: 'directory',
+    };
+  }
+  if (plan.action === 'write_file') {
+    const content = String(plan.args.content ?? '');
+    const before = fileVerificationStats(plan.args.path);
+    return {
+      action: plan.action,
+      targetPath: plan.args.path,
+      expectedType: 'file',
+      expectedBytes: Buffer.byteLength(content, 'utf8'),
+      expectedHash: crypto.createHash('sha256').update(content).digest('hex'),
+      append: Boolean(plan.args.append),
+      beforeBytes: before.bytes,
+      content,
+    };
+  }
+  if (plan.action === 'copy_file' || plan.action === 'move_file') {
+    const source = fileVerificationStats(plan.args.sourcePath);
+    return {
+      action: plan.action,
+      sourcePath: plan.args.sourcePath,
+      targetPath: plan.args.destinationPath,
+      expectedType: 'file',
+      expectedBytes: source.bytes,
+      expectedHash: source.exists && source.isFile ? fileVerificationHash(plan.args.sourcePath) : '',
+    };
+  }
+  return {
+    action: plan.action,
+    targetPath: plan.target || '',
+  };
+}
+
+function verifyFileActionResult(expectation = {}) {
+  try {
+    const target = fileVerificationStats(expectation.targetPath);
+    if (expectation.action === 'create_directory') {
+      return {
+        ok: target.exists && target.isDirectory,
+        action: expectation.action,
+        targetPath: expectation.targetPath,
+        target,
+        summary: target.exists && target.isDirectory ? 'verified directory exists' : 'directory was not created',
+      };
+    }
+    if (expectation.action === 'write_file') {
+      const actualHash = target.exists && target.isFile ? fileVerificationHash(expectation.targetPath) : '';
+      const contentMatches = expectation.append
+        ? target.exists && target.isFile && fs.readFileSync(expectation.targetPath, 'utf8').endsWith(expectation.content)
+        : actualHash === expectation.expectedHash;
+      const byteCheck = expectation.append
+        ? target.bytes >= expectation.beforeBytes + expectation.expectedBytes
+        : target.bytes === expectation.expectedBytes;
+      return {
+        ok: target.exists && target.isFile && byteCheck && contentMatches,
+        action: expectation.action,
+        targetPath: expectation.targetPath,
+        expectedBytes: expectation.expectedBytes,
+        actualBytes: target.bytes,
+        hashMatch: contentMatches,
+        target,
+        summary: target.exists && target.isFile && byteCheck && contentMatches ? 'verified written file content' : 'written file did not match expected content',
+      };
+    }
+    if (expectation.action === 'copy_file') {
+      const actualHash = target.exists && target.isFile ? fileVerificationHash(expectation.targetPath) : '';
+      return {
+        ok: target.exists && target.isFile && target.bytes === expectation.expectedBytes && actualHash === expectation.expectedHash,
+        action: expectation.action,
+        sourcePath: expectation.sourcePath,
+        targetPath: expectation.targetPath,
+        expectedBytes: expectation.expectedBytes,
+        actualBytes: target.bytes,
+        hashMatch: actualHash === expectation.expectedHash,
+        sourceStillExists: fs.existsSync(expectation.sourcePath),
+        target,
+        summary: target.exists && target.isFile && target.bytes === expectation.expectedBytes && actualHash === expectation.expectedHash
+          ? 'verified copied file content'
+          : 'copied file did not match source content',
+      };
+    }
+    if (expectation.action === 'move_file') {
+      const actualHash = target.exists && target.isFile ? fileVerificationHash(expectation.targetPath) : '';
+      const sourceStillExists = fs.existsSync(expectation.sourcePath);
+      return {
+        ok: target.exists && target.isFile && !sourceStillExists && target.bytes === expectation.expectedBytes && actualHash === expectation.expectedHash,
+        action: expectation.action,
+        sourcePath: expectation.sourcePath,
+        targetPath: expectation.targetPath,
+        expectedBytes: expectation.expectedBytes,
+        actualBytes: target.bytes,
+        hashMatch: actualHash === expectation.expectedHash,
+        sourceStillExists,
+        target,
+        summary: target.exists && target.isFile && !sourceStillExists && target.bytes === expectation.expectedBytes && actualHash === expectation.expectedHash
+          ? 'verified moved file content and source removal'
+          : 'moved file result did not match expected source/destination state',
+      };
+    }
+    return {
+      ok: true,
+      action: expectation.action,
+      targetPath: expectation.targetPath,
+      summary: 'verification not required for this action',
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      action: expectation.action,
+      targetPath: expectation.targetPath,
+      error: error instanceof Error ? error.message : String(error),
+      summary: 'verification failed with an error',
+    };
+  }
+}
+
 function formatFilePlanApplyResults(results = []) {
   return results
     .map((result, index) => {
-      const detail = result.output || result.error || result.approval?.summary || '';
+      const verification = result.verification
+        ? `${result.verification.ok ? 'verified' : 'verification failed'}: ${result.verification.summary || result.verification.error || ''}`
+        : '';
+      const detail = [result.output || result.error || result.approval?.summary || '', verification].filter(Boolean).join(' · ');
       return `${index + 1}. ${result.status}: ${result.summary}${detail ? ` · ${detail}` : ''}`;
     })
     .join('\n');
@@ -15898,8 +16042,10 @@ async function applyFilePlan(options = {}) {
     const preview = previewPlannedFileStep(step);
     const summary = preview.ok ? preview.plan.summary : `${step.action} ${step.path || step.sourcePath || ''}`.trim();
     try {
+      const verificationExpectation = buildFileActionVerificationExpectation(step);
       const output = await executeFileAction(step);
-      results.push({ status: 'executed', action: step.action, summary, output });
+      const verification = verifyFileActionResult(verificationExpectation);
+      results.push({ status: 'executed', action: step.action, summary, output, verification });
     } catch (error) {
       if (error instanceof ActionApprovalRequired) {
         results.push({
@@ -15923,12 +16069,18 @@ async function applyFilePlan(options = {}) {
     (memo, result) => {
       memo.total += 1;
       memo[result.status] = (memo[result.status] || 0) + 1;
+      if (result.status === 'executed') {
+        if (result.verification?.ok) memo.verified += 1;
+        else {
+          memo.verification_failed += 1;
+        }
+      }
       return memo;
     },
-    { total: 0, executed: 0, approval_required: 0, blocked: 0 },
+    { total: 0, executed: 0, approval_required: 0, blocked: 0, verified: 0, verification_failed: 0 },
   );
   const output = formatFilePlanApplyResults(results) || 'No file actions were requested.';
-  const status = counts.blocked ? 'blocked' : counts.approval_required ? 'blocked' : 'done';
+  const status = counts.blocked || counts.approval_required || counts.verification_failed ? 'blocked' : 'done';
   const workflow = createWorkflowRecord({
     kind: 'file',
     source: 'file_plan_apply',
@@ -15946,6 +16098,8 @@ async function applyFilePlan(options = {}) {
       type: 'file_plan_apply',
       planIntent: plan.planIntent || planIntent,
       resultCount: counts.total,
+      verifiedCount: counts.verified,
+      verificationFailedCount: counts.verification_failed,
       returnedLength: output.length,
     },
   });
@@ -15958,7 +16112,7 @@ async function applyFilePlan(options = {}) {
   });
 
   return {
-    ok: counts.blocked === 0,
+    ok: counts.blocked === 0 && counts.verification_failed === 0,
     confirmed: true,
     parentWorkflow,
     workflow,
