@@ -534,7 +534,7 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'background',
-      tools: ['run_file_workflow', 'plan_file_organization', 'apply_file_plan', 'run_file_action'],
+      tools: ['run_file_workflow', 'plan_file_organization', 'plan_file_batch', 'apply_file_plan', 'run_file_action'],
       rule: 'Preview before mutation; apply only after explicit confirmation and policy approval.',
     },
     toolPosture: 'Allowed roots, max bytes/results, dry-run, approvals, and audit logs are always enforced.',
@@ -13502,7 +13502,7 @@ async function runBrowserWorkflow(options = {}) {
 
 function normalizeFileWorkflowIntent(value) {
   const intent = String(value || '').trim();
-  if (['list', 'search', 'summarize', 'ask', 'organize'].includes(intent)) return intent;
+  if (['list', 'search', 'summarize', 'ask', 'organize', 'rename', 'convert'].includes(intent)) return intent;
   return 'list';
 }
 
@@ -15200,6 +15200,139 @@ function formatFilePlanSteps(steps = []) {
     .join('\n');
 }
 
+function normalizeFilePlanIntent(value) {
+  const intent = String(value || '').trim().toLowerCase();
+  if (['organize', 'rename', 'convert'].includes(intent)) return intent;
+  return 'organize';
+}
+
+function normalizeFilePlanExtension(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  if (!raw) return '';
+  const ext = raw.startsWith('.') ? raw : `.${raw}`;
+  if (!/^\.[a-z0-9][a-z0-9._-]{0,30}$/.test(ext)) throw new Error(`Invalid file extension: ${raw}`);
+  return ext;
+}
+
+function normalizeFilePlanExtensions(value) {
+  const items = Array.isArray(value)
+    ? value
+    : String(value || '').split(',');
+  return Array.from(new Set(items
+    .map((item) => normalizeFilePlanExtension(item))
+    .filter(Boolean)));
+}
+
+function filePlanEntryMatches(entry, options = {}) {
+  if (entry.type !== 'file') return false;
+  if (!options.includeHidden && String(entry.name || '').startsWith('.')) return false;
+  const extensions = normalizeFilePlanExtensions(options.extensions || options.matchExtensions || options.extension);
+  if (extensions.length && !extensions.includes(path.extname(entry.name || '').toLowerCase())) return false;
+  const nameIncludes = String(options.nameIncludes || options.query || '').trim().toLowerCase();
+  if (nameIncludes && !String(entry.name || '').toLowerCase().includes(nameIncludes)) return false;
+  return true;
+}
+
+function sanitizeGeneratedFileName(value) {
+  return String(value || '')
+    .replace(/[/:\\\0]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 180);
+}
+
+function escapeRegExp(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function transformFileBaseName(baseName, options = {}) {
+  let next = String(baseName || '');
+  const replaceFrom = String(options.replaceFrom || '').trim();
+  if (replaceFrom) {
+    const flags = options.replaceAll === false ? '' : 'g';
+    next = next.replace(new RegExp(escapeRegExp(replaceFrom), flags), String(options.replaceTo ?? ''));
+  }
+  const caseStyle = String(options.caseStyle || '').trim().toLowerCase();
+  if (caseStyle === 'lower') next = next.toLowerCase();
+  if (caseStyle === 'upper') next = next.toUpperCase();
+  if (caseStyle === 'kebab') next = next.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gu, '-').replace(/^-+|-+$/g, '');
+  if (caseStyle === 'snake') next = next.toLowerCase().replace(/[^a-z0-9\u4e00-\u9fff]+/gu, '_').replace(/^_+|_+$/g, '');
+  return next;
+}
+
+function fileRenameNameForEntry(entry, index, options = {}) {
+  const ext = path.extname(entry.name || '');
+  const baseName = path.basename(entry.name || '', ext);
+  const transformedBase = transformFileBaseName(baseName, options);
+  const startIndex = Math.max(0, Number(options.startIndex || 1));
+  const pad = Math.max(1, Math.min(8, Number(options.pad || 2)));
+  const indexValue = startIndex + index;
+  const indexText = String(indexValue).padStart(pad, '0');
+  const date = new Date(entry.modifiedAt || Date.now()).toISOString().slice(0, 10);
+  const prefix = String(options.prefix || '');
+  const suffix = String(options.suffix || '');
+  const template = String(options.template || options.renameTemplate || '').trim();
+  const rendered = template
+    ? template
+        .replaceAll('{name}', transformedBase)
+        .replaceAll('{originalName}', baseName)
+        .replaceAll('{ext}', ext)
+        .replaceAll('{index}', indexText)
+        .replaceAll('{index0}', String(index))
+        .replaceAll('{date}', date)
+    : `${prefix}${transformedBase}${suffix}${ext}`;
+  const finalName = template && !rendered.endsWith(ext) && !path.extname(rendered) ? `${rendered}${ext}` : rendered;
+  const sanitized = sanitizeGeneratedFileName(finalName);
+  if (!sanitized || sanitized === '.' || sanitized === '..') throw new Error(`Invalid generated file name for ${entry.name}`);
+  return sanitized;
+}
+
+function blockedPlannedFileStep(action, args, error) {
+  return {
+    ok: false,
+    action,
+    args,
+    error,
+    evaluation: {
+      blocked: true,
+      reason: 'plan_conflict',
+    },
+  };
+}
+
+function finalizeFilePlan({ intent, directoryPath, title, entries, steps, source = 'file_plan' }) {
+  const blocked = steps.filter((step) => !step.ok || step.evaluation?.blocked).length;
+  const approvals = steps.filter((step) => step.ok && step.evaluation?.needsApproval).length;
+  const summary = steps.length
+    ? `${steps.length} planned ${intent} file operation(s): ${approvals} need approval, ${blocked} blocked by current policy/setup.`
+    : `No ${intent} file operations are needed for this folder.`;
+  appendAudit('file_plan.created', {
+    intent,
+    path: directoryPath,
+    entries: entries.length,
+    steps: steps.length,
+    blocked,
+    approvals,
+    source,
+  });
+  return {
+    ok: blocked === 0,
+    intent,
+    planIntent: intent,
+    path: directoryPath,
+    title,
+    summary,
+    counts: {
+      entries: entries.length,
+      steps: steps.length,
+      approvals,
+      blocked,
+    },
+    steps,
+    output: formatFilePlanSteps(steps) || summary,
+  };
+}
+
 function planFileOrganization(options = {}) {
   const targetPath = String(options.path || '.');
   const maxEntries = Math.max(1, Math.min(500, Number(options.maxEntries || 120)));
@@ -15251,6 +15384,7 @@ function planFileOrganization(options = {}) {
     return {
       ok: blocked === 0,
       intent: 'organize_by_type',
+      planIntent: 'organize',
       path: directoryPath,
       title: `organize · ${path.basename(directoryPath) || directoryPath}`.slice(0, 180),
       summary,
@@ -15266,9 +15400,118 @@ function planFileOrganization(options = {}) {
   });
 }
 
+async function filePlanDirectoryEntries(options = {}) {
+  const targetPath = String(options.path || '.');
+  const maxEntries = Math.max(1, Math.min(500, Number(options.maxEntries || 120)));
+  const raw = await executeFileAction({ action: 'list_directory', path: targetPath, maxEntries });
+  const directory = JSON.parse(raw);
+  const maxFiles = Math.max(1, Math.min(200, Number(options.maxFiles || options.maxMoves || 40)));
+  const entries = (directory.entries || [])
+    .filter((entry) => filePlanEntryMatches(entry, options))
+    .slice(0, maxFiles);
+  return {
+    directoryPath: directory.path,
+    entries,
+  };
+}
+
+async function planFileRename(options = {}) {
+  const { directoryPath, entries } = await filePlanDirectoryEntries(options);
+  const destinationNames = new Set();
+  const steps = entries.map((entry, index) => {
+    let destinationName = '';
+    try {
+      destinationName = fileRenameNameForEntry(entry, index, options);
+    } catch (error) {
+      return blockedPlannedFileStep('move_file', { sourcePath: entry.path }, error instanceof Error ? error.message : String(error));
+    }
+    const destinationPath = path.join(directoryPath, destinationName);
+    const duplicateKey = destinationPath.toLowerCase();
+    if (destinationNames.has(duplicateKey)) {
+      return blockedPlannedFileStep('move_file', {
+        sourcePath: entry.path,
+        destinationPath,
+      }, `Duplicate destination in rename plan: ${destinationPath}`);
+    }
+    destinationNames.add(duplicateKey);
+    if (entry.path === destinationPath) {
+      return blockedPlannedFileStep('move_file', {
+        sourcePath: entry.path,
+        destinationPath,
+      }, 'Generated name is unchanged.');
+    }
+    return previewPlannedFileStep({
+      action: 'move_file',
+      sourcePath: entry.path,
+      destinationPath,
+      overwrite: Boolean(options.overwrite),
+    });
+  });
+
+  return finalizeFilePlan({
+    intent: 'rename',
+    directoryPath,
+    title: `rename · ${path.basename(directoryPath) || directoryPath}`.slice(0, 180),
+    entries,
+    steps,
+    source: options.source || 'file_rename_plan',
+  });
+}
+
+async function planFileConvert(options = {}) {
+  const targetExtension = normalizeFilePlanExtension(options.targetExtension || options.toExtension || options.extensionTo || options.to);
+  if (!targetExtension) throw new Error('Missing targetExtension for file conversion plan.');
+  const { directoryPath, entries } = await filePlanDirectoryEntries(options);
+  const destinationDirectory = String(options.destinationDirectory || options.destinationPath || '').trim();
+  const destinationRoot = destinationDirectory ? resolvePath(destinationDirectory) : directoryPath;
+  const destinationNames = new Set();
+  const steps = entries.map((entry) => {
+    const sourceExtension = path.extname(entry.name || '');
+    const baseName = path.basename(entry.name || '', sourceExtension);
+    const destinationName = sanitizeGeneratedFileName(`${baseName}${targetExtension}`);
+    const destinationPath = path.join(destinationRoot, destinationName);
+    const duplicateKey = destinationPath.toLowerCase();
+    if (destinationNames.has(duplicateKey)) {
+      return blockedPlannedFileStep('copy_file', {
+        sourcePath: entry.path,
+        destinationPath,
+      }, `Duplicate destination in conversion plan: ${destinationPath}`);
+    }
+    destinationNames.add(duplicateKey);
+    if (entry.path === destinationPath) {
+      return blockedPlannedFileStep('copy_file', {
+        sourcePath: entry.path,
+        destinationPath,
+      }, 'Conversion target matches the source path.');
+    }
+    return previewPlannedFileStep({
+      action: 'copy_file',
+      sourcePath: entry.path,
+      destinationPath,
+      overwrite: Boolean(options.overwrite),
+    });
+  });
+
+  return finalizeFilePlan({
+    intent: 'convert',
+    directoryPath,
+    title: `convert · ${path.basename(directoryPath) || directoryPath}`.slice(0, 180),
+    entries,
+    steps,
+    source: options.source || 'file_convert_plan',
+  });
+}
+
+function planFileBatchPlan(options = {}) {
+  const intent = normalizeFilePlanIntent(options.intent || options.planIntent || options.type);
+  if (intent === 'rename') return planFileRename(options);
+  if (intent === 'convert') return planFileConvert(options);
+  return planFileOrganization(options);
+}
+
 function filePlanExecutableSteps(plan) {
   return (plan.steps || [])
-    .filter((step) => step?.ok && step?.plan?.args && ['create_directory', 'copy_file', 'move_file'].includes(step.action))
+    .filter((step) => step?.ok && step?.plan?.args && ['create_directory', 'copy_file', 'move_file', 'write_file'].includes(step.action))
     .map((step) => step.plan.args);
 }
 
@@ -15287,8 +15530,16 @@ async function applyFilePlan(options = {}) {
   if (requestedWorkflowId && !parentWorkflow) throw new Error('Workflow not found.');
 
   const pathForPlan = String(options.path || parentWorkflow?.target?.path || '.');
-  const plan = await planFileOrganization({
+  const planIntent = normalizeFilePlanIntent(
+    options.intent
+    || options.planIntent
+    || parentWorkflow?.target?.planIntent
+    || parentWorkflow?.intent
+    || 'organize',
+  );
+  const plan = await planFileBatchPlan({
     ...options,
+    intent: planIntent,
     path: pathForPlan,
   });
   const steps = filePlanExecutableSteps(plan);
@@ -15352,9 +15603,9 @@ async function applyFilePlan(options = {}) {
     source: 'file_plan_apply',
     status,
     title: `apply · ${path.basename(plan.path) || plan.path}`.slice(0, 180),
-    intent: 'apply_plan',
+    intent: `apply_${plan.planIntent || planIntent}`,
     mode: 'local',
-    request: `Apply file organization plan for ${plan.path}`,
+    request: `Apply file ${plan.planIntent || planIntent} plan for ${plan.path}`,
     result: output,
     parentWorkflowId: parentWorkflow?.id || '',
     target: {
@@ -15362,6 +15613,7 @@ async function applyFilePlan(options = {}) {
       title: path.basename(plan.path) || plan.path,
       path: plan.path,
       type: 'file_plan_apply',
+      planIntent: plan.planIntent || planIntent,
       resultCount: counts.total,
       returnedLength: output.length,
     },
@@ -15496,9 +15748,13 @@ async function runFileWorkflow(options = {}) {
   const mode = normalizeWorkflowMode(options.mode, intent === 'list' || intent === 'search' ? 'quick' : 'background');
   const instruction = String(options.instruction || '').trim();
 
-  if (intent === 'organize') {
-    const plan = await planFileOrganization(options);
-    const request = instruction || 'Plan a safe folder organization by file type.';
+  if (['organize', 'rename', 'convert'].includes(intent)) {
+    const plan = await planFileBatchPlan({ ...options, intent });
+    const request = instruction || {
+      organize: 'Plan a safe folder organization by file type.',
+      rename: 'Plan a safe batch file rename.',
+      convert: 'Plan a safe non-destructive file conversion by extension.',
+    }[intent];
     const workflow = createWorkflowRecord({
       kind: 'file',
       source: 'file_workflow',
@@ -15512,6 +15768,7 @@ async function runFileWorkflow(options = {}) {
         title: path.basename(plan.path) || plan.path,
         path: plan.path,
         type: 'file_plan',
+        planIntent: plan.planIntent || intent,
         resultCount: plan.counts.steps,
         returnedLength: plan.output.length,
       },
@@ -27606,6 +27863,11 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'plan_file_batch') {
+    const result = await planFileBatchPlan(args || {});
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'apply_file_plan') {
     const result = await applyFilePlan(args || {});
     return { ok: result.ok, output: JSON.stringify(result) };
@@ -27818,9 +28080,10 @@ function createRealtimeSessionConfig(options = {}) {
       'Use read_browser_dom when the user asks what controls are visible on the current webpage or when a browser DOM target is needed.',
       'Use control_browser_dom for guarded webpage element click/fill/select actions after the target is clear.',
       'Use run_browser_workflow for webpage summarization, action extraction, drafting, page-specific questions, web search, search-result review, or multi-page research. Use intent:research when the user asks you to look something up, inspect multiple sources, or synthesize web evidence; use background/Codex/Claude mode for longer work.',
-      'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, or safe folder organization planning.',
+      'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, or non-destructive copy-convert previews.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
-      'Use apply_file_plan only after the user explicitly confirms a specific file organization plan; it still goes through policy, approval, and local-execution gates.',
+      'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves or copies files by itself.',
+      'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
       'Use get_lane_contracts when routing, ownership, scope, handoff, or worker boundaries are unclear.',
       'Use route_task when the user asks for something that might be quick or might need background/Codex/Claude work; it keeps the voice lane responsive.',
       'Only request full clipboard text when the user asks about clipboard content or it is clearly needed for the task.',
@@ -29126,18 +29389,33 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_file_workflow',
-        description: 'Run a practical workflow over an allowed local file or folder: list, search, summarize, answer a file-specific question, or plan safe folder organization.',
+        description: 'Run a practical workflow over an allowed local file or folder: list, search, summarize, answer a file-specific question, plan safe folder organization, preview batch rename, or preview non-destructive copy-convert.',
         parameters: {
           type: 'object',
           properties: {
             path: { type: 'string' },
-            intent: { type: 'string', enum: ['list', 'search', 'summarize', 'ask', 'organize'] },
+            intent: { type: 'string', enum: ['list', 'search', 'summarize', 'ask', 'organize', 'rename', 'convert'] },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             query: { type: 'string' },
             instruction: { type: 'string' },
             maxEntries: { type: 'number' },
             maxResults: { type: 'number' },
             maxBytes: { type: 'number' },
+            maxFiles: { type: 'number' },
+            extensions: { type: 'array', items: { type: 'string' } },
+            matchExtensions: { type: 'array', items: { type: 'string' } },
+            nameIncludes: { type: 'string' },
+            prefix: { type: 'string' },
+            suffix: { type: 'string' },
+            template: { type: 'string' },
+            replaceFrom: { type: 'string' },
+            replaceTo: { type: 'string' },
+            caseStyle: { type: 'string', enum: ['lower', 'upper', 'kebab', 'snake'] },
+            startIndex: { type: 'number' },
+            pad: { type: 'number' },
+            targetExtension: { type: 'string' },
+            destinationDirectory: { type: 'string' },
+            overwrite: { type: 'boolean' },
             scope: { type: 'string' },
             parallelGroup: { type: 'string' },
           },
@@ -29161,15 +29439,62 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'plan_file_batch',
+        description: 'Create a policy-aware preview plan for file organization, batch rename, or non-destructive copy-convert. Does not execute file moves or copies.',
+        parameters: {
+          type: 'object',
+          properties: {
+            path: { type: 'string' },
+            intent: { type: 'string', enum: ['organize', 'rename', 'convert'] },
+            maxEntries: { type: 'number' },
+            maxMoves: { type: 'number' },
+            maxFiles: { type: 'number' },
+            extensions: { type: 'array', items: { type: 'string' } },
+            matchExtensions: { type: 'array', items: { type: 'string' } },
+            nameIncludes: { type: 'string' },
+            prefix: { type: 'string' },
+            suffix: { type: 'string' },
+            template: { type: 'string' },
+            replaceFrom: { type: 'string' },
+            replaceTo: { type: 'string' },
+            caseStyle: { type: 'string', enum: ['lower', 'upper', 'kebab', 'snake'] },
+            startIndex: { type: 'number' },
+            pad: { type: 'number' },
+            targetExtension: { type: 'string' },
+            destinationDirectory: { type: 'string' },
+            overwrite: { type: 'boolean' },
+          },
+          required: ['path', 'intent'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'apply_file_plan',
-        description: 'Apply a previously reviewed file organization plan, or regenerate a plan for a path, after explicit user confirmation. Goes through policy, approval, and local-execution gates.',
+        description: 'Apply a previously reviewed file plan, or regenerate a plan for a path, after explicit user confirmation. Goes through policy, approval, and local-execution gates.',
         parameters: {
           type: 'object',
           properties: {
             workflowId: { type: 'string' },
             path: { type: 'string' },
+            intent: { type: 'string', enum: ['organize', 'rename', 'convert'] },
             maxEntries: { type: 'number' },
             maxMoves: { type: 'number' },
+            maxFiles: { type: 'number' },
+            extensions: { type: 'array', items: { type: 'string' } },
+            matchExtensions: { type: 'array', items: { type: 'string' } },
+            nameIncludes: { type: 'string' },
+            prefix: { type: 'string' },
+            suffix: { type: 'string' },
+            template: { type: 'string' },
+            replaceFrom: { type: 'string' },
+            replaceTo: { type: 'string' },
+            caseStyle: { type: 'string', enum: ['lower', 'upper', 'kebab', 'snake'] },
+            startIndex: { type: 'number' },
+            pad: { type: 'number' },
+            targetExtension: { type: 'string' },
+            destinationDirectory: { type: 'string' },
+            overwrite: { type: 'boolean' },
             confirm: { type: 'boolean' },
           },
           required: ['confirm'],
@@ -31208,7 +31533,7 @@ function startApiServer() {
 
   api.post('/api/files/plan', async (req, res) => {
     try {
-      const result = await planFileOrganization(req.body || {});
+      const result = await planFileBatchPlan(req.body || {});
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'File plan failed', error instanceof Error ? error.message : String(error));

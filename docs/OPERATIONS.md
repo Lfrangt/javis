@@ -568,20 +568,36 @@ curl http://127.0.0.1:3417/api/learning/skill-draft
 
 `JAVIS_AMBIENT_LEARNING=true` distills passive ambient metadata into `learned-profile.json`. It stores aggregate app/browser/context patterns only and does not call a model. `POST /api/learning/remember` upserts that aggregate profile into one searchable local memory tagged `ambient-profile`; it does not create duplicate memories on every run. `GET /api/learning/skill-draft` turns the same aggregate profile plus recent work evidence into a reviewable Codex skill draft for repeatable local workflows. `JAVIS_INCLUDE_LEARNING_IN_PROMPTS=false` keeps that profile out of task prompts while still allowing local inspection.
 
-For a file-organization dry run:
+For a file-plan dry run:
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/files/plan \
   -H 'Content-Type: application/json' \
-  -d '{"path":".","maxMoves":10}'
+  -d '{"path":".","intent":"organize","maxMoves":10}'
 ```
 
-The plan endpoint only previews create-directory and move-file steps. Actual file mutations still use the Level 3 action path and current policy. Applying a plan requires explicit confirmation:
+`intent:"rename"` previews batch `move_file` steps without executing them:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/files/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"~/Downloads","intent":"rename","extensions":[".png"],"template":"screenshot-{index}{ext}","maxFiles":20}'
+```
+
+`intent:"convert"` previews non-destructive copy-convert steps by copying matching files to a target extension:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/files/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"~/Documents","intent":"convert","extensions":[".txt"],"targetExtension":".md","maxFiles":10}'
+```
+
+The plan endpoint only previews create-directory, move-file, copy-file, or write-file steps. Actual file mutations still use the Level 3 action path and current policy. Applying a plan requires explicit confirmation:
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/files/plan/apply \
   -H 'Content-Type: application/json' \
-  -d '{"path":".","maxMoves":10,"confirm":true}'
+  -d '{"path":".","intent":"organize","maxMoves":10,"confirm":true}'
 ```
 
 With `JAVIS_ENABLE_LOCAL_EXEC=false`, the apply endpoint reports blocked steps and does not move files.
@@ -833,9 +849,9 @@ curl -X POST http://127.0.0.1:3417/api/files/workflow \
   -d '{"intent":"search","path":"docs","query":"workflow","mode":"quick","maxResults":20}'
 ```
 
-Supported intents: `list`, `search`, `summarize`, and `ask`.
+Supported intents: `list`, `search`, `summarize`, `ask`, `organize`, `rename`, and `convert`.
 
-`list` and `search` can complete locally without a model key. `summarize` and `ask` read allowed file/folder context, then use quick/background/Codex/Claude routing.
+`list`, `search`, `organize`, `rename`, and `convert` can complete locally without a model key. `summarize` and `ask` read allowed file/folder context, then use quick/background/Codex/Claude routing.
 
 ## Browser Workflows
 

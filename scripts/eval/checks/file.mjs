@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { ok, warn, fail } from '../_client.mjs';
 
 export default {
@@ -47,6 +50,102 @@ export default {
         ? ok('file.plan', 'Organization preview', `${plan.data.counts.steps || 0} planned step(s), ${plan.data.counts.blocked || 0} blocked`)
         : warn('file.plan', 'Organization preview', `preview ${plan.status} ${plan.error || plan.data?.error || ''}`),
     );
+
+    const fixtureDir = path.join(process.cwd(), '.javis-eval-file-workflow');
+    fs.rmSync(fixtureDir, { recursive: true, force: true });
+    fs.mkdirSync(fixtureDir, { recursive: true });
+    try {
+      const alpha = path.join(fixtureDir, 'Alpha Draft.txt');
+      const beta = path.join(fixtureDir, 'Beta Draft.txt');
+      fs.writeFileSync(alpha, 'alpha\n', 'utf8');
+      fs.writeFileSync(beta, 'beta\n', 'utf8');
+
+      const renamePlan = await ctx.api('/api/files/plan', {
+        method: 'POST',
+        body: {
+          path: fixtureDir,
+          intent: 'rename',
+          extensions: ['.txt'],
+          prefix: 'renamed-',
+          caseStyle: 'kebab',
+          maxFiles: 2,
+        },
+      });
+      const renameSteps = Array.isArray(renamePlan.data?.steps) ? renamePlan.data.steps : [];
+      out.push(
+        renamePlan.ok &&
+          renamePlan.data?.planIntent === 'rename' &&
+          renamePlan.data?.counts?.steps === 2 &&
+          renameSteps.every((step) => step.action === 'move_file') &&
+          renameSteps.some((step) => String(step.plan?.args?.destinationPath || '').endsWith('renamed-alpha-draft.txt'))
+          ? ok('file.rename_plan', 'Batch rename preview', '2 move_file step(s) generated without execution')
+          : fail('file.rename_plan', 'Batch rename preview', `POST /api/files/plan ${renamePlan.status}`, renamePlan.data),
+      );
+
+      const renameApplyPreview = await ctx.api('/api/files/plan/apply', {
+        method: 'POST',
+        body: {
+          path: fixtureDir,
+          intent: 'rename',
+          extensions: ['.txt'],
+          prefix: 'renamed-',
+          caseStyle: 'kebab',
+          maxFiles: 2,
+          confirm: false,
+        },
+      });
+      out.push(
+        renameApplyPreview.ok &&
+          renameApplyPreview.data?.confirmed === false &&
+          fs.existsSync(alpha) &&
+          fs.existsSync(beta)
+          ? ok('file.rename_apply_gate', 'Batch rename apply gate', 'confirm:false previews only and leaves files untouched')
+          : fail('file.rename_apply_gate', 'Batch rename apply gate', `POST /api/files/plan/apply ${renameApplyPreview.status}`, renameApplyPreview.data),
+      );
+
+      const convertPlan = await ctx.api('/api/files/plan', {
+        method: 'POST',
+        body: {
+          path: fixtureDir,
+          intent: 'convert',
+          extensions: ['.txt'],
+          targetExtension: '.md',
+          maxFiles: 1,
+        },
+      });
+      const convertStep = Array.isArray(convertPlan.data?.steps) ? convertPlan.data.steps[0] : null;
+      out.push(
+        convertPlan.ok &&
+          convertPlan.data?.planIntent === 'convert' &&
+          convertPlan.data?.counts?.steps === 1 &&
+          convertStep?.action === 'copy_file' &&
+          String(convertStep.plan?.args?.destinationPath || '').endsWith('.md')
+          ? ok('file.convert_plan', 'Copy-convert preview', '1 non-destructive copy_file step generated')
+          : fail('file.convert_plan', 'Copy-convert preview', `POST /api/files/plan ${convertPlan.status}`, convertPlan.data),
+      );
+
+      const convertApply = await ctx.api('/api/files/plan/apply', {
+        method: 'POST',
+        body: {
+          path: fixtureDir,
+          intent: 'convert',
+          extensions: ['.txt'],
+          targetExtension: '.md',
+          maxFiles: 1,
+          confirm: true,
+        },
+      });
+      out.push(
+        convertApply.ok &&
+          convertApply.data?.confirmed === true &&
+          convertApply.data?.counts?.executed === 1 &&
+          fs.readdirSync(fixtureDir).some((name) => name.endsWith('.md'))
+          ? ok('file.convert_apply', 'Copy-convert apply', 'confirmed plan copied one file through file action policy')
+          : fail('file.convert_apply', 'Copy-convert apply', `POST /api/files/plan/apply ${convertApply.status}`, convertApply.data),
+      );
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
 
     return out;
   },
