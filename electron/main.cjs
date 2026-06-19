@@ -16085,6 +16085,7 @@ const REALTIME_SHORTCUT_TOOL_NAMES = new Set([
   'forget_skill_shortcut',
 ]);
 const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
+const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 
 function realtimeToolOutputObject(result = {}) {
   if (!result || typeof result.output !== 'string') return null;
@@ -16152,6 +16153,27 @@ function realtimeHandoffToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeAutopilotToolSummary(name, args = {}, result = {}) {
+  if (name !== REALTIME_AUTOPILOT_TOOL_NAME) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const selected = output.selectedAction || output.decisionPreview?.selectedAction || null;
+  return {
+    spokenSummary: compactRecordText(output.spokenSummary || output.output || '', 420),
+    source: compactRecordText(output.source || args?.source || '', 80),
+    canActNow: Boolean(output.canActNow),
+    enabled: Boolean(output.enabled),
+    running: Boolean(output.running || output.busy),
+    reason: compactRecordText(output.reason || output.decisionPreview?.reason || '', 120),
+    nextWait: compactRecordText(output.nextWait || output.nextAction || '', 240),
+    selectedAction: compactRecordText(selected?.label || selected?.id || '', 140),
+    selectedSource: compactRecordText(selected?.source || '', 80),
+    candidateCount: Array.isArray(output.candidates) ? output.candidates.length : 0,
+    tickCount: boundedCount(output.tickCount, 1000000000),
+    executedCount: boundedCount(output.executedCount, 1000000000),
+    skippedCount: boundedCount(output.skippedCount, 1000000000),
+  };
+}
+
 function recordRealtimeToolCall(options = {}) {
   const name = compactRecordText(options.name || '', 120);
   if (!name) return null;
@@ -16159,6 +16181,7 @@ function recordRealtimeToolCall(options = {}) {
   const errorText = options.error instanceof Error ? options.error.message : options.error || '';
   const shortcut = realtimeShortcutToolSummary(name, options.args || {}, result);
   const handoff = realtimeHandoffToolSummary(name, options.args || {}, result);
+  const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
     name,
@@ -16171,6 +16194,7 @@ function recordRealtimeToolCall(options = {}) {
     result: realtimeToolOutputShape(result),
     shortcut,
     handoff,
+    autopilot,
   };
   realtimeToolCallEvents.unshift(event);
   realtimeToolCallEvents.splice(MAX_REALTIME_TOOL_CALL_EVENTS);
@@ -16185,6 +16209,9 @@ function recordRealtimeToolCall(options = {}) {
     requiresConfirmation: Boolean(shortcut?.requiresConfirmation),
     handoffSummary: handoff?.spokenSummary || '',
     handoffNextActions: handoff?.nextActionCount || 0,
+    autopilotSummary: autopilot?.spokenSummary || '',
+    autopilotReason: autopilot?.reason || '',
+    autopilotCanActNow: Boolean(autopilot?.canActNow),
     error: event.error,
   });
   return event;
@@ -16231,6 +16258,23 @@ function realtimeHandoffToolEvidence(limit = 8) {
     nextAction: hasHandoff
       ? 'Ask live voice to summarize the handoff naturally and continue the next step.'
       : 'Ask the live voice session: 现在做到哪了 / what next, and confirm get_work_handoff appears here.',
+  };
+}
+
+function realtimeAutopilotToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => event.name === REALTIME_AUTOPILOT_TOOL_NAME)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasStatus = recent.some((event) => event.ok && event.autopilot?.spokenSummary);
+  return {
+    ok: hasStatus,
+    count: recent.length,
+    hasStatus,
+    last: recent[0] || null,
+    recent,
+    nextAction: hasStatus
+      ? 'Ask live voice why autopilot skipped or what it can do next, then confirm the answer matches this evidence.'
+      : 'Ask the live voice session: autopilot 为什么没自己继续跑 / why did unattended work stop?',
   };
 }
 
@@ -16494,9 +16538,10 @@ function realtimeVoiceWorkbenchSnapshot() {
 function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const blocker = evidence.blocker || null;
   const handoffTools = evidence.handoffTools || {};
+  const autopilotTools = evidence.autopilotTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
-    goal: 'Prove a real Realtime voice session can speak current progress, call get_work_handoff, and leave evidence.',
+    goal: 'Prove a real Realtime voice session can speak current progress, call get_work_handoff/get_autopilot_status, and leave evidence.',
     manualOnly: true,
     requiresUserPresence: true,
     current: {
@@ -16523,6 +16568,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
     prompts: [
       '后台现在怎么样',
       '现在做到哪了？接下来做什么？',
+      'autopilot 为什么没自己继续跑？',
     ],
     expectedEvidence: [
       {
@@ -16546,6 +16592,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         ok: Boolean(handoffTools.hasHandoff),
         tool: REALTIME_HANDOFF_TOOL_NAME,
       },
+      {
+        id: 'autopilot_tool',
+        label: 'Realtime called get_autopilot_status',
+        ok: Boolean(autopilotTools.hasStatus),
+        tool: REALTIME_AUTOPILOT_TOOL_NAME,
+      },
     ],
     nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the two prompts.',
   };
@@ -16555,6 +16607,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const shortcutTools = evidence.shortcutTools || {};
   const handoffTools = evidence.handoffTools || {};
+  const autopilotTools = evidence.autopilotTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
   const stepIds = [
@@ -16579,7 +16632,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools });
   return {
     ok: true,
     status: ready ? 'ready' : evidence.status || 'pending',
@@ -16637,6 +16690,12 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasHandoff: Boolean(handoffTools.hasHandoff),
       nextAction: handoffTools.nextAction || 'Ask the live voice session for the current work handoff.',
     },
+    autopilotTools: {
+      observed: Boolean(autopilotTools.ok),
+      count: Number(autopilotTools.count || 0),
+      hasStatus: Boolean(autopilotTools.hasStatus),
+      nextAction: autopilotTools.nextAction || 'Ask the live voice session why unattended autopilot skipped.',
+    },
     drill,
     promptWhenReady: '后台现在怎么样',
     currentStep,
@@ -16665,6 +16724,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
   const handoffTools = options.handoffTools || evidence.handoffTools || {};
+  const autopilotTools = options.autopilotTools || evidence.autopilotTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
   const steps = [
@@ -16739,6 +16799,14 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_HANDOFF_TOOL_NAME, count: Number(handoffTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_autopilot_status',
+      label: 'Ask why unattended autopilot stopped',
+      ok: Boolean(autopilotTools.hasStatus),
+      detail: autopilotTools.hasStatus ? 'get_autopilot_status was observed in recent Realtime tool evidence.' : 'No get_autopilot_status call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: autopilot 为什么没自己继续跑？',
+      evidence: { tool: REALTIME_AUTOPILOT_TOOL_NAME, count: Number(autopilotTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'list_shortcuts',
       label: 'Ask voice to list saved shortcut phrases',
       ok: Boolean(shortcutTools.hasList),
@@ -16788,6 +16856,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
     prompts: [
       '后台现在怎么样',
       '现在做到哪了？接下来做什么？',
+      'autopilot 为什么没自己继续跑？',
       '有哪些快捷短语?',
       '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
       '确认保存「测试贾维斯快捷短语」',
@@ -17062,6 +17131,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const toolCalls = realtimeToolCallSnapshot(10);
   const shortcutTools = realtimeShortcutToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
+  const autopilotTools = realtimeAutopilotToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const liveAt = Number(conversation.liveAt || 0);
   const negotiationAt = Number(negotiation?.createdAt || 0);
@@ -17121,6 +17191,7 @@ function realtimeVoiceEvidenceSnapshot() {
     toolCalls,
     shortcutTools,
     handoffTools,
+    autopilotTools,
     progressSync,
     progress: {
       version: progress.version,
@@ -17225,6 +17296,11 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         count: Number(evidence.shortcutTools?.count || 0),
         observedActions: Array.isArray(evidence.shortcutTools?.observedActions) ? evidence.shortcutTools.observedActions : [],
         nextAction: evidence.shortcutTools?.nextAction || '',
+      },
+      autopilot: {
+        observed: Boolean(evidence.autopilotTools?.hasStatus),
+        count: Number(evidence.autopilotTools?.count || 0),
+        nextAction: evidence.autopilotTools?.nextAction || '',
       },
     } : undefined,
   };

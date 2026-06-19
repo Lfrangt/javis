@@ -161,6 +161,17 @@ export default {
         : fail('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `tool execute ${autopilotStatusTool.status}`, autopilotStatusTool.data),
     );
 
+    const autopilotEvidence = await ctx.api('/api/realtime/evidence');
+    const autopilotToolEvidence = autopilotEvidence.data?.evidence?.autopilotTools;
+    const autopilotToolEvents = Array.isArray(autopilotToolEvidence?.recent) ? autopilotToolEvidence.recent : [];
+    out.push(
+      autopilotEvidence.ok &&
+        autopilotToolEvidence?.hasStatus === true &&
+        autopilotToolEvents.some((event) => event.name === 'get_autopilot_status' && event.source === 'eval' && event.autopilot?.spokenSummary)
+        ? ok('realtime.autopilot_tool_evidence', 'Realtime autopilot tool evidence', `${autopilotToolEvidence.count || 0} autopilot status call(s) visible`)
+        : fail('realtime.autopilot_tool_evidence', 'Realtime autopilot tool evidence', 'expected get_autopilot_status calls to be visible in realtime evidence', autopilotToolEvidence),
+    );
+
     const realtimeEvidenceTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {
@@ -187,6 +198,7 @@ export default {
         realtimeEvidenceOutput.dogfood?.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(realtimeEvidenceOutput.dogfood?.prompts) &&
         realtimeEvidenceOutput.tools?.handoff &&
+        realtimeEvidenceOutput.tools?.autopilot &&
         realtimeEvidenceOutput.tools?.shortcuts
         ? ok('realtime.evidence_tool', 'Realtime evidence voice tool', `${realtimeEvidenceOutput.status}/${realtimeEvidenceOutput.phase} · ${realtimeEvidenceOutput.nextAction}`)
         : fail('realtime.evidence_tool', 'Realtime evidence voice tool', `tool execute ${realtimeEvidenceTool.status}`, realtimeEvidenceTool.data),
@@ -383,6 +395,7 @@ export default {
       out.push(
         output.includes('Shortcut tools:') &&
           output.includes('Handoff tool:') &&
+          output.includes('Autopilot tool:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Recent realtime tool calls:') &&
           output.includes('- sync ') &&
@@ -390,9 +403,10 @@ export default {
           output.includes('save') &&
           output.includes('forget') &&
           output.includes('called=yes') &&
-          output.includes('get_work_handoff')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, handoff, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, handoff, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
+          output.includes('get_work_handoff') &&
+          output.includes('get_autopilot_status')
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, handoff, autopilot, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, handoff, autopilot, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -523,8 +537,10 @@ export default {
         Array.isArray(e.drill?.steps) &&
         e.drill.steps.some((step) => step.id === 'start_live_voice') &&
         e.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
+        e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
         e.handoffTools?.hasHandoff === true &&
+        e.autopilotTools?.hasStatus === true &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
         : fail('realtime.evidence_checklist', 'Realtime evidence checklist', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),
@@ -558,13 +574,16 @@ export default {
         Array.isArray(d.drill?.steps) &&
         d.drill.steps.some((step) => step.id === 'ask_progress') &&
         d.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
+        d.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         d.handoffTools?.hasHandoff === true &&
+        d.autopilotTools?.hasStatus === true &&
         dogfoodGuide.start?.endpoint?.path === '/api/realtime/dogfood/start' &&
         dogfoodGuide.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(dogfoodGuide.prompts) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_autopilot_status') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
         typeof d.promptWhenReady === 'string' &&
@@ -582,6 +601,7 @@ export default {
       'inject_worker_progress',
       'ask_progress',
       'ask_work_handoff',
+      'ask_autopilot_status',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
@@ -597,6 +617,7 @@ export default {
         Array.isArray(drillGuide.prompts) &&
         drillGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         Array.isArray(drillData.prompts) &&
+        drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
         ? ok('realtime.dogfood_drill', 'Realtime dogfood drill', `${drillData.status || 'pending'} · ${drillData.summary || ''}`)

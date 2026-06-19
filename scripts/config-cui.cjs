@@ -953,6 +953,8 @@ function printRealtimeEvidence(result) {
   const shortcutEvents = Array.isArray(shortcutTools.recent) ? shortcutTools.recent : [];
   const handoffTools = evidence.handoffTools || {};
   const handoffEvents = Array.isArray(handoffTools.recent) ? handoffTools.recent : [];
+  const autopilotTools = evidence.autopilotTools || {};
+  const autopilotEvents = Array.isArray(autopilotTools.recent) ? autopilotTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
   const drill = evidence.drill || dogfood.drill || {};
   const dogfoodStart = evidence.dogfoodStart || drill.dogfoodStart || {};
@@ -1030,6 +1032,21 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = handoff.spokenSummary ? ` · ${compact(handoff.spokenSummary, 140)}` : '';
     console.log(`- ${event.name || 'get_work_handoff'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nAutopilot tool:');
+  console.log(`- observed ${Number(autopilotTools.count || 0)} recent event(s) · called=${autopilotTools.hasStatus ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(autopilotTools.nextAction || dogfood.autopilotTools?.nextAction || 'Ask live voice why unattended autopilot skipped.', 220)}`);
+  for (const event of autopilotEvents.slice(0, 4)) {
+    const autopilot = event.autopilot || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      autopilot.canActNow ? 'can-act' : 'waiting',
+      autopilot.reason ? `reason=${autopilot.reason}` : '',
+      autopilot.candidateCount ? `candidates=${autopilot.candidateCount}` : '',
+    ].filter(Boolean);
+    const summary = autopilot.spokenSummary ? ` · ${compact(autopilot.spokenSummary, 140)}` : '';
+    console.log(`- ${event.name || 'get_autopilot_status'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nRecent realtime tool calls:');
   if (toolCalls.length) {

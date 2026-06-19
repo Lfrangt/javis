@@ -14,7 +14,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime evidence separates SDP negotiation from renderer live/data-channel state, making dogfood blockers more precise.
 - Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
 - Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
-- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget and work-handoff events in `/api/realtime/evidence`.
+- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, and autopilot-status events in `/api/realtime/evidence`.
 - Realtime voice self-diagnostics through `get_realtime_evidence`, so voice can explain whether WebRTC/live progress is connected, what is blocked, and the next dogfood step.
 - Manual Realtime dogfood drill for verifying live voice progress and work-handoff answers plus shortcut list/save/recall/forget flows from CUI/API.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
