@@ -49,7 +49,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime voice recovery inspection for failed workers through `get_worker_recovery`, while execution still goes through explicit `run_work_next`.
 - Voice-ready work handoff that compresses readiness, progress, session, collaboration, next actions, and workflow continuation suggestions into one short spoken summary.
 - Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, workflows, and Realtime dogfood; Realtime blockers include a guided handoff dogfood pack with start, monitor, prompt, and evidence instructions.
-- Overnight autopilot decision evidence through `/api/autopilot` and CUI status, showing candidate actions, the selected safe action, skip reasons, and what the resident is waiting for.
+- Overnight autopilot decision evidence through `/api/autopilot`, CUI status, and Realtime voice `get_autopilot_status`, showing candidate actions, the selected safe action, skip reasons, and what the resident is waiting for.
 - Local work sessions for focus goals, session notes, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, spoken check-ins, and deterministic end-of-session summaries.
 - Local memory for user-approved preferences, project facts, and durable notes.
 - Local Inbox for clipboard/manual captures and pending follow-up items.

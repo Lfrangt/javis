@@ -17,6 +17,7 @@ const REQUIRED_TOOLS = [
   'get_work_progress',
   'get_realtime_evidence',
   'get_worker_recovery',
+  'get_autopilot_status',
   'get_work_handoff',
   'get_collaboration_state',
   'search_local_skills',
@@ -139,6 +140,25 @@ export default {
         typeof workerRecoveryOutput.nextAction === 'string'
         ? ok('realtime.worker_recovery_tool', 'Realtime worker recovery tool', `${workerRecoveryOutput.counts.recoverable} recoverable failed job(s)`)
         : fail('realtime.worker_recovery_tool', 'Realtime worker recovery tool', `tool execute ${workerRecoveryTool.status}`, workerRecoveryTool.data),
+    );
+
+    const autopilotStatusTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_autopilot_status', arguments: { workflowLimit: 6, jobLimit: 6 } },
+    });
+    const autopilotStatusOutput = parseToolOutput(autopilotStatusTool);
+    out.push(
+      autopilotStatusTool.ok &&
+        autopilotStatusTool.data?.ok === true &&
+        autopilotStatusOutput?.ok === true &&
+        typeof autopilotStatusOutput.spokenSummary === 'string' &&
+        typeof autopilotStatusOutput.nextWait === 'string' &&
+        typeof autopilotStatusOutput.canActNow === 'boolean' &&
+        autopilotStatusOutput.decisionPreview &&
+        Array.isArray(autopilotStatusOutput.candidates) &&
+        autopilotStatusOutput.candidates.every((candidate) => candidate.id && candidate.decision && typeof candidate.decision.reason === 'string')
+        ? ok('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `${autopilotStatusOutput.canActNow ? 'ready' : 'waiting'} · ${autopilotStatusOutput.reason || autopilotStatusOutput.nextWait}`)
+        : fail('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `tool execute ${autopilotStatusTool.status}`, autopilotStatusTool.data),
     );
 
     const realtimeEvidenceTool = await ctx.api('/api/tools/execute', {
