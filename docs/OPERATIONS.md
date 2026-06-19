@@ -186,6 +186,7 @@ curl http://127.0.0.1:3417/api/window/state
 curl http://127.0.0.1:3417/api/menubar/state
 curl http://127.0.0.1:3417/api/notifications/state
 curl http://127.0.0.1:3417/api/attention
+curl http://127.0.0.1:3417/api/attention/history
 curl -X POST http://127.0.0.1:3417/api/attention/notify \
   -H 'Content-Type: application/json' \
   -d '{"dryRun":true,"source":"operator"}'
@@ -204,7 +205,7 @@ curl -X POST http://127.0.0.1:3417/api/notifications/test \
   -d '{"body":"JAVIS notification check"}'
 ```
 
-Resident notifications are enabled by default and can be disabled with `JAVIS_NOTIFICATIONS=false`. They fire for pending approvals and background task completion/failure/cancellation. Pending approvals, setup blockers, and Realtime voice errors pass through the quiet attention gate before a system notification is sent, so ordinary task/test notifications do not reset the attention cooldown. `/api/attention`, `/api/attention/notify`, and `npm run config -- --print-attention` expose whether JAVIS should stay quiet, wait through the notification cooldown, or notify because a high-priority approval/setup/voice issue needs attention.
+Resident notifications are enabled by default and can be disabled with `JAVIS_NOTIFICATIONS=false`. They fire for pending approvals and background task completion/failure/cancellation. Pending approvals, setup blockers, and Realtime voice errors pass through the quiet attention gate before a system notification is sent, so ordinary task/test notifications do not reset the attention cooldown. `/api/attention`, `/api/attention/history`, `/api/attention/notify`, and `npm run config -- --print-attention` expose whether JAVIS should stay quiet, wait through the notification cooldown, or notify because a high-priority approval/setup/voice issue needs attention. Attention history is operator-only API/CUI evidence; the desktop pet should keep using only compact level/color state.
 
 For a local work briefing:
 

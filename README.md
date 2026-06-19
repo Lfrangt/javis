@@ -142,7 +142,7 @@ Local Express service on 127.0.0.1:3417
   /api/window/park      -> move the buddy back to its configured notch/corner position
   /api/window/move      -> move the buddy to explicit screen coordinates
   /api/menubar/state    -> macOS menu bar status item state
-  /api/notifications/state -> resident notification support, counters, and quiet attention policy
+  /api/notifications/state -> resident notification support, counters, quiet attention policy, and operator-only attention history
   /api/briefing         -> local status, blockers, recent work, and next actions
   /api/work/progress    -> spoken-style job/workflow progress check-in
   /api/work/handoff     -> voice-ready handoff over readiness, progress, sessions, collaboration, and continuations
@@ -183,7 +183,8 @@ Local Express service on 127.0.0.1:3417
   /api/learning/distill -> refresh the local inferred profile now
   /api/learning/skill-draft -> build a reviewable SKILL.md draft from inferred local patterns
   /api/presence         -> resident standby/watch/work state, attention policy, and latest passive context
-  /api/attention        -> quiet attention policy for pet color, notifications, cooldown, and reasons
+  /api/attention        -> quiet attention policy for pet color, notifications, cooldown, reasons, and operator-only history
+  /api/attention/history -> recent operator-only attention notification sent/suppressed events
   /api/attention/notify -> apply the attention notification gate, with dry-run support for testing
   /api/conversation/state -> resident voice conversation lifecycle state
   /api/realtime/context -> silent preflight context for new voice sessions

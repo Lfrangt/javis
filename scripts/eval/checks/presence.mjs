@@ -42,9 +42,26 @@ export default {
           typeof attention.cooldown.remainingMs === 'number' &&
           typeof attention.cooldown.lastNotificationAt === 'number' &&
           Array.isArray(attention.reasons) &&
-          intervention.attentionLevel === attention.level
+          intervention.attentionLevel === attention.level &&
+          !Object.prototype.hasOwnProperty.call(attention, 'history')
           ? ok('presence.attention_policy', 'Attention policy', `${attention.level} · pet=${attention.petState} · notify=${attention.shouldNotify ? 'yes' : 'no'}`)
-          : fail('presence.attention_policy', 'Attention policy', 'presence must expose quiet attention policy and cooldown state', attention),
+          : fail('presence.attention_policy', 'Attention policy', 'presence must expose lightweight quiet attention policy without operator history', attention),
+      );
+
+      const attentionApi = await ctx.api('/api/attention?limit=5');
+      const attentionOperator = attentionApi.data?.attention || {};
+      const history = attentionOperator.history || {};
+      out.push(
+        attentionApi.ok &&
+          attentionOperator.ok === true &&
+          history.ok === true &&
+          history.operatorOnly === true &&
+          history.desktopPet === false &&
+          Array.isArray(history.recent) &&
+          typeof history.summary === 'string' &&
+          history.returned <= 5
+          ? ok('presence.attention_history', 'Attention operator history', `${history.returned}/${history.count || 0} attention notification event(s)`)
+          : fail('presence.attention_history', 'Attention operator history', 'attention API must expose operator-only history without bloating presence', attentionApi.data),
       );
 
       const notifyPreview = await ctx.api('/api/attention/notify', {
@@ -77,6 +94,8 @@ export default {
           typeof notificationState.attentionNotifications.sent === 'number' &&
           typeof notificationState.attentionNotifications.skipped === 'number' &&
           typeof notificationState.attentionNotifications.lastNotificationAt === 'number' &&
+          notificationState.attentionNotifications.history?.operatorOnly === true &&
+          Array.isArray(notificationState.attentionNotifications.history?.recent) &&
           notificationState.attention?.cooldown &&
           notificationState.attention.cooldown.lastNotificationAt === notificationState.attentionNotifications.lastNotificationAt
           ? ok('presence.attention_notification_state', 'Attention notification state', `${notificationState.attentionNotifications.sent} attention notification(s), cooldown=${notificationState.attention.cooldown.remainingLabel || 'now'}`)
@@ -149,9 +168,10 @@ export default {
       out.push(
         output.includes('Attention:') &&
           output.includes('Cooldown:') &&
-          output.includes('Reasons:')
-          ? ok('presence.attention_cui', 'CUI attention policy', 'config CUI prints quiet attention policy')
-          : fail('presence.attention_cui', 'CUI attention policy', 'expected --print-attention to print attention policy', { output: output.slice(0, 2000) }),
+          output.includes('Reasons:') &&
+          output.includes('History:')
+          ? ok('presence.attention_cui', 'CUI attention policy', 'config CUI prints quiet attention policy and operator history')
+          : fail('presence.attention_cui', 'CUI attention policy', 'expected --print-attention to print attention policy and history', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
       out.push(fail('presence.attention_cui', 'CUI attention policy', error instanceof Error ? error.message : String(error)));

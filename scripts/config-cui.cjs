@@ -1184,12 +1184,26 @@ function printAttentionPolicy(result) {
   console.log('\nReasons:');
   if (!reasons.length) {
     console.log('- none');
+  } else {
+    for (const reason of reasons.slice(0, 8)) {
+      const notify = reason.notify ? 'notify' : 'quiet';
+      const count = reason.count ? ` · ${reason.count}` : '';
+      console.log(`- ${reason.severity || 'info'} ${reason.label || reason.id} · ${notify}${count}: ${compact(reason.summary || '', 180)}`);
+    }
+  }
+  const history = attention.history || {};
+  const recent = Array.isArray(history.recent) ? history.recent : [];
+  console.log('\nHistory:');
+  console.log(`Summary: ${compact(history.summary || 'No attention notification history yet.', 220)}`);
+  if (!recent.length) {
+    console.log('- none');
     return;
   }
-  for (const reason of reasons.slice(0, 8)) {
-    const notify = reason.notify ? 'notify' : 'quiet';
-    const count = reason.count ? ` · ${reason.count}` : '';
-    console.log(`- ${reason.severity || 'info'} ${reason.label || reason.id} · ${notify}${count}: ${compact(reason.summary || '', 180)}`);
+  for (const item of recent.slice(0, 8)) {
+    const status = item.delivered ? 'sent' : `suppressed:${item.reason || 'policy'}`;
+    const reason = item.attentionReason ? ` · ${item.attentionReason}` : '';
+    console.log(`- ${formatTime(item.createdAt)} · ${status}${reason} · ${compact(item.title || '', 90)}`);
+    if (item.body) console.log(`  ${compact(item.body, 160)}`);
   }
 }
 

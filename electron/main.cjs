@@ -913,6 +913,82 @@ function notificationSupported() {
   }
 }
 
+function normalizeAttentionNotificationHistoryRecord(record = {}, options = {}) {
+  const createdAt = Number(record.createdAt || options.createdAt || Date.parse(options.ts || '') || 0);
+  const payload = record.data || {};
+  const delivered = record.delivered === true;
+  const reason = compactRecordText(record.reason || (delivered ? 'sent' : 'unknown'), 80);
+  return {
+    id: crypto.createHash('sha1').update([
+      createdAt,
+      options.eventType || '',
+      record.title || '',
+      record.body || '',
+      delivered ? 'sent' : reason,
+    ].join('|')).digest('hex').slice(0, 16),
+    eventType: compactRecordText(options.eventType || '', 80),
+    source: compactRecordText(payload.source || record.source || options.source || 'resident', 80),
+    title: compactRecordText(record.title || 'JAVIS attention', 100),
+    body: compactRecordText(record.body || '', 240),
+    delivered,
+    suppressed: !delivered,
+    reason,
+    attentionReason: compactRecordText(record.attentionReason || payload.attentionReason || '', 80),
+    attentionLevel: compactRecordText(record.attentionLevel || payload.attentionLevel || '', 40),
+    cooldownRemainingMs: Math.max(0, Number(record.cooldownRemainingMs || 0)),
+    createdAt,
+    ageMs: createdAt ? Math.max(0, Date.now() - createdAt) : null,
+    ageLabel: createdAt ? `${attentionDurationLabel(Date.now() - createdAt)} ago` : 'unknown',
+  };
+}
+
+function attentionNotificationHistory(limit = 8, auditLimit = 160) {
+  const max = Math.max(1, Math.min(25, Number(limit || 8)));
+  const records = [];
+  const seen = new Set();
+  const add = (record, options = {}) => {
+    if (!record) return;
+    const normalized = normalizeAttentionNotificationHistoryRecord(record, options);
+    if (!normalized.createdAt || seen.has(normalized.id)) return;
+    seen.add(normalized.id);
+    records.push(normalized);
+  };
+
+  add(notificationState.attention.last, { source: 'memory', eventType: 'notification.last' });
+  try {
+    for (const event of readRecentAudit(auditLimit)) {
+      const data = event.data || {};
+      const attentionEvent = event.type === 'notification.attention_suppressed' || data.attention === true;
+      if (!attentionEvent) continue;
+      add(data, { source: 'audit', eventType: event.type, ts: event.ts });
+    }
+  } catch {
+    // History is operator evidence only; never let a damaged audit log break attention policy.
+  }
+
+  records.sort((a, b) => b.createdAt - a.createdAt);
+  const recent = records.slice(0, max);
+  const delivered = records.filter((record) => record.delivered).length;
+  const suppressed = records.filter((record) => record.suppressed).length;
+  const latest = recent[0] || null;
+  const summary = latest
+    ? `Latest attention notification ${latest.delivered ? 'sent' : `suppressed (${latest.reason || 'policy'})`} ${latest.ageLabel}.`
+    : 'No attention notification history yet.';
+  return {
+    ok: true,
+    operatorOnly: true,
+    desktopPet: false,
+    count: records.length,
+    returned: recent.length,
+    limit: max,
+    delivered,
+    suppressed,
+    latest,
+    summary,
+    recent,
+  };
+}
+
 function notificationSnapshot() {
   return {
     enabled: NOTIFICATIONS_ENABLED,
@@ -920,7 +996,10 @@ function notificationSnapshot() {
     sent: notificationState.sent,
     skipped: notificationState.skipped,
     last: notificationState.last,
-    attentionNotifications: notificationState.attention,
+    attentionNotifications: {
+      ...notificationState.attention,
+      history: attentionNotificationHistory(8),
+    },
     attention: attentionPolicySnapshot(),
   };
 }
@@ -27097,8 +27176,17 @@ function startApiServer() {
     res.json({ presence: presenceStateSnapshot({ limit: req.query.limit }) });
   });
 
-  api.get('/api/attention', (_req, res) => {
-    res.json({ attention: attentionPolicySnapshot() });
+  api.get('/api/attention', (req, res) => {
+    res.json({
+      attention: {
+        ...attentionPolicySnapshot(),
+        history: attentionNotificationHistory(req.query.limit),
+      },
+    });
+  });
+
+  api.get('/api/attention/history', (req, res) => {
+    res.json({ history: attentionNotificationHistory(req.query.limit) });
   });
 
   api.post('/api/attention/notify', express.json({ limit: '64kb' }), (req, res) => {
