@@ -69,6 +69,8 @@ const WINDOW_PARK_MARGIN = Math.max(0, Math.min(160, Number(process.env.JAVIS_WI
 const WINDOW_NOTCH_TOP_OFFSET = Math.max(0, Math.min(40, Number(process.env.JAVIS_WINDOW_NOTCH_TOP_OFFSET || 5)));
 const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_CHROME_DEBUG_PORT || 9222)));
 const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR || path.join(DATA_DIR, 'chrome-cdp-profile');
+const AX_TREE_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_TREE_TIMEOUT_MS || 25000)));
+const AX_ACTION_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_ACTION_TIMEOUT_MS || 25000)));
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
 const AMBIENT_OBSERVE_ENABLED = process.env.JAVIS_AMBIENT_OBSERVE === 'true';
 const AMBIENT_CAPTURE_SCREEN = process.env.JAVIS_AMBIENT_CAPTURE_SCREEN === 'true';
@@ -5235,7 +5237,7 @@ if (!processes.length) {
 `;
 
   try {
-    const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 12000, maxBuffer: 3_000_000 });
+    const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: AX_TREE_TIMEOUT_MS, maxBuffer: 3_000_000 });
     const tree = JSON.parse(String(stdout || '{}'));
     const result = {
       accessibilityTrusted,
@@ -7848,7 +7850,7 @@ JSON.stringify({
 });
 `;
 
-  const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: 8000, maxBuffer: 1_000_000 });
+  const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: AX_ACTION_TIMEOUT_MS, maxBuffer: 1_000_000 });
   const result = JSON.parse(String(stdout || '{}'));
   appendAudit('accessibility_action.executed', {
     action: plan.action,

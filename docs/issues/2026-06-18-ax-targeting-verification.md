@@ -56,15 +56,13 @@ Run against the live resident service at `http://127.0.0.1:3417`:
    `AXEnhancedUserInterface` is being set before the read. Good.
 2. **Budget 240/9 is not a perf regression on normal trees.** Native/small trees
    (ghostty ~10 nodes, a normal page) read well under the 12s snapshot timeout.
-3. **Open edge case — discarded Chrome tabs hang the AX read.** Reading a
+3. **Follow-up landed — discarded Chrome tabs get a wider AX timeout.** Reading a
    **suspended/discarded** Chrome tab ("闲置标签页 · 已释放 N MB", web content
-   process released) produced `accessibility_tree_read_timeout` on the control
-   path while the tree itself reported only ~30 shallow nodes. This is
-   environmental, not the core Gemini fix, but worth a small robustness pass:
-   - detect a discarded tab (shallow `AXWebArea` + the "已释放/Discarded" hint) and
-     return a clear recovery hint ("reload the tab, then retry") instead of a 12s
-     hang, **or**
-   - lower the snapshot timeout for the control/plan path and retry once.
+   process released) produced `accessibility_tree_read_timeout` on the older 12s
+   tree / 8s action path while the tree itself reported only ~30 shallow nodes.
+   The resident now uses configurable 25s JXA timeouts for tree reads and AX
+   actions (`JAVIS_AX_TREE_TIMEOUT_MS`, `JAVIS_AX_ACTION_TIMEOUT_MS`) and the eval
+   smoke check waits 30s before aborting its client request.
 
 ## Status of the core fix (to confirm once Codex's diff lands)
 

@@ -776,6 +776,9 @@ For Chromium browsers, the tree reader attempts to enable the web accessibility 
 nodes, and captures web hints such as placeholder text, DOM role, DOM id, class list, editable state,
 and focus state. This makes side panes and web textboxes easier to target without bypassing the
 same Level 3 action policy used by `ax_press` and `ax_set_value`.
+AX tree reads and action JXA calls default to a 25s timeout (`JAVIS_AX_TREE_TIMEOUT_MS` and
+`JAVIS_AX_ACTION_TIMEOUT_MS`, capped at 60s) so suspended or complex Chromium pages do not fail
+before the app has exposed a usable accessibility tree.
 
 For the Gemini/Chromium side-pane targeting regression, use the shared verifier:
 
