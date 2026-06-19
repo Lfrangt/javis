@@ -1019,6 +1019,8 @@ function printRealtimeEvidence(result) {
   const autopilotEvents = Array.isArray(autopilotTools.recent) ? autopilotTools.recent : [];
   const attentionTools = evidence.attentionTools || {};
   const attentionEvents = Array.isArray(attentionTools.recent) ? attentionTools.recent : [];
+  const perceptionTools = evidence.perceptionTools || {};
+  const perceptionEvents = Array.isArray(perceptionTools.recent) ? perceptionTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
   const drill = evidence.drill || dogfood.drill || {};
   const dogfoodStart = evidence.dogfoodStart || drill.dogfoodStart || {};
@@ -1151,6 +1153,24 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = attention.spokenSummary ? ` · ${compact(attention.spokenSummary, 180)}` : '';
     console.log(`- ${event.name || 'get_attention_explanation'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nPerception consent tool:');
+  console.log(`- observed ${Number(perceptionTools.count || 0)} recent event(s) · called=${perceptionTools.hasConsent ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(perceptionTools.nextAction || dogfood.perceptionTools?.nextAction || 'Ask live voice what JAVIS can see/control and which permissions are active.', 220)}`);
+  for (const event of perceptionEvents.slice(0, 4)) {
+    const perception = event.perception || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      perception.surfaceCount ? `surfaces=${perception.surfaceCount}` : '',
+      perception.rawStoredCount ? `raw=${perception.rawStoredCount}` : 'raw=0',
+      perception.blockedCount ? `blocked=${perception.blockedCount}` : '',
+      perception.localOnly ? 'local-only' : '',
+      perception.requiresUserIntentForAction ? 'user-intent' : '',
+      perception.desktopPetStillMinimal ? 'pet-minimal' : '',
+    ].filter(Boolean);
+    const summary = perception.summary ? ` · ${compact(perception.summary, 180)}` : '';
+    console.log(`- ${event.name || 'get_perception_consent'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nRecent realtime tool calls:');
   if (toolCalls.length) {

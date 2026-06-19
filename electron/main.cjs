@@ -2637,6 +2637,7 @@ function normalizeContextPlan(value) {
     browserActivity: Boolean(rawNeeds.browserActivity),
     browserPage: Boolean(rawNeeds.browserPage),
     browserDom: Boolean(rawNeeds.browserDom),
+    perceptionStatus: Boolean(rawNeeds.perceptionStatus),
     clipboard: Boolean(rawNeeds.clipboard),
     clipboardText: Boolean(rawNeeds.clipboardText),
     files: Boolean(rawNeeds.files),
@@ -13799,6 +13800,7 @@ function contextPlanPushReason(reasons, reason) {
 function contextPlanRecommendedTools(needs) {
   const tools = [];
   if (needs.residentState) tools.push('get_work_briefing');
+  if (needs.perceptionStatus) tools.push('get_perception_consent');
   if (needs.macContext || needs.clipboard) tools.push('get_mac_context');
   if (needs.screen || needs.vision || needs.accessibility) tools.push('observe_now');
   if (needs.vision) tools.push('describe_screen');
@@ -13849,6 +13851,7 @@ function buildContextPlan(message, options = {}) {
     browserActivity: false,
     browserPage: false,
     browserDom: false,
+    perceptionStatus: false,
     clipboard: false,
     clipboardText: false,
     files: false,
@@ -13882,9 +13885,17 @@ function buildContextPlan(message, options = {}) {
   const clipboardSignal = /clipboard|pasteboard|copy|paste|剪贴板|粘贴板|复制|粘贴/.test(text);
   const clipboardTextSignal = /read.*clipboard|clipboard.*content|what.*clipboard|剪贴板.*内容|读.*剪贴板|看看剪贴板/.test(text);
   const statusSignal = /status|briefing|progress|next action|jobs|approvals|session|inbox|状态|简报|进度|下一步|任务|审批|会话|收件箱|待办/.test(text);
+  const perceptionStatusSignal = /(what|which).*(see|watch|listen|control|operate|permission|access)|can you (see|watch|listen|control|operate)|permission|privacy|consent|surface|access|你.*(能|可以).*(看|看到|听|监听|操作|控制)|权限|隐私|同意|授权|能看什么|能操作什么/.test(text);
+  const explicitScreenContextSignal = /screen|screenshot|visible|look at|current view|屏幕|截屏|截图|当前界面|现在界面|界面|画面|窗口|当前应用/.test(text);
   const codeWorkerSignal = /codex|claude|code agent|implement|fix|refactor|debug|test|lint|build|commit|pr\b|实现|修复|重构|调试|跑测试|提交/.test(text);
 
-  if (options.includeScreen === true || screenSignal) {
+  if (perceptionStatusSignal) {
+    needs.perceptionStatus = true;
+    needs.residentState = true;
+    contextPlanPushReason(reasons, 'task asks what JAVIS can see, read, hear, control, or what permissions are active');
+  }
+
+  if (options.includeScreen === true || (screenSignal && (!perceptionStatusSignal || explicitScreenContextSignal))) {
     needs.screen = true;
     needs.macContext = true;
     contextPlanPushReason(reasons, options.includeScreen === true ? 'caller requested screen context' : 'task refers to the visible screen/UI');
@@ -17587,6 +17598,7 @@ const REALTIME_DOGFOOD_SESSION_TOOL_NAMES = new Set([
 const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
 const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
+const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
 
 function realtimeToolOutputObject(result = {}) {
   if (!result || typeof result.output !== 'string') return null;
@@ -17703,6 +17715,36 @@ function realtimeAttentionToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimePerceptionToolSummary(name, args = {}, result = {}) {
+  if (name !== REALTIME_PERCEPTION_TOOL_NAME) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const surfaces = Array.isArray(output.surfaces) ? output.surfaces : [];
+  const rawStored = surfaces.filter((surface) => surface.rawContentStored === true);
+  const blocked = surfaces.filter((surface) => surface.status === 'blocked');
+  const limited = surfaces.filter((surface) => surface.status === 'limited');
+  return {
+    summary: compactRecordText(output.summary || '', 420),
+    surfaceCount: boundedCount(surfaces.length, 100),
+    enabledCount: boundedCount(output.counts?.enabled, 100),
+    activeCount: boundedCount(output.counts?.active, 100),
+    readyCount: boundedCount(output.counts?.ready, 100),
+    waitingCount: boundedCount(output.counts?.waiting, 100),
+    limitedCount: boundedCount(output.counts?.limited || limited.length, 100),
+    blockedCount: boundedCount(output.counts?.blocked || blocked.length, 100),
+    rawStoredCount: boundedCount(rawStored.length, 100),
+    rawStoredSurfaces: rawStored.map((surface) => compactRecordText(surface.id || '', 80)).filter(Boolean).slice(0, 8),
+    blockedSurfaces: blocked.map((surface) => compactRecordText(surface.id || '', 80)).filter(Boolean).slice(0, 8),
+    localOnly: output.policy?.localOnly === true,
+    passiveByDefault: output.policy?.passiveByDefault === true,
+    requiresUserIntentForAction: output.policy?.requiresUserIntentForAction === true,
+    desktopPetStillMinimal: true,
+    controlMode: compactRecordText(output.policy?.controlMode?.mode || '', 80),
+    localExecutionEnabled: Boolean(output.policy?.localExecutionEnabled),
+    trustedLocalMode: Boolean(output.policy?.trustedLocalMode),
+    limit: boundedCount(args?.limit, 100),
+  };
+}
+
 function dogfoodSessionActionForToolCall(name) {
   if (name === 'get_realtime_dogfood_session') return 'snapshot';
   if (name === 'start_realtime_dogfood_session') return 'start';
@@ -17748,6 +17790,7 @@ function recordRealtimeToolCall(options = {}) {
   const handoff = realtimeHandoffToolSummary(name, options.args || {}, result);
   const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
+  const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
   const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
@@ -17763,6 +17806,7 @@ function recordRealtimeToolCall(options = {}) {
     handoff,
     autopilot,
     attention,
+    perception,
     dogfoodSession,
   };
   realtimeToolCallEvents.unshift(event);
@@ -17789,6 +17833,12 @@ function recordRealtimeToolCall(options = {}) {
     attentionPetState: attention?.petState || '',
     attentionHistoryCount: attention?.historyCount || 0,
     attentionOperatorOnlyHistory: Boolean(attention?.operatorOnlyHistory),
+    perceptionSummary: perception?.summary || '',
+    perceptionSurfaceCount: perception?.surfaceCount || 0,
+    perceptionRawStoredCount: perception?.rawStoredCount || 0,
+    perceptionBlockedCount: perception?.blockedCount || 0,
+    perceptionLocalOnly: Boolean(perception?.localOnly),
+    perceptionRequiresUserIntent: Boolean(perception?.requiresUserIntentForAction),
     dogfoodSessionAction: dogfoodSession?.action || '',
     dogfoodSessionId: dogfoodSession?.sessionId || '',
     dogfoodSessionStatus: dogfoodSession?.sessionStatus || '',
@@ -17897,6 +17947,30 @@ function realtimeAttentionToolEvidence(limit = 8) {
     nextAction: hasExplanation
       ? 'Ask live voice to explain why the pet is green/yellow/red and confirm the answer matches this attention evidence.'
       : 'Ask the live voice session: 为什么你现在是绿色？为什么刚才没提醒我？',
+  };
+}
+
+function realtimePerceptionToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => event.name === REALTIME_PERCEPTION_TOOL_NAME)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasConsent = recent.some((event) => (
+    event.ok &&
+    event.perception?.localOnly === true &&
+    event.perception?.passiveByDefault === true &&
+    event.perception?.requiresUserIntentForAction === true &&
+    event.perception?.desktopPetStillMinimal === true &&
+    Number(event.perception?.surfaceCount || 0) >= 8
+  ));
+  return {
+    ok: hasConsent,
+    count: recent.length,
+    hasConsent,
+    last: recent[0] || null,
+    recent,
+    nextAction: hasConsent
+      ? 'Ask live voice what JAVIS can currently see/control and confirm it answers from consent registry evidence.'
+      : 'Ask the live voice session: 你现在能看到什么、能操作什么、哪些权限开着？',
   };
 }
 
@@ -18163,6 +18237,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const handoffTools = evidence.handoffTools || {};
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
+  const perceptionTools = evidence.perceptionTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
     goal: 'Prove a real Realtime voice session can speak current progress, call get_work_handoff/get_autopilot_status, and leave evidence.',
@@ -18194,6 +18269,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '现在做到哪了？接下来做什么？',
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
+      '你现在能看到什么、能操作什么？',
     ],
     expectedEvidence: [
       {
@@ -18229,6 +18305,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         ok: Boolean(attentionTools.hasExplanation),
         tool: REALTIME_ATTENTION_TOOL_NAME,
       },
+      {
+        id: 'perception_tool',
+        label: 'Realtime called get_perception_consent',
+        ok: Boolean(perceptionTools.hasConsent),
+        tool: REALTIME_PERCEPTION_TOOL_NAME,
+      },
     ],
     nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, and attention prompts.',
   };
@@ -18240,6 +18322,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const handoffTools = evidence.handoffTools || {};
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
+  const perceptionTools = evidence.perceptionTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
   const stepIds = [
@@ -18264,7 +18347,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools });
   return {
     ok: true,
     status: ready ? 'ready' : evidence.status || 'pending',
@@ -18334,6 +18417,12 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasExplanation: Boolean(attentionTools.hasExplanation),
       nextAction: attentionTools.nextAction || 'Ask the live voice session why the pet is green/yellow/red.',
     },
+    perceptionTools: {
+      observed: Boolean(perceptionTools.ok),
+      count: Number(perceptionTools.count || 0),
+      hasConsent: Boolean(perceptionTools.hasConsent),
+      nextAction: perceptionTools.nextAction || 'Ask the live voice session what JAVIS can see/control and which permissions are active.',
+    },
     drill,
     promptWhenReady: '后台现在怎么样',
     currentStep,
@@ -18364,6 +18453,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const handoffTools = options.handoffTools || evidence.handoffTools || {};
   const autopilotTools = options.autopilotTools || evidence.autopilotTools || {};
   const attentionTools = options.attentionTools || evidence.attentionTools || {};
+  const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
   const steps = [
@@ -18454,6 +18544,14 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_ATTENTION_TOOL_NAME, count: Number(attentionTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_perception_consent',
+      label: 'Ask what JAVIS can see or control',
+      ok: Boolean(perceptionTools.hasConsent),
+      detail: perceptionTools.hasConsent ? 'get_perception_consent was observed in recent Realtime tool evidence.' : 'No get_perception_consent call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 你现在能看到什么、能操作什么？',
+      evidence: { tool: REALTIME_PERCEPTION_TOOL_NAME, count: Number(perceptionTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'list_shortcuts',
       label: 'Ask voice to list saved shortcut phrases',
       ok: Boolean(shortcutTools.hasList),
@@ -18505,6 +18603,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '现在做到哪了？接下来做什么？',
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
+      '你现在能看到什么、能操作什么？',
       '有哪些快捷短语?',
       '把这个工作流保存成快捷短语，短语叫「测试贾维斯快捷短语」',
       '确认保存「测试贾维斯快捷短语」',
@@ -19356,6 +19455,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const handoffTools = realtimeHandoffToolEvidence(8);
   const autopilotTools = realtimeAutopilotToolEvidence(8);
   const attentionTools = realtimeAttentionToolEvidence(8);
+  const perceptionTools = realtimePerceptionToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const liveAt = Number(conversation.liveAt || 0);
   const negotiationAt = Number(negotiation?.createdAt || 0);
@@ -19420,6 +19520,7 @@ function realtimeVoiceEvidenceSnapshot() {
     handoffTools,
     autopilotTools,
     attentionTools,
+    perceptionTools,
     progressSync,
     progress: {
       version: progress.version,
@@ -19556,6 +19657,11 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         observed: Boolean(evidence.attentionTools?.hasExplanation),
         count: Number(evidence.attentionTools?.count || 0),
         nextAction: evidence.attentionTools?.nextAction || '',
+      },
+      perception: {
+        observed: Boolean(evidence.perceptionTools?.hasConsent),
+        count: Number(evidence.perceptionTools?.count || 0),
+        nextAction: evidence.perceptionTools?.nextAction || '',
       },
     } : undefined,
   };
@@ -25897,6 +26003,16 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(configCheckSnapshot()) };
   }
 
+  if (name === 'get_perception_consent') {
+    return {
+      ok: true,
+      output: JSON.stringify(perceptionConsentSnapshot({
+        limit: args?.limit,
+        auditLimit: args?.auditLimit,
+      })),
+    };
+  }
+
   if (name === 'get_control_mode') {
     return {
       ok: true,
@@ -26636,6 +26752,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use read_browser_dom before choosing a clickable or fillable element inside the current webpage.',
       'Use control_browser_dom only when the user explicitly asks to click, fill, or select an element inside the current webpage. Do not use it for submits, purchases, sends, logins, deletes, or account changes without confirmation.',
       'Use get_config_check when setup, permission, resident mode, or local worker readiness is unclear.',
+      'Use get_perception_consent when the user asks what JAVIS can see, hear, read, control, what permissions are active, what is stored, or why an action is allowed/blocked. It reads the local consent registry and keeps the desktop pet minimal.',
       'Use get_control_mode when the user asks whether JAVIS is observing, asking, trusted, or in supervised takeover mode. Use set_control_mode only when the user explicitly asks to change autonomy.',
       'Use get_attention_policy when the user asks whether JAVIS should interrupt, why the pet is red/yellow/green, why no notification fired, or what needs attention. It is read-only and should keep the answer short.',
       'Use get_attention_explanation when the user asks for a spoken explanation of the pet color, attention history, the last notification, or why JAVIS stayed quiet. It returns a short Chinese spokenSummary plus read-only evidence.',
@@ -26860,6 +26977,19 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_perception_consent',
+        description: 'Read the local perception consent/status registry: screen, voice, ambient observer, browser activity/page reader, clipboard, Accessibility/app control, local learning, and worker/CLI tools. Reports consent gates, local retention, raw-content storage posture, controls, and recent audit evidence without adding desktop pet diagnostics.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+            auditLimit: { type: 'number' },
+          },
           additionalProperties: false,
         },
       },
@@ -28207,6 +28337,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_browser_context',
   'get_browser_activity',
   'get_config_check',
+  'get_perception_consent',
   'get_control_mode',
   'get_attention_policy',
   'get_attention_explanation',
@@ -28249,6 +28380,7 @@ function realtimeInstructionChecks(instructions = '') {
     standbyWakeGate: /standby behavior|wake word/i.test(text),
     contextPlanner: /plan_context/i.test(text),
     screenGrounding: /describe_screen/i.test(text),
+    perceptionConsent: /get_perception_consent|what JAVIS can see|what JAVIS can control|permission.*active|consent registry/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     attentionPolicy: /get_attention_policy|should interrupt|pet is red\/yellow\/green|notification fired|needs attention/i.test(text),
     attentionExplanation: /get_attention_explanation|spoken explanation of the pet color|attention history|last notification|stayed quiet/i.test(text),

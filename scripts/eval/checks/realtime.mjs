@@ -13,6 +13,7 @@ const REQUIRED_TOOLS = [
   'get_browser_context',
   'get_browser_activity',
   'get_config_check',
+  'get_perception_consent',
   'get_control_mode',
   'get_attention_policy',
   'get_attention_explanation',
@@ -131,6 +132,44 @@ export default {
         : fail('realtime.browser_activity_tool', 'Realtime browser activity tool', `tool execute ${browserActivityTool.status}`, browserActivityTool.data),
     );
 
+    const perceptionTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_perception_consent', arguments: { limit: 5 } },
+    });
+    const perceptionOutput = parseToolOutput(perceptionTool);
+    const perceptionSurfaces = Array.isArray(perceptionOutput?.surfaces) ? perceptionOutput.surfaces : [];
+    const perceptionSurfaceIds = new Set(perceptionSurfaces.map((surface) => surface.id));
+    const requiredPerceptionSurfaces = [
+      'screen_context',
+      'voice_microphone',
+      'ambient_observer',
+      'browser_activity',
+      'browser_page_reader',
+      'clipboard',
+      'accessibility_tree',
+      'app_control',
+      'local_learning',
+      'worker_tools',
+    ];
+    out.push(
+      perceptionTool.ok &&
+        perceptionTool.data?.ok === true &&
+        perceptionOutput?.ok === true &&
+        perceptionOutput.policy?.localOnly === true &&
+        perceptionOutput.policy?.passiveByDefault === true &&
+        perceptionOutput.policy?.requiresUserIntentForAction === true &&
+        requiredPerceptionSurfaces.every((id) => perceptionSurfaceIds.has(id)) &&
+        perceptionSurfaces.every((surface) => (
+          typeof surface.enabled === 'boolean' &&
+          typeof surface.status === 'string' &&
+          typeof surface.rawContentStored === 'boolean' &&
+          Array.isArray(surface.controls) &&
+          Array.isArray(surface.auditTypes)
+        ))
+        ? ok('realtime.perception_consent_tool', 'Realtime perception consent tool', `${perceptionSurfaces.length} surface(s) · ${perceptionOutput.summary || ''}`)
+        : fail('realtime.perception_consent_tool', 'Realtime perception consent tool', `tool execute ${perceptionTool.status}`, perceptionTool.data),
+    );
+
     const workerRecoveryTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: { source: 'eval', name: 'get_worker_recovery', arguments: { limit: 5, includeInternal: true } },
@@ -215,6 +254,24 @@ export default {
         attentionToolEvents.some((event) => event.name === 'get_attention_explanation' && event.source === 'eval' && event.attention?.spokenSummary && event.attention?.desktopPetStillMinimal === true)
         ? ok('realtime.attention_tool_evidence', 'Realtime attention tool evidence', `${attentionToolEvidence.count || 0} attention explanation call(s) visible`)
         : fail('realtime.attention_tool_evidence', 'Realtime attention tool evidence', 'expected get_attention_explanation calls to be visible in realtime evidence', attentionToolEvidence),
+    );
+
+    const perceptionEvidence = await ctx.api('/api/realtime/evidence');
+    const perceptionToolEvidence = perceptionEvidence.data?.evidence?.perceptionTools;
+    const perceptionToolEvents = Array.isArray(perceptionToolEvidence?.recent) ? perceptionToolEvidence.recent : [];
+    out.push(
+      perceptionEvidence.ok &&
+        perceptionToolEvidence?.hasConsent === true &&
+        perceptionToolEvents.some((event) => (
+          event.name === 'get_perception_consent' &&
+          event.source === 'eval' &&
+          event.perception?.surfaceCount >= 8 &&
+          event.perception?.localOnly === true &&
+          event.perception?.requiresUserIntentForAction === true &&
+          event.perception?.desktopPetStillMinimal === true
+        ))
+        ? ok('realtime.perception_tool_evidence', 'Realtime perception tool evidence', `${perceptionToolEvidence.count || 0} perception consent call(s) visible`)
+        : fail('realtime.perception_tool_evidence', 'Realtime perception tool evidence', 'expected get_perception_consent calls to be visible in realtime evidence', perceptionToolEvidence),
     );
 
     const autopilotStatusTool = await ctx.api('/api/tools/execute', {
@@ -603,6 +660,7 @@ export default {
           output.includes('Handoff tool:') &&
           output.includes('Autopilot tool:') &&
           output.includes('Attention explanation tool:') &&
+          output.includes('Perception consent tool:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Latency:') &&
           output.includes('Recent realtime tool calls:') &&
@@ -616,9 +674,10 @@ export default {
           output.includes('no-mic') &&
           output.includes('get_work_handoff') &&
           output.includes('get_autopilot_status') &&
-          output.includes('get_attention_explanation')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
+          output.includes('get_attention_explanation') &&
+          output.includes('get_perception_consent')
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, tool-call, and progress sync evidence', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -880,18 +939,22 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         d.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
+        d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
         d.handoffTools?.hasHandoff === true &&
         d.autopilotTools?.hasStatus === true &&
         d.attentionTools?.hasExplanation === true &&
+        d.perceptionTools?.hasConsent === true &&
         dogfoodGuide.start?.endpoint?.path === '/api/realtime/dogfood/start' &&
         dogfoodGuide.monitor?.endpoint === '/api/realtime/evidence' &&
         Array.isArray(dogfoodGuide.prompts) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_autopilot_status') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
         typeof d.promptWhenReady === 'string' &&
@@ -911,6 +974,7 @@ export default {
       'ask_work_handoff',
       'ask_autopilot_status',
       'ask_attention_explanation',
+      'ask_perception_consent',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
@@ -929,6 +993,7 @@ export default {
         Array.isArray(drillData.prompts) &&
         drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
+        drillData.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
         ? ok('realtime.dogfood_drill', 'Realtime dogfood drill', `${drillData.status || 'pending'} · ${drillData.summary || ''}`)

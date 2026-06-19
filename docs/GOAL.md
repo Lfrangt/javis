@@ -46,7 +46,7 @@ These are not marketing comparisons. They are goals JAVIS should implement.
 
 - Smart context assembly: classify each turn before capturing screen, Accessibility trees, browser text, clipboard, files, memory, or audio, so realtime voice stays fast and private by default.
 - Perception consent model: screen watching, background listening, browser reading, clipboard access, and app control each need clear status, toggles, first-use approval, and audit trails.
-- The current operator surface for that model is `/api/perception/consent` and `npm run config -- --print-perception`: it belongs in the CUI/local API, not in the tiny desktop pet.
+- The current operator surface for that model is `/api/perception/consent`, Realtime `get_perception_consent`, and `npm run config -- --print-perception`: it belongs in the CUI/local API/voice evidence, not in the tiny desktop pet.
 - Control modes: support observe-only, ask-before-action, trusted local low-risk action, and takeover-style supervised execution, with hard stops for sends, deletes, purchases, account changes, and private data exposure.
 - Native setup path: provide signed/notarized Mac builds, LaunchAgent resident mode, guided permission setup, self-checks, one-step fixes, and update/recovery flows that do not require manual debugging.
 - Local and BYOK model paths: keep OpenAI Realtime as the premium voice lane, while leaving room for local STT/TTS/LLM, Ollama/Rapid-MLX-compatible providers, OpenRouter-style BYOK routing, and offline-capable narrow commands.

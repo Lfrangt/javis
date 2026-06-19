@@ -48,6 +48,24 @@ export default {
         : fail('context.browser_activity', 'Browser activity context plan', `expected metadata-only browser activity plan, got ${browserActivity.status}`, browserActivity.data),
     );
 
+    const perception = await ctx.api('/api/context/plan', {
+      method: 'POST',
+      body: { message: '你现在能看到什么、能操作什么、哪些权限开着？', useMemory: false },
+    });
+    const perceptionPlan = perception.data?.contextPlan;
+    const perceptionNeeds = needs(perceptionPlan);
+    out.push(
+      perception.ok &&
+        perceptionNeeds.perceptionStatus === true &&
+        perceptionNeeds.residentState === true &&
+        perceptionNeeds.screen !== true &&
+        perceptionNeeds.browserPage !== true &&
+        perceptionNeeds.files !== true &&
+        perceptionPlan?.recommendedTools?.includes('get_perception_consent')
+        ? ok('context.perception_consent', 'Perception consent context plan', `${perceptionPlan.mode}: ${perceptionPlan.recommendedTools?.join(', ')}`, perceptionPlan)
+        : fail('context.perception_consent', 'Perception consent context plan', `expected lightweight perception consent plan, got ${perception.status}`, perception.data),
+    );
+
     const app = await ctx.api('/api/context/plan', {
       method: 'POST',
       body: { message: '点击当前应用里的搜索框并输入 JAVIS', useMemory: false },
