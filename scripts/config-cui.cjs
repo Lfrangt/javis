@@ -844,6 +844,9 @@ function printRealtimeEvidence(result) {
   const negotiation = conversation.lastRealtimeSessionNegotiation || {};
   const injection = conversation.lastRealtimeProgressInjection || {};
   const progress = evidence.progress || {};
+  const shortcutTools = evidence.shortcutTools || {};
+  const shortcutEvents = Array.isArray(shortcutTools.recent) ? shortcutTools.recent : [];
+  const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const checkLabels = [
     ['providerReady', 'Realtime provider'],
@@ -875,6 +878,30 @@ function printRealtimeEvidence(result) {
     for (const item of evidence.missing.slice(0, 4)) {
       console.log(`- ${item}`);
     }
+  }
+  console.log('\nShortcut tools:');
+  console.log(`- observed ${Number(shortcutTools.count || 0)} recent event(s) · actions ${(shortcutTools.observedActions || []).join(', ') || '-'}`);
+  console.log(`- gates confirm=${shortcutTools.hasConfirmationGate ? 'yes' : 'no'} · save=${shortcutTools.hasSave ? 'yes' : 'no'} · forget=${shortcutTools.hasForget ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(shortcutTools.nextAction || dogfood.shortcutTools?.nextAction || 'Ask live voice to list, save, or forget a shortcut phrase.', 220)}`);
+  for (const event of shortcutEvents.slice(0, 4)) {
+    const shortcut = event.shortcut || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      shortcut.action || event.name || '-',
+      shortcut.requiresConfirmation ? 'confirmation' : '',
+      shortcut.phrase ? `phrase="${compact(shortcut.phrase, 60)}"` : '',
+    ].filter(Boolean);
+    console.log(`- ${event.name || 'shortcut_tool'} · ${bits.join(' · ')}`);
+  }
+  console.log('\nRecent realtime tool calls:');
+  if (toolCalls.length) {
+    for (const event of toolCalls.slice(0, 5)) {
+      const resultShape = event.result || {};
+      const shortcut = event.shortcut?.action ? ` · shortcut=${event.shortcut.action}` : '';
+      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}`);
+    }
+  } else {
+    console.log('- none yet');
   }
   if (dogfood.manualOnly) {
     console.log('\nManual dogfood:');
@@ -929,7 +956,6 @@ async function watchRealtimeEvidence(rl) {
       const result = await request('/api/realtime/evidence');
       lastError = null;
       printRealtimeEvidence(result);
-      if (result.evidence?.readyForVoiceProgressQuestion) return;
     } catch (error) {
       lastError = error;
       console.log(`Cannot read realtime evidence: ${error instanceof Error ? error.message : String(error)}`);
@@ -967,6 +993,12 @@ async function movePetCorner(rl) {
 }
 
 async function main() {
+  if (process.argv.includes('--print-realtime-evidence') || process.argv.includes('--realtime-evidence')) {
+    const result = await request('/api/realtime/evidence');
+    printRealtimeEvidence(result);
+    return;
+  }
+
   if (!process.stdin.isTTY) {
     await printStatus();
     return;

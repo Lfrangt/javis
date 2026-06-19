@@ -1,4 +1,9 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { ok, warn, fail } from '../_client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 const REQUIRED_TOOLS = [
   'plan_context',
@@ -246,6 +251,27 @@ export default {
         ? ok('realtime.shortcut_tool_evidence', 'Realtime shortcut tool evidence', `actions=${Array.from(shortcutActions).join(', ')}`)
         : fail('realtime.shortcut_tool_evidence', 'Realtime shortcut tool evidence', 'expected shortcut tool calls to be visible in realtime evidence', shortcutToolEvidence),
     );
+
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-evidence'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      out.push(
+        output.includes('Shortcut tools:') &&
+          output.includes('Recent realtime tool calls:') &&
+          output.includes('confirm_required') &&
+          output.includes('save') &&
+          output.includes('forget')
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut and recent tool-call evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut tool evidence', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
+    }
 
     const context = await ctx.api('/api/realtime/context?source=eval');
     const c = context.data?.context;
