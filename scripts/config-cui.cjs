@@ -724,18 +724,31 @@ function printRealtimeEvidence(result) {
   const negotiation = conversation.lastRealtimeSessionNegotiation || {};
   const injection = conversation.lastRealtimeProgressInjection || {};
   const progress = evidence.progress || {};
+  const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const checkLabels = [
+    ['providerReady', 'Realtime provider'],
     ['sessionNegotiated', 'WebRTC session'],
     ['progressInjectedFromRenderer', 'Renderer progress injection'],
     ['passiveContextOnly', 'Passive context only'],
     ['spokenSummaryReady', 'Short spoken summary'],
   ];
   console.log(`Realtime voice evidence: ${evidence.readyForVoiceProgressQuestion ? 'READY' : 'pending'}`);
+  console.log(`Status: ${evidence.status || 'pending'} · phase ${evidence.phase || '-'}`);
   if (evidence.generatedAt) console.log(`Generated: ${evidence.generatedAt}`);
   console.log(`Next: ${evidence.nextAction || '-'}`);
+  if (evidence.blocker?.summary) {
+    console.log(`Blocker: ${evidence.blocker.label || evidence.blocker.id || '-'} · ${compact(evidence.blocker.summary, 220)}`);
+  }
   console.log('\nChecks:');
-  for (const [key, label] of checkLabels) {
-    console.log(`- ${checks[key] ? 'ok' : 'pending'} ${label}`);
+  if (checklist.length) {
+    for (const step of checklist) {
+      const suffix = step.detail ? ` · ${compact(step.detail, 180)}` : '';
+      console.log(`- ${step.status || (step.ok ? 'ready' : 'pending')} ${step.label || step.id || '-'}${suffix}`);
+    }
+  } else {
+    for (const [key, label] of checkLabels) {
+      console.log(`- ${checks[key] ? 'ok' : 'pending'} ${label}`);
+    }
   }
   if (Array.isArray(evidence.missing) && evidence.missing.length) {
     console.log('\nMissing:');

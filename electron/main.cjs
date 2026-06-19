@@ -14226,6 +14226,30 @@ function recordRealtimeProgressInjection(options = {}) {
   return { ok: true, injection, conversation: conversationStateSnapshot() };
 }
 
+function realtimeEvidenceStep({ id, label, ok, blocked = false, detail = '', nextAction = '', evidence = {} }) {
+  const status = ok ? 'ready' : blocked ? 'blocked' : 'pending';
+  return {
+    id,
+    label,
+    status,
+    ok: Boolean(ok),
+    detail: compactRecordText(detail, 240),
+    nextAction: compactRecordText(nextAction, 240),
+    evidence,
+  };
+}
+
+function realtimeEvidencePhase(checks = {}, voiceHealth = {}) {
+  if (!checks.providerReady) {
+    return voiceHealth.status === 'blocked' ? 'provider_blocked' : 'provider_attention';
+  }
+  if (!checks.sessionNegotiated) return 'needs_live_session';
+  if (!checks.progressInjectedFromRenderer) return 'needs_worker_progress_injection';
+  if (!checks.passiveContextOnly) return 'needs_passive_injection';
+  if (!checks.spokenSummaryReady) return 'needs_spoken_summary';
+  return 'ready';
+}
+
 function realtimeVoiceEvidenceSnapshot() {
   const conversation = conversationStateSnapshot();
   const negotiation = conversation.lastRealtimeSessionNegotiation || null;
@@ -14233,23 +14257,102 @@ function realtimeVoiceEvidenceSnapshot() {
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
   const checks = {
+    providerReady: voiceHealth.status === 'ready',
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
     progressInjectedFromRenderer: Boolean(injection?.transport === 'webrtc-datachannel' && injection.dataChannelReadyState === 'open'),
     passiveContextOnly: Boolean(injection && injection.eventType === 'conversation.item.create' && injection.forcedResponse === false),
     spokenSummaryReady: Boolean(progress.spokenSummary && progress.spokenSummary.length <= 420),
   };
+  const checklist = [
+    realtimeEvidenceStep({
+      id: 'provider_ready',
+      label: 'Realtime provider ready',
+      ok: checks.providerReady,
+      blocked: voiceHealth.status === 'blocked',
+      detail: voiceHealth.summary,
+      nextAction: voiceHealth.next,
+      evidence: { status: voiceHealth.status, kind: voiceHealth.kind, hasOpenAiKey: voiceHealth.hasOpenAiKey },
+    }),
+    realtimeEvidenceStep({
+      id: 'session_negotiated',
+      label: 'Renderer WebRTC session negotiated',
+      ok: checks.sessionNegotiated,
+      detail: checks.sessionNegotiated
+        ? `session ${negotiation.sessionId || '-'} · status ${negotiation.statusCode || '-'}`
+        : 'No successful renderer WebRTC offer/answer receipt has been recorded.',
+      nextAction: 'Start a real renderer/WebRTC voice session from the desktop pet or summon hotkey.',
+      evidence: {
+        sessionId: negotiation?.sessionId || '',
+        statusCode: negotiation?.statusCode || 0,
+        offerBytes: negotiation?.offerBytes || 0,
+        answerBytes: negotiation?.answerBytes || 0,
+      },
+    }),
+    realtimeEvidenceStep({
+      id: 'worker_progress_injected',
+      label: 'Worker progress injected through renderer',
+      ok: checks.progressInjectedFromRenderer,
+      detail: checks.progressInjectedFromRenderer
+        ? `${injection.workerSummary || 'progress injected'} via ${injection.transport}`
+        : 'No open WebRTC data-channel progress injection has been recorded from the renderer.',
+      nextAction: 'Keep voice live while background worker progress changes.',
+      evidence: {
+        transport: injection?.transport || '',
+        dataChannelReadyState: injection?.dataChannelReadyState || '',
+        workerSummary: injection?.workerSummary || '',
+      },
+    }),
+    realtimeEvidenceStep({
+      id: 'passive_context_only',
+      label: 'Progress update stayed passive',
+      ok: checks.passiveContextOnly,
+      detail: checks.passiveContextOnly
+        ? 'Progress was sent as passive context without forcing a response.'
+        : 'Progress injection has not yet proven conversation.item.create with forcedResponse=false.',
+      nextAction: 'Let the live voice session receive progress without forcing a model response.',
+      evidence: {
+        eventType: injection?.eventType || '',
+        forcedResponse: Boolean(injection?.forcedResponse),
+      },
+    }),
+    realtimeEvidenceStep({
+      id: 'spoken_summary_ready',
+      label: 'Short spoken progress summary ready',
+      ok: checks.spokenSummaryReady,
+      detail: progress.spokenSummary || 'No short spokenSummary available from /api/work/progress.',
+      nextAction: 'Refresh /api/work/progress until it returns a short spokenSummary.',
+      evidence: { length: String(progress.spokenSummary || '').length },
+    }),
+  ];
+  const phase = realtimeEvidencePhase(checks, voiceHealth);
+  const status = phase === 'ready'
+    ? 'ready'
+    : phase === 'provider_blocked'
+      ? 'blocked'
+      : 'pending';
+  const blockerStep = checklist.find((step) => !step.ok) || null;
+  const blocker = blockerStep
+    ? {
+      id: blockerStep.id,
+      label: blockerStep.label,
+      status: blockerStep.status,
+      summary: blockerStep.detail,
+      nextAction: blockerStep.nextAction,
+    }
+    : null;
   const missing = [
-    checks.sessionNegotiated ? '' : 'start a real renderer/WebRTC voice session so lastRealtimeSessionNegotiation.ok is true',
-    checks.progressInjectedFromRenderer ? '' : 'keep voice live while background worker progress changes so renderer reports a webrtc-datachannel progress injection',
-    checks.passiveContextOnly ? '' : 'confirm progress injection is a passive conversation.item.create with forcedResponse=false',
-    checks.spokenSummaryReady ? '' : 'generate a short /api/work/progress spokenSummary',
+    ...checklist.filter((step) => !step.ok).map((step) => step.nextAction || step.detail),
   ].filter(Boolean);
   const readyForVoiceProgressQuestion = Object.values(checks).every(Boolean);
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
+    status,
+    phase,
     readyForVoiceProgressQuestion,
     checks,
+    checklist,
+    blocker,
     missing,
     nextAction: readyForVoiceProgressQuestion
       ? 'Ask in the live voice session: 后台现在怎么样'

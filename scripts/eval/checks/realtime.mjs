@@ -132,15 +132,33 @@ export default {
 
     const evidence = await ctx.api('/api/realtime/evidence');
     const e = evidence.data?.evidence;
+    const checklistIds = new Set((Array.isArray(e?.checklist) ? e.checklist : []).map((step) => step.id));
+    const requiredChecklist = [
+      'provider_ready',
+      'session_negotiated',
+      'worker_progress_injected',
+      'passive_context_only',
+      'spoken_summary_ready',
+    ];
+    const structuredEvidenceOk = Boolean(
+      e &&
+        ['ready', 'pending', 'blocked'].includes(e.status) &&
+        typeof e.phase === 'string' &&
+        e.phase.length > 0 &&
+        Array.isArray(e.checklist) &&
+        requiredChecklist.every((id) => checklistIds.has(id)) &&
+        (e.readyForVoiceProgressQuestion ? e.status === 'ready' && !e.blocker : e.blocker && typeof e.blocker.id === 'string'),
+    );
     out.push(
       evidence.ok &&
         e &&
         typeof e.readyForVoiceProgressQuestion === 'boolean' &&
         e.checks &&
-        ['sessionNegotiated', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof e.checks[key] === 'boolean') &&
+        ['providerReady', 'sessionNegotiated', 'progressInjectedFromRenderer', 'passiveContextOnly', 'spokenSummaryReady'].every((key) => typeof e.checks[key] === 'boolean') &&
+        structuredEvidenceOk &&
         typeof e.nextAction === 'string' &&
         e.progress?.spokenSummary
-        ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.readyForVoiceProgressQuestion ? 'ready' : 'pending'} · ${e.nextAction}`)
+        ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
         : fail('realtime.evidence_checklist', 'Realtime evidence checklist', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),
     );
 
