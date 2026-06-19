@@ -12548,6 +12548,193 @@ function redactedBrowserFillDraftPlan(plan = {}) {
   };
 }
 
+function browserFillDraftVerificationPreview(plan = {}, status = 'preview_only') {
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  return {
+    ok: false,
+    status,
+    plannedCount: steps.length,
+    executedCount: 0,
+    verifiedCount: 0,
+    entries: steps.map((step) => ({
+      index: step.index,
+      field: step.field,
+      action: step.action,
+      selector: step.selector,
+      found: false,
+      matched: false,
+      expectedBytes: Buffer.byteLength(String(step.value || ''), 'utf8'),
+      actualBytes: 0,
+      evidence: status,
+    })),
+    output: status === 'confirmation_required'
+      ? 'Post-fill verification is waiting for confirm:true.'
+      : status === 'fixture_blocked'
+        ? 'Post-fill verification cannot run against fixture DOM.'
+        : 'Post-fill verification will run after a confirmed live fill.',
+  };
+}
+
+function browserFillDraftVerificationScript(steps = []) {
+  const targets = steps.map((step) => ({
+    index: step.index,
+    field: step.field,
+    action: step.action,
+    selector: step.selector,
+    expected: String(step.value || ''),
+  }));
+  return `
+(() => {
+  const targets = ${JSON.stringify(targets)};
+  const clean = (input, max = 80) => String(input || '').replace(/[\\t\\r\\n ]+/g, ' ').trim().slice(0, max);
+  const byteLength = (value) => new TextEncoder().encode(String(value || '')).length;
+  const actualValue = (el) => {
+    const tag = el.tagName.toLowerCase();
+    if (tag === 'select') {
+      const option = el.options?.[el.selectedIndex];
+      return { value: String(el.value || ''), label: String(option?.text || '') };
+    }
+    if (el.isContentEditable) return { value: String(el.textContent || ''), label: '' };
+    if (tag === 'input' || tag === 'textarea') return { value: String(el.value || ''), label: '' };
+    return { value: String(el.textContent || ''), label: '' };
+  };
+  const entries = targets.map((target) => {
+    let el = null;
+    try {
+      el = target.selector ? document.querySelector(target.selector) : null;
+    } catch (_) {
+      el = null;
+    }
+    if (!el) {
+      return {
+        index: target.index,
+        field: target.field,
+        action: target.action,
+        selector: target.selector,
+        found: false,
+        matched: false,
+        expectedBytes: byteLength(target.expected),
+        actualBytes: 0,
+        evidence: 'target_missing'
+      };
+    }
+    const tag = el.tagName.toLowerCase();
+    const type = clean(el.getAttribute('type') || '', 40);
+    const actual = actualValue(el);
+    const expectedLower = String(target.expected || '').toLowerCase();
+    const actualLower = String(actual.value || '').toLowerCase();
+    const labelLower = String(actual.label || '').toLowerCase();
+    const matched = target.action === 'select'
+      ? (actual.value === target.expected || actualLower === expectedLower || labelLower === expectedLower || Boolean(expectedLower && labelLower.includes(expectedLower)))
+      : actual.value === target.expected;
+    return {
+      index: target.index,
+      field: target.field,
+      action: target.action,
+      selector: target.selector,
+      found: true,
+      matched,
+      expectedBytes: byteLength(target.expected),
+      actualBytes: byteLength(actual.value),
+      tag,
+      type,
+      evidence: matched ? 'value_matched_in_browser' : 'value_mismatch_in_browser'
+    };
+  });
+  return JSON.stringify({
+    ok: entries.length > 0 && entries.every((entry) => entry.matched),
+    title: document.title || '',
+    url: location.href,
+    entries
+  });
+})()
+  `.trim();
+}
+
+function normalizeBrowserFillDraftVerificationEntries(entries = []) {
+  return (Array.isArray(entries) ? entries : []).map((entry) => ({
+    index: Number(entry.index || 0),
+    field: compactRecordText(entry.field || '', 120),
+    action: compactRecordText(entry.action || '', 40),
+    selector: compactRecordText(entry.selector || '', 220),
+    found: Boolean(entry.found),
+    matched: Boolean(entry.matched),
+    expectedBytes: Math.max(0, Number(entry.expectedBytes || 0)),
+    actualBytes: Math.max(0, Number(entry.actualBytes || 0)),
+    tag: compactRecordText(entry.tag || '', 40),
+    type: compactRecordText(entry.type || '', 40),
+    evidence: compactRecordText(entry.evidence || '', 120),
+  }));
+}
+
+async function verifyBrowserFillDraftExecution(steps = [], options = {}) {
+  const executableSteps = (Array.isArray(steps) ? steps : []).filter((step) => step?.selector && step?.value !== undefined);
+  if (!executableSteps.length) {
+    return {
+      ok: false,
+      status: 'no_executed_fields',
+      plannedCount: 0,
+      executedCount: 0,
+      verifiedCount: 0,
+      entries: [],
+      output: 'Post-fill verification skipped: no executed fields.',
+    };
+  }
+  try {
+    const browser = await browserContextSnapshot({ app: options.app });
+    if (!browser.supported || !browser.available) {
+      return {
+        ok: false,
+        status: 'browser_unavailable',
+        plannedCount: executableSteps.length,
+        executedCount: executableSteps.length,
+        verifiedCount: 0,
+        entries: [],
+        output: `Post-fill verification unavailable: ${browser.error || 'no supported browser is active'}.`,
+      };
+    }
+    const snapshot = await executeBrowserJavaScriptBridge(browser, browserFillDraftVerificationScript(executableSteps), { timeoutMs: 6000 });
+    const parsed = JSON.parse(snapshot.output || '{}');
+    const entries = normalizeBrowserFillDraftVerificationEntries(parsed.entries);
+    const verifiedCount = entries.filter((entry) => entry.matched).length;
+    const status = entries.length && verifiedCount === entries.length
+      ? 'verified'
+      : verifiedCount > 0 ? 'partial' : 'unverified';
+    appendAudit('browser_fill_draft.verified', {
+      app: browser.app,
+      url: parsed.url || browser.url,
+      status,
+      planned: executableSteps.length,
+      verified: verifiedCount,
+      bridge: snapshot.bridge,
+    });
+    return {
+      ok: status === 'verified',
+      status,
+      plannedCount: executableSteps.length,
+      executedCount: executableSteps.length,
+      verifiedCount,
+      entries,
+      output: `Post-fill verification: ${verifiedCount}/${entries.length} executed field(s) matched in the live browser.`,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendAudit('browser_fill_draft.verify_failed', {
+      error: compactRecordText(message, 500),
+      planned: executableSteps.length,
+    });
+    return {
+      ok: false,
+      status: 'verification_failed',
+      plannedCount: executableSteps.length,
+      executedCount: executableSteps.length,
+      verifiedCount: 0,
+      entries: [],
+      output: `Post-fill verification failed: ${compactRecordText(message, 260)}`,
+    };
+  }
+}
+
 async function runBrowserFillDraftWorkflow(options = {}) {
   const instruction = String(options.instruction || options.goal || 'Draft browser form fills.').trim();
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
@@ -12612,6 +12799,10 @@ async function runBrowserFillDraftWorkflow(options = {}) {
   const confirmationRequired = execute && !confirmed;
   const fixtureExecutionBlocked = execute && !live;
   const results = [];
+  let verification = browserFillDraftVerificationPreview(
+    plan,
+    confirmationRequired ? 'confirmation_required' : fixtureExecutionBlocked ? 'fixture_blocked' : 'preview_only',
+  );
   if (execute && confirmed && !fixtureExecutionBlocked) {
     for (const step of plan.steps) {
       try {
@@ -12641,6 +12832,8 @@ async function runBrowserFillDraftWorkflow(options = {}) {
         break;
       }
     }
+    const executedSteps = plan.steps.filter((step) => results.some((result) => result.index === step.index && result.status === 'executed'));
+    verification = await verifyBrowserFillDraftExecution(executedSteps, { app: options.app });
   } else {
     for (const step of plan.steps) {
       results.push({
@@ -12658,12 +12851,14 @@ async function runBrowserFillDraftWorkflow(options = {}) {
       });
     }
   }
-  const blocked = confirmationRequired || fixtureExecutionBlocked || plan.blocked.length > 0 || results.some((result) => ['blocked', 'approval_required'].includes(result.status));
+  const verificationBlocked = execute && confirmed && live && verification.status && !['verified', 'no_executed_fields'].includes(verification.status);
+  const blocked = confirmationRequired || fixtureExecutionBlocked || verificationBlocked || plan.blocked.length > 0 || results.some((result) => ['blocked', 'approval_required'].includes(result.status));
   const output = [
     `Browser fill draft: ${instruction}`,
     `Plan: ${plan.summary}`,
     plan.blocked.length ? `Review needed: ${plan.blocked.map((item) => `${item.field} (${item.reason})`).join('; ')}` : '',
     results.length ? formatBrowserTaskResults(results) : 'No matching fillable fields were found.',
+    verification.output,
     confirmationRequired ? 'Execution paused: pass confirm:true after reviewing the field draft.' : '',
     fixtureExecutionBlocked ? 'Execution blocked: fixture DOM is preview-only.' : '',
   ].filter(Boolean).join('\n');
@@ -12676,6 +12871,8 @@ async function runBrowserFillDraftWorkflow(options = {}) {
       resultCount: results.length,
       plannedFieldCount: plan.steps.length,
       blockedFieldCount: plan.blocked.length,
+      verifiedFieldCount: verification.verifiedCount,
+      verificationStatus: verification.status,
       fixture: !live,
       confirmed,
     },
@@ -12686,6 +12883,8 @@ async function runBrowserFillDraftWorkflow(options = {}) {
     planned: plan.steps.length,
     blocked: plan.blocked.length,
     results: results.length,
+    verificationStatus: verification.status,
+    verified: verification.verifiedCount,
     execute,
     confirmed,
     live,
@@ -12701,7 +12900,7 @@ async function runBrowserFillDraftWorkflow(options = {}) {
   });
   return {
     ok: !blocked,
-    executed: execute && confirmed && !fixtureExecutionBlocked,
+    executed: results.some((result) => result.status === 'executed'),
     confirmed,
     mode: 'quick',
     intent: 'fill_draft',
@@ -12709,6 +12908,7 @@ async function runBrowserFillDraftWorkflow(options = {}) {
     routing,
     page: pageSummary,
     dom: { ...dom, elements: (dom.elements || []).slice(0, 40) },
+    verification,
     fields: fields.map((field) => ({
       name: field.name,
       valuePreview: browserFillDraftSensitiveField(field) ? '[sensitive]' : compactRecordText(field.value, 80),

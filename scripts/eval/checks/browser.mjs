@@ -74,6 +74,9 @@ export default {
         fillDraft.data?.plan?.steps?.every((step) => !String(step.value || '').includes('haoge@example.com')) &&
         !JSON.stringify(fillDraft.data?.fields || []).includes('secret-password') &&
         fillDraft.data?.fields?.find((field) => field.name === 'Password')?.valuePreview === '[sensitive]' &&
+        fillDraft.data?.verification?.status === 'preview_only' &&
+        fillDraft.data?.verification?.entries?.length === 3 &&
+        !JSON.stringify(fillDraft.data?.verification || {}).includes('haoge@example.com') &&
         fillDraft.data?.results?.every((result) => result.status === 'previewed')
         ? ok('browser.fill_draft_preview', 'Browser fill draft preview', '3 field fill draft(s), 1 sensitive field blocked')
         : fail('browser.fill_draft_preview', 'Browser fill draft preview', `POST /api/browser/fill-draft ${fillDraft.status}`, fillDraft.data),
@@ -92,6 +95,7 @@ export default {
     out.push(
       fixtureExecute.ok &&
         fixtureExecute.data?.executed === false &&
+        fixtureExecute.data?.verification?.status === 'fixture_blocked' &&
         fixtureExecute.data?.results?.[0]?.status === 'blocked' &&
         /fixture/i.test(String(fixtureExecute.data?.output || ''))
         ? ok('browser.fill_draft_fixture_gate', 'Browser fill draft fixture gate', 'fixture DOM cannot execute browser fills')
