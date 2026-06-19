@@ -77,6 +77,18 @@ export default {
         })
         : { ok: false, data: {} };
       const replayPlan = replay.data || {};
+      const replayRunBlocked = demoId
+        ? await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/replay/run`, {
+          method: 'POST',
+          body: { source: 'eval', instruction: 'Attempt run without confirmation' },
+        })
+        : { ok: false, data: {} };
+      const replayRunPreview = demoId
+        ? await ctx.api(`/api/demonstrations/${encodeURIComponent(demoId)}/replay/run`, {
+          method: 'POST',
+          body: { source: 'eval', execute: false, instruction: 'Preview confirmed run gate' },
+        })
+        : { ok: false, data: {} };
       out.push(
         captured.ok &&
           finished.ok &&
@@ -100,6 +112,17 @@ export default {
           replayPlan.steps.length === 1
           ? ok('learning.demonstration_replay_plan', 'UI demonstration replay plan', `${replayPlan.steps.length} step(s) · ${replayPlan.replayMode}`)
           : fail('learning.demonstration_replay_plan', 'UI demonstration replay plan', `plan ${replay.status} ${replay.error || ''}`, replay.data),
+      );
+      out.push(
+        !replayRunBlocked.ok &&
+          replayRunBlocked.status === 409 &&
+          replayRunBlocked.data?.confirmationRequired === true &&
+          replayRunBlocked.data?.executed === false &&
+          replayRunPreview.ok &&
+          replayRunPreview.data?.executed === false &&
+          replayRunPreview.data?.replayMode === 'confirmed_run_preview'
+          ? ok('learning.demonstration_replay_run_gate', 'UI demonstration replay run gate', 'confirm:true required for execution; execute:false previews only')
+          : fail('learning.demonstration_replay_run_gate', 'UI demonstration replay run gate', `blocked ${replayRunBlocked.status} preview ${replayRunPreview.status}`, { blocked: replayRunBlocked.data, preview: replayRunPreview.data }),
       );
     } finally {
       if (demoId) {

@@ -3743,6 +3743,78 @@ async function planDemonstrationReplay(id, options = {}) {
   };
 }
 
+async function runDemonstrationReplay(id, options = {}) {
+  const execute = options.execute !== false && String(options.execute || '').toLowerCase() !== 'false';
+  const confirmed =
+    options.confirm === true ||
+    options.confirmed === true ||
+    String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  const plan = await planDemonstrationReplay(id, {
+    ...(options || {}),
+    previewWorkflow: false,
+    source: options.source || 'api',
+  });
+  if (!plan.ok) return { ...plan, executed: false };
+
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      execute: false,
+      confirmationRequired: false,
+      demonstrationId: plan.demonstrationId,
+      replayMode: 'confirmed_run_preview',
+      plan,
+      run: null,
+      output: `Prepared replay run preview for ${plan.title}. Pass execute:true and confirm:true only after explicit user confirmation.`,
+    };
+  }
+
+  if (!confirmed) {
+    appendAudit('demonstration.replay_blocked', {
+      id: plan.demonstrationId,
+      reason: 'confirmation_required',
+      source: String(options.source || 'api').slice(0, 80),
+    });
+    return {
+      ok: false,
+      status: 409,
+      executed: false,
+      execute: true,
+      confirmationRequired: true,
+      demonstrationId: plan.demonstrationId,
+      replayMode: 'confirmed_run',
+      plan,
+      output: 'Explicit confirm:true is required before running a UI demonstration replay.',
+    };
+  }
+
+  const run = await runAppWorkflow({
+    ...plan.appWorkflow,
+    source: 'demonstration_replay',
+    execute: true,
+    continueOnError: false,
+  });
+  appendAudit('demonstration.replay_run', {
+    id: plan.demonstrationId,
+    workflowId: run.workflow?.id || '',
+    ok: run.ok,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return {
+    ok: run.ok,
+    executed: true,
+    execute: true,
+    confirmationRequired: false,
+    demonstrationId: plan.demonstrationId,
+    replayMode: 'confirmed_run',
+    plan,
+    run,
+    workflow: run.workflow,
+    output: run.output,
+  };
+}
+
 async function startDemonstration(options = {}) {
   const existing = activeDemonstration();
   if (existing && options.force !== true) {
@@ -20773,6 +20845,18 @@ async function executeTool(name, args) {
     }
   }
 
+  if (name === 'run_ui_demonstration_replay') {
+    try {
+      const result = await runDemonstrationReplay(args?.id || args?.demonstrationId || '', {
+        ...(args || {}),
+        source: 'voice',
+      });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_inbox') {
     const status = String(args?.status || 'open');
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 5)));
@@ -21066,6 +21150,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use capture_ui_demonstration_step when the user says this step, now, record this part, or capture the current step during an active UI demonstration.',
       'Use finish_ui_demonstration when the user says they are done recording, or wants to cancel a UI demonstration.',
       'Use plan_ui_demonstration_replay when the user asks to replay, use, or turn a completed UI demonstration into a safe preview plan. It must not execute; actual execution requires a separate explicit run_app_workflow confirmation through normal gates.',
+      'Use run_ui_demonstration_replay only after the user explicitly confirms running a specific UI demonstration replay. Pass confirm:true only after that confirmation; the replay still uses normal app workflow, action policy, control mode, and approval gates.',
       'UI demonstrations are explicit local learning records; they store user notes plus sanitized app/browser/screen/accessibility summaries, never screenshots or raw clipboard text. Replay must re-observe the live UI before acting.',
       'Use get_inbox when the user asks what is waiting, what they captured, or which Inbox items are open.',
       'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory.',
@@ -21880,6 +21965,23 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'run_ui_demonstration_replay',
+        description: 'Run a completed UI demonstration replay only after explicit user confirmation. Requires confirm:true for execution and still uses normal app workflow, policy, control-mode, and approval gates.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            demonstrationId: { type: 'string' },
+            instruction: { type: 'string' },
+            execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_inbox',
         description: 'List local Inbox captures and counts. Defaults to open items.',
         parameters: {
@@ -22286,6 +22388,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'capture_ui_demonstration_step',
   'finish_ui_demonstration',
   'plan_ui_demonstration_replay',
+  'run_ui_demonstration_replay',
   'read_browser_page',
   'run_browser_workflow',
   'route_task',
@@ -22304,7 +22407,7 @@ function realtimeInstructionChecks(instructions = '') {
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
-    demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|UI demonstrations/i.test(text),
+    demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
     localExecution: /run_cli_tool|run_mac_action|run_file_action/i.test(text),
     confirmationStops: /purchases|logins|deletes|sends|irreversible|confirmation/i.test(text),
@@ -23250,6 +23353,24 @@ function startApiServer() {
       res.status(result.ok ? 200 : 409).json(result);
     } catch (error) {
       jsonError(res, 400, 'Demonstration replay plan failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/demonstrations/replay/run', express.json({ limit: '256kb' }), async (req, res) => {
+    try {
+      const result = await runDemonstrationReplay(req.body?.id || req.body?.demonstrationId || '', { ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : result.status || 202).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration replay run failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/demonstrations/:id/replay/run', express.json({ limit: '256kb' }), async (req, res) => {
+    try {
+      const result = await runDemonstrationReplay(req.params.id, { ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : result.status || 202).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Demonstration replay run failed', error instanceof Error ? error.message : String(error));
     }
   });
 
