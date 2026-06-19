@@ -12447,6 +12447,165 @@ function browserResearchWorkflowPrompt({ request, query, searchPage, selectedLin
   ].filter((line) => line !== '').join('\n');
 }
 
+function browserResearchLinkKey(link = {}) {
+  return String(link.href || '').replace(/#.*$/, '');
+}
+
+function browserResearchUniqueLinks(links = [], limit = 5) {
+  const seen = new Set();
+  const result = [];
+  for (const link of Array.isArray(links) ? links : []) {
+    const href = normalizeBrowserHref(link?.href || link?.url);
+    if (!href) continue;
+    const key = href.replace(/#.*$/, '');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    let host = '';
+    try {
+      host = new URL(href).hostname.replace(/^www\./i, '');
+    } catch {
+      continue;
+    }
+    result.push({
+      index: result.length + 1,
+      text: compactRecordText(link.text || link.title || link.label || href, 180) || href,
+      href,
+      host,
+      sameHost: Boolean(link.sameHost),
+    });
+    if (result.length >= limit) break;
+  }
+  return result;
+}
+
+function browserResearchFollowUpLinks(pages = [], selectedLinks = [], limit = 8) {
+  const selected = new Set(selectedLinks.map(browserResearchLinkKey).filter(Boolean));
+  const candidates = [];
+  for (const item of Array.isArray(pages) ? pages : []) {
+    const pageLinks = Array.isArray(item.page?.links) ? item.page.links : [];
+    for (const link of pageLinks) {
+      const key = browserResearchLinkKey(link);
+      if (!key || selected.has(key)) continue;
+      if (/^(Privacy|Terms|Sign in|Login|Subscribe|登录|隐私|条款)$/i.test(String(link.text || ''))) continue;
+      candidates.push({
+        ...link,
+        sourceTitle: item.page?.title || item.selected?.text || '',
+        sourceUrl: item.page?.url || item.selected?.href || '',
+      });
+    }
+  }
+  return browserResearchUniqueLinks(candidates, limit);
+}
+
+function browserResearchContinuationPlan({
+  request = '',
+  query = '',
+  mode = 'quick',
+  maxPages = 3,
+  selectedLinks = [],
+  search = null,
+  pages = [],
+  executed = false,
+} = {}) {
+  const selected = browserResearchUniqueLinks(selectedLinks, Math.max(1, Math.min(12, Number(maxPages || selectedLinks.length || 3))));
+  const selectedKeys = new Set(selected.map(browserResearchLinkKey).filter(Boolean));
+  const availablePages = (Array.isArray(pages) ? pages : []).filter((item) => item.page?.available);
+  const failedPages = (Array.isArray(pages) ? pages : []).filter((item) => !item.page?.available);
+  const searchCandidates = browserResearchUniqueLinks(search?.candidates || browserSearchResultLinks(search?.page, 12), 12);
+  const remainingSearchCandidates = browserResearchUniqueLinks(
+    searchCandidates.filter((link) => !selectedKeys.has(browserResearchLinkKey(link))),
+    Math.max(1, Math.min(5, Number(maxPages || 3))),
+  );
+  const failedLinks = browserResearchUniqueLinks(
+    failedPages.map((item) => item.selected).filter(Boolean),
+    Math.max(1, Math.min(5, Number(maxPages || 3))),
+  );
+  const followUpLinks = browserResearchFollowUpLinks(pages, selected, Math.max(1, Math.min(5, Number(maxPages || 3))));
+  const nextActions = [];
+
+  if (remainingSearchCandidates.length) {
+    nextActions.push({
+      type: 'research_more',
+      label: 'Continue with unvisited search result links',
+      reason: `${remainingSearchCandidates.length} search result candidate(s) were not reviewed yet.`,
+      arguments: {
+        intent: 'research',
+        mode,
+        urls: remainingSearchCandidates.map((link) => link.href),
+        maxPages: remainingSearchCandidates.length,
+      },
+    });
+  }
+
+  if (failedLinks.length) {
+    nextActions.push({
+      type: 'retry_failed_pages',
+      label: 'Retry failed research pages with a longer wait',
+      reason: `${failedLinks.length} selected page(s) were not readable in this run.`,
+      arguments: {
+        intent: 'research',
+        mode,
+        urls: failedLinks.map((link) => link.href),
+        maxPages: failedLinks.length,
+        openWaitMs: 5000,
+      },
+    });
+  }
+
+  if (followUpLinks.length) {
+    nextActions.push({
+      type: 'research_follow_up_links',
+      label: 'Open promising follow-up links from reviewed pages',
+      reason: `${followUpLinks.length} follow-up link candidate(s) were found inside reviewed pages.`,
+      arguments: {
+        intent: 'research',
+        mode,
+        urls: followUpLinks.map((link) => link.href),
+        maxPages: followUpLinks.length,
+      },
+    });
+  }
+
+  if (!availablePages.length && query) {
+    const alternateQuery = compactRecordText(request || query, 180);
+    nextActions.push({
+      type: 'search_alternate_query',
+      label: 'Try a narrower search query',
+      reason: 'No selected research pages were readable.',
+      arguments: {
+        intent: 'research',
+        mode,
+        query: alternateQuery,
+        maxPages,
+      },
+    });
+  }
+
+  const status = !executed
+    ? 'preview'
+    : availablePages.length
+      ? nextActions.length ? 'ready_to_continue' : 'enough_context'
+      : nextActions.length ? 'recovery_available' : 'blocked';
+  return {
+    status,
+    reviewedCount: availablePages.length,
+    failedCount: failedPages.length,
+    selectedCount: selected.length,
+    remainingCandidateCount: remainingSearchCandidates.length,
+    followUpLinkCount: followUpLinks.length,
+    summary: status === 'preview'
+      ? `Prepared browser research plan for ${selected.length || maxPages} page(s).`
+      : availablePages.length
+        ? `Reviewed ${availablePages.length}/${selected.length || pages.length} page(s); ${nextActions.length} continuation action(s) available.`
+        : `No research pages were readable; ${nextActions.length} recovery action(s) available.`,
+    selectedLinks: selected,
+    remainingSearchCandidates,
+    failedLinks,
+    followUpLinks,
+    nextActions,
+  };
+}
+
 function parseJsonFromModelText(text) {
   const raw = String(text || '').trim();
   if (!raw) throw new Error('empty_model_json');
@@ -14231,6 +14390,15 @@ async function runBrowserResearchWorkflow(options = {}) {
   const workflowTitle = `research · ${query || urls.join(' ; ')}`.slice(0, 180);
 
   if (!execute) {
+    const selectedLinks = urls.map(browserResearchLinkFromUrl);
+    const continuation = browserResearchContinuationPlan({
+      request,
+      query,
+      mode,
+      maxPages,
+      selectedLinks,
+      executed: false,
+    });
     const workflow = createWorkflowRecord({
       kind: 'browser',
       source: 'browser_research_workflow',
@@ -14268,7 +14436,8 @@ async function runBrowserResearchWorkflow(options = {}) {
       mode,
       intent: 'research',
       query,
-      selectedLinks: urls.map(browserResearchLinkFromUrl),
+      selectedLinks,
+      continuation,
       pages: [],
       workflow,
       routing,
@@ -14368,6 +14537,16 @@ async function runBrowserResearchWorkflow(options = {}) {
 
     const availablePages = pages.filter((item) => item.page?.available);
     if (!availablePages.length) throw new Error('No selected research pages could be read.');
+    const continuation = browserResearchContinuationPlan({
+      request,
+      query,
+      mode,
+      maxPages,
+      selectedLinks,
+      search,
+      pages,
+      executed: true,
+    });
 
     const prompt = browserResearchWorkflowPrompt({
       request,
@@ -14411,6 +14590,7 @@ async function runBrowserResearchWorkflow(options = {}) {
         selectedLinks,
         search: search ? { query: search.query, page: search.pageSummary, candidates: search.candidates } : null,
         pages: pages.map((item) => ({ selected: item.selected, page: item.pageSummary, error: item.error })),
+        continuation,
         workflow: finalWorkflow || queuedWorkflow,
         job,
         routing,
@@ -14428,9 +14608,13 @@ async function runBrowserResearchWorkflow(options = {}) {
       source: 'browser_research_workflow',
       timeoutMs: 90000,
     });
+    const resultSummary = [
+      output,
+      continuation.nextActions.length ? `Continuation: ${continuation.summary}` : '',
+    ].filter(Boolean).join('\n');
     const finalWorkflow = setWorkflow(workflow.id, {
       status: quickLaneOutputOk(output) ? 'done' : 'blocked',
-      result: output,
+      result: resultSummary,
       completedAt: Date.now(),
       target: {
         ...latestPage,
@@ -14448,7 +14632,7 @@ async function runBrowserResearchWorkflow(options = {}) {
       source: options.source || 'browser_research_workflow',
       scope: options.scope || 'browser:research',
       parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
-      resultSummary: output,
+      resultSummary,
     });
     return {
       ok: quickLaneOutputOk(output),
@@ -14460,15 +14644,30 @@ async function runBrowserResearchWorkflow(options = {}) {
       selectedLinks,
       search: search ? { query: search.query, page: search.pageSummary, candidates: search.candidates } : null,
       pages: pages.map((item) => ({ selected: item.selected, page: item.pageSummary, error: item.error })),
+      continuation,
       workflow: finalWorkflow,
       routing,
       output,
     };
   } catch (error) {
     const output = `Browser research blocked: ${error instanceof Error ? error.message : String(error)}`;
+    const continuation = browserResearchContinuationPlan({
+      request,
+      query,
+      mode,
+      maxPages,
+      selectedLinks,
+      search,
+      pages,
+      executed: true,
+    });
+    const resultSummary = [
+      output,
+      continuation.nextActions.length ? `Recovery: ${continuation.summary}` : '',
+    ].filter(Boolean).join('\n');
     const finalWorkflow = setWorkflow(workflow.id, {
       status: 'blocked',
-      result: output,
+      result: resultSummary,
       completedAt: Date.now(),
       target: {
         ...(workflow.target || {}),
@@ -14486,7 +14685,7 @@ async function runBrowserResearchWorkflow(options = {}) {
       source: options.source || 'browser_research_workflow',
       scope: options.scope || 'browser:research',
       parallelGroup: options.parallelGroup || options.group || `browser:${mode}`,
-      resultSummary: output,
+      resultSummary,
     });
     return {
       ok: false,
@@ -14498,6 +14697,7 @@ async function runBrowserResearchWorkflow(options = {}) {
       selectedLinks,
       search: search ? { query: search.query, page: search.pageSummary, candidates: search.candidates } : null,
       pages: pages.map((item) => ({ selected: item.selected, page: item.pageSummary, error: item.error })),
+      continuation,
       page: browserFailedPageSummary(error),
       workflow: finalWorkflow,
       routing,

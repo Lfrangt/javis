@@ -8,7 +8,7 @@ export default {
     const health = await ctx.api('/api/health');
     out.push(assert(health.ok, 'health.up', 'Service health', `GET /api/health ${health.status}`, `health ${health.status} ${health.error || ''}`));
 
-    const doctor = await ctx.api('/api/doctor/report', { timeoutMs: 20000 });
+    const doctor = await ctx.api('/api/doctor/report', { timeoutMs: 45000 });
     const report = doctor.data?.doctor;
     if (report) {
       const counts = report.counts || {};

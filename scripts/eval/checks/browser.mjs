@@ -157,6 +157,38 @@ export default {
         : fail('browser.workflow_preview_fixture', 'Browser workflow preview fixture', `POST /api/browser/workflow ${workflowPreview.status}`, workflowPreview.data),
     );
 
+    const researchPreview = await ctx.api('/api/browser/workflow', {
+      method: 'POST',
+      body: {
+        intent: 'research',
+        mode: 'quick',
+        execute: false,
+        source: 'eval_browser_research_continuation',
+        scope: 'eval:browser:research',
+        instruction: 'Research two JAVIS browser automation references.',
+        urls: [
+          'https://example.test/javis/browser-a',
+          'https://example.test/javis/browser-b',
+        ],
+        maxPages: 2,
+      },
+    });
+    out.push(
+      researchPreview.ok &&
+        researchPreview.data?.ok === true &&
+        researchPreview.data?.executed === false &&
+        researchPreview.data?.intent === 'research' &&
+        researchPreview.data?.selectedLinks?.length === 2 &&
+        researchPreview.data?.continuation?.status === 'preview' &&
+        researchPreview.data?.continuation?.selectedLinks?.length === 2 &&
+        researchPreview.data?.continuation?.summary?.includes('2 page') &&
+        researchPreview.data?.workflow?.target?.resultCount === 2 &&
+        researchPreview.data?.routing?.status === 'done' &&
+        !JSON.stringify(researchPreview.data || {}).includes('Private fixture token')
+        ? ok('browser.research_continuation_preview', 'Browser research continuation preview', 'preview returns selected links plus structured continuation metadata')
+        : fail('browser.research_continuation_preview', 'Browser research continuation preview', `POST /api/browser/workflow ${researchPreview.status}`, researchPreview.data),
+    );
+
     return out;
   },
 };
