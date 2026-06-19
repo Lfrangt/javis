@@ -66,7 +66,8 @@
 - Coding workflows through Codex and Claude Code with clear owner/scope boundaries, progress updates, and parallel routing for independent work. Current build records per-task ownership metadata and serializes overlapping write scopes instead of launching competing agents against the same files; `npm run eval -- --only=parallel` dogfoods two read-only investigations plus two overlapping scoped documentation edits and verifies owner/scope/status/result-link metadata.
 - Live worker dogfood is opt-in: `JAVIS_EVAL_LIVE_WORKERS=true npm run eval -- --only=workers-live` queues real read-only Codex, Claude, and local CLI jobs, then verifies job logs, attempts, cancel state, and `/api/work/progress` recent job links.
 - Realtime worker dogfood: `JAVIS_EVAL_REALTIME_DOGFOOD=true npm run eval -- --only=realtime-live-dogfood` keeps a live conversation state, queues Codex/Claude/local read-only workers, records `realtime.progress_injection`, and verifies `spokenSummary` is short enough for voice progress answers.
-- Verifiable next task: run the same flow through a real renderer/WebRTC voice session until `/api/realtime/evidence.readyForVoiceProgressQuestion` is true, then ask “后台现在怎么样” and confirm the grouped summary is heard.
+- Realtime voice evidence monitor: current CUI option `V. Watch Realtime voice evidence` watches the real renderer/WebRTC evidence checklist without adding desktop pet UI.
+- Verifiable next task: run the same flow through a real renderer/WebRTC voice session with the CUI evidence monitor open until `READY`, then ask “后台现在怎么样” and confirm the grouped summary is heard.
 
 ## Phase 3: Natural Collaboration
 

@@ -248,6 +248,7 @@ async function printStatus() {
   console.log('11. Set control mode');
   console.log('12. Run doctor');
   console.log('13. Test wake trigger');
+  console.log('V. Watch Realtime voice evidence');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
   console.log('16. Show autopilot status');
@@ -676,6 +677,98 @@ async function showCollaborationClaims() {
   printCollaborationClaims(result.collaboration || {});
 }
 
+function summarizeWorkerGroups(groups) {
+  if (!Array.isArray(groups)) return `${Number(groups || 0)} group(s)`;
+  if (!groups.length) return '0 group(s)';
+  const summary = groups.slice(0, 4).map((group) => {
+    const owner = [group.owner, group.lane].filter(Boolean).join('/') || group.id || 'worker';
+    const parts = [];
+    if (Number(group.active || 0)) parts.push(`${group.active} active`);
+    if (Number(group.done || 0)) parts.push(`${group.done} done`);
+    if (Number(group.failed || 0)) parts.push(`${group.failed} failed`);
+    if (!parts.length) parts.push(`${group.total || 0} total`);
+    return `${owner} ${parts.join(', ')}`;
+  });
+  const more = groups.length > summary.length ? `; +${groups.length - summary.length} more` : '';
+  return `${groups.length} group(s): ${summary.join('; ')}${more}`;
+}
+
+function summarizeNextActions(actions) {
+  if (!Array.isArray(actions)) return compact(actions || '-', 260);
+  return compact(actions.map((action) => action?.label || action?.summary || action?.id || String(action)).join(' | ') || '-', 260);
+}
+
+function printRealtimeEvidence(result) {
+  const evidence = result?.evidence || result || {};
+  const checks = evidence.checks || {};
+  const conversation = evidence.conversation || {};
+  const negotiation = conversation.lastRealtimeSessionNegotiation || {};
+  const injection = conversation.lastRealtimeProgressInjection || {};
+  const progress = evidence.progress || {};
+  const checkLabels = [
+    ['sessionNegotiated', 'WebRTC session'],
+    ['progressInjectedFromRenderer', 'Renderer progress injection'],
+    ['passiveContextOnly', 'Passive context only'],
+    ['spokenSummaryReady', 'Short spoken summary'],
+  ];
+  console.log(`Realtime voice evidence: ${evidence.readyForVoiceProgressQuestion ? 'READY' : 'pending'}`);
+  if (evidence.generatedAt) console.log(`Generated: ${evidence.generatedAt}`);
+  console.log(`Next: ${evidence.nextAction || '-'}`);
+  console.log('\nChecks:');
+  for (const [key, label] of checkLabels) {
+    console.log(`- ${checks[key] ? 'ok' : 'pending'} ${label}`);
+  }
+  if (Array.isArray(evidence.missing) && evidence.missing.length) {
+    console.log('\nMissing:');
+    for (const item of evidence.missing.slice(0, 4)) {
+      console.log(`- ${item}`);
+    }
+  }
+  console.log('\nVoice session:');
+  console.log(`- status ${conversation.status || 'idle'} · mic ${conversation.micMode || '-'} · session ${conversation.sessionId || '-'}`);
+  if (Object.keys(negotiation).length) {
+    console.log(`- negotiation ok=${negotiation.ok === true ? 'yes' : 'no'} · status=${negotiation.statusCode || '-'} · offer=${negotiation.offerBytes || 0}B · answer=${negotiation.answerBytes || 0}B · ${formatInterval(negotiation.durationMs)}`);
+  } else {
+    console.log('- negotiation none yet');
+  }
+  if (Object.keys(injection).length) {
+    console.log(`- injection ${injection.transport || '-'} · channel=${injection.dataChannelReadyState || '-'} · forced=${injection.forcedResponse === true ? 'yes' : 'no'} · workers=${injection.workerSummary || '-'}`);
+  } else {
+    console.log('- injection none yet');
+  }
+  console.log('\nProgress summary:');
+  console.log(`- workers ${summarizeWorkerGroups(progress.workerGroups)} · active jobs ${progress.activeJobs || 0} · blocked workflows ${progress.blockedWorkflows || 0}`);
+  console.log(`- spoken ${compact(progress.spokenSummary || '-', 420)}`);
+  if (Array.isArray(progress.nextActions) && progress.nextActions.length) {
+    console.log(`- next ${summarizeNextActions(progress.nextActions)}`);
+  }
+}
+
+async function watchRealtimeEvidence(rl) {
+  const answer = (await rl.question('\nWatch realtime voice evidence for how many seconds? [120] ')).trim();
+  const parsedSeconds = Number(answer);
+  const seconds = Number.isFinite(parsedSeconds) && parsedSeconds > 0 ? Math.min(600, Math.max(5, parsedSeconds)) : 120;
+  const endAt = Date.now() + seconds * 1000;
+  let lastError = null;
+  while (Date.now() <= endAt) {
+    console.clear();
+    console.log('JAVIS Realtime Voice Evidence');
+    console.log('=============================');
+    console.log(`Watching ${API_BASE}/api/realtime/evidence · ${Math.max(0, Math.ceil((endAt - Date.now()) / 1000))}s left\n`);
+    try {
+      const result = await request('/api/realtime/evidence');
+      lastError = null;
+      printRealtimeEvidence(result);
+      if (result.evidence?.readyForVoiceProgressQuestion) return;
+    } catch (error) {
+      lastError = error;
+      console.log(`Cannot read realtime evidence: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    await sleep(Math.min(3000, Math.max(250, endAt - Date.now())));
+  }
+  if (lastError) throw lastError;
+}
+
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
   const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'notch';
@@ -742,6 +835,8 @@ async function main() {
           body: { source: 'cui', phrase: 'manual test' },
         });
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
+      } else if (answer === 'v' || answer === 'voice' || answer === 'realtime') {
+        await watchRealtimeEvidence(rl);
       } else if (answer === '14') {
         await showWorkbenchNext();
       } else if (answer === '15') {

@@ -106,6 +106,8 @@ Use option `10. Toggle trusted local mode` when this Mac is intentionally being 
 
 Use option `11. Set control mode` to switch the runtime posture without editing JSON. `observe_only` keeps JAVIS watching and reading but blocks local actions, `ask_before_action` requires approval for Level 2+ actions, and `trusted_local` / `takeover_supervised` stay bounded by action policy.
 
+Use option `V. Watch Realtime voice evidence` while dogfooding a real WebRTC voice session. It polls `/api/realtime/evidence` and shows whether the renderer negotiated a session, sent passive worker progress through the WebRTC data channel, and has a short spoken progress summary ready. When it reaches `READY`, ask the live voice session: `后台现在怎么样`.
+
 In trusted local mode, file write/create/copy/move roots default to the project, Desktop, Documents,
 and Downloads. Set `JAVIS_ALLOWED_WRITE_ROOTS` or edit `action-policy.json` in the CUI if you want a
 different local scope.
@@ -244,6 +246,8 @@ curl -X POST http://127.0.0.1:3417/api/context/plan \
 
 `/api/collaboration` is for external workers that are not launched by JAVIS, such as a separate Claude Code session. A worker should create a claim before editing, heartbeat it during long work, and release it when finished. Claims expire automatically after `JAVIS_COLLABORATION_CLAIM_TTL_MS` if the worker disappears. Active write claims seed `/api/tasks/parallel`, so a later Codex/Claude/local task that overlaps the claimed scope is serialized instead of started in parallel.
 
+When Claude Code is working beside Codex, ask it to use the collaboration commands above before editing. The CUI option `26. Show collaboration claims` should show its active scope, and overlapping write scopes will be reported as conflicts instead of silently running competing agents on the same files.
+
 `/api/browser/workflow` supports `search`, `compare`, `review_result`, and `research` intents in addition to current-page workflows. Search/compare navigate the active supported browser to Google result pages and capture those result pages. `review_result` opens one explicit URL or selected result link through the guarded `open_url` path, then reads the target page. `research` opens several explicit URLs or selected result links in sequence and synthesizes their read-only page snapshots. Browser workflows do not click page controls, type into arbitrary fields, submit forms, or make account changes by themselves.
 
 `/api/work/next` turns the top briefing action into one safe step. GET previews the selected action; POST runs exactly one step, such as opening the next setup target, showing approvals, checking session/progress state, or processing the next Inbox item. It does not approve actions or batch-run tasks.
@@ -300,6 +304,8 @@ curl -X POST http://127.0.0.1:3417/api/screen/describe \
   -d '{"capture":true,"prompt":"Describe the current screen."}'
 curl -X DELETE http://127.0.0.1:3417/api/screen/frame
 ```
+
+For a real voice progress run, keep `npm run config` open on option `V` while the desktop renderer voice session is live and a background worker batch is changing state. The monitor should move from pending to `READY`; then the voice model should answer the grouped worker summary without forcing the worker progress injection to become an assistant response by itself.
 
 Learning controls are local. `paused:true` stops future learning distillation, `includeInPrompts:false` keeps the profile on disk but prevents prompt injection, and exclusions keep matching apps/sites/folder-like contexts out of future ambient samples and distillation. Routing records include `learningEvidence` so you can see whether inferred habits were attached to a task prompt. `/api/learning/skill-draft` follows the Codex Record & Replay shape by turning inferred habits plus recent routing/workflow evidence into a reviewable `SKILL.md` draft; it does not write files. `/api/learning/skill-draft/save` requires `confirm:true` and writes to user-level `~/.agents/skills`, not the open-source repo.
 
