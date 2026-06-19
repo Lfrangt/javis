@@ -53,7 +53,7 @@ Local Mac-first realtime desktop buddy.
 - Local work sessions for focus goals, session notes, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, spoken check-ins, and deterministic end-of-session summaries.
 - Local memory for user-approved preferences, project facts, and durable notes.
 - Local Inbox for clipboard/manual captures and pending follow-up items.
-- Read-only Inbox triage for prioritizing captures and suggesting quick/background/Codex/Claude lanes.
+- Read-only Inbox triage for prioritizing captures, grouping them by lane/source/priority, suggesting quick/background/Codex/Claude lanes, and returning voice-ready confirmation prompts before execution.
 - Explicit Inbox "do next" processing that sends the highest-priority open capture into the task router.
 - Inbox-to-task routing for turning captures into quick/background/Codex/Claude work.
 - Continue-from-history workflow routing for follow-up tasks, with memory-aware preview prompts over the parent workflow, related recent workflows, explicit memories, local skills, and inferred learning context.

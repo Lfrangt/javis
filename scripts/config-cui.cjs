@@ -1115,6 +1115,55 @@ function printRealtimeEvidence(result) {
   }
 }
 
+function printInboxTriage(result) {
+  const triage = result?.triage || result || {};
+  const counts = triage.counts || {};
+  const groups = triage.groups || {};
+  const items = Array.isArray(triage.items) ? triage.items : [];
+  console.log(`Inbox triage: ${counts.open || 0} open / ${counts.total || 0} total`);
+  if (triage.spokenSummary) console.log(`Spoken: ${compact(triage.spokenSummary, 420)}`);
+  if (triage.confirmationPolicy?.summary) console.log(`Policy: ${compact(triage.confirmationPolicy.summary, 420)}`);
+  const laneGroups = Array.isArray(groups.byLane) ? groups.byLane : [];
+  const priorityGroups = Array.isArray(groups.byPriority) ? groups.byPriority : [];
+  const sourceGroups = Array.isArray(groups.bySource) ? groups.bySource : [];
+  if (laneGroups.length) {
+    console.log('\nBy lane:');
+    for (const group of laneGroups.slice(0, 6)) {
+      const top = group.topItem?.title ? ` · top ${compact(group.topItem.title, 80)}` : '';
+      const confirm = group.requiresConfirmation ? ` · confirm ${group.requiresConfirmation}` : '';
+      console.log(`- ${group.key}: ${group.count}${confirm}${top}`);
+    }
+  }
+  if (priorityGroups.length) {
+    console.log('\nBy priority:');
+    for (const group of priorityGroups.slice(0, 6)) {
+      console.log(`- ${group.key}: ${group.count}`);
+    }
+  }
+  if (sourceGroups.length) {
+    console.log('\nBy source:');
+    for (const group of sourceGroups.slice(0, 6)) {
+      console.log(`- ${group.key}: ${group.count}`);
+    }
+  }
+  console.log('\nItems:');
+  if (!items.length) {
+    console.log('- none');
+    return;
+  }
+  for (const item of items.slice(0, 8)) {
+    const policy = item.confirmationPolicy || {};
+    const decision = item.decision || {};
+    console.log(`- P${item.priority} ${compact(item.title, 100)} · ${item.age || '-'} · ${decision.label || decision.lane || '-'} · ${policy.label || '-'}`);
+    if (policy.spokenPrompt) console.log(`  ask: ${compact(policy.spokenPrompt, 180)}`);
+  }
+}
+
+async function showInboxTriage() {
+  const result = await request('/api/inbox/triage');
+  printInboxTriage(result);
+}
+
 async function watchRealtimeEvidence(rl) {
   const answer = (await rl.question('\nWatch realtime voice evidence for how many seconds? [120] ')).trim();
   const parsedSeconds = Number(answer);
@@ -1207,6 +1256,11 @@ async function main() {
 
   if (process.argv.includes('--print-browser-activity') || process.argv.includes('--browser-activity')) {
     await showBrowserActivity();
+    return;
+  }
+
+  if (process.argv.includes('--print-inbox-triage') || process.argv.includes('--inbox-triage')) {
+    await showInboxTriage();
     return;
   }
 

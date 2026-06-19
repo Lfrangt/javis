@@ -142,6 +142,24 @@ export default {
         : fail('realtime.worker_recovery_tool', 'Realtime worker recovery tool', `tool execute ${workerRecoveryTool.status}`, workerRecoveryTool.data),
     );
 
+    const inboxTriageTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'triage_inbox', arguments: { limit: 5 } },
+    });
+    const inboxTriageOutput = parseToolOutput(inboxTriageTool);
+    out.push(
+      inboxTriageTool.ok &&
+        inboxTriageTool.data?.ok === true &&
+        inboxTriageOutput?.ok === true &&
+        inboxTriageOutput.groups &&
+        Array.isArray(inboxTriageOutput.groups.byLane) &&
+        Array.isArray(inboxTriageOutput.groups.bySource) &&
+        inboxTriageOutput.confirmationPolicy?.requiresExplicitUserIntent === true &&
+        typeof inboxTriageOutput.spokenSummary === 'string'
+        ? ok('realtime.inbox_triage_tool', 'Realtime Inbox triage tool', `open=${inboxTriageOutput.counts?.open || 0} · groups=${inboxTriageOutput.groups.byLane.length}`)
+        : fail('realtime.inbox_triage_tool', 'Realtime Inbox triage tool', `tool execute ${inboxTriageTool.status}`, inboxTriageTool.data),
+    );
+
     const autopilotStatusTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: { source: 'eval', name: 'get_autopilot_status', arguments: { workflowLimit: 6, jobLimit: 6 } },

@@ -5686,6 +5686,138 @@ function inboxItemAgeLabel(item) {
   return progressAgeLabel(item.updatedAt || item.createdAt);
 }
 
+function inboxTextForPolicy(item) {
+  return [
+    item?.title,
+    item?.body,
+    Array.isArray(item?.tags) ? item.tags.join(' ') : '',
+  ].filter(Boolean).join('\n').toLowerCase();
+}
+
+function inboxConfirmationPolicy(item, decision = {}, options = {}) {
+  const lane = String(decision.lane || decision.mode || options.mode || options.lane || 'quick').trim() || 'quick';
+  const text = inboxTextForPolicy(item);
+  const sensitive = /(send|submit|purchase|buy|delete|remove|payment|password|login|post|publish|email|message|account|发送|提交|购买|付款|支付|删除|移除|密码|登录|发布|发邮件|邮件|消息|账号)/i.test(text);
+  const localMutation = /(write|edit|rename|move|copy|organize|file|folder|terminal|command|修改|写入|重命名|移动|复制|整理|文件|文件夹|终端|命令)/i.test(text);
+  const backgroundLane = ['background', 'codex', 'claude'].includes(lane);
+  const reason = sensitive
+    ? 'Item appears to involve sending, deleting, payments, credentials, publishing, or account state.'
+    : localMutation
+      ? 'Item may mutate local files, apps, or terminal state.'
+      : backgroundLane
+        ? 'Item will leave the fast voice lane and run as delegated/background work.'
+        : 'Item can be previewed safely and processed only after explicit user intent.';
+  const policy = sensitive
+    ? 'confirm_sensitive_action'
+    : localMutation
+      ? 'confirm_local_mutation'
+      : backgroundLane
+        ? 'confirm_background_lane'
+        : 'explicit_process_request';
+  const label = policy === 'explicit_process_request'
+    ? 'Explicit process request'
+    : policy === 'confirm_background_lane'
+      ? 'Confirm delegated work'
+      : policy === 'confirm_local_mutation'
+        ? 'Confirm local mutation'
+        : 'Confirm sensitive action';
+  const title = compactRecordText(item?.title || item?.id || 'this Inbox item', 90);
+  const laneLabel = decision.label || lane;
+  return {
+    policy,
+    label,
+    lane,
+    previewAllowed: true,
+    autoProcessAllowed: false,
+    requiresExplicitUserIntent: true,
+    requiresSpokenConfirmation: policy !== 'explicit_process_request',
+    riskSignals: {
+      sensitive,
+      localMutation,
+      backgroundLane,
+    },
+    reason: compactRecordText(reason, 240),
+    spokenPrompt: policy === 'explicit_process_request'
+      ? `要现在处理 Inbox「${title}」吗？我会走 ${laneLabel}。`
+      : `Inbox「${title}」需要确认后再处理。要我用 ${laneLabel} 继续吗？`,
+    previewPrompt: `我可以先整理 Inbox「${title}」的处理计划，不会执行。`,
+  };
+}
+
+function inboxGroupList(triaged = [], keyFn, labelFn, type) {
+  const groups = new Map();
+  for (const item of triaged) {
+    const key = String(keyFn(item) || 'unknown').slice(0, 80);
+    const group = groups.get(key) || {
+      id: `${type}:${key}`,
+      type,
+      key,
+      label: compactRecordText(labelFn(key, item) || key, 120),
+      count: 0,
+      itemIds: [],
+      topItem: null,
+      lanes: {},
+      requiresConfirmation: 0,
+    };
+    group.count += 1;
+    group.itemIds.push(item.id);
+    if (!group.topItem) {
+      group.topItem = {
+        id: item.id,
+        title: item.title,
+        priority: item.priority,
+        age: item.age,
+      };
+    }
+    const lane = item.decision?.lane || 'unknown';
+    group.lanes[lane] = (group.lanes[lane] || 0) + 1;
+    if (item.confirmationPolicy?.requiresSpokenConfirmation) group.requiresConfirmation += 1;
+    groups.set(key, group);
+  }
+  return Array.from(groups.values())
+    .sort((a, b) => b.count - a.count || String(a.key).localeCompare(String(b.key)))
+    .slice(0, 12);
+}
+
+function inboxTriageGroups(triaged = []) {
+  return {
+    byLane: inboxGroupList(
+      triaged,
+      (item) => item.decision?.lane || 'unknown',
+      (key) => `Lane ${key}`,
+      'lane',
+    ),
+    byPriority: inboxGroupList(
+      triaged,
+      (item) => `P${item.priority}`,
+      (key) => `Priority ${key}`,
+      'priority',
+    ),
+    bySource: inboxGroupList(
+      triaged,
+      (item) => item.source || 'manual',
+      (key) => `Source ${key}`,
+      'source',
+    ),
+  };
+}
+
+function inboxTriageSpokenSummary(counts, triaged = [], groups = {}) {
+  if (!triaged.length) return `Inbox 为空。共 ${counts.total} 条，open ${counts.open} 条。`;
+  const top = triaged[0];
+  const laneBits = (groups.byLane || [])
+    .slice(0, 3)
+    .map((group) => `${group.key} ${group.count}`)
+    .join(', ');
+  const confirmations = triaged.filter((item) => item.confirmationPolicy?.requiresSpokenConfirmation).length;
+  return compactRecordText([
+    `Inbox 有 ${counts.open} 个 open item。`,
+    laneBits ? `分组: ${laneBits}。` : '',
+    `建议先处理: ${top.title}，走 ${top.decision?.label || top.decision?.lane || 'router'}。`,
+    confirmations ? `${confirmations} 项需要语音确认后才能执行。` : '所有项目都仍需明确“处理下一项”才会执行。',
+  ].filter(Boolean).join(' '), 520);
+}
+
 function triageInbox(options = {}) {
   const limit = Math.max(1, Math.min(30, Number(options.limit || 12)));
   const items = inboxSnapshot(limit, 'open')
@@ -5695,6 +5827,14 @@ function triageInbox(options = {}) {
     const decision = routeTaskDecision(task, { execute: false, mode: options.mode || options.lane });
     const age = inboxItemAgeLabel(item);
     const summary = `${index + 1}. P${item.priority} · ${item.title} · ${age} · 建议 ${decision.label}`;
+    const decisionSummary = {
+      lane: decision.lane,
+      mode: decision.mode,
+      label: decision.label,
+      reason: decision.reason,
+      confidence: decision.confidence,
+    };
+    const confirmationPolicy = inboxConfirmationPolicy(item, decisionSummary, options);
     return {
       id: item.id,
       title: item.title,
@@ -5705,37 +5845,48 @@ function triageInbox(options = {}) {
       age,
       createdAt: item.createdAt,
       updatedAt: item.updatedAt,
-      decision: {
-        lane: decision.lane,
-        mode: decision.mode,
-        label: decision.label,
-        reason: decision.reason,
-        confidence: decision.confidence,
-      },
+      decision: decisionSummary,
+      confirmationPolicy,
       summary,
     };
   });
   const counts = inboxCounts();
+  const groups = inboxTriageGroups(triaged);
+  const spokenSummary = inboxTriageSpokenSummary(counts, triaged, groups);
   const output = triaged.length
     ? [
         `Inbox 有 ${counts.open} 个 open item。`,
+        groups.byLane.length ? `分组: ${groups.byLane.slice(0, 4).map((group) => `${group.key} ${group.count}`).join(', ')}` : '',
         triaged.slice(0, 8).map((item) => `${item.summary}\n   ${compactRecordText(item.decision.reason, 110)}`).join('\n'),
         `建议先处理: ${triaged[0].title}。`,
+        `语音确认: ${triaged[0].confirmationPolicy.spokenPrompt}`,
       ].join('\n')
     : `Inbox 为空。共 ${counts.total} 条，open ${counts.open} 条。`;
 
   appendAudit('inbox.triaged', {
     open: counts.open,
     returned: triaged.length,
+    laneGroups: groups.byLane.length,
+    confirmationRequired: triaged.filter((item) => item.confirmationPolicy?.requiresSpokenConfirmation).length,
     source: String(options.source || 'api').slice(0, 80),
   });
 
   return {
     ok: true,
     output,
+    spokenSummary,
     counts,
+    groups,
     items: triaged,
     next: triaged[0] || null,
+    confirmationPolicy: {
+      previewAllowed: true,
+      autoProcessAllowed: false,
+      requiresExplicitUserIntent: true,
+      summary: triaged.length
+        ? 'Triage is read-only; processing or routing an Inbox item requires explicit user intent, and sensitive/delegated work asks for spoken confirmation.'
+        : 'Triage is read-only; no open item is available to process.',
+    },
   };
 }
 
@@ -5756,6 +5907,15 @@ async function routeInboxItem(options = {}) {
 
   const execute = options.execute !== false;
   const task = inboxTaskPrompt(item, String(options.instruction || '').trim());
+  const previewDecision = routeTaskDecision(task, { execute: false, mode: options.mode || options.lane });
+  const previewDecisionSummary = {
+    lane: previewDecision.lane,
+    mode: previewDecision.mode,
+    label: previewDecision.label,
+    reason: previewDecision.reason,
+    confidence: previewDecision.confidence,
+  };
+  const confirmationPolicy = inboxConfirmationPolicy(item, previewDecisionSummary, options);
   const route = await routeTask({
     message: task,
     execute,
@@ -5808,6 +5968,7 @@ async function routeInboxItem(options = {}) {
     ok: Boolean(route.ok),
     item: nextItem,
     task,
+    confirmationPolicy,
     route,
     inbox: { counts: inboxCounts(), open: inboxSnapshot(5, 'open') },
     output: route.output,
@@ -5842,6 +6003,7 @@ async function processNextInbox(options = {}) {
   const decision = result.route?.decision;
   const output = [
     `处理下一项 Inbox: ${selected.title}`,
+    selected.confirmationPolicy?.spokenPrompt ? `确认策略: ${selected.confirmationPolicy.spokenPrompt}` : '',
     decision ? `分工: ${decision.label} · ${compactRecordText(decision.reason, 140)}` : '',
     result.route?.queued && result.route?.job ? `已进入后台队列: ${result.route.job.id}` : '',
     result.output ? compactRecordText(result.output, 1200) : '',
@@ -5864,6 +6026,7 @@ async function processNextInbox(options = {}) {
     status: result.status || (result.ok ? 200 : 500),
     output,
     selected,
+    confirmationPolicy: selected.confirmationPolicy || result.confirmationPolicy || null,
     item: result.item,
     triage,
     route: result.route,
@@ -25386,7 +25549,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'triage_inbox',
-        description: 'Read-only local triage for open Inbox items. Sorts by priority and age, suggests quick/background/Codex/Claude lanes, and does not execute anything.',
+        description: 'Read-only local triage for open Inbox items. Sorts by priority and age, groups by lane/source/priority, suggests quick/background/Codex/Claude lanes, and returns a voice confirmation policy. It never executes anything.',
         parameters: {
           type: 'object',
           properties: {
@@ -25401,7 +25564,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'process_next_inbox',
-        description: 'Process the highest-priority open Inbox item by sending it through the quick/background/Codex/Claude router. Use only after the user explicitly asks to do the next Inbox item.',
+        description: 'Process the highest-priority open Inbox item by sending it through the quick/background/Codex/Claude router. Use only after the user explicitly asks to do the next Inbox item; repeat the returned confirmationPolicy.spokenPrompt before sensitive or delegated work.',
         parameters: {
           type: 'object',
           properties: {
@@ -25439,7 +25602,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'route_inbox_item',
-        description: 'Send an Inbox item into the quick/background/Codex/Claude task lanes. Use only after the user explicitly asks to process it.',
+        description: 'Send an Inbox item into the quick/background/Codex/Claude task lanes. Use only after the user explicitly asks to process it; use the returned confirmationPolicy to explain any spoken confirmation requirement.',
         parameters: {
           type: 'object',
           properties: {
