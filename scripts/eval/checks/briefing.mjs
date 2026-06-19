@@ -91,6 +91,32 @@ export default {
         : fail('briefing.worknext', 'Work-next', `GET /api/work/next did not return a coherent preview envelope (${wn.status})`, wn.data),
     );
 
+    const handoffResponse = await ctx.api('/api/work/handoff?maxChars=760&nextLimit=2&followUpLimit=2');
+    const handoff = handoffResponse.data?.handoff;
+    const handoffReady = Boolean(
+      handoffResponse.ok &&
+      handoff &&
+      typeof handoff.ok === 'boolean' &&
+      typeof handoff.spokenSummary === 'string' &&
+      handoff.spokenSummary.trim() &&
+      handoff.spokenSummary.length <= 760 &&
+      handoff.progress &&
+      typeof handoff.progress.spokenSummary === 'string' &&
+      handoff.briefing &&
+      Array.isArray(handoff.nextActions) &&
+      Array.isArray(handoff.followUps) &&
+      handoff.collaboration?.counts,
+    );
+    out.push(
+      handoffReady
+        ? ok('briefing.handoff', 'Spoken work handoff', handoff.spokenSummary.slice(0, 180), {
+          nextActions: handoff.nextActions.length,
+          followUps: handoff.followUps.length,
+          progress: handoff.progress.spokenSummary,
+        })
+        : fail('briefing.handoff', 'Spoken work handoff', `GET /api/work/handoff did not return a coherent voice-ready handoff (${handoffResponse.status})`, handoffResponse.data),
+    );
+
     return out;
   },
 };

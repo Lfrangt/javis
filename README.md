@@ -42,6 +42,7 @@ Local Mac-first realtime desktop buddy.
 - Workflow history for recent browser, voice, and background work.
 - Local work briefing for recent progress, blockers, active work, and next actions.
 - Local work progress check-ins for background jobs, workflows, and grouped Codex/Claude/local worker batches.
+- Voice-ready work handoff that compresses readiness, progress, session, collaboration, next actions, and workflow continuation suggestions into one short spoken summary.
 - Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, and workflows.
 - Local work sessions for focus goals, session notes, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, spoken check-ins, and deterministic end-of-session summaries.
 - Local memory for user-approved preferences, project facts, and durable notes.
@@ -138,6 +139,7 @@ Local Express service on 127.0.0.1:3417
   /api/notifications/state -> resident notification support and counters
   /api/briefing         -> local status, blockers, recent work, and next actions
   /api/work/progress    -> spoken-style job/workflow progress check-in
+  /api/work/handoff     -> voice-ready handoff over readiness, progress, sessions, collaboration, and continuations
   /api/work/next        -> preview or execute one safe next workbench action, including explicit maintenance fallback previews
   /api/jobs             -> persisted background job history
   /api/workflows        -> persisted workflow history with linked jobs and results

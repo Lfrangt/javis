@@ -18648,6 +18648,97 @@ function workProgressCheckIn(options = {}) {
   };
 }
 
+function formatHandoffAction(action, maxLength = 150) {
+  const label = compactRecordText(action?.label || action?.title || action?.id || 'Next step', 70);
+  const detail = compactRecordText(action?.summary || action?.instruction || '', maxLength);
+  return detail ? `${label}: ${detail}` : label;
+}
+
+function workHandoff(options = {}) {
+  const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 5)));
+  const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 5)));
+  const nextLimit = Math.max(1, Math.min(4, Number(options.nextLimit || 2)));
+  const followUpLimit = Math.max(0, Math.min(4, Number(options.followUpLimit ?? 2)));
+  const maxChars = Math.max(240, Math.min(1400, Number(options.maxChars || 760)));
+  const source = String(options.source || 'work_handoff').slice(0, 80);
+  const briefing = workflowBriefing({ workflowLimit, jobLimit, followUpLimit });
+  const progress = workProgressCheckIn({
+    jobLimit,
+    workflowLimit,
+    includeInternal: options.includeInternal,
+    source,
+  });
+  const activeSession = activeSessionSnapshot();
+  const nextActions = (briefing.nextActions || []).slice(0, nextLimit);
+  const followUps = (briefing.followUps || []).slice(0, followUpLimit);
+  const collaboration = briefing.collaboration || progress.collaboration || collaborationSnapshot(4);
+  const readinessLabel = briefing.readiness?.overall === 'ready'
+    ? 'JAVIS 现在是 ready。'
+    : briefing.readiness?.overall === 'blocked'
+      ? `JAVIS 当前有 setup blocker: ${compactRecordText(briefing.readiness?.primaryIssue?.summary || briefing.readiness?.label || '需要处理权限或配置', 150)}。`
+      : `JAVIS 当前需要注意: ${compactRecordText(briefing.readiness?.label || briefing.summary || '状态降级', 150)}。`;
+  const sessionLine = activeSession
+    ? `当前会话是 ${compactRecordText(activeSession.title, 90)}，已经记录 ${activeSession.events.length} 个事件。`
+    : '当前没有 active work session。';
+  const collaborationLine = collaboration.counts?.active
+    ? `协作中有 ${collaboration.counts.active} 个 agent claim，${collaboration.counts.conflicts ? `${collaboration.counts.conflicts} 个冲突需要处理` : '没有冲突'}。`
+    : '';
+  const followUpLine = followUps.length
+    ? `可接着做: ${followUps.map((action, index) => `${index + 1}. ${formatHandoffAction(action, 130)}`).join('；')}。`
+    : '';
+  const nextLine = nextActions.length
+    ? `建议下一步: ${nextActions.map((action, index) => `${index + 1}. ${formatHandoffAction(action, 140)}`).join('；')}。`
+    : '';
+  const spokenSummary = compactRecordText([
+    readinessLabel,
+    progress.spokenSummary,
+    sessionLine,
+    collaborationLine,
+    followUpLine,
+    nextLine,
+  ].filter(Boolean).join(' '), maxChars);
+
+  appendAudit('work_handoff.generated', {
+    ok: briefing.ok,
+    activeSessionId: activeSession?.id || '',
+    nextActions: nextActions.length,
+    followUps: followUps.length,
+    workerGroups: progress.workerGroups?.length || 0,
+    activeCollaborationClaims: collaboration.counts?.active || 0,
+    source,
+  });
+
+  return {
+    ok: Boolean(briefing.ok),
+    generatedAt: new Date().toISOString(),
+    spokenSummary,
+    output: spokenSummary,
+    source,
+    session: activeSession ? {
+      id: activeSession.id,
+      title: activeSession.title,
+      goal: activeSession.goal,
+      events: activeSession.events.length,
+      updatedAt: activeSession.updatedAt,
+    } : null,
+    progress: {
+      spokenSummary: progress.spokenSummary,
+      workerSummary: progress.workerSummary,
+      counts: progress.counts,
+      version: progress.version,
+    },
+    briefing: {
+      summary: briefing.summary,
+      readiness: briefing.readiness,
+      counts: briefing.counts,
+      realtimeVoice: briefing.realtimeVoice,
+    },
+    collaboration,
+    nextActions,
+    followUps,
+  };
+}
+
 async function runMaintenanceSnapshot(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const source = String(options.source || 'maintenance').slice(0, 80);
@@ -22715,6 +22806,11 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(progress) };
   }
 
+  if (name === 'get_work_handoff') {
+    const handoff = workHandoff({ ...(args || {}), source: 'voice' });
+    return { ok: handoff.ok, output: JSON.stringify(handoff) };
+  }
+
   if (name === 'get_collaboration_state') {
     return { ok: true, output: JSON.stringify(collaborationSnapshot(args?.limit || 20)) };
   }
@@ -23294,6 +23390,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_creative_workflow only when the user asks to start/open the creative task. It opens or focuses the selected app, observes the project window, and returns the staged action pack; saves, exports, uploads, and destructive edits still require explicit confirmation.',
       'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. Executed actions verify the screen/UI state and return recovery hints unless verify:false is passed. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
+      'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
       'Use get_work_next when the user asks what single step should happen next. Use run_work_next only when the user explicitly asks to do, run, or execute the next work step.',
       'Use get_collaboration_state when the user asks which agents are working, what Claude Code or Codex owns, or whether parallel agent work has conflicts.',
       'Use get_work_session when the user asks about the current work session.',
@@ -23768,6 +23865,22 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             jobLimit: { type: 'number' },
             workflowLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_work_handoff',
+        description: 'Get a natural voice-ready work handoff that combines readiness, background progress, active session, collaboration state, next actions, and proactive workflow continuations. Does not call a model.',
+        parameters: {
+          type: 'object',
+          properties: {
+            jobLimit: { type: 'number' },
+            workflowLimit: { type: 'number' },
+            nextLimit: { type: 'number' },
+            followUpLimit: { type: 'number' },
+            maxChars: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -24669,6 +24782,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
+  'get_work_handoff',
   'get_collaboration_state',
   'search_local_skills',
   'get_skill_shortcuts',
@@ -24701,6 +24815,7 @@ function realtimeInstructionChecks(instructions = '') {
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
+    workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
@@ -24849,6 +24964,24 @@ function startApiServer() {
       });
     } catch (error) {
       jsonError(res, 500, 'Work progress failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/work/handoff', (req, res) => {
+    try {
+      res.json({
+        handoff: workHandoff({
+          jobLimit: req.query.jobLimit,
+          workflowLimit: req.query.workflowLimit,
+          nextLimit: req.query.nextLimit,
+          followUpLimit: req.query.followUpLimit,
+          maxChars: req.query.maxChars,
+          includeInternal: req.query.includeInternal,
+          source: 'api',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Work handoff failed', error instanceof Error ? error.message : String(error));
     }
   });
 

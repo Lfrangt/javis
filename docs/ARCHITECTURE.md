@@ -99,6 +99,7 @@ Renderer
 - Workflow history lane: user-level workflow records linked to jobs, targets, status, and results.
 - Work briefing lane: deterministic status summary over readiness, jobs, workflows, approvals, memories, blockers, proactive workflow follow-ups, and suggested next actions.
 - Work progress lane: deterministic spoken-style progress over active collaboration claims, active jobs, recent job results, active/blocked workflows, latest completions, and next actions.
+- Work handoff lane: voice-ready synthesis over briefing, progress, active session, collaboration claims, next actions, and workflow continuation suggestions so Realtime can speak a coherent resume/update without assembling raw JSON itself.
 - Work next lane: chooses and optionally runs exactly one safe next action across setup, approvals, sessions, Inbox, jobs, and workflows, including selected workflow continuation previews.
 - Work session lane: local focus sessions with a goal, append-only notes/events, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, active-session status, spoken check-ins, and deterministic end summaries.
 - Inbox lane: persistent local capture queue for clipboard/manual follow-ups that feeds the menu bar, CUI, work briefing, and task routing.
