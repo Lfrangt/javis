@@ -13,6 +13,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+const configuredApiTimeoutMs = Number(process.env.JAVIS_EVAL_API_TIMEOUT_MS || 20000);
+const DEFAULT_API_TIMEOUT_MS = Number.isFinite(configuredApiTimeoutMs)
+  ? Math.max(10000, Math.min(60000, configuredApiTimeoutMs))
+  : 20000;
+
 export function resolveBaseUrl() {
   return process.env.JAVIS_API_BASE || `http://127.0.0.1:${process.env.JAVIS_API_PORT || 3417}`;
 }
@@ -33,7 +38,7 @@ export function resolveToken() {
 export function makeContext() {
   const baseUrl = resolveBaseUrl();
   const token = resolveToken();
-  async function api(pathname, { method = 'GET', body, timeoutMs = 10000, retries = 1 } = {}) {
+  async function api(pathname, { method = 'GET', body, timeoutMs = DEFAULT_API_TIMEOUT_MS, retries = 1 } = {}) {
     const headers = {};
     if (token) headers['X-JAVIS-Token'] = token;
     if (body) headers['Content-Type'] = 'application/json';

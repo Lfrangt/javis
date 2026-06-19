@@ -887,6 +887,10 @@ const realtimeWorkProgressSyncMs = Number(import.meta.env.VITE_JAVIS_REALTIME_WO
 const REALTIME_WORK_PROGRESS_SYNC_MS = Number.isFinite(realtimeWorkProgressSyncMs)
   ? Math.max(15000, Math.min(120000, realtimeWorkProgressSyncMs))
   : 30000
+const PET_STATUS_POLL_MS = 5000
+const PANEL_DETAIL_POLL_MS = 30000
+const SCREEN_CONTEXT_LIVE_POLL_MS = 15000
+const SCREEN_CONTEXT_IDLE_POLL_MS = 120000
 const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   version: 1,
   mode: 'private',
@@ -1130,6 +1134,21 @@ function App() {
     return briefing
   }, [])
 
+  const loadPanelDetails = useCallback(async () => {
+    const [audit, context, config, doctor, briefing] = await Promise.all([
+      apiJson<{ events: AuditEvent[] }>('/api/audit/recent?limit=8'),
+      apiJson<{ context: MacContext }>('/api/mac/context'),
+      apiJson<{ config: ConfigCheck }>('/api/config/check'),
+      fetchDoctorReport(),
+      fetchWorkBriefing(),
+    ])
+    setRuntimeEvents(audit.events)
+    setMacContext(context.context)
+    setConfigCheck(config.config)
+    setDoctorReport(doctor)
+    setWorkBriefing(briefing)
+  }, [])
+
   const setMicTracksEnabled = useCallback((enabled: boolean) => {
     micStreamRef.current?.getAudioTracks().forEach((track) => {
       track.enabled = enabled
@@ -1240,18 +1259,11 @@ function App() {
       setStatus(next)
       if (next.window) setExpanded(next.window.mode === 'panel')
       setLastError('')
-      const audit = await apiJson<{ events: AuditEvent[] }>('/api/audit/recent?limit=8')
-      setRuntimeEvents(audit.events)
-      const context = await apiJson<{ context: MacContext }>('/api/mac/context')
-      setMacContext(context.context)
-      const config = await apiJson<{ config: ConfigCheck }>('/api/config/check')
-      setConfigCheck(config.config)
-      await loadDoctorReport()
-      await loadWorkBriefing()
+      await loadPanelDetails()
     } catch (error) {
       setLastError(error instanceof Error ? error.message : String(error))
     }
-  }, [loadDoctorReport, loadWorkBriefing])
+  }, [loadPanelDetails])
 
   const setWindowMode = useCallback(async (mode: WindowMode) => {
     const result = await apiJson<{ window: WindowState }>('/api/window/mode', {
@@ -1335,23 +1347,19 @@ function App() {
 
   useEffect(() => {
     let disposed = false
+    let lastPanelDetailAt = 0
     const load = async () => {
       try {
-        const next = await apiJson<Status>('/api/status')
-        if (!disposed) {
-          setStatus(next)
-          if (next.window) setExpanded(next.window.mode === 'panel')
-          const audit = await apiJson<{ events: AuditEvent[] }>('/api/audit/recent?limit=8')
-          setRuntimeEvents(audit.events)
-          const context = await apiJson<{ context: MacContext }>('/api/mac/context')
-          setMacContext(context.context)
-          const config = await apiJson<{ config: ConfigCheck }>('/api/config/check')
-          setConfigCheck(config.config)
-          const doctor = await fetchDoctorReport()
-          setDoctorReport(doctor)
-          const briefing = await fetchWorkBriefing()
-          setWorkBriefing(briefing)
-          setLastError('')
+        const next = await apiJson<Status>('/api/pet/status')
+        if (disposed) return
+        setStatus(next)
+        if (next.window) setExpanded(next.window.mode === 'panel')
+        setLastError('')
+        const panelOpen = next.window?.mode === 'panel'
+        const now = Date.now()
+        if (panelOpen && now - lastPanelDetailAt >= PANEL_DETAIL_POLL_MS) {
+          lastPanelDetailAt = now
+          await loadPanelDetails()
         }
       } catch (error) {
         if (!disposed) {
@@ -1360,21 +1368,22 @@ function App() {
       }
     }
     void load()
-    const id = window.setInterval(load, 2500)
+    const id = window.setInterval(load, PET_STATUS_POLL_MS)
     return () => {
       disposed = true
       window.clearInterval(id)
     }
-  }, [])
+  }, [loadPanelDetails])
 
   const toggleExpanded = useCallback(async () => {
     const next = !expanded
     try {
-      await setWindowMode(next ? 'panel' : 'pet')
+      const windowState = await setWindowMode(next ? 'panel' : 'pet')
+      if (windowState.mode === 'panel') void loadPanelDetails()
     } catch (error) {
       setLastError(error instanceof Error ? error.message : String(error))
     }
-  }, [expanded, setWindowMode])
+  }, [expanded, loadPanelDetails, setWindowMode])
 
   useEffect(() => () => {
     if (dragFrameRef.current !== null) {
@@ -2003,7 +2012,7 @@ function App() {
   }, [micMode, voiceStatus])
 
   const captureFrame = useCallback(
-    async (describe = false) => {
+    async (describe = false, options: { refresh?: boolean } = {}) => {
       const result = await apiJson<{ ok: boolean; screen: NonNullable<Status['screen']> }>('/api/screen/capture-now', {
         method: 'POST',
         body: JSON.stringify({ includeImage: true, source: 'renderer' }),
@@ -2026,7 +2035,7 @@ function App() {
         })
         addMessage('assistant', result.output)
       }
-      refreshStatus()
+      if (options.refresh !== false) refreshStatus()
     },
     [addMessage, pushRealtimeScreenContext, refreshStatus],
   )
@@ -2208,11 +2217,12 @@ function App() {
 
   useEffect(() => {
     if (!screenLive) return undefined
+    const intervalMs = voiceStatus === 'live' ? SCREEN_CONTEXT_LIVE_POLL_MS : SCREEN_CONTEXT_IDLE_POLL_MS
     const id = window.setInterval(() => {
-      captureFrame().catch((error) => setLastError(error instanceof Error ? error.message : String(error)))
-    }, 5000)
+      captureFrame(false, { refresh: false }).catch((error) => setLastError(error instanceof Error ? error.message : String(error)))
+    }, intervalMs)
     return () => window.clearInterval(id)
-  }, [captureFrame, screenLive])
+  }, [captureFrame, screenLive, voiceStatus])
 
   const sendQuick = useCallback(
     async (event: FormEvent) => {

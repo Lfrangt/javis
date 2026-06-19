@@ -16500,6 +16500,230 @@ function presenceStateSnapshot(options = {}) {
   };
 }
 
+function petReadinessSnapshot() {
+  if (OPENAI_API_KEY) {
+    return {
+      overall: 'ready',
+      label: 'Ready',
+      summary: 'Core voice key is configured.',
+      counts: { ready: 1, warning: 0, blocked: 0, total: 1 },
+      primaryIssue: null,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+  return {
+    overall: 'blocked',
+    label: 'Setup blocked',
+    summary: 'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
+    counts: { ready: 0, warning: 0, blocked: 1, total: 1 },
+    primaryIssue: readinessItem(
+      'openai_key',
+      'OpenAI key',
+      'blocked',
+      'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
+      'Add OPENAI_API_KEY to .env and restart JAVIS.',
+    ),
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+function petPresenceSnapshot(options = {}) {
+  const conversation = options.conversation || conversationStateSnapshot();
+  const wake = options.wake || wakeStatusSnapshot();
+  const pendingApprovals = options.pendingApprovals || pendingApprovalSnapshot(5);
+  const activeJobs = options.activeJobs || jobSnapshot(8).filter((job) => job.status === 'queued' || job.status === 'running');
+  const readiness = options.readiness || petReadinessSnapshot();
+  const latestAmbient = ambientSnapshot(1)[0] || null;
+  const observing = presenceRecentObservation(latestAmbient);
+  const latestScreenFrame = latestScreenSnapshot();
+  const screenAge = latestScreenAgeMs();
+  const mode = presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation });
+  const activeRoutes = activeRoutingSnapshot(3).map(routingLedgerEntry).filter(Boolean);
+  let nextIntervention = 'Standing by until you speak or ask for help.';
+  if (conversation.status === 'live') {
+    nextIntervention = 'Voice conversation is live.';
+  } else if (conversation.status === 'connecting') {
+    nextIntervention = 'Voice conversation is connecting.';
+  } else if (conversation.status === 'error') {
+    nextIntervention = `Last voice session error: ${conversation.error || 'unknown error'}`;
+  } else if (pendingApprovals[0]) {
+    nextIntervention = `Waiting for approval: ${compactRecordText(pendingApprovals[0].summary, 120)}`;
+  } else if (activeJobs[0]) {
+    nextIntervention = `Background work running: ${compactRecordText(activeJobs[0].title, 120)}`;
+  } else if (activeRoutes[0]) {
+    nextIntervention = `Routed work needs attention: ${compactRecordText(activeRoutes[0].taskTitle, 100)}`;
+  } else if (wake.pending) {
+    nextIntervention = 'Wake trigger is pending.';
+  } else if (readiness.primaryIssue) {
+    nextIntervention = readiness.primaryIssue.next || readiness.primaryIssue.summary;
+  }
+
+  const summaryParts = [
+    mode === 'watching' ? 'Standing by and passively observing local context.' : '',
+    mode === 'standby' ? 'Standing by.' : '',
+    mode === 'connecting' ? 'Voice conversation is connecting.' : '',
+    mode === 'listening' ? `Voice conversation is live in ${conversation.micMode} mic mode.` : '',
+    mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
+    mode === 'waking' ? 'Wake trigger received.' : '',
+    mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
+    activeRoutes.length ? `${activeRoutes.length} routed task(s) active or blocked.` : '',
+    mode === 'needs_attention' ? `${pendingApprovals.length} approval(s) need attention.` : '',
+    mode === 'setup_blocked' ? `Setup blocked: ${readiness.summary}` : '',
+    observing.available
+      ? `Latest context: ${[observing.app, observing.browser.host || observing.browser.title || observing.windowTitle].filter(Boolean).join(' · ')}.`
+      : '',
+  ].filter(Boolean);
+
+  return {
+    ok: readiness.overall !== 'blocked',
+    generatedAt: new Date().toISOString(),
+    mode,
+    label: {
+      standby: 'Standby',
+      watching: 'Watching',
+      waking: 'Wake pending',
+      connecting: 'Connecting',
+      listening: 'Listening',
+      voice_error: 'Voice error',
+      working: 'Working',
+      needs_attention: 'Needs attention',
+      setup_blocked: 'Setup blocked',
+    }[mode] || mode,
+    summary: summaryParts.join(' '),
+    intervention: {
+      passiveByDefault: true,
+      requiresUserIntent: true,
+      canActWhenInvited: LOCAL_EXEC_ENABLED,
+      trustedLocalMode: TRUSTED_LOCAL_MODE,
+      maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
+      requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+      next: nextIntervention,
+      attentionLevel: pendingApprovals.length ? 'high' : activeJobs.length || activeRoutes.length ? 'normal' : 'low',
+      shouldNotify: false,
+    },
+    conversation,
+    wake,
+    observing: {
+      latest: observing,
+      screen: latestScreenFrame
+        ? {
+            available: true,
+            width: latestScreenFrame.width,
+            height: latestScreenFrame.height,
+            source: latestScreenFrame.source || '',
+            privacyMode: latestScreenFrame.privacy?.mode || '',
+            ageMs: Number.isFinite(screenAge) ? screenAge : null,
+            updatedAt: latestScreenFrame.updatedAt,
+          }
+        : {
+            available: false,
+            width: 0,
+            height: 0,
+            source: '',
+            privacyMode: screenPrivacySnapshot().mode,
+            ageMs: null,
+            updatedAt: 0,
+          },
+    },
+    work: {
+      activeJobs: activeJobs.slice(0, 6).map((job) => ({
+        id: job.id,
+        mode: job.mode,
+        status: job.status,
+        title: job.title,
+        skill: normalizeSkillRecallPlan(job.skillRecallPlan).primarySkill.name || '',
+        updatedAt: job.updatedAt,
+      })),
+      activeRoutes,
+      pendingApprovals: pendingApprovals.map((approval) => ({
+        id: approval.id,
+        action: approval.action,
+        riskLevel: approval.riskLevel,
+        summary: approval.summary,
+        createdAt: approval.createdAt,
+      })),
+      activeSession: activeSessionSnapshot(),
+      queue: queueCounts(),
+      workflows: workflowCounts(),
+      progressVersion: workProgressSnapshot(),
+    },
+    readiness: {
+      overall: readiness.overall,
+      label: readiness.label,
+      counts: readiness.counts,
+      primaryIssue: readiness.primaryIssue,
+    },
+  };
+}
+
+function petStatusSnapshot() {
+  const conversation = conversationStateSnapshot();
+  const wake = wakeStatusSnapshot();
+  const pendingApprovals = pendingApprovalSnapshot(5);
+  const activeJobs = jobSnapshot(12).filter((job) => job.status === 'queued' || job.status === 'running');
+  const readiness = petReadinessSnapshot();
+  const presence = petPresenceSnapshot({ conversation, wake, pendingApprovals, activeJobs, readiness });
+  return {
+    api: {
+      baseUrl: API_BASE,
+      auth: apiAuthSnapshot(),
+      hasOpenAiKey: Boolean(OPENAI_API_KEY),
+      localExecutionEnabled: LOCAL_EXEC_ENABLED,
+      trustedLocalMode: TRUSTED_LOCAL_MODE,
+    },
+    runtime: {
+      version: packageInfo.version,
+      uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+      dataDir: DATA_DIR,
+    },
+    actionPolicy: {
+      dryRun: actionPolicy.dryRun,
+      maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
+      requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
+    },
+    screenPrivacy: screenPrivacySnapshot(),
+    presence,
+    conversation,
+    voiceHealth: realtimeVoiceHealthSnapshot({ conversation }),
+    progressVersion: workProgressSnapshot(),
+    wake,
+    speech: speechStateSnapshot(),
+    window: windowStateSnapshot(),
+    menuBar: menuBarSnapshot(),
+    notifications: notificationSnapshot(),
+    approvals: pendingApprovals,
+    models,
+    readiness: {
+      overall: readiness.overall,
+      label: readiness.label,
+      summary: readiness.summary,
+      counts: readiness.counts,
+      primaryIssue: readiness.primaryIssue,
+    },
+    activeJobs: Array.from(activeJobRuns.keys()),
+    workflows: workflowSnapshot(3),
+    workflowCounts: workflowCounts(),
+    routing: {
+      counts: routingCounts(),
+      active: activeRoutingSnapshot(3),
+      ledger: activeRoutingSnapshot(3).map(routingLedgerEntry).filter(Boolean),
+      recent: routingSnapshot(3),
+    },
+    collaboration: collaborationSnapshot(4),
+    inbox: {
+      counts: inboxCounts(),
+      open: inboxSnapshot(3, 'open'),
+    },
+    sessions: {
+      counts: sessionCounts(),
+      active: activeSessionSnapshot(),
+      recent: sessionSnapshot(3),
+    },
+    screen: latestScreenSnapshot(),
+    queue: jobSnapshot(10),
+  };
+}
+
 function formatRealtimeContextAction(action, index) {
   return `${index + 1}. ${action.label}: ${compactRecordText(action.summary, 180)}`;
 }
@@ -29906,6 +30130,10 @@ function startApiServer() {
       screen: latestScreenSnapshot(),
       queue: jobSnapshot(),
     });
+  });
+
+  api.get('/api/pet/status', (_req, res) => {
+    res.json(petStatusSnapshot());
   });
 
   api.get('/api/presence', (req, res) => {

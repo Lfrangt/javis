@@ -997,3 +997,11 @@ Formats:
 Jobs are persisted after creation and on every status transition. If JAVIS exits while a job is queued or running, that job is marked failed on the next launch with an interruption note.
 
 Running Codex, Claude, and explicit CLI jobs write stdout/stderr into the job log while they run. Use the buddy panel or `POST /api/jobs/<job-id>/cancel` to stop queued or running work.
+
+## Resident Pet Load
+
+The desktop pet should stay quiet and cheap while it is parked. The renderer polls `GET /api/pet/status` every 5 seconds for traffic-light state, voice/session state, window position, approvals, inbox/session counts, and a small job snapshot.
+
+Full diagnostics stay out of the pet. `GET /api/status`, `/api/doctor/report`, `/api/config/check`, `/api/mac/context`, and `/api/briefing` are reserved for manual refresh, the terminal CUI, or the expanded panel, which refreshes those details at a slow cadence.
+
+Resident screen context is also throttled. A manual screen start captures immediately; after that, the renderer refreshes screen context every 15 seconds during a live voice session and every 2 minutes while merely observing. Periodic screen refreshes must not call full status/doctor refreshes.
