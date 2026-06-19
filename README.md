@@ -19,6 +19,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime attention explanations through `get_attention_explanation`, so voice can briefly explain pet color, quiet/notify decisions, cooldown, and recent attention history without opening a desktop dashboard.
 - Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, and shortcut list/save/recall/forget flows from CUI/API.
 - Next Realtime dogfood prompt helper from CUI/API, with clipboard copy and dry-run support, so operators can manually dogfood live voice without starting microphone capture from automation.
+- Realtime dogfood operator session tracker from CUI/API, so a real spoken drill can be started, marked, ended, and audited without turning the desktop pet into a dashboard.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
@@ -194,6 +195,7 @@ Local Express service on 127.0.0.1:3417
   /api/realtime/dogfood/drill -> manual live-voice dogfood drill steps and prompts
   /api/realtime/dogfood/prompt -> next manual live-voice dogfood prompt
   /api/realtime/dogfood/prompt/copy -> copy the next dogfood prompt, with dry-run support
+  /api/realtime/dogfood/session -> manual operator session tracker for real live-voice dogfood
   /api/realtime/dogfood/start -> manual dogfood drill starter: summon pet and optionally prepare progress after voice is live
   /api/context/plan    -> smart context assembly plan for a user request
   /api/wake/status      -> soft/local wake-word trigger state

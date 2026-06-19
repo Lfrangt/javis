@@ -53,6 +53,7 @@ const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const DEMONSTRATIONS_FILE = path.join(DATA_DIR, 'demonstrations.json');
 const SHORTCUTS_FILE = path.join(DATA_DIR, 'shortcuts.json');
+const REALTIME_DOGFOOD_SESSIONS_FILE = path.join(DATA_DIR, 'realtime-dogfood-sessions.json');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
@@ -101,6 +102,7 @@ const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300)
 const MAX_PERSISTED_SESSIONS = Number(process.env.JAVIS_MAX_PERSISTED_SESSIONS || 200);
 const MAX_PERSISTED_DEMONSTRATIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_DEMONSTRATIONS || 200)));
 const MAX_PERSISTED_SHORTCUTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_SHORTCUTS || 200)));
+const MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS || 120)));
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
@@ -574,6 +576,7 @@ const inboxItems = new Map();
 const workSessions = new Map();
 const demonstrations = new Map();
 const shortcuts = new Map();
+const realtimeDogfoodOperatorSessions = new Map();
 const ambientEvents = [];
 const realtimeToolCallEvents = [];
 const activeJobRuns = new Map();
@@ -703,6 +706,7 @@ loadPersistedInbox();
 loadPersistedSessions();
 loadPersistedDemonstrations();
 loadPersistedShortcuts();
+loadPersistedRealtimeDogfoodOperatorSessions();
 loadPersistedAmbient();
 loadPersistedLearning();
 appendAudit('process.start', {
@@ -3247,6 +3251,50 @@ function normalizePersistedSession(session) {
   };
 }
 
+function normalizeRealtimeDogfoodOperatorStep(step = {}) {
+  if (!step || typeof step !== 'object') return null;
+  const id = String(step.id || step.stepId || '').trim().slice(0, 80);
+  if (!id) return null;
+  const status = ['pending', 'ready', 'done', 'blocked', 'skipped'].includes(step.status) ? step.status : 'pending';
+  return {
+    id,
+    label: compactRecordText(step.label || id, 140),
+    status,
+    evidenceOk: Boolean(step.evidenceOk),
+    promptType: String(step.promptType || '').slice(0, 40),
+    prompt: compactRecordText(step.prompt || '', 400),
+    note: compactRecordText(step.note || '', 500),
+    source: String(step.source || 'api').slice(0, 80),
+    updatedAt: Number(step.updatedAt || Date.now()),
+  };
+}
+
+function normalizeRealtimeDogfoodOperatorSession(session = {}) {
+  if (!session || typeof session !== 'object' || !session.id) return null;
+  const status = ['active', 'done', 'cancelled'].includes(session.status) ? session.status : 'active';
+  const title = compactRecordText(session.title || 'Realtime voice dogfood drill', 160);
+  const steps = Array.isArray(session.steps)
+    ? session.steps.map(normalizeRealtimeDogfoodOperatorStep).filter(Boolean).slice(0, 80)
+    : [];
+  return {
+    id: String(session.id || crypto.randomUUID()).slice(0, 120),
+    title,
+    status,
+    manualOnly: true,
+    startsMicrophone: false,
+    source: String(session.source || 'api').slice(0, 80),
+    evidenceStatus: String(session.evidenceStatus || '').slice(0, 40),
+    evidencePhase: String(session.evidencePhase || '').slice(0, 80),
+    drillSummary: compactRecordText(session.drillSummary || '', 300),
+    promptText: compactRecordText(session.promptText || '', 400),
+    steps,
+    summary: compactRecordText(session.summary || '', 1200),
+    createdAt: Number(session.createdAt || Date.now()),
+    updatedAt: Number(session.updatedAt || Date.now()),
+    completedAt: status === 'active' ? 0 : Number(session.completedAt || Date.now()),
+  };
+}
+
 function normalizeDemonstrationObservation(value = {}) {
   const raw = value && typeof value === 'object' ? value : {};
   const mac = raw.mac && typeof raw.mac === 'object' ? raw.mac : {};
@@ -3987,6 +4035,23 @@ function loadPersistedShortcuts() {
   }
 }
 
+function loadPersistedRealtimeDogfoodOperatorSessions() {
+  if (!fs.existsSync(REALTIME_DOGFOOD_SESSIONS_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(REALTIME_DOGFOOD_SESSIONS_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+    realtimeDogfoodOperatorSessions.clear();
+    for (const rawSession of list) {
+      const session = normalizeRealtimeDogfoodOperatorSession(rawSession);
+      if (session) realtimeDogfoodOperatorSessions.set(session.id, session);
+    }
+    persistRealtimeDogfoodOperatorSessions();
+    appendAudit('realtime.dogfood_operator_sessions_loaded', { count: realtimeDogfoodOperatorSessions.size });
+  } catch (error) {
+    appendAudit('realtime.dogfood_operator_sessions_load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function loadPersistedAmbient() {
   if (!fs.existsSync(AMBIENT_FILE)) return;
   try {
@@ -4060,6 +4125,17 @@ function persistShortcuts() {
     version: 1,
     updatedAt: new Date().toISOString(),
     shortcuts: shortcutsForStorage,
+  });
+}
+
+function persistRealtimeDogfoodOperatorSessions() {
+  const sessionsForStorage = Array.from(realtimeDogfoodOperatorSessions.values())
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS);
+  writeJsonAtomic(REALTIME_DOGFOOD_SESSIONS_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    sessions: sessionsForStorage,
   });
 }
 
@@ -17935,6 +18011,273 @@ function realtimeDogfoodNextPromptSnapshot(options = {}) {
   };
 }
 
+function realtimeDogfoodOperatorSessionCounts() {
+  return Array.from(realtimeDogfoodOperatorSessions.values()).reduce(
+    (counts, session) => {
+      counts[session.status] = (counts[session.status] || 0) + 1;
+      counts.total += 1;
+      return counts;
+    },
+    { total: 0, active: 0, done: 0, cancelled: 0 },
+  );
+}
+
+function realtimeDogfoodOperatorSessionItems(limit = 10, status = '') {
+  const wantedStatus = String(status || '').trim();
+  return Array.from(realtimeDogfoodOperatorSessions.values())
+    .filter((session) => !wantedStatus || session.status === wantedStatus)
+    .sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'active' ? -1 : 1;
+      return b.updatedAt - a.updatedAt;
+    })
+    .slice(0, Math.max(1, Math.min(100, Number(limit || 10))));
+}
+
+function activeRealtimeDogfoodOperatorSession() {
+  return realtimeDogfoodOperatorSessionItems(1, 'active')[0] || null;
+}
+
+function realtimeDogfoodOperatorSessionView(session = null, evidence = realtimeVoiceEvidenceSnapshot()) {
+  if (!session) return null;
+  const drill = evidence.drill || evidence.dogfood?.drill || {};
+  const prompt = realtimeDogfoodNextPromptSnapshot({ evidence });
+  const storedById = new Map((Array.isArray(session.steps) ? session.steps : []).map((step) => [step.id, step]));
+  const drillSteps = Array.isArray(drill.steps) ? drill.steps : [];
+  const steps = drillSteps.map((step) => {
+    const stored = storedById.get(step.id) || {};
+    const evidenceOk = Boolean(step.ok);
+    const operatorStatus = stored.status || (evidenceOk ? 'ready' : 'pending');
+    return {
+      id: step.id || '',
+      label: step.label || stored.label || step.id || '',
+      status: evidenceOk ? 'ready' : operatorStatus,
+      evidenceOk,
+      operatorDone: stored.status === 'done',
+      promptType: stored.promptType || '',
+      prompt: stored.prompt || step.evidence?.prompt || '',
+      note: stored.note || '',
+      nextAction: step.nextAction || '',
+      detail: step.detail || '',
+      updatedAt: stored.updatedAt || session.updatedAt,
+    };
+  });
+  const counts = {
+    total: steps.length,
+    evidenceReady: steps.filter((step) => step.evidenceOk).length,
+    operatorDone: steps.filter((step) => step.operatorDone).length,
+    pendingEvidence: steps.filter((step) => !step.evidenceOk).length,
+  };
+  const nextStep = steps.find((step) => !step.evidenceOk) || null;
+  return {
+    ...session,
+    manualOnly: true,
+    startsMicrophone: false,
+    evidenceStatus: evidence.status || session.evidenceStatus || '',
+    evidencePhase: evidence.phase || session.evidencePhase || '',
+    drillSummary: drill.summary || session.drillSummary || '',
+    promptText: prompt.copyText || session.promptText || '',
+    counts,
+    steps,
+    nextStep,
+    prompt,
+    monitor: {
+      cui: 'npm run config -> V. Watch Realtime voice evidence',
+      prompt: 'npm run config -- --print-realtime-dogfood-prompt',
+      endpoint: '/api/realtime/evidence',
+    },
+    output: [
+      `${session.title}: ${session.status}`,
+      `${counts.evidenceReady}/${counts.total} evidence step(s) ready · ${counts.operatorDone}/${counts.total} operator step(s) marked done.`,
+      nextStep ? `Next evidence step: ${nextStep.label}.` : 'All current evidence steps are ready.',
+      prompt.copyText ? `Next prompt: ${prompt.copyText}` : '',
+    ].filter(Boolean).join('\n'),
+  };
+}
+
+function realtimeDogfoodOperatorSessionSnapshot(options = {}) {
+  const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
+  const active = activeRealtimeDogfoodOperatorSession();
+  const items = realtimeDogfoodOperatorSessionItems(options.limit || 10, options.status)
+    .map((session) => realtimeDogfoodOperatorSessionView(session, evidence));
+  return {
+    ok: true,
+    manualOnly: true,
+    startsMicrophone: false,
+    sessionsFile: REALTIME_DOGFOOD_SESSIONS_FILE,
+    counts: realtimeDogfoodOperatorSessionCounts(),
+    active: realtimeDogfoodOperatorSessionView(active, evidence),
+    items,
+    evidence: {
+      status: evidence.status,
+      phase: evidence.phase,
+      readyForVoiceProgressQuestion: Boolean(evidence.readyForVoiceProgressQuestion),
+    },
+    prompt: realtimeDogfoodNextPromptSnapshot({ evidence }),
+  };
+}
+
+function startRealtimeDogfoodOperatorSession(options = {}) {
+  const existing = activeRealtimeDogfoodOperatorSession();
+  if (existing && options.replace === true) {
+    finishRealtimeDogfoodOperatorSession({ id: existing.id, status: 'cancelled', note: 'Replaced by a new dogfood operator session.', source: options.source || 'api' });
+  } else if (existing && options.allowConcurrent !== true) {
+    const evidence = realtimeVoiceEvidenceSnapshot();
+    return {
+      ok: false,
+      status: 409,
+      active: realtimeDogfoodOperatorSessionView(existing, evidence),
+      sessions: realtimeDogfoodOperatorSessionSnapshot({ evidence }),
+      output: `A Realtime dogfood operator session is already active: ${existing.title}`,
+    };
+  }
+  const evidence = realtimeVoiceEvidenceSnapshot();
+  const prompt = realtimeDogfoodNextPromptSnapshot({ evidence });
+  const drill = evidence.drill || {};
+  const now = Date.now();
+  const session = normalizeRealtimeDogfoodOperatorSession({
+    id: crypto.randomUUID(),
+    title: options.title || 'Realtime voice dogfood drill',
+    status: 'active',
+    source: options.source || 'api',
+    evidenceStatus: evidence.status,
+    evidencePhase: evidence.phase,
+    drillSummary: drill.summary || '',
+    promptText: prompt.copyText || '',
+    steps: (Array.isArray(drill.steps) ? drill.steps : []).map((step) => ({
+      id: step.id,
+      label: step.label,
+      status: step.ok ? 'ready' : 'pending',
+      evidenceOk: Boolean(step.ok),
+      prompt: step.evidence?.prompt || '',
+      updatedAt: now,
+    })),
+    createdAt: now,
+    updatedAt: now,
+  });
+  realtimeDogfoodOperatorSessions.set(session.id, session);
+  persistRealtimeDogfoodOperatorSessions();
+  appendAudit('realtime.dogfood_operator_session_started', {
+    id: session.id,
+    source: session.source,
+    evidenceStatus: session.evidenceStatus,
+    evidencePhase: session.evidencePhase,
+    stepCount: session.steps.length,
+  });
+  const view = realtimeDogfoodOperatorSessionView(session, evidence);
+  return {
+    ok: true,
+    manualOnly: true,
+    startsMicrophone: false,
+    session: view,
+    sessions: realtimeDogfoodOperatorSessionSnapshot({ evidence }),
+    evidence,
+    prompt,
+    output: view.output,
+  };
+}
+
+function markRealtimeDogfoodOperatorStep(options = {}) {
+  const sessionId = String(options.id || options.sessionId || '').trim();
+  const session = sessionId ? realtimeDogfoodOperatorSessions.get(sessionId) : activeRealtimeDogfoodOperatorSession();
+  if (!session) throw new Error('No Realtime dogfood operator session is active.');
+  const stepId = String(options.stepId || options.idStep || '').trim();
+  if (!stepId) throw new Error('Missing dogfood step id.');
+  const status = ['pending', 'ready', 'done', 'blocked', 'skipped'].includes(options.status) ? options.status : 'done';
+  const evidence = realtimeVoiceEvidenceSnapshot();
+  const drillStep = (evidence.drill?.steps || []).find((step) => step.id === stepId) || {};
+  const existing = (session.steps || []).find((step) => step.id === stepId) || {};
+  const updatedStep = normalizeRealtimeDogfoodOperatorStep({
+    ...existing,
+    id: stepId,
+    label: drillStep.label || existing.label || stepId,
+    status,
+    evidenceOk: Boolean(drillStep.ok || existing.evidenceOk),
+    promptType: options.promptType || existing.promptType || '',
+    prompt: options.prompt || existing.prompt || drillStep.evidence?.prompt || '',
+    note: options.note || existing.note || '',
+    source: options.source || 'api',
+    updatedAt: Date.now(),
+  });
+  const nextSteps = [
+    ...(session.steps || []).filter((step) => step.id !== stepId),
+    updatedStep,
+  ].sort((a, b) => {
+    const order = (evidence.drill?.steps || []).map((step) => step.id);
+    return order.indexOf(a.id) - order.indexOf(b.id);
+  });
+  const next = normalizeRealtimeDogfoodOperatorSession({
+    ...session,
+    steps: nextSteps,
+    promptText: realtimeDogfoodNextPromptSnapshot({ evidence }).copyText || session.promptText,
+    evidenceStatus: evidence.status,
+    evidencePhase: evidence.phase,
+    drillSummary: evidence.drill?.summary || session.drillSummary,
+    updatedAt: Date.now(),
+  });
+  realtimeDogfoodOperatorSessions.set(next.id, next);
+  persistRealtimeDogfoodOperatorSessions();
+  appendAudit('realtime.dogfood_operator_step_marked', {
+    id: next.id,
+    stepId,
+    status,
+    evidenceOk: Boolean(updatedStep.evidenceOk),
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  const view = realtimeDogfoodOperatorSessionView(next, evidence);
+  return {
+    ok: true,
+    manualOnly: true,
+    startsMicrophone: false,
+    session: view,
+    step: view.steps.find((step) => step.id === stepId) || updatedStep,
+    sessions: realtimeDogfoodOperatorSessionSnapshot({ evidence }),
+    output: view.output,
+  };
+}
+
+function finishRealtimeDogfoodOperatorSession(options = {}) {
+  const sessionId = String(options.id || options.sessionId || '').trim();
+  const session = sessionId ? realtimeDogfoodOperatorSessions.get(sessionId) : activeRealtimeDogfoodOperatorSession();
+  if (!session) throw new Error('No Realtime dogfood operator session is active.');
+  const evidence = realtimeVoiceEvidenceSnapshot();
+  const view = realtimeDogfoodOperatorSessionView(session, evidence);
+  const status = options.status === 'cancelled' ? 'cancelled' : 'done';
+  const completedAt = Date.now();
+  const summary = compactRecordText(options.summary || [
+    `${view.counts.evidenceReady}/${view.counts.total} evidence step(s) ready.`,
+    `${view.counts.operatorDone}/${view.counts.total} operator step(s) marked done.`,
+    options.note ? `Note: ${options.note}` : '',
+  ].filter(Boolean).join(' '), 1200);
+  const next = normalizeRealtimeDogfoodOperatorSession({
+    ...session,
+    status,
+    summary,
+    completedAt,
+    updatedAt: completedAt,
+    evidenceStatus: evidence.status,
+    evidencePhase: evidence.phase,
+    drillSummary: evidence.drill?.summary || session.drillSummary,
+  });
+  realtimeDogfoodOperatorSessions.set(next.id, next);
+  persistRealtimeDogfoodOperatorSessions();
+  appendAudit('realtime.dogfood_operator_session_finished', {
+    id: next.id,
+    status,
+    evidenceStatus: next.evidenceStatus,
+    evidencePhase: next.evidencePhase,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  const finalView = realtimeDogfoodOperatorSessionView(next, evidence);
+  return {
+    ok: true,
+    manualOnly: true,
+    startsMicrophone: false,
+    session: finalView,
+    sessions: realtimeDogfoodOperatorSessionSnapshot({ evidence }),
+    output: finalView.output,
+  };
+}
+
 function realtimeDogfoodProgressSampleCommand(durationMs) {
   const safeDurationMs = Math.max(5000, Math.min(120000, Number(durationMs || 45000)));
   const script = [
@@ -27584,6 +27927,51 @@ function startApiServer() {
       });
     } catch (error) {
       jsonError(res, 400, 'Realtime dogfood prompt copy failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/session', (req, res) => {
+    try {
+      res.json({ sessions: realtimeDogfoodOperatorSessionSnapshot({ limit: req.query.limit || 10, status: req.query.status }) });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood operator session failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/session/start', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      const result = startRealtimeDogfoodOperatorSession({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_dogfood_session_start',
+      });
+      res.status(result.ok === false ? (result.status || 409) : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood operator session start failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/session/:id/steps/:stepId', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      res.json(markRealtimeDogfoodOperatorStep({
+        ...(req.body || {}),
+        id: req.params.id,
+        stepId: req.params.stepId,
+        source: req.body?.source || 'api_realtime_dogfood_step',
+      }));
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood operator step failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/session/:id/end', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      res.json(finishRealtimeDogfoodOperatorSession({
+        ...(req.body || {}),
+        id: req.params.id,
+        source: req.body?.source || 'api_realtime_dogfood_session_end',
+      }));
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood operator session end failed', error instanceof Error ? error.message : String(error));
     }
   });
 

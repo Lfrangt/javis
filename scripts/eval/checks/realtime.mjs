@@ -511,6 +511,26 @@ export default {
     }
 
     try {
+      const sessionCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-session'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${sessionCui.stdout || ''}\n${sessionCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Realtime Dogfood Session') &&
+          output.includes('starts microphone=no') &&
+          output.includes('Next prompt:') &&
+          output.includes('npm run config -> V. Watch Realtime voice evidence')
+          ? ok('realtime.cui_dogfood_session', 'Realtime CUI dogfood session', 'config CUI prints the manual dogfood session tracker')
+          : fail('realtime.cui_dogfood_session', 'Realtime CUI dogfood session', 'expected config CUI to print dogfood session tracker state', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_dogfood_session', 'Realtime CUI dogfood session', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
       const handoff = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-handoff'], {
         cwd: process.cwd(),
         env: process.env,
@@ -767,6 +787,82 @@ export default {
         ? ok('realtime.dogfood_prompt_copy_dry_run', 'Realtime dogfood prompt copy dry-run', dogfoodPromptCopy.data.text)
         : fail('realtime.dogfood_prompt_copy_dry_run', 'Realtime dogfood prompt copy dry-run', `POST /api/realtime/dogfood/prompt/copy ${dogfoodPromptCopy.status}`, dogfoodPromptCopy.data),
     );
+
+    const dogfoodSessionBefore = await ctx.api('/api/realtime/dogfood/session');
+    out.push(
+      dogfoodSessionBefore.ok &&
+        dogfoodSessionBefore.data?.sessions?.manualOnly === true &&
+        dogfoodSessionBefore.data?.sessions?.startsMicrophone === false &&
+        dogfoodSessionBefore.data?.sessions?.prompt?.startsMicrophone === false &&
+        dogfoodSessionBefore.data?.sessions?.prompt?.copyText
+        ? ok('realtime.dogfood_operator_session_snapshot', 'Realtime dogfood operator session snapshot', `${dogfoodSessionBefore.data.sessions.counts?.active || 0} active session(s)`)
+        : fail('realtime.dogfood_operator_session_snapshot', 'Realtime dogfood operator session snapshot', `GET /api/realtime/dogfood/session ${dogfoodSessionBefore.status}`, dogfoodSessionBefore.data),
+    );
+
+    const dogfoodSessionStart = await ctx.api('/api/realtime/dogfood/session/start', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        allowConcurrent: true,
+        title: 'Eval realtime dogfood operator session',
+      },
+    });
+    const dogfoodSession = dogfoodSessionStart.data?.session;
+    const dogfoodSessionStepId = dogfoodSession?.steps?.find((step) => step.id === 'open_monitor')?.id || dogfoodSession?.steps?.[0]?.id || '';
+    out.push(
+      dogfoodSessionStart.ok &&
+        dogfoodSessionStart.data?.ok === true &&
+        dogfoodSessionStart.data?.manualOnly === true &&
+        dogfoodSessionStart.data?.startsMicrophone === false &&
+        dogfoodSession?.status === 'active' &&
+        dogfoodSession?.manualOnly === true &&
+        dogfoodSession?.startsMicrophone === false &&
+        dogfoodSession?.monitor?.endpoint === '/api/realtime/evidence' &&
+        dogfoodSessionStepId
+        ? ok('realtime.dogfood_operator_session_start', 'Realtime dogfood operator session start', `${dogfoodSession.id} · ${dogfoodSession.counts?.evidenceReady || 0}/${dogfoodSession.counts?.total || 0} evidence ready`)
+        : fail('realtime.dogfood_operator_session_start', 'Realtime dogfood operator session start', `POST /api/realtime/dogfood/session/start ${dogfoodSessionStart.status}`, dogfoodSessionStart.data),
+    );
+
+    if (dogfoodSession?.id && dogfoodSessionStepId) {
+      const markSession = await ctx.api(`/api/realtime/dogfood/session/${encodeURIComponent(dogfoodSession.id)}/steps/${encodeURIComponent(dogfoodSessionStepId)}`, {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          status: 'done',
+          note: 'Eval marked the operator step without starting microphone capture.',
+        },
+      });
+      out.push(
+        markSession.ok &&
+          markSession.data?.ok === true &&
+          markSession.data?.startsMicrophone === false &&
+          markSession.data?.step?.id === dogfoodSessionStepId &&
+          markSession.data?.step?.operatorDone === true
+          ? ok('realtime.dogfood_operator_step_mark', 'Realtime dogfood operator step mark', `${dogfoodSessionStepId} marked done`)
+          : fail('realtime.dogfood_operator_step_mark', 'Realtime dogfood operator step mark', `POST step mark ${markSession.status}`, markSession.data),
+      );
+
+      const finishSession = await ctx.api(`/api/realtime/dogfood/session/${encodeURIComponent(dogfoodSession.id)}/end`, {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          status: 'cancelled',
+          note: 'Eval cleanup.',
+        },
+      });
+      out.push(
+        finishSession.ok &&
+          finishSession.data?.ok === true &&
+          finishSession.data?.startsMicrophone === false &&
+          finishSession.data?.session?.id === dogfoodSession.id &&
+          finishSession.data?.session?.status === 'cancelled'
+          ? ok('realtime.dogfood_operator_session_end', 'Realtime dogfood operator session end', `${dogfoodSession.id} cleaned up`)
+          : fail('realtime.dogfood_operator_session_end', 'Realtime dogfood operator session end', `POST session end ${finishSession.status}`, finishSession.data),
+      );
+    } else {
+      out.push(fail('realtime.dogfood_operator_step_mark', 'Realtime dogfood operator step mark', 'session start did not return a markable step', dogfoodSessionStart.data));
+      out.push(fail('realtime.dogfood_operator_session_end', 'Realtime dogfood operator session end', 'session start did not return an id to clean up', dogfoodSessionStart.data));
+    }
 
     const startPreview = await ctx.api('/api/realtime/dogfood/start', {
       method: 'POST',

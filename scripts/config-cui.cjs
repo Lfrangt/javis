@@ -292,6 +292,7 @@ async function printStatus() {
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
   console.log('P. Copy next Realtime dogfood prompt');
+  console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
@@ -1310,6 +1311,73 @@ async function showRealtimeDogfoodPrompt(options = {}) {
   printRealtimeDogfoodPrompt(result);
 }
 
+function printRealtimeDogfoodSession(result) {
+  const sessions = result?.sessions || result || {};
+  const active = sessions.active || null;
+  const items = Array.isArray(sessions.items) ? sessions.items : [];
+  const counts = sessions.counts || {};
+  console.log('JAVIS Realtime Dogfood Session');
+  console.log('==============================');
+  console.log(`Sessions: ${counts.active || 0} active · ${counts.done || 0} done · ${counts.cancelled || 0} cancelled · ${counts.total || 0} total`);
+  console.log(`Manual only=yes · starts microphone=${sessions.startsMicrophone ? 'yes' : 'no'}`);
+  console.log(`Evidence: ${sessions.evidence?.status || '-'} · phase ${sessions.evidence?.phase || '-'}`);
+  if (sessions.prompt?.copyText) console.log(`Next prompt: ${sessions.prompt.copyText}`);
+  console.log(`Monitor: ${sessions.active?.monitor?.cui || 'npm run config -> V. Watch Realtime voice evidence'}`);
+  if (!active) {
+    console.log('\nActive session: none');
+  } else {
+    console.log(`\nActive session: ${active.title} · ${active.status} · ${formatTime(active.createdAt)}`);
+    console.log(`Progress: ${active.counts?.evidenceReady || 0}/${active.counts?.total || 0} evidence ready · ${active.counts?.operatorDone || 0}/${active.counts?.total || 0} operator done`);
+    if (active.nextStep) console.log(`Next evidence step: ${active.nextStep.label}`);
+    const steps = Array.isArray(active.steps) ? active.steps : [];
+    for (const step of steps.slice(0, 12)) {
+      const mark = step.evidenceOk ? 'ready' : step.operatorDone ? 'done' : step.status || 'pending';
+      console.log(`- ${mark} ${step.label || step.id}`);
+    }
+  }
+  const recent = items.filter((item) => !active || item.id !== active.id).slice(0, 3);
+  if (recent.length) {
+    console.log('\nRecent sessions:');
+    for (const item of recent) {
+      console.log(`- ${item.status} ${item.title || item.id} · ${item.counts?.evidenceReady || 0}/${item.counts?.total || 0} evidence · ${formatTime(item.updatedAt)}`);
+    }
+  }
+}
+
+async function showRealtimeDogfoodSession(options = {}) {
+  if (options.start) {
+    const result = await request('/api/realtime/dogfood/session/start', {
+      method: 'POST',
+      body: { source: 'cui', allowConcurrent: options.allowConcurrent === true },
+    });
+    printRealtimeDogfoodSession(result.sessions || {});
+    if (result.output) console.log(`\n${compact(result.output, 900)}`);
+    return result;
+  }
+  const result = await request('/api/realtime/dogfood/session');
+  printRealtimeDogfoodSession(result.sessions || {});
+  return result;
+}
+
+async function manageRealtimeDogfoodSession(rl) {
+  const result = await showRealtimeDogfoodSession();
+  const active = result.sessions?.active || null;
+  if (active) {
+    const answer = (await rl.question('\nType DONE to finish, CANCEL to cancel, or press Enter to return: ')).trim();
+    if (answer === 'DONE' || answer === 'CANCEL') {
+      const finished = await request(`/api/realtime/dogfood/session/${encodeURIComponent(active.id)}/end`, {
+        method: 'POST',
+        body: { source: 'cui', status: answer === 'CANCEL' ? 'cancelled' : 'done' },
+      });
+      console.log('');
+      printRealtimeDogfoodSession(finished.sessions || {});
+    }
+    return;
+  }
+  const answer = (await rl.question('\nType START to start a Realtime dogfood tracker, or press Enter to return: ')).trim();
+  if (answer === 'START') await showRealtimeDogfoodSession({ start: true });
+}
+
 async function movePetCorner(rl) {
   const status = await request('/api/window/state');
   const current = status.window?.parkCorner || getEnvValue('JAVIS_WINDOW_PARK_CORNER') || 'notch';
@@ -1351,6 +1419,16 @@ async function main() {
 
   if (process.argv.includes('--copy-realtime-dogfood-prompt')) {
     await showRealtimeDogfoodPrompt({ copy: true });
+    return;
+  }
+
+  if (process.argv.includes('--print-realtime-dogfood-session') || process.argv.includes('--realtime-dogfood-session')) {
+    await showRealtimeDogfoodSession();
+    return;
+  }
+
+  if (process.argv.includes('--start-realtime-dogfood-session')) {
+    await showRealtimeDogfoodSession({ start: true, allowConcurrent: true });
     return;
   }
 
@@ -1429,6 +1507,8 @@ async function main() {
         await startRealtimeDogfoodDrillFromCui(rl);
       } else if (answer === 'p' || answer === 'prompt' || answer === 'dogfood prompt') {
         await showRealtimeDogfoodPrompt({ copy: true });
+      } else if (answer === 't' || answer === 'track' || answer === 'dogfood session') {
+        await manageRealtimeDogfoodSession(rl);
       } else if (answer === 'h' || answer === 'handoff' || answer === 'work handoff') {
         await showWorkHandoff();
       } else if (answer === '14') {
