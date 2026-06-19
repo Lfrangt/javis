@@ -27,6 +27,11 @@ async function importRealtimeProgressModule() {
 function baseProgress(now, overrides = {}) {
   return {
     output: 'RAW OUTPUT SHOULD NOT WIN',
+    version: {
+      sequence: 42,
+      updatedAt: now,
+      source: 'eval_progress',
+    },
     counts: {
       activeJobs: 0,
       activeWorkflows: 0,
@@ -134,6 +139,28 @@ export default {
     }
 
     const evidence = mod.realtimeProgressInjectionEvidence(baseProgress(now), context);
+    out.push(
+      evidence.progressSequence === 42 &&
+        evidence.progressUpdatedAt === now &&
+        evidence.progressSource === 'eval_progress'
+        ? ok('realtime_injection.progress_version_evidence', 'Progress version evidence', `sequence=${evidence.progressSequence}`)
+        : fail('realtime_injection.progress_version_evidence', 'Progress version evidence', 'progress version was not carried into injection evidence', evidence),
+    );
+
+    const status = await ctx.api('/api/status');
+    const progressSnapshot = await ctx.api('/api/work/progress');
+    const statusVersion = status.data?.progressVersion;
+    const endpointVersion = progressSnapshot.data?.progress?.version;
+    out.push(
+      status.ok &&
+        progressSnapshot.ok &&
+        typeof statusVersion?.sequence === 'number' &&
+        typeof endpointVersion?.sequence === 'number' &&
+        typeof endpointVersion?.updatedAt === 'number'
+        ? ok('realtime_injection.progress_version_api', 'Progress version API', `status=${statusVersion.sequence} progress=${endpointVersion.sequence}`)
+        : fail('realtime_injection.progress_version_api', 'Progress version API', 'status/progress APIs did not expose work progress versions', { status: status.data, progress: progressSnapshot.data }),
+    );
+
     if (conversation.active) {
       const dryRun = await ctx.api('/api/realtime/progress-injection', {
         method: 'POST',
@@ -158,6 +185,7 @@ export default {
         dryRun.ok &&
           dryRun.data?.injection?.workerSummary === evidence.workerSummary &&
           dryRun.data?.injection?.transport === 'eval-simulated' &&
+          dryRun.data?.injection?.progressSequence === evidence.progressSequence &&
           dryRun.data?.injection?.eventType === 'conversation.item.create' &&
           dryRun.data?.injection?.forcedResponse === false
           ? ok('realtime_injection.runtime_dry_run', 'Runtime injection evidence', 'active user session detected; dry-run normalization passed')
@@ -203,6 +231,8 @@ export default {
           recorded?.workerSummary === evidence.workerSummary &&
           recorded?.contextPreview === evidence.contextPreview &&
           recorded?.transport === 'eval-simulated' &&
+          recorded?.progressSequence === evidence.progressSequence &&
+          recorded?.progressSource === evidence.progressSource &&
           recorded?.dataChannelReadyState === 'open' &&
           recorded?.eventType === 'conversation.item.create' &&
           recorded?.forcedResponse === false

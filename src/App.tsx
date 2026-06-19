@@ -137,6 +137,9 @@ type ConversationState = {
     contentType?: string
     forcedResponse?: boolean
     responseActive?: boolean
+    progressSequence?: number
+    progressUpdatedAt?: number
+    progressSource?: string
     voiceStatus?: string
     micMode?: MicMode
     screenLive?: boolean
@@ -423,6 +426,7 @@ type Status = {
   screenPrivacy?: ScreenPrivacy
   presence?: PresenceState
   conversation?: ConversationState
+  progressVersion?: ProgressVersion
   speech?: {
     available: boolean
     enabled: boolean
@@ -612,6 +616,7 @@ type WorkBriefing = {
 type WorkProgress = {
   ok: boolean
   output: string
+  version?: ProgressVersion
   counts: {
     jobs: Record<string, number>
     workflows: Record<string, number>
@@ -800,6 +805,12 @@ type AuditEvent = {
   ts: string
   type: string
   data?: Record<string, unknown>
+}
+
+type ProgressVersion = {
+  sequence: number
+  updatedAt: number
+  source: string
 }
 
 type ChatMessage = {
@@ -1001,6 +1012,8 @@ function App() {
   const responseActiveRef = useRef(false)
   const lastRealtimeWorkProgressSignatureRef = useRef('')
   const lastRealtimeWorkProgressSyncAtRef = useRef(0)
+  const lastRealtimeWorkProgressSequenceRef = useRef(0)
+  const realtimeVoiceLiveStartedAtRef = useRef(0)
 
   const jobs = status?.queue || []
   const workflows = status?.workflows || []
@@ -1302,6 +1315,7 @@ function App() {
     handledToolCallsRef.current.clear()
     previousPushStateRef.current = false
     responseActiveRef.current = false
+    realtimeVoiceLiveStartedAtRef.current = 0
     voiceSessionIdRef.current = ''
     setIsPushingToTalk(false)
     setVoiceStatus('idle')
@@ -1469,6 +1483,7 @@ function App() {
       dataChannelRef.current = dataChannel
       dataChannel.addEventListener('open', () => {
         if (dataChannelRef.current !== dataChannel || voiceSessionIdRef.current !== voiceSessionId) return
+        realtimeVoiceLiveStartedAtRef.current = Date.now()
         setVoiceStatus('live')
         void updateResidentConversation({ status: 'live', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive })
         addMessage('system', 'Voice link live.')
@@ -1504,6 +1519,7 @@ function App() {
         if (dataChannelRef.current !== dataChannel || voiceSessionIdRef.current !== voiceSessionId) return
         setVoiceStatus((current) => (current === 'live' ? 'idle' : current))
         voiceSessionIdRef.current = ''
+        realtimeVoiceLiveStartedAtRef.current = 0
         void updateResidentConversation({ status: 'idle', sessionId: voiceSessionId, micMode, screenLive: false })
       })
 
@@ -1536,31 +1552,28 @@ function App() {
     return () => window.clearInterval(id)
   }, [micMode, screenLive, updateResidentConversation, voiceStatus])
 
-  useEffect(() => {
-    if (voiceStatus !== 'live') {
-      lastRealtimeWorkProgressSignatureRef.current = ''
-      lastRealtimeWorkProgressSyncAtRef.current = 0
-      return undefined
-    }
-
-    let disposed = false
-    const liveStartedAt = Date.now()
-    const syncWorkProgress = async () => {
+  const syncRealtimeWorkProgress = useCallback(
+    async (reason = 'interval', force = false) => {
+      if (voiceStatus !== 'live') return false
       try {
         const result = await apiJson<{ progress: WorkProgress }>('/api/work/progress?jobLimit=5&workflowLimit=5')
-        if (disposed) return
+        const version = result.progress.version
+        const sequence = Number(version?.sequence || 0)
+        if (sequence) lastRealtimeWorkProgressSequenceRef.current = Math.max(lastRealtimeWorkProgressSequenceRef.current, sequence)
+        const liveStartedAt = realtimeVoiceLiveStartedAtRef.current || Date.now()
         const contextText = realtimeWorkProgressContext(result.progress, liveStartedAt)
-        if (!contextText) return
+        if (!contextText) return false
         const signature = contextText
-        if (signature === lastRealtimeWorkProgressSignatureRef.current) return
+        if (signature === lastRealtimeWorkProgressSignatureRef.current) return false
         const now = Date.now()
-        if (now - lastRealtimeWorkProgressSyncAtRef.current < 10000) return
+        const minGapMs = force ? 0 : 10000
+        if (now - lastRealtimeWorkProgressSyncAtRef.current < minGapMs) return false
         if (pushRealtimeTextContext(contextText)) {
           const dataChannelReadyState = dataChannelRef.current?.readyState || ''
           void apiJson<{ conversation: ConversationState }>('/api/realtime/progress-injection', {
             method: 'POST',
             body: JSON.stringify({
-              source: 'renderer',
+              source: reason === 'progress_version' ? 'renderer_progress_version' : 'renderer',
               sessionId: voiceSessionIdRef.current,
               transport: 'webrtc-datachannel',
               dataChannelReadyState,
@@ -1583,20 +1596,46 @@ function App() {
             })
           lastRealtimeWorkProgressSignatureRef.current = signature
           lastRealtimeWorkProgressSyncAtRef.current = now
+          return true
         }
       } catch {
         // Work-progress sync is opportunistic context; voice should keep running.
       }
+      return false
+    },
+    [micMode, pushRealtimeTextContext, screenLive, voiceStatus],
+  )
+
+  useEffect(() => {
+    if (voiceStatus !== 'live') {
+      lastRealtimeWorkProgressSignatureRef.current = ''
+      lastRealtimeWorkProgressSyncAtRef.current = 0
+      lastRealtimeWorkProgressSequenceRef.current = 0
+      realtimeVoiceLiveStartedAtRef.current = 0
+      return undefined
     }
 
-    const timeout = window.setTimeout(syncWorkProgress, Math.min(REALTIME_WORK_PROGRESS_SYNC_MS, 30000))
-    const interval = window.setInterval(syncWorkProgress, REALTIME_WORK_PROGRESS_SYNC_MS)
+    if (!realtimeVoiceLiveStartedAtRef.current) realtimeVoiceLiveStartedAtRef.current = Date.now()
+    const timeout = window.setTimeout(
+      () => void syncRealtimeWorkProgress('live_start', true),
+      Math.min(REALTIME_WORK_PROGRESS_SYNC_MS, 30000),
+    )
+    const interval = window.setInterval(
+      () => void syncRealtimeWorkProgress('interval'),
+      REALTIME_WORK_PROGRESS_SYNC_MS,
+    )
     return () => {
-      disposed = true
       window.clearTimeout(timeout)
       window.clearInterval(interval)
     }
-  }, [micMode, pushRealtimeTextContext, screenLive, voiceStatus])
+  }, [syncRealtimeWorkProgress, voiceStatus])
+
+  useEffect(() => {
+    const sequence = Number(status?.progressVersion?.sequence || 0)
+    if (voiceStatus !== 'live' || !sequence) return
+    if (sequence <= lastRealtimeWorkProgressSequenceRef.current) return
+    void syncRealtimeWorkProgress('progress_version', true)
+  }, [status?.progressVersion?.sequence, syncRealtimeWorkProgress, voiceStatus])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return

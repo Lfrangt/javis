@@ -623,6 +623,11 @@ let maintenanceState = {
   lastWorkflowId: '',
   lastSummary: '',
 };
+let workProgressState = {
+  sequence: 0,
+  updatedAt: 0,
+  source: 'startup',
+};
 let wakeEngineProcess = null;
 let wakeState = {
   lastTriggerAt: 0,
@@ -15146,6 +15151,7 @@ function presenceStateSnapshot(options = {}) {
       activeSession,
       queue: queueCounts(),
       workflows: workflowCounts(),
+      progressVersion: workProgressSnapshot(),
       autopilot: autopilotStateSnapshot(),
     },
     readiness: {
@@ -15698,6 +15704,9 @@ function normalizeRealtimeProgressInjection(options = {}) {
     contentType: compactRecordText(options.contentType || '', 40),
     forcedResponse: Boolean(options.forcedResponse),
     responseActive: Boolean(options.responseActive),
+    progressSequence: boundedCount(options.progressSequence, 1000000000),
+    progressUpdatedAt: boundedCount(options.progressUpdatedAt, 4102444800000),
+    progressSource: compactRecordText(options.progressSource || '', 80),
     voiceStatus: compactRecordText(options.voiceStatus || '', 40),
     micMode: normalizeConversationMicMode(options.micMode),
     screenLive: Boolean(options.screenLive),
@@ -15759,6 +15768,8 @@ function recordRealtimeProgressInjection(options = {}) {
     dataChannelReadyState: injection.dataChannelReadyState,
     eventType: injection.eventType,
     forcedResponse: injection.forcedResponse,
+    progressSequence: injection.progressSequence,
+    progressSource: injection.progressSource,
     voiceStatus: injection.voiceStatus,
     contextLength: injection.contextLength,
     workerSummary: injection.workerSummary,
@@ -17260,6 +17271,23 @@ function workflowCounts() {
   );
 }
 
+function bumpWorkProgress(source = 'work') {
+  workProgressState = {
+    sequence: Number(workProgressState.sequence || 0) + 1,
+    updatedAt: Date.now(),
+    source: String(source || 'work').slice(0, 80),
+  };
+  return workProgressSnapshot();
+}
+
+function workProgressSnapshot() {
+  return {
+    sequence: Number(workProgressState.sequence || 0),
+    updatedAt: Number(workProgressState.updatedAt || 0),
+    source: workProgressState.source || 'startup',
+  };
+}
+
 function compactRecordText(value, maxLength = 220) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (text.length <= maxLength) return text;
@@ -17342,6 +17370,7 @@ function createRoutingRecord(options = {}) {
   record.resultLink = record.resultLink || routeResultLink(record);
   routingRecords.set(record.id, record);
   persistRouting();
+  bumpWorkProgress('route_created');
   appendAudit('task_route.recorded', {
     id: record.id,
     lane: record.lane,
@@ -17367,6 +17396,7 @@ function setRoutingRecord(id, patch = {}) {
   next.resultLink = next.resultLink || routeResultLink(next);
   routingRecords.set(next.id, next);
   persistRouting();
+  bumpWorkProgress(patch.status && patch.status !== existing.status ? 'route_status' : 'route_updated');
   if (patch.status && patch.status !== existing.status) {
     appendAudit('task_route.status', {
       id: next.id,
@@ -18405,6 +18435,7 @@ function workProgressCheckIn(options = {}) {
   const progress = {
     ok: true,
     output,
+    version: workProgressSnapshot(),
     counts: {
       jobs: queueCounts(),
       workflows: workflowCounts(),
@@ -18863,6 +18894,7 @@ function createWorkflowRecord(value = {}) {
   });
   workflows.set(id, workflow);
   persistWorkflows();
+  bumpWorkProgress('workflow_created');
   appendAudit('workflow.created', { id, kind: workflow.kind, source: workflow.source, status: workflow.status, title: workflow.title });
   recordActiveSessionEvent('workflow_created', `Workflow ${workflow.status}: ${compactRecordText(workflow.title, 120)}`, workflow.source || 'workflow', {
     kind: 'workflow',
@@ -18884,6 +18916,7 @@ function setWorkflow(id, patch) {
   workflows.set(id, next);
   persistWorkflows();
   updateRoutingRecordsForWorkflow(next);
+  bumpWorkProgress(patch.status && patch.status !== existing.status ? 'workflow_status' : 'workflow_updated');
   if (patch.status) {
     appendAudit('workflow.status', {
       id,
@@ -19226,6 +19259,7 @@ function createJob(task, mode, source, metadata = {}) {
   };
   jobs.set(id, job);
   persistJobs();
+  bumpWorkProgress('job_created');
   appendAudit('job.created', { id, mode, source, title: job.title });
   recordActiveSessionEvent('job_created', `Queued ${mode}: ${compactRecordText(job.title, 120)}`, source || 'job', {
     kind: 'job',
@@ -19253,6 +19287,7 @@ function setJob(id, patch) {
   jobs.set(id, next);
   persistJobs();
   updateRoutingRecordsForJob(next);
+  bumpWorkProgress(patch.status && patch.status !== existing.status ? 'job_status' : 'job_updated');
   if (patch.status) {
     appendAudit('job.status', {
       id,
@@ -24884,6 +24919,7 @@ function startApiServer() {
     }
     jobs.delete(id);
     persistJobs();
+    bumpWorkProgress('job_removed');
     appendAudit('job.removed', { id, mode: existing.mode, status: existing.status, title: existing.title });
     res.json({ ok: true, removed: id });
   });
@@ -24921,6 +24957,7 @@ function startApiServer() {
       presence,
       conversation,
       voiceHealth: realtimeVoiceHealthSnapshot({ conversation }),
+      progressVersion: workProgressSnapshot(),
       ambient: ambientStateSnapshot(5),
       learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),

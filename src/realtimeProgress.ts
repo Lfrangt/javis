@@ -15,6 +15,11 @@ export type RealtimeProgressWorkerGroup = {
 
 export type RealtimeWorkProgress = {
   output: string
+  version?: {
+    sequence: number
+    updatedAt: number
+    source: string
+  }
   counts: {
     activeJobs: number
     activeWorkflows: number
@@ -33,6 +38,9 @@ export type RealtimeWorkProgress = {
 }
 
 export type RealtimeProgressInjectionEvidence = {
+  progressSequence: number
+  progressUpdatedAt: number
+  progressSource: string
   contextLength: number
   contextPreview: string
   workerSummary: string
@@ -137,6 +145,9 @@ export function realtimeProgressInjectionEvidence(
 ): RealtimeProgressInjectionEvidence {
   const groups = (progress.workerGroups || []).slice(0, 5)
   return {
+    progressSequence: Math.max(0, Number(progress.version?.sequence || 0)),
+    progressUpdatedAt: Math.max(0, Number(progress.version?.updatedAt || 0)),
+    progressSource: compactRealtimeText(progress.version?.source || '', 80),
     contextLength: contextText.length,
     contextPreview: compactRealtimeText(contextText, 240),
     workerSummary: progress.workerSummary || '',
