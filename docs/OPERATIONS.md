@@ -204,6 +204,7 @@ For a local work briefing:
 curl http://127.0.0.1:3417/api/briefing
 curl http://127.0.0.1:3417/api/work/progress
 curl http://127.0.0.1:3417/api/work/next
+curl http://127.0.0.1:3417/api/workflows/follow-ups
 curl http://127.0.0.1:3417/api/lanes/contracts
 curl http://127.0.0.1:3417/api/tasks/routing
 curl -X POST http://127.0.0.1:3417/api/work/next \
@@ -244,6 +245,8 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
 ```
 
 The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, grouped Codex/Claude/local worker batches, and workflows, including active work, recent completions, blockers, recovery hints, and next actions. Use `workerGroups` / `workerSummary` when a voice or remote surface needs compact multi-agent progress instead of raw job rows.
+
+`/api/workflows/follow-ups` proposes continuation candidates from recent completed or blocked workflows. Each suggestion carries the selected parent workflow, a continuation instruction, memory/skill/related-workflow counts, and a `continue:<workflow-id>` action id. Pass that id to `/api/work/next?actionId=...` for a safe preview, or POST it to `/api/work/next` with `"execute":true` when you want the resident to queue or run the continuation through the normal workbench gates.
 
 `/api/lanes/contracts` exposes the runtime owner/scope/handoff/risk contract for each lane. The Realtime tool `get_lane_contracts` uses the same registry, so the voice model can check boundaries before deciding whether to answer quickly, delegate to background, call Codex/Claude, or use browser/file/app/local tool surfaces.
 

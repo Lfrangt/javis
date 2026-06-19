@@ -97,15 +97,15 @@ Renderer
 - File workflow lane: policy-guarded local file/folder list, search, summarize, Q&A, and folder organization planning routed through quick or background lanes.
 - File organization lane: deterministic by-type folder plans with per-step policy preview, explicit apply confirmation, and the same approval/local-execution gates before any move/copy/create action.
 - Workflow history lane: user-level workflow records linked to jobs, targets, status, and results.
-- Work briefing lane: deterministic status summary over readiness, jobs, workflows, approvals, memories, blockers, and suggested next actions.
+- Work briefing lane: deterministic status summary over readiness, jobs, workflows, approvals, memories, blockers, proactive workflow follow-ups, and suggested next actions.
 - Work progress lane: deterministic spoken-style progress over active collaboration claims, active jobs, recent job results, active/blocked workflows, latest completions, and next actions.
-- Work next lane: chooses and optionally runs exactly one safe next action across setup, approvals, sessions, Inbox, jobs, and workflows.
+- Work next lane: chooses and optionally runs exactly one safe next action across setup, approvals, sessions, Inbox, jobs, and workflows, including selected workflow continuation previews.
 - Work session lane: local focus sessions with a goal, append-only notes/events, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, active-session status, spoken check-ins, and deterministic end summaries.
 - Inbox lane: persistent local capture queue for clipboard/manual follow-ups that feeds the menu bar, CUI, work briefing, and task routing.
 - Inbox triage lane: deterministic read-only priority sorting and lane suggestions over open captures, available from API, local command, voice tool, and panel.
 - Inbox next-action lane: explicitly processes the highest-priority open capture by reusing the same Inbox router and marking the item done only when routing succeeds.
 - Inbox routing lane: sends captured items through the same quick, background, Codex, or Claude router used by chat and voice, then marks successful captures done with route metadata.
-- Workflow continuation lane: previews or creates follow-up workflows from prior records, preserving parent workflow ids and target context while adding related recent workflow records, explicit memory matches, recalled local skills, and inferred learning evidence to the continuation prompt.
+- Workflow continuation lane: previews or creates follow-up workflows from prior records, preserving parent workflow ids and target context while adding related recent workflow records, explicit memory matches, recalled local skills, and inferred learning evidence to the continuation prompt. The same context powers proactive follow-up suggestions in briefing and work-next before any background continuation is queued.
 - Workflow delivery lane: copies completed workflow results back to the system clipboard in result-only or Markdown format.
 - Memory lane: user-approved local memories for durable preferences, project facts, and notes, with keyword search, task-context injection, and delete.
 - Learning lane: optional local inferred profile distilled from passive ambient metadata, with local pause/resume, prompt-inclusion, delete, promote-to-memory, app/site/folder exclusion controls, routing evidence, Record & Replay-inspired `SKILL.md` draft generation, and read-only local skill recall that can change the routed plan without granting action permission.

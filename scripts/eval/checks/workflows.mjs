@@ -55,6 +55,46 @@ export default {
       );
     }
 
+    const followUpResponse = await ctx.api('/api/workflows/follow-ups?limit=3');
+    const followUps = followUpResponse.data?.followUps;
+    out.push(
+      followUpResponse.ok && Array.isArray(followUps)
+        ? ok('workflows.followups', 'Workflow follow-up suggestions', `${followUps.length} suggestion(s)`)
+        : fail('workflows.followups', 'Workflow follow-up suggestions', `GET /api/workflows/follow-ups ${followUpResponse.status} ${followUpResponse.error || ''}`, followUpResponse.data),
+    );
+    const followUp = Array.isArray(followUps) ? followUps[0] : null;
+    if (followUp) {
+      const shapeOk = Boolean(
+        followUp.source === 'workflows' &&
+        followUp.workflowAction === 'continue' &&
+        followUp.id &&
+        followUp.workflowId &&
+        followUp.instruction &&
+        followUp.continuation &&
+        typeof followUp.continuation.memoryMatches === 'number' &&
+        typeof followUp.continuation.skillMatches === 'number' &&
+        typeof followUp.continuation.relatedWorkflows === 'number'
+      );
+      out.push(
+        shapeOk
+          ? ok('workflows.followups_shape', 'Workflow follow-up shape', `${followUp.id} -> ${followUp.workflowId}`)
+          : fail('workflows.followups_shape', 'Workflow follow-up shape', 'suggestion did not include continuation metadata', followUp),
+      );
+
+      const workNext = await ctx.api(`/api/work/next?actionId=${encodeURIComponent(followUp.id)}`);
+      const next = workNext.data?.next || {};
+      out.push(
+        workNext.ok &&
+          next.ok === true &&
+          next.executed === false &&
+          next.action?.id === followUp.id &&
+          next.result?.preview === true &&
+          String(next.output || '').includes('Preview continuation')
+          ? ok('workflows.followups_worknext', 'Workflow follow-up work-next preview', String(next.output).slice(0, 140))
+          : fail('workflows.followups_worknext', 'Workflow follow-up work-next preview', 'work-next did not preview the selected follow-up without execution', workNext.data),
+      );
+    }
+
     return out;
   },
 };

@@ -17996,6 +17996,81 @@ function maintenanceActionCandidate(workflowContext = workflowSnapshot(80), opti
   };
 }
 
+function workflowFollowUpInstruction(workflow) {
+  const kind = String(workflow?.kind || '').toLowerCase();
+  const intent = String(workflow?.intent || '').toLowerCase();
+  if (workflow?.status === 'blocked' || workflow?.status === 'failed') {
+    return 'Inspect this workflow, explain the blocker, and propose the smallest safe recovery step.';
+  }
+  if (kind === 'browser' || /browser|research|summarize|draft|review|网页|页面|搜索|研究/.test(`${kind} ${intent} ${workflow?.title || ''} ${workflow?.request || ''}`.toLowerCase())) {
+    return 'Continue from the previous browser/research result and produce the next useful artifact or answer.';
+  }
+  if (kind === 'file' || /file|folder|organize|文件|文件夹|整理/.test(`${kind} ${intent} ${workflow?.title || ''} ${workflow?.request || ''}`.toLowerCase())) {
+    return 'Continue from the previous file workflow and produce the next safe file plan or result.';
+  }
+  if (kind === 'app' || kind === 'creative_action' || /app|workflow|video|music|剪辑|编曲|应用/.test(`${kind} ${intent} ${workflow?.title || ''} ${workflow?.request || ''}`.toLowerCase())) {
+    return 'Continue from the previous app workflow and propose the next verified action.';
+  }
+  return 'Continue from this workflow and produce the next concrete useful step.';
+}
+
+function workflowFollowUpSuggestions(workflowContext = workflowSnapshot(80), options = {}) {
+  const limit = Math.max(1, Math.min(10, Number(options.limit || 5)));
+  const candidates = workflowContext
+    .filter((workflow) => !isInternalWorkflow(workflow))
+    .filter((workflow) => workflow.intent !== 'continue')
+    .filter((workflow) => ['done', 'blocked', 'failed'].includes(workflow.status))
+    .filter((workflow) => workflow.request || workflow.result || workflow.title)
+    .filter((workflow) => !isWorkflowResolvedByLaterDone(workflow, workflowContext))
+    .sort((a, b) => {
+      const statusWeight = (workflow) => (workflow.status === 'done' ? 0 : workflow.status === 'blocked' ? 1 : 2);
+      return statusWeight(a) - statusWeight(b) || workflowResolutionTime(b) - workflowResolutionTime(a);
+    })
+    .slice(0, limit);
+  return candidates.map((workflow, index) => {
+    const instruction = workflowFollowUpInstruction(workflow);
+    const continuation = workflowContinuationContext(workflow, instruction, {
+      preview: true,
+      execute: false,
+      memoryLimit: options.memoryLimit || 3,
+      skillLimit: options.skillLimit || 2,
+      workflowLimit: options.workflowLimit || 3,
+    });
+    return {
+      id: `continue:${workflow.id}`,
+      priority: 3 + index,
+      label: workflow.status === 'done' ? 'Continue recent workflow' : 'Follow up workflow blocker',
+      summary: `${workflow.title}: ${instruction}`,
+      source: 'workflows',
+      workflowAction: 'continue',
+      workflowId: workflow.id,
+      mode: options.mode || 'background',
+      instruction,
+      executable: true,
+      autoEligible: false,
+      autopilotEligible: false,
+      manualOnly: false,
+      reason: 'Generated from local workflow history, explicit memory, skill recall, and inferred learning context.',
+      continuation: {
+        summary: continuation.summary,
+        memoryMatches: continuation.memoryContext.matches.length,
+        skillMatches: continuation.memoryContext.skills.length,
+        relatedWorkflows: continuation.relatedWorkflows.length,
+        learningEvidence: continuation.memoryContext.learningEvidence,
+      },
+      workflow: {
+        id: workflow.id,
+        title: workflow.title,
+        kind: workflow.kind,
+        intent: workflow.intent,
+        status: workflow.status,
+        updatedAt: workflow.updatedAt,
+        result: compactRecordText(workflow.result || '', 360),
+      },
+    };
+  });
+}
+
 function workflowBriefing(options = {}) {
   const workflowLimit = Math.max(1, Math.min(20, Number(options.workflowLimit || 6)));
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
@@ -18026,6 +18101,10 @@ function workflowBriefing(options = {}) {
   ));
   const latestDoneWorkflow = workflowContext.find((workflow) => workflow.status === 'done') || null;
   const latestDeliverableWorkflow = workflowContext.find(isDeliverableWorkflow) || null;
+  const followUps = workflowFollowUpSuggestions(workflowContext, {
+    limit: options.followUpLimit || 3,
+    workflowLimit: 3,
+  });
   const latestDoneJob = recentJobs.find((job) => job.status === 'done') || null;
   const learning = learningStateSnapshot();
   const realtimeWorkbench = realtimeVoiceWorkbenchSnapshot();
@@ -18157,6 +18236,12 @@ function workflowBriefing(options = {}) {
     });
   }
 
+  for (const followUp of followUps) {
+    if (!nextActions.some((action) => action.workflowId === followUp.workflowId && action.workflowAction === followUp.workflowAction)) {
+      nextActions.push(followUp);
+    }
+  }
+
   if (includeMaintenance) {
     const maintenance = maintenanceActionCandidate(workflowContext, { force: forceMaintenance });
     if (maintenance && !firstAutopilotExecutableAction(nextActions)) {
@@ -18213,8 +18298,10 @@ function workflowBriefing(options = {}) {
       blockedWorkflows: blockedWorkflows.length,
       resolvedBlockedWorkflows: resolvedBlockedWorkflows.length,
       realtimeVoiceStatus: realtimeWorkbench.status,
+      followUps: followUps.length,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
+    followUps,
     realtimeVoice: realtimeWorkbench,
     routingLedger,
     collaboration,
@@ -18711,8 +18798,12 @@ async function workNextAction(options = {}) {
     forceMaintenance: options.forceMaintenance,
   });
   const requestedActionId = String(options.actionId || options.id || '').trim();
-  const actions = briefing.nextActions || [];
-  const action = requestedActionId ? actions.find((item) => item.id === requestedActionId) || null : actions[0] || null;
+  const primaryActions = Array.isArray(briefing.nextActions) ? briefing.nextActions : [];
+  const followUpActions = Array.isArray(briefing.followUps) ? briefing.followUps : [];
+  const actionPool = requestedActionId
+    ? [...primaryActions, ...followUpActions].filter((item, index, list) => item?.id && list.findIndex((candidate) => candidate?.id === item.id) === index)
+    : primaryActions;
+  const action = requestedActionId ? actionPool.find((item) => item.id === requestedActionId) || null : actionPool[0] || null;
   if (requestedActionId && !action) {
     return {
       ok: false,
@@ -18856,6 +18947,28 @@ async function workNextAction(options = {}) {
         `可重试 workflow: ${workflow.title}`,
         result.output || '',
       ].filter(Boolean).join('\n');
+    }
+  } else if (action.source === 'workflows' && action.workflowAction === 'continue') {
+    const workflow = action.workflowId ? workflows.get(action.workflowId) || null : null;
+    if (!workflow) {
+      result = { workflow: null, action };
+      output = '没有找到要继续的 workflow。';
+    } else {
+      result = await continueWorkflow({
+        workflowId: workflow.id,
+        instruction: options.instruction || action.instruction,
+        mode: options.mode || action.mode || 'background',
+        preview: !execute,
+        execute,
+        source: options.source || 'work_next',
+        memoryLimit: options.memoryLimit,
+        skillLimit: options.skillLimit,
+        workflowLimit: options.workflowLimit || 3,
+      });
+      executed = Boolean(execute && result?.ok && (result.queued || result.workflow?.status === 'done' || result.workflow?.status === 'running'));
+      output = result.output || (execute
+        ? `已启动 workflow 后续任务: ${workflow.title}`
+        : `可继续 workflow: ${workflow.title}`);
     }
   } else if (action.source === 'workflows' && String(action.id || '').startsWith('copy:')) {
     const workflow = action.workflowId ? workflows.get(action.workflowId) || null : null;
@@ -24923,6 +25036,27 @@ function startApiServer() {
       counts: workflowCounts(),
       workflowsFile: WORKFLOWS_FILE,
     });
+  });
+
+  api.get('/api/workflows/follow-ups', (req, res) => {
+    try {
+      const followUps = workflowFollowUpSuggestions(workflowSnapshot(80), {
+        limit: req.query.limit || 5,
+        mode: req.query.mode,
+        memoryLimit: req.query.memoryLimit,
+        skillLimit: req.query.skillLimit,
+        workflowLimit: req.query.workflowLimit,
+      });
+      res.json({
+        followUps,
+        counts: {
+          followUps: followUps.length,
+          workflows: workflowCounts(),
+        },
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Workflow follow-up suggestions failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.post('/api/workflows/continue', express.json({ limit: '1mb' }), async (req, res) => {

@@ -22,6 +22,22 @@ export default {
         ? ok('briefing.next', 'Next actions', `${next.length} next action(s): ${next.map((n) => n.label || n.title || n.summary || n).slice(0, 2).join(' · ')}`)
         : warn('briefing.next', 'Next actions', 'briefing returned no next actions (idle is ok)'),
     );
+    const followUps = Array.isArray(b.followUps) ? b.followUps : [];
+    const coherentFollowUps = followUps.every((action) => (
+      action?.source === 'workflows' &&
+      action.workflowAction === 'continue' &&
+      action.id &&
+      action.workflowId &&
+      action.instruction &&
+      action.continuation &&
+      typeof action.continuation.memoryMatches === 'number' &&
+      typeof action.continuation.relatedWorkflows === 'number'
+    ));
+    out.push(
+      Array.isArray(b.followUps) && coherentFollowUps
+        ? ok('briefing.followups', 'Workflow follow-ups', `${followUps.length} continuation suggestion(s)`)
+        : fail('briefing.followups', 'Workflow follow-ups', 'briefing followUps are missing or malformed', b.followUps),
+    );
     const realtimeVoice = b.realtimeVoice || {};
     const realtimeAction = next.find((action) => action.source === 'realtime_voice') || null;
     const realtimePending = realtimeVoice.status && realtimeVoice.status !== 'ready';
