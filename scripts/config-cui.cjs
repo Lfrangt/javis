@@ -284,6 +284,7 @@ async function printStatus() {
   console.log('13. Test wake trigger');
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
+  console.log('H. Show spoken work handoff');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
   console.log('16. Show autopilot status');
@@ -499,6 +500,32 @@ async function runWorkbenchNext(rl) {
   const next = result.next || {};
   console.log(`\nWork item ${next.executed ? 'executed' : 'reviewed'}.`);
   if (next.output) console.log(compact(next.output, 900));
+}
+
+function printWorkHandoff(result) {
+  const handoff = result?.handoff || result || {};
+  console.log('JAVIS Work Handoff');
+  console.log('==================');
+  console.log(handoff.spokenSummary || handoff.output || 'No handoff summary available.');
+  const nextActions = Array.isArray(handoff.nextActions) ? handoff.nextActions : [];
+  const followUps = Array.isArray(handoff.followUps) ? handoff.followUps : [];
+  const progress = handoff.progress || {};
+  const session = handoff.session || null;
+  console.log('\nDetails:');
+  console.log(`- generated: ${handoff.generatedAt || '-'}`);
+  console.log(`- progress: ${compact(progress.spokenSummary || '-', 360)}`);
+  console.log(`- workers: ${compact(progress.workerSummary || '-', 220)}`);
+  console.log(`- session: ${session ? `${session.title || session.id} · ${session.events || 0} event(s)` : 'none active'}`);
+  console.log(`- next: ${summarizeNextActions(nextActions)}`);
+  console.log(`- continuations: ${summarizeNextActions(followUps)}`);
+  const collaboration = handoff.collaboration?.counts || {};
+  console.log(`- collab: ${collaboration.active || 0} active · ${collaboration.conflicts || 0} conflict pair(s)`);
+}
+
+async function showWorkHandoff() {
+  const result = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
+  console.log('');
+  printWorkHandoff(result);
 }
 
 async function showAutopilotStatus() {
@@ -1050,6 +1077,12 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-work-handoff') || process.argv.includes('--work-handoff')) {
+    const result = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
+    printWorkHandoff(result);
+    return;
+  }
+
   if (!process.stdin.isTTY) {
     await printStatus();
     return;
@@ -1092,6 +1125,8 @@ async function main() {
         await watchRealtimeEvidence(rl);
       } else if (answer === 'd' || answer === 'dogfood' || answer === 'drill') {
         await startRealtimeDogfoodDrillFromCui(rl);
+      } else if (answer === 'h' || answer === 'handoff' || answer === 'work handoff') {
+        await showWorkHandoff();
       } else if (answer === '14') {
         await showWorkbenchNext();
       } else if (answer === '15') {

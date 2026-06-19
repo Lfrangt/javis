@@ -13,6 +13,7 @@ const REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_work_progress',
+  'get_work_handoff',
   'get_collaboration_state',
   'search_local_skills',
   'get_skill_shortcuts',
@@ -273,6 +274,27 @@ export default {
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const handoff = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-handoff'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${handoff.stdout || ''}\n${handoff.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Work Handoff') &&
+          output.includes('Details:') &&
+          output.includes('- progress:') &&
+          output.includes('- next:') &&
+          output.includes('- continuations:')
+          ? ok('realtime.cui_handoff', 'Realtime CUI work handoff', 'config CUI prints a voice-ready handoff summary')
+          : fail('realtime.cui_handoff', 'Realtime CUI work handoff', 'expected config CUI to print the work handoff summary and detail fields', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_handoff', 'Realtime CUI work handoff', error instanceof Error ? error.message : String(error)));
     }
 
     const context = await ctx.api('/api/realtime/context?source=eval');
