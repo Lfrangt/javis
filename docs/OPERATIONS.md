@@ -134,6 +134,7 @@ surfaced there too: when `/api/realtime/evidence` is stuck at `needs_live_sessio
 uses the same summon/wake path as `Option+Space` and parks the pet at the notch for the live session.
 This Realtime voice action is marked manual-only because starting microphone/live voice requires an
 explicit user action; overnight autopilot must skip it.
+Blocked route records now return a structured route recovery envelope from `/api/work/next`: linked failed jobs expose their existing recovery actions, linked workflows expose continuation/copy-result options, and routes without an executable candidate still include the exact inspect target. You can target a specific route with `GET /api/work/next?actionId=route:<route-id>`.
 Retryable failed jobs can be advanced from work-next or `POST /api/jobs/:id/recovery/run` into a
 narrower recovery job with the original task, attempts, diagnostics, and log tail attached. Realtime
 voice can target the same path through `run_worker_recovery` when the user asks to recover a specific
@@ -142,7 +143,7 @@ failed worker. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs
 Use option `14. Show next work item`, or `npm run config -- --print-work-next`, to preview the current `/api/work/next` action from the CUI.
 
 Use option `15. Run next work item` to preview and then execute the current workbench action after
-typing `RUN`. This is the manual path for recovering blocked jobs, processing the top Inbox item,
+typing `RUN`. This is the manual path for recovering blocked jobs or routed work, processing the top Inbox item,
 checking progress, summoning a real Realtime voice dogfood session, or delivering a completed workflow result without memorizing HTTP calls. Realtime voice actions print a small guide with the pet/hotkey start path, CUI monitor, the prompts `后台现在怎么样` and `现在做到哪了？接下来做什么？`, and the expected `get_work_handoff` evidence. Internal
 smoke/verification workflows are not offered as deliverable results.
 

@@ -119,6 +119,43 @@ export default {
         : fail('briefing.worknext', 'Work-next', `GET /api/work/next did not return a coherent preview envelope (${wn.status})`, wn.data),
     );
 
+    const routeSeed = await ctx.api('/api/tasks/parallel', {
+      method: 'POST',
+      body: {
+        execute: true,
+        source: 'eval_route_worknext',
+        parallelGroup: `eval-route-worknext-${Date.now()}`,
+        tasks: [
+          { command: 'node -e "console.log(\\"route-a\\")"', mode: 'cli', owner: 'eval-route-a', scope: 'eval/route-worknext.md', access: 'write' },
+          { command: 'node -e "console.log(\\"route-b\\")"', mode: 'cli', owner: 'eval-route-b', scope: 'eval/route-worknext.md', access: 'write' },
+        ],
+      },
+    });
+    const blockedRoute = Array.isArray(routeSeed.data?.results)
+      ? routeSeed.data.results.find((item) => item.routing?.status === 'blocked')?.routing
+      : null;
+    const routeWorkNext = blockedRoute?.id
+      ? await ctx.api(`/api/work/next?actionId=${encodeURIComponent(`route:${blockedRoute.id}`)}`)
+      : null;
+    const routeNext = routeWorkNext?.data?.next || {};
+    out.push(
+      routeSeed.ok &&
+        routeSeed.data?.ok === false &&
+        blockedRoute?.id &&
+        routeWorkNext?.ok &&
+        routeNext.ok === true &&
+        routeNext.executed === false &&
+        routeNext.action?.id === `route:${blockedRoute.id}` &&
+        routeNext.action?.routeRecovery?.candidateCount >= 1 &&
+        routeNext.result?.routeRecovery?.recommended?.type === 'inspect_route' &&
+        String(routeNext.output || '').includes('候选:')
+        ? ok('briefing.route_worknext_recovery', 'Route work-next recovery envelope', `route:${blockedRoute.id} -> ${routeNext.result.routeRecovery.recommended.label}`)
+        : fail('briefing.route_worknext_recovery', 'Route work-next recovery envelope', 'explicit route work-next did not expose recovery candidates for a blocked routed task', {
+          routeSeed: routeSeed.data,
+          routeWorkNext: routeWorkNext?.data,
+        }),
+    );
+
     try {
       const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-next'], {
         cwd: process.cwd(),

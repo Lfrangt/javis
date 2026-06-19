@@ -24013,6 +24013,304 @@ function routingLedgerEntry(record) {
   };
 }
 
+function linkedJobForRoute(record) {
+  return record?.jobId ? jobs.get(record.jobId) || null : null;
+}
+
+function linkedWorkflowForRoute(record) {
+  return record?.workflowId ? workflows.get(record.workflowId) || null : null;
+}
+
+function routeCandidateFromJobRecovery(job, action, index = 0) {
+  if (!job || !action) return null;
+  return {
+    id: action.id || `recovery:${job.id}:${action.recoveryType || action.type || index}`,
+    type: 'job_recovery',
+    label: action.label || 'Recover failed job',
+    summary: action.summary || [
+      `${job.mode}/${job.failureKind || job.recoveryPlan?.failureKind || 'failed'}: ${compactRecordText(job.title, 120)}`,
+      action.reason || job.recoveryPlan?.summary || '',
+    ].filter(Boolean).join(' · '),
+    reason: compactRecordText(action.reason || job.recoveryPlan?.summary || '', 360),
+    executable: true,
+    riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+    jobId: job.id,
+    recoveryType: action.recoveryType || action.type || '',
+    endpoint: {
+      method: 'POST',
+      path: `/api/jobs/${encodeURIComponent(job.id)}/recovery/run`,
+      body: {
+        execute: true,
+        recoveryType: action.recoveryType || action.type || '',
+        source: 'work_next_route_recovery',
+      },
+    },
+  };
+}
+
+function routeCandidateFromWorkflowContinuation(workflow) {
+  if (!workflow || workflow.intent === 'continue') return null;
+  const browserContinuation = workflowBrowserResearchContinuation(workflow);
+  if (browserContinuation) {
+    return {
+      id: `continue:${workflow.id}:browser_research`,
+      type: 'browser_research_continue',
+      label: 'Continue browser research',
+      summary: `${workflow.title}: ${browserContinuation.action.label || browserContinuation.summary || 'continue research'}`,
+      reason: browserContinuation.summary,
+      executable: true,
+      workflowId: workflow.id,
+      browserWorkflow: {
+        method: 'POST',
+        path: '/api/browser/workflow',
+        body: browserContinuation.body,
+      },
+    };
+  }
+  if (!['done', 'blocked', 'failed'].includes(workflow.status)) return null;
+  const instruction = workflowFollowUpInstruction(workflow);
+  return {
+    id: `continue:${workflow.id}`,
+    type: 'workflow_continue',
+    label: workflow.status === 'done' ? 'Continue linked workflow' : 'Follow up linked workflow blocker',
+    summary: `${workflow.title}: ${instruction}`,
+    reason: 'Continue from linked workflow history with memory, skill recall, and related workflow context.',
+    executable: true,
+    workflowId: workflow.id,
+    instruction,
+    mode: 'background',
+    endpoint: {
+      method: 'POST',
+      path: `/api/workflows/${encodeURIComponent(workflow.id)}/continue`,
+      body: {
+        execute: true,
+        mode: 'background',
+        instruction,
+        source: 'work_next_route_continue',
+      },
+    },
+  };
+}
+
+function routeCandidateFromWorkflowCopy(workflow) {
+  if (!workflow?.result) return null;
+  return {
+    id: `copy:${workflow.id}`,
+    type: 'copy_workflow_result',
+    label: 'Copy linked workflow result',
+    summary: `Copy the latest result from ${workflow.title}.`,
+    reason: 'Linked workflow already has a result that can be delivered to clipboard.',
+    executable: true,
+    workflowId: workflow.id,
+    endpoint: {
+      method: 'POST',
+      path: `/api/workflows/${encodeURIComponent(workflow.id)}/copy-result`,
+      body: {
+        format: 'markdown',
+      },
+    },
+  };
+}
+
+function routeCandidateFromWorkflowRetry(workflow) {
+  const retryPlan = retryableBlockedWorkflowPlan(workflow);
+  if (!retryPlan) return null;
+  return {
+    id: `retry:${workflow.id}`,
+    type: 'workflow_retry_app',
+    label: 'Retry linked app workflow',
+    summary: `${workflow.title}: retry with ${retryPlan.stepCount} safe local step(s).`,
+    reason: 'The linked app workflow can be re-planned by the deterministic safe local app workflow planner.',
+    executable: true,
+    workflowId: workflow.id,
+    retryPlan,
+    endpoint: {
+      method: 'POST',
+      path: '/api/work/next',
+      body: {
+        execute: true,
+        actionId: `workflow:${workflow.id}`,
+        source: 'work_next_route_retry',
+      },
+    },
+  };
+}
+
+function routeInspectCandidate(record, entry = routingLedgerEntry(record)) {
+  if (!record) return null;
+  return {
+    id: `inspect:${record.id}`,
+    type: 'inspect_route',
+    label: 'Inspect routed task',
+    summary: entry?.nextAction || `Inspect ${record.resultLink || `/api/tasks/routing/${record.id}`}.`,
+    reason: entry?.blocker || record.resultSummary || 'No executable recovery candidate is attached yet.',
+    executable: false,
+    routeId: record.id,
+    endpoint: {
+      method: 'GET',
+      path: `/api/tasks/routing/${encodeURIComponent(record.id)}`,
+    },
+  };
+}
+
+function routingRecoveryEnvelope(record, options = {}) {
+  const entry = routingLedgerEntry(record);
+  if (!record || !entry) {
+    return {
+      ok: false,
+      route: null,
+      ledgerEntry: null,
+      candidates: [],
+      recommended: null,
+      output: 'No routed task is available.',
+    };
+  }
+  const job = linkedJobForRoute(record);
+  const workflow = linkedWorkflowForRoute(record);
+  const candidates = [];
+
+  if (job?.status === 'failed' && job.recoveryPlan?.nextActions?.length && !completedRecoveryChildJob(job.id)) {
+    const jobRecoveryActions = job.recoveryPlan.nextActions
+      .map((action, index) => normalizedRecoveryActionForJob(job, action, index))
+      .filter(Boolean)
+      .sort((a, b) => a.priority - b.priority)
+      .slice(0, 3);
+    for (const [index, action] of jobRecoveryActions.entries()) {
+      const candidate = routeCandidateFromJobRecovery(job, action, index);
+      if (candidate) candidates.push(candidate);
+    }
+  }
+
+  if (workflow) {
+    const retryCandidate = routeCandidateFromWorkflowRetry(workflow);
+    if (retryCandidate) candidates.push(retryCandidate);
+    const continueCandidate = routeCandidateFromWorkflowContinuation(workflow);
+    if (continueCandidate) candidates.push(continueCandidate);
+    const copyCandidate = routeCandidateFromWorkflowCopy(workflow);
+    if (copyCandidate) candidates.push(copyCandidate);
+  }
+
+  const inspect = routeInspectCandidate(record, entry);
+  if (inspect) candidates.push(inspect);
+  const recommended = candidates.find((candidate) => candidate.executable) || candidates[0] || null;
+  const output = [
+    `分流任务: ${formatRoutingProgressLine(record)}`,
+    entry.blocker ? `阻塞: ${entry.blocker}` : '',
+    recommended ? `推荐下一步: ${recommended.label} · ${compactRecordText(recommended.summary || recommended.reason, 220)}` : '',
+    candidates.length ? `候选: ${candidates.map((candidate) => `${candidate.label}${candidate.executable ? '' : ' (inspect)'}`).join(' / ')}` : '',
+  ].filter(Boolean).join('\n');
+  return {
+    ok: true,
+    route: record,
+    ledgerEntry: entry,
+    linked: {
+      job: job ? {
+        id: job.id,
+        title: job.title,
+        mode: job.mode,
+        status: job.status,
+        failureKind: job.failureKind || '',
+        recoveryActions: job.recoveryPlan?.nextActions?.length || 0,
+      } : null,
+      workflow: workflow ? {
+        id: workflow.id,
+        title: workflow.title,
+        kind: workflow.kind,
+        intent: workflow.intent,
+        status: workflow.status,
+        hasResult: Boolean(workflow.result),
+      } : null,
+    },
+    candidateCount: candidates.length,
+    executableCandidateCount: candidates.filter((candidate) => candidate.executable).length,
+    candidates,
+    recommended,
+    output,
+    source: options.source || 'routing',
+  };
+}
+
+async function executeRoutingRecoveryCandidate(candidate, options = {}) {
+  if (!candidate?.executable) return null;
+  if (candidate.type === 'job_recovery') {
+    const job = candidate.jobId ? jobs.get(candidate.jobId) || null : null;
+    if (!job) return null;
+    return runRecoveryActionForJob(job, {}, {
+      execute: true,
+      recoveryType: candidate.recoveryType,
+      source: options.source || 'work_next_route_recovery',
+    });
+  }
+  if (candidate.type === 'browser_research_continue' && candidate.browserWorkflow?.body) {
+    return runBrowserWorkflow({
+      ...candidate.browserWorkflow.body,
+      execute: true,
+      source: candidate.browserWorkflow.body.source || options.source || 'work_next_route_browser_continue',
+    });
+  }
+  if (candidate.type === 'workflow_continue') {
+    return continueWorkflow({
+      workflowId: candidate.workflowId,
+      instruction: candidate.instruction,
+      mode: candidate.mode || 'background',
+      execute: true,
+      source: options.source || 'work_next_route_continue',
+    });
+  }
+  if (candidate.type === 'workflow_retry_app') {
+    const workflow = candidate.workflowId ? workflows.get(candidate.workflowId) || null : null;
+    const retryPlan = retryableBlockedWorkflowPlan(workflow);
+    if (!workflow || !retryPlan) return null;
+    const result = await planAndMaybeRunAppWorkflow({
+      instruction: retryPlan.instruction,
+      title: `retry · ${workflow.title}`,
+      execute: true,
+      useModel: false,
+      maxNodes: options.maxNodes || 240,
+      maxDepth: options.maxDepth || 9,
+    });
+    if (result.ok && result.workflow?.id) {
+      setWorkflow(workflow.id, {
+        status: 'done',
+        result: [
+          `Recovered by routed retry workflow ${result.workflow.id}.`,
+          result.output || '',
+        ].filter(Boolean).join('\n'),
+        completedAt: Date.now(),
+      });
+    }
+    return result;
+  }
+  if (candidate.type === 'copy_workflow_result') {
+    return copyWorkflowResult({ workflowId: candidate.workflowId, format: 'markdown' });
+  }
+  return null;
+}
+
+function routingWorkNextActionForRecord(record, options = {}) {
+  const envelope = routingRecoveryEnvelope(record, { source: options.source || 'briefing' });
+  const entry = envelope.ledgerEntry;
+  if (!record || !entry) return null;
+  const activeCount = Math.max(1, Number(options.activeCount || 1));
+  return {
+    id: `route:${record.id}`,
+    priority: Number(options.priority || 2),
+    label: envelope.recommended?.executable ? 'Recover routed work' : 'Check routed work',
+    summary: `${activeCount} routed task(s) active/blocked. ${record.owner} owns ${record.lane}: ${record.taskTitle}. Next: ${envelope.recommended?.label || entry.nextAction || 'check progress'}`,
+    source: 'routing',
+    routeId: record.id,
+    executable: Boolean(envelope.recommended?.executable),
+    autoEligible: false,
+    autopilotEligible: false,
+    routeRecovery: {
+      candidateCount: envelope.candidateCount,
+      executableCandidateCount: envelope.executableCandidateCount,
+      recommended: envelope.recommended,
+      linked: envelope.linked,
+    },
+  };
+}
+
 function finalizeRouteResult(result, context = {}) {
   const job = result.job || result.data?.job || null;
   const workflow = result.workflow || result.data?.workflow || result.data?.result?.workflow || null;
@@ -24717,15 +25015,12 @@ function workflowBriefing(options = {}) {
   }
 
   if (activeRoutes.length) {
-    const first = routingLedger[0];
-    nextActions.push({
-      id: `route:${first.id}`,
-      priority: 2,
-      label: 'Check routed work',
-      summary: `${routingLedger.length} routed task(s) active/blocked. ${first.owner} owns ${first.lane}: ${first.taskTitle}. Next: ${first.nextAction || 'check progress'}`,
-      source: 'routing',
-      routeId: first.id,
+    const first = activeRoutes[0];
+    const action = routingWorkNextActionForRecord(first, {
+      activeCount: routingLedger.length,
+      source: 'briefing',
     });
+    if (action) nextActions.push(action);
   }
 
   if (collaboration.counts.conflicts) {
@@ -25457,7 +25752,12 @@ async function workNextAction(options = {}) {
   const actionPool = requestedActionId
     ? [...primaryActions, ...followUpActions].filter((item, index, list) => item?.id && list.findIndex((candidate) => candidate?.id === item.id) === index)
     : primaryActions;
-  const action = requestedActionId ? actionPool.find((item) => item.id === requestedActionId) || null : actionPool[0] || null;
+  let action = requestedActionId ? actionPool.find((item) => item.id === requestedActionId) || null : actionPool[0] || null;
+  if (requestedActionId && !action && requestedActionId.startsWith('route:')) {
+    const routeId = requestedActionId.replace(/^route:/, '');
+    const record = routingRecords.get(routeId) || null;
+    action = routingWorkNextActionForRecord(record, { source: 'explicit_action_id' });
+  }
   if (requestedActionId && !action) {
     return {
       ok: false,
@@ -25676,13 +25976,32 @@ async function workNextAction(options = {}) {
     output = result.output;
   } else if (action.source === 'routing') {
     const record = action.routeId ? routingRecords.get(action.routeId) || null : activeRoutingSnapshot(1)[0] || routingSnapshot(1)[0] || null;
-    const entry = routingLedgerEntry(record);
-    result = { route: record, ledgerEntry: entry, activeLedger: activeRoutingSnapshot(5).map(routingLedgerEntry).filter(Boolean), counts: routingCounts() };
+    const routeRecovery = routingRecoveryEnvelope(record, { source: options.source || 'work_next' });
+    let routeExecution = null;
+    if (execute && routeRecovery.recommended?.executable) {
+      routeExecution = await executeRoutingRecoveryCandidate(routeRecovery.recommended, {
+        source: options.source || 'work_next_route',
+        maxNodes: options.maxNodes,
+        maxDepth: options.maxDepth,
+      });
+      executed = Boolean(routeExecution?.executed || routeExecution?.queued || routeExecution?.ok);
+    }
+    result = {
+      route: record,
+      ledgerEntry: routeRecovery.ledgerEntry,
+      routeRecovery,
+      routeExecution,
+      activeLedger: activeRoutingSnapshot(5).map(routingLedgerEntry).filter(Boolean),
+      counts: routingCounts(),
+    };
     output = record
       ? [
-        `分流任务: ${formatRoutingProgressLine(record)}`,
-        entry?.blocker ? `阻塞: ${entry.blocker}` : '',
-        entry?.nextAction ? `下一步: ${entry.nextAction}` : '',
+        routeRecovery.output,
+        execute && routeRecovery.recommended?.executable
+          ? routeExecution?.output || '推荐恢复动作已尝试执行。'
+          : execute
+            ? '没有可直接执行的 route recovery candidate；已保留为检查计划。'
+            : '预览模式：不会执行 route recovery candidate。',
       ].filter(Boolean).join('\n')
       : '当前没有可查看的分流任务。';
   } else if (action.source === 'collaboration') {

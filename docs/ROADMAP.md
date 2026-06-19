@@ -40,7 +40,7 @@
 - Add deterministic work briefing over status, blockers, recent work, and next actions, filtering internal eval/doctor evidence out of user-facing Work Next.
 - Add deterministic lane contract registry for owner/scope/handoff/risk boundaries before model choice.
 - Add deterministic spoken progress check-ins for background jobs and workflows.
-- Add unified work-next execution for one safe next action across the local workbench.
+- Add unified work-next execution for one safe next action across the local workbench, including route-level recovery envelopes for blocked routed work.
 - Add local work sessions for focus goals, notes/events, resume handoffs, automatic evidence capture, spoken check-ins, and end-of-session summaries.
 - Add safe local command routing before model calls for basic resident operations.
 - Persist explicit local memories for user-approved preferences, project facts, and notes.
@@ -54,7 +54,7 @@
 - Route Inbox captures into quick/background/Codex/Claude work from CUI/API or voice tools.
 - Copy workflow results back to the clipboard from CUI/API or voice tools.
 - Add cancellable background workers with visible logs, structured failure recovery plans, `/api/jobs/recovery` summaries, job-level recovery execution through `/api/jobs/:id/recovery/run`, and Realtime `get_worker_recovery` / `run_worker_recovery` access for attempts, diagnostics, recovery child jobs, and recommended next actions.
-- Add a multi-agent lane decision record for every routed task: realtime voice, background, Codex, Claude, owner, lane contract, write scope, parallel group, approval requirement, status, and result link.
+- Add a multi-agent lane decision record for every routed task: realtime voice, background, Codex, Claude, owner, lane contract, write scope, parallel group, approval requirement, status, result link, and work-next recovery candidates when the route blocks.
 - Add resident status views and spoken check-ins that report active parallel work by lane, owner, blocker, and next action.
 - Add a local config validator with terminal CUI diagnostics.
 - Add a setup guide that maps blockers to the next safe local setup action.
