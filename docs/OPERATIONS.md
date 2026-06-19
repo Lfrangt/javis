@@ -387,6 +387,8 @@ curl -X POST http://127.0.0.1:3417/api/screen/describe \
 curl -X DELETE http://127.0.0.1:3417/api/screen/frame
 ```
 
+Realtime can also call `get_attention_explanation` through `/api/tools/execute` when the user asks why the pet is green/yellow/red, why JAVIS stayed quiet, or what the last attention notification did. That tool returns a short Chinese `spokenSummary` plus read-only policy/history evidence; it does not add any diagnostics to the desktop pet.
+
 For a real voice progress run, keep `npm run config` open on option `V` while the desktop renderer voice session is live and a background worker batch is changing state. The monitor should show the latest work-progress sequence moving from `pending` or `stale` to `synced`, then move from pending to `READY`; then the voice model should answer the grouped worker summary without forcing the worker progress injection to become an assistant response by itself.
 
 Learning controls are local. `paused:true` stops future learning distillation, `includeInPrompts:false` keeps the profile on disk but prevents prompt injection, and exclusions keep matching apps/sites/folder-like contexts out of future ambient samples and distillation. Routing records include `learningEvidence` so you can see whether inferred habits were attached to a task prompt. `/api/learning/skill-draft` follows the Codex Record & Replay shape by turning inferred habits plus recent routing/workflow evidence into a reviewable `SKILL.md` draft; it does not write files. `/api/learning/skill-draft/save` requires `confirm:true` and writes to user-level `~/.agents/skills`, not the open-source repo.

@@ -15,6 +15,7 @@ const REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_attention_policy',
+  'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
   'get_worker_recovery',
@@ -178,6 +179,26 @@ export default {
         Array.isArray(attentionOutput.reasons)
         ? ok('realtime.attention_policy_tool', 'Realtime attention policy tool', `${attentionOutput.level} · pet=${attentionOutput.petState}`)
         : fail('realtime.attention_policy_tool', 'Realtime attention policy tool', `tool execute ${attentionTool.status}`, attentionTool.data),
+    );
+
+    const attentionExplanationTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_attention_explanation', arguments: { limit: 3 } },
+    });
+    const attentionExplanationOutput = parseToolOutput(attentionExplanationTool);
+    out.push(
+      attentionExplanationTool.ok &&
+        attentionExplanationTool.data?.ok === true &&
+        attentionExplanationOutput?.ok === true &&
+        typeof attentionExplanationOutput.spokenSummary === 'string' &&
+        attentionExplanationOutput.spokenSummary.length > 0 &&
+        attentionExplanationOutput.spokenSummary.length <= 420 &&
+        attentionExplanationOutput.policy?.ok === true &&
+        attentionExplanationOutput.history?.operatorOnly === true &&
+        attentionExplanationOutput.history?.desktopPet === false &&
+        attentionExplanationOutput.guidance?.desktopPetStillMinimal === true
+        ? ok('realtime.attention_explanation_tool', 'Realtime attention explanation tool', attentionExplanationOutput.spokenSummary)
+        : fail('realtime.attention_explanation_tool', 'Realtime attention explanation tool', `tool execute ${attentionExplanationTool.status}`, attentionExplanationTool.data),
     );
 
     const autopilotStatusTool = await ctx.api('/api/tools/execute', {

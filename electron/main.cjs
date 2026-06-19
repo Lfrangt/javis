@@ -1238,6 +1238,43 @@ function attentionPolicySnapshot(options = {}) {
   };
 }
 
+function attentionVoiceExplanationSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(8, Number(options.limit || 4)));
+  const policy = attentionPolicySnapshot();
+  const history = attentionNotificationHistory(limit);
+  const top = policy.topReason;
+  const candidate = policy.notifyCandidate;
+  const latest = history.latest;
+  const statusLine = `现在是 ${policy.level}，宠物状态 ${policy.petState}。`;
+  const reasonLine = top
+    ? `主要原因是 ${top.label}：${top.summary}`
+    : '现在没有需要打断你的事项。';
+  const actionLine = policy.shouldNotify
+    ? `应该提醒你：${candidate?.label || '有高优先级事项'}。`
+    : candidate && policy.cooldown?.active
+      ? `有高优先级事项，但还在 ${policy.cooldown.remainingLabel || 'cooldown'} 安静冷却中。`
+      : '保持安静，等你叫它或出现高优先级审批、设置、语音错误再介入。';
+  const historyLine = latest
+    ? `最近一次 attention 通知是 ${latest.ageLabel} ${latest.delivered ? '发出' : `被压住(${latest.reason || 'policy'})`}：${latest.title}。`
+    : '还没有 attention 通知历史。';
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    spokenSummary: compactRecordText(`${statusLine} ${reasonLine} ${actionLine} ${historyLine}`, 420),
+    statusLine,
+    reasonLine,
+    actionLine,
+    historyLine,
+    policy,
+    history,
+    guidance: {
+      answerStyle: 'short_spoken_chinese',
+      desktopPetStillMinimal: true,
+      readOnly: true,
+    },
+  };
+}
+
 function attentionNotificationDecision(options = {}) {
   const attention = options.attention || attentionPolicySnapshot();
   const candidate = attention.notifyCandidate || null;
@@ -24278,6 +24315,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(attentionPolicySnapshot()) };
   }
 
+  if (name === 'get_attention_explanation') {
+    return { ok: true, output: JSON.stringify(attentionVoiceExplanationSnapshot(args || {})) };
+  }
+
   if (name === 'set_control_mode') {
     try {
       const result = setControlMode({ mode: args?.mode, source: 'voice' });
@@ -24955,6 +24996,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_config_check when setup, permission, resident mode, or local worker readiness is unclear.',
       'Use get_control_mode when the user asks whether JAVIS is observing, asking, trusted, or in supervised takeover mode. Use set_control_mode only when the user explicitly asks to change autonomy.',
       'Use get_attention_policy when the user asks whether JAVIS should interrupt, why the pet is red/yellow/green, why no notification fired, or what needs attention. It is read-only and should keep the answer short.',
+      'Use get_attention_explanation when the user asks for a spoken explanation of the pet color, attention history, the last notification, or why JAVIS stayed quiet. It returns a short Chinese spokenSummary plus read-only evidence.',
       'Use get_setup_guide when the user asks what setup remains. Use run_setup_next only when the user asks to fix, open, or do the next setup step.',
       'Use read_accessibility_tree before planning control of a visible Mac app through its UI structure.',
       'Use plan_ui_action when the user asks you to click, choose, fill, edit, or control the current app; this is a dry-run plan, not execution.',
@@ -25192,6 +25234,18 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {},
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_attention_explanation',
+        description: 'Get a short spoken Chinese explanation of JAVIS attention state, pet color, notification cooldown, and recent sent/suppressed attention history. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+          },
           additionalProperties: false,
         },
       },
@@ -26425,6 +26479,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_config_check',
   'get_control_mode',
   'get_attention_policy',
+  'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
   'get_worker_recovery',
@@ -26462,6 +26517,7 @@ function realtimeInstructionChecks(instructions = '') {
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     attentionPolicy: /get_attention_policy|should interrupt|pet is red\/yellow\/green|notification fired|needs attention/i.test(text),
+    attentionExplanation: /get_attention_explanation|spoken explanation of the pet color|attention history|last notification|stayed quiet/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
