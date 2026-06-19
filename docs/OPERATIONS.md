@@ -155,6 +155,8 @@ Use options `19`-`25` for local learning maintenance: refresh the inferred profi
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, preview
 a Codex-style skill draft, or export that draft to `~/.agents/skills` after typing `SAVE`.
 
+Use option `30. Show browser activity`, or `npm run config -- --print-browser-activity`, to inspect the local browser activity summary. This is metadata-only: app, host, title, timestamp, and redacted URL context from ambient observations. It does not store page text, and learning exclusions for apps/sites/folders are applied before the activity summary is built.
+
 Use option `27. Show UI demonstrations` to inspect explicit local demonstrations. Demonstrations are user-started records for repeatable UI workflows; they store notes plus sanitized app/browser/screen/accessibility summaries and a manual-preview playbook, not screenshots or raw clipboard text. Completed demonstrations can become replay plans or reviewable local skill drafts; saving a draft to `~/.agents/skills` requires explicit confirmation.
 
 Use option `28. Show skill shortcuts` to inspect saved local trigger phrases for recalled skill plans. Use option `29. Promote shortcut candidate` to turn a completed, successful `skillRecallPlan` route/job into a shortcut after typing `SAVE`. Shortcuts affect future routing context only; action policy and confirmation gates stay unchanged.
@@ -674,6 +676,7 @@ curl -X POST http://127.0.0.1:3417/api/actions/preview \
   -H 'Content-Type: application/json' \
   -d '{"action":"ax_press","nodeId":"12","expectedRole":"AXButton","expectedLabel":"Export","maxNodes":100,"maxDepth":6}'
 curl http://127.0.0.1:3417/api/browser/context
+curl http://127.0.0.1:3417/api/browser/activity
 curl 'http://127.0.0.1:3417/api/browser/page?maxChars=12000'
 curl -X POST http://127.0.0.1:3417/api/browser/control \
   -H 'Content-Type: application/json' \

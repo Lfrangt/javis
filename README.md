@@ -16,11 +16,12 @@ Local Mac-first realtime desktop buddy.
 - Manual Realtime dogfood drill for verifying live voice progress and work-handoff answers plus shortcut list/save/recall/forget flows from CUI/API.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
-- Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.
+- Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
 - Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, attach recalled local skills as structured `skillRecallPlan` evidence during later task routing, promote confirmed repeats into local skill shortcuts, manage those shortcuts from CUI/API/Realtime voice tools, and pass recalled plans into queued background/Codex/Claude workers.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
+- Browser activity: local recent browser host/title timeline from ambient metadata, exposed through API/CUI/presence without storing page text.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
@@ -192,6 +193,7 @@ Local Express service on 127.0.0.1:3417
   /api/creative/workflow -> plan/start video-editing or music-composition workflows with stage action packs
   /api/creative/action -> preview or execute one guarded creative workflow action, with verification/recovery hints
   /api/browser/context  -> supported browser tab title and URL
+  /api/browser/activity -> metadata-only recent browser host/title activity
   /api/browser/page     -> read-only current browser page text and link extraction
   /api/browser/control  -> guarded current-browser navigation actions
   /api/browser/javascript -> browser JavaScript bridge status

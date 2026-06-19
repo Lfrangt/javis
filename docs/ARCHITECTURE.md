@@ -84,6 +84,7 @@ Renderer
 - Setup guide lane: maps the current setup blockers to the next safe local action, such as opening `.env` or macOS permission settings.
 - Doctor lane: one report that validates service health, setup, policy guards, resident mode, workers, storage, queue, workflows, and approvals.
 - Browser context lane: current supported browser tab title and URL for webpage-aware tasks.
+- Browser activity lane: summarizes recent supported-browser host/title metadata from ambient observations for presence, Realtime preflight context, API, and CUI. It does not store page text and applies the same local learning exclusion controls before summarizing.
 - Browser page lane: read-only extraction of selected text, headings, and visible page text from supported active tabs.
 - Browser DOM lane: read-only visible control extraction plus guarded one-step click/fill/select actions inside supported active tabs, using browser Apple Events first and Chrome DevTools on `JAVIS_CHROME_DEBUG_PORT` as a fallback.
 - Browser workflow lane: page-aware summarize, action extraction, drafting, and Q&A routed through quick or background lanes.

@@ -1,4 +1,9 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
 import { ok, warn, fail } from '../_client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 // Resident presence + passive ambient observation (README: "Resident presence
 // state: standby/watching/wake/work/attention" and "Passive ambient observe
@@ -26,6 +31,18 @@ export default {
           ? ok('presence.guardrails', 'Presence guardrails', `passive=${intervention.passiveByDefault} · user intent=${intervention.requiresUserIntent}`)
           : fail('presence.guardrails', 'Presence guardrails', 'presence must expose passive-by-default intervention boundaries', intervention),
       );
+
+      const browserActivity = p.observing?.browserActivity || {};
+      out.push(
+        browserActivity.ok === true &&
+          browserActivity.privacy?.metadataOnly === true &&
+          browserActivity.privacy?.noPageText === true &&
+          Array.isArray(browserActivity.recent) &&
+          Array.isArray(browserActivity.topHosts) &&
+          typeof browserActivity.summary === 'string'
+          ? ok('presence.browser_activity', 'Browser activity in presence', `${browserActivity.count || 0} ambient browser sample(s) · ${browserActivity.summary}`)
+          : fail('presence.browser_activity', 'Browser activity in presence', 'presence must expose metadata-only browser activity context', browserActivity),
+      );
     }
 
     const ambient = await ctx.api('/api/ambient');
@@ -36,6 +53,39 @@ export default {
         ? ok('presence.ambient', 'Ambient observations', `observe=${a.enabled} · ${a.count ?? events.length} retained · ${events.length} recent`)
         : warn('presence.ambient', 'Ambient observations', `GET /api/ambient ${ambient.status} ${ambient.error || ''}`),
     );
+
+    const activity = await ctx.api('/api/browser/activity?limit=5');
+    const browserActivity = activity.data?.activity;
+    out.push(
+      activity.ok &&
+        browserActivity?.ok === true &&
+        browserActivity.privacy?.metadataOnly === true &&
+        browserActivity.privacy?.noPageText === true &&
+        Array.isArray(browserActivity.recent) &&
+        Array.isArray(browserActivity.topHosts) &&
+        typeof browserActivity.nextAction === 'string'
+        ? ok('presence.browser_activity_api', 'Browser activity API', `${browserActivity.count || 0} sample(s), ${browserActivity.recent.length} recent context(s)`)
+        : fail('presence.browser_activity_api', 'Browser activity API', `GET /api/browser/activity ${activity.status}`, activity.data),
+    );
+
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-browser-activity'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      out.push(
+        output.includes('Browser Activity') &&
+          output.includes('Privacy: metadata-only=yes') &&
+          output.includes('page text stored=no')
+          ? ok('presence.browser_activity_cui', 'CUI browser activity', 'config CUI prints metadata-only browser activity')
+          : fail('presence.browser_activity_cui', 'CUI browser activity', 'expected --print-browser-activity to print privacy-aware browser activity', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('presence.browser_activity_cui', 'CUI browser activity', error instanceof Error ? error.message : String(error)));
+    }
 
     return out;
   },

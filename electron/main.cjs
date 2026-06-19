@@ -3688,6 +3688,75 @@ function browserHostFromAmbientEvent(event) {
   }
 }
 
+function browserActivityEventSummary(event) {
+  const host = browserHostFromAmbientEvent(event);
+  const app = String(event?.browser?.app || event?.frontmost?.app || '').trim();
+  const title = sanitizeLearningTitle(event?.browser?.title || event?.frontmost?.windowTitle || '', app);
+  const url = redactUrlForStorage(event?.browser?.url || '').slice(0, 1000);
+  return {
+    id: String(event?.id || ''),
+    app: app.slice(0, 120),
+    title,
+    host,
+    url,
+    source: String(event?.browser?.source || event?.source || '').slice(0, 80),
+    createdAt: Number(event?.createdAt || 0),
+    ageMs: presenceAgeMs(event?.createdAt),
+  };
+}
+
+function browserActivitySnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(50, Number(options.limit || 8)));
+  const eventLimit = Math.max(limit, Math.min(200, Number(options.eventLimit || 80)));
+  const events = ambientSnapshot(eventLimit)
+    .filter((event) => event?.browser?.available)
+    .filter((event) => !learningExclusionForAmbientEvent(event));
+  const seen = new Set();
+  const recent = [];
+  const hostCounts = new Map();
+  for (const event of events) {
+    const item = browserActivityEventSummary(event);
+    if (!item.host && !item.title && !item.app) continue;
+    incrementLearningCounter(hostCounts, item.host, {
+      host: item.host,
+      title: item.title,
+      lastSeenAt: item.createdAt,
+    });
+    const key = [item.app, item.host, item.title].join('\n');
+    if (!seen.has(key) && recent.length < limit) {
+      seen.add(key);
+      recent.push(item);
+    }
+  }
+  const topHosts = learningCounterList(hostCounts, events.length, (item) => ({
+    host: item.host,
+    title: item.title,
+  }), Math.min(8, limit));
+  const current = recent[0] || null;
+  const summary = current
+    ? `Recent browser activity: ${[current.app, current.host || current.title].filter(Boolean).join(' · ')}; ${recent.length} unique recent page context(s), ${topHosts.length} host signal(s).`
+    : 'No recent browser activity is available from local ambient metadata.';
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    enabled: AMBIENT_OBSERVE_ENABLED,
+    privacy: {
+      metadataOnly: true,
+      noPageText: true,
+      urlsRedactedForStorage: true,
+      exclusionControls: 'learning excluded apps/sites/folders are applied before ambient browser activity is summarized',
+    },
+    count: events.length,
+    current,
+    recent,
+    topHosts,
+    summary,
+    nextAction: current
+      ? 'Use read_browser_page only when the user asks for page contents or a task needs visible page text.'
+      : 'Keep ambient observation on or open a supported browser tab to build local browser activity context.',
+  };
+}
+
 function incrementLearningCounter(map, key, patch = {}) {
   const normalizedKey = String(key || '').trim();
   if (!normalizedKey) return;
@@ -14948,6 +15017,7 @@ function ambientStateSnapshot(limit = 8) {
     learningEnabled: learningRuntimeEnabled(),
     count: ambientEvents.length,
     recent: ambientSnapshot(limit),
+    browserActivity: browserActivitySnapshot({ limit }),
   };
 }
 
@@ -15030,6 +15100,7 @@ function presenceStateSnapshot(options = {}) {
   const latestScreen = latestScreenSnapshot();
   const mode = presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation });
   const observing = presenceRecentObservation(latestAmbient);
+  const browserActivity = browserActivitySnapshot({ limit });
   const screenAge = latestScreenAgeMs();
   const screen = latestScreen
     ? {
@@ -15121,6 +15192,7 @@ function presenceStateSnapshot(options = {}) {
       },
       latest: observing,
       recent: ambient.recent.slice(0, limit).map((event) => presenceRecentObservation(event)),
+      browserActivity,
       screen,
     },
     learning: {
@@ -15187,6 +15259,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
   const activeRoutes = presence.work?.activeRoutes || [];
   const pendingApprovals = presence.work?.pendingApprovals || [];
   const learningSummary = presence.learning?.sourceEventCount ? presence.learning.summary : '';
+  const browserActivity = presence.observing?.browserActivity || browserActivitySnapshot({ limit: 5 });
   const currentApp = mac.frontmost?.available
     ? [mac.frontmost.app, mac.frontmost.windowTitle].filter(Boolean).join(' · ')
     : [latest.app, latest.windowTitle].filter(Boolean).join(' · ');
@@ -15200,6 +15273,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
         `Conversation: ${presence.conversation.status}; mic ${presence.conversation.micMode}; screen context ${presence.conversation.screenLive ? 'on' : 'off'}.`,
         currentApp ? `Current app/window: ${compactRecordText(currentApp, 220)}` : '',
         currentBrowser ? `Current browser: ${compactRecordText(currentBrowser, 260)}` : '',
+        browserActivity.current ? `Recent browser activity: ${compactRecordText(browserActivity.summary, 360)}` : '',
         screenFrame ? `Latest resident screen frame: ${screenFrame.width}x${screenFrame.height}, privacy ${screenFrame.privacy?.mode || 'unknown'}, age ${Math.round(latestScreenAgeMs() / 1000)}s.` : 'No resident screen frame is cached yet.',
         learningSummary ? `Local inferred profile: ${compactRecordText(learningSummary, 360)}` : '',
         activeJobs.length ? `Background work: ${activeJobs.map((job) => `${job.mode}/${job.status} ${compactRecordText(job.title, 80)}`).join('; ')}` : 'Background work: none active.',
@@ -15233,6 +15307,7 @@ async function realtimePreflightContextSnapshot(options = {}) {
     },
     mac,
     screen: screenFrame,
+    browserActivity,
     briefing: {
       summary: briefing.summary,
       nextActions,
@@ -25601,6 +25676,7 @@ function startApiServer() {
       voiceHealth: realtimeVoiceHealthSnapshot({ conversation }),
       progressVersion: workProgressSnapshot(),
       ambient: ambientStateSnapshot(5),
+      browserActivity: browserActivitySnapshot({ limit: 5 }),
       learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),
       speech: speechStateSnapshot(),
@@ -25757,6 +25833,10 @@ function startApiServer() {
 
   api.get('/api/ambient', (req, res) => {
     res.json({ ambient: ambientStateSnapshot(req.query.limit || 20), ambientFile: AMBIENT_FILE });
+  });
+
+  api.get('/api/browser/activity', (req, res) => {
+    res.json({ activity: browserActivitySnapshot({ limit: req.query.limit || 8, eventLimit: req.query.eventLimit || 80 }) });
   });
 
   api.post('/api/ambient/sample', express.json({ limit: '64kb' }), async (req, res) => {

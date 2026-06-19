@@ -301,7 +301,8 @@ async function printStatus() {
   console.log('27. Show UI demonstrations');
   console.log('28. Show skill shortcuts');
   console.log('29. Promote shortcut candidate');
-  console.log('30. Quit');
+  console.log('30. Show browser activity');
+  console.log('31. Quit');
 }
 
 async function setupAction(action) {
@@ -809,6 +810,41 @@ async function showSkillShortcuts() {
   printShortcuts(result.shortcuts || {});
 }
 
+function printBrowserActivity(activity) {
+  console.log('Browser Activity');
+  console.log('================');
+  console.log(activity?.summary || 'No browser activity summary available.');
+  const privacy = activity?.privacy || {};
+  console.log(`Privacy: metadata-only=${privacy.metadataOnly ? 'yes' : 'no'} · page text stored=${privacy.noPageText ? 'no' : 'unknown'} · urls redacted=${privacy.urlsRedactedForStorage ? 'yes' : 'no'}`);
+  const current = activity?.current;
+  if (current) {
+    console.log(`Current: ${[current.app, current.host || current.title].filter(Boolean).join(' · ') || '-'} · ${formatTime(current.createdAt)}`);
+  }
+  const topHosts = Array.isArray(activity?.topHosts) ? activity.topHosts : [];
+  if (topHosts.length) {
+    console.log('\nTop hosts:');
+    for (const host of topHosts.slice(0, 8)) {
+      console.log(`- ${host.host || '-'} · ${host.count || 0} sample(s) · ${formatTime(host.lastSeenAt)}`);
+    }
+  }
+  const recent = Array.isArray(activity?.recent) ? activity.recent : [];
+  if (!recent.length) {
+    console.log('\nRecent pages: none');
+    return;
+  }
+  console.log('\nRecent pages:');
+  for (const item of recent.slice(0, 10)) {
+    const title = item.title ? ` · ${compact(item.title, 120)}` : '';
+    console.log(`- ${item.app || '-'} · ${item.host || '-'}${title} · ${formatTime(item.createdAt)}`);
+  }
+}
+
+async function showBrowserActivity() {
+  const result = await request('/api/browser/activity?limit=10');
+  console.log('');
+  printBrowserActivity(result.activity || {});
+}
+
 function printShortcutCandidate(candidate, index) {
   const skill = candidate.skillRecallPlan?.primarySkill?.name || '-';
   const title = candidate.taskTitle || candidate.title || candidate.phrase || '-';
@@ -1114,6 +1150,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-browser-activity') || process.argv.includes('--browser-activity')) {
+    await showBrowserActivity();
+    return;
+  }
+
   if (!process.stdin.isTTY) {
     await printStatus();
     return;
@@ -1198,7 +1239,9 @@ async function main() {
         await showSkillShortcuts();
       } else if (answer === '29') {
         await promoteShortcutCandidate(rl);
-      } else if (answer === '30' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '30') {
+        await showBrowserActivity();
+      } else if (answer === '31' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');
