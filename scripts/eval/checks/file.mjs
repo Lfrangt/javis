@@ -117,10 +117,13 @@ export default {
       out.push(
         convertPlan.ok &&
           convertPlan.data?.planIntent === 'convert' &&
+          convertPlan.data?.conversionMode === 'semantic' &&
           convertPlan.data?.counts?.steps === 1 &&
-          convertStep?.action === 'copy_file' &&
-          String(convertStep.plan?.args?.destinationPath || '').endsWith('.md')
-          ? ok('file.convert_plan', 'Copy-convert preview', '1 non-destructive copy_file step generated')
+          convertStep?.action === 'write_file' &&
+          convertStep.plan?.metadata?.contentRedacted === true &&
+          String(convertStep.plan?.args?.path || '').endsWith('.md') &&
+          !String(convertStep.plan?.args?.content || '').includes('alpha')
+          ? ok('file.convert_plan', 'Semantic convert preview', '1 redacted write_file step generated')
           : fail('file.convert_plan', 'Copy-convert preview', `POST /api/files/plan ${convertPlan.status}`, convertPlan.data),
       );
 
@@ -135,13 +138,39 @@ export default {
           confirm: true,
         },
       });
+      const generatedMarkdown = fs.readdirSync(fixtureDir).find((name) => name.endsWith('.md'));
+      const generatedMarkdownText = generatedMarkdown ? fs.readFileSync(path.join(fixtureDir, generatedMarkdown), 'utf8') : '';
       out.push(
         convertApply.ok &&
           convertApply.data?.confirmed === true &&
           convertApply.data?.counts?.executed === 1 &&
-          fs.readdirSync(fixtureDir).some((name) => name.endsWith('.md'))
-          ? ok('file.convert_apply', 'Copy-convert apply', 'confirmed plan copied one file through file action policy')
+          generatedMarkdown &&
+          /^# .+ Draft/m.test(generatedMarkdownText) &&
+          /alpha|beta/.test(generatedMarkdownText)
+          ? ok('file.convert_apply', 'Semantic convert apply', 'confirmed plan wrote Markdown through file action policy')
           : fail('file.convert_apply', 'Copy-convert apply', `POST /api/files/plan/apply ${convertApply.status}`, convertApply.data),
+      );
+
+      const copyConvertPlan = await ctx.api('/api/files/plan', {
+        method: 'POST',
+        body: {
+          path: fixtureDir,
+          intent: 'convert',
+          extensions: ['.txt'],
+          targetExtension: '.copy',
+          conversionMode: 'copy',
+          maxFiles: 1,
+        },
+      });
+      const copyConvertStep = Array.isArray(copyConvertPlan.data?.steps) ? copyConvertPlan.data.steps[0] : null;
+      out.push(
+        copyConvertPlan.ok &&
+          copyConvertPlan.data?.planIntent === 'convert' &&
+          copyConvertPlan.data?.conversionMode === 'copy' &&
+          copyConvertStep?.action === 'copy_file' &&
+          String(copyConvertStep.plan?.args?.destinationPath || '').endsWith('.copy')
+          ? ok('file.convert_copy_mode', 'Copy-convert mode', 'conversionMode:copy still generates a non-destructive copy_file step')
+          : fail('file.convert_copy_mode', 'Copy-convert mode', `POST /api/files/plan ${copyConvertPlan.status}`, copyConvertPlan.data),
       );
     } finally {
       fs.rmSync(fixtureDir, { recursive: true, force: true });

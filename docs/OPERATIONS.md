@@ -584,12 +584,20 @@ curl -X POST http://127.0.0.1:3417/api/files/plan \
   -d '{"path":"~/Downloads","intent":"rename","extensions":[".png"],"template":"screenshot-{index}{ext}","maxFiles":20}'
 ```
 
-`intent:"convert"` previews non-destructive copy-convert steps by copying matching files to a target extension:
+`intent:"convert"` previews non-destructive conversions. Supported text formats (`.txt`, `.md`, `.html`, `.json`, `.csv`, `.tsv`) use deterministic local semantic conversion by default and return a redacted `write_file` plan:
 
 ```bash
 curl -X POST http://127.0.0.1:3417/api/files/plan \
   -H 'Content-Type: application/json' \
   -d '{"path":"~/Documents","intent":"convert","extensions":[".txt"],"targetExtension":".md","maxFiles":10}'
+```
+
+Use `conversionMode:"copy"` when you only want an extension-only copy-convert plan:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/files/plan \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"~/Documents","intent":"convert","extensions":[".txt"],"targetExtension":".bak","conversionMode":"copy","maxFiles":10}'
 ```
 
 The plan endpoint only previews create-directory, move-file, copy-file, or write-file steps. Actual file mutations still use the Level 3 action path and current policy. Applying a plan requires explicit confirmation:
@@ -851,7 +859,7 @@ curl -X POST http://127.0.0.1:3417/api/files/workflow \
 
 Supported intents: `list`, `search`, `summarize`, `ask`, `organize`, `rename`, and `convert`.
 
-`list`, `search`, `organize`, `rename`, and `convert` can complete locally without a model key. `summarize` and `ask` read allowed file/folder context, then use quick/background/Codex/Claude routing.
+`list`, `search`, `organize`, `rename`, and supported text `convert` plans can complete locally without a model key. `summarize` and `ask` read allowed file/folder context, then use quick/background/Codex/Claude routing.
 
 ## Browser Workflows
 

@@ -15179,7 +15179,12 @@ function previewPlannedFileStep(step) {
   try {
     const plan = buildLocalActionPlan(step);
     const evaluation = evaluateMacActionPlan(plan, { preview: true });
-    return { ok: true, action: step.action, plan, evaluation };
+    const result = { ok: true, action: step.action, plan: redactedFilePlan(plan), evaluation };
+    Object.defineProperty(result, 'executionArgs', {
+      value: plan.args,
+      enumerable: false,
+    });
+    return result;
   } catch (error) {
     return {
       ok: false,
@@ -15223,6 +15228,30 @@ function normalizeFilePlanExtensions(value) {
     .filter(Boolean)));
 }
 
+const TEXT_CONVERSION_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.html', '.htm', '.json', '.csv', '.tsv']);
+
+function normalizeTextConversionExtension(value) {
+  const extension = normalizeFilePlanExtension(value);
+  if (extension === '.markdown') return '.md';
+  if (extension === '.htm') return '.html';
+  return extension;
+}
+
+function canSemanticallyConvertText(sourceExtension, targetExtension) {
+  const source = normalizeTextConversionExtension(sourceExtension);
+  const target = normalizeTextConversionExtension(targetExtension);
+  return source && target && source !== target && TEXT_CONVERSION_EXTENSIONS.has(source) && TEXT_CONVERSION_EXTENSIONS.has(target);
+}
+
+function normalizeFileConversionMode(options = {}, sourceExtension = '', targetExtension = '') {
+  const requested = String(options.conversionMode || options.convertMode || options.contentMode || '').trim().toLowerCase();
+  if (['copy', 'copy-convert', 'copy_convert', 'extension', 'extension-only'].includes(requested)) return 'copy';
+  if (['semantic', 'text', 'content', 'format', 'transform'].includes(requested)) return 'semantic';
+  if (options.copyOnly === true || options.semantic === false || options.transformContent === false) return 'copy';
+  if (options.semantic === true || options.transformContent === true) return 'semantic';
+  return canSemanticallyConvertText(sourceExtension, targetExtension) ? 'semantic' : 'copy';
+}
+
 function filePlanEntryMatches(entry, options = {}) {
   if (entry.type !== 'file') return false;
   if (!options.includeHidden && String(entry.name || '').startsWith('.')) return false;
@@ -15243,6 +15272,272 @@ function sanitizeGeneratedFileName(value) {
 
 function escapeRegExp(value) {
   return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function escapeHtml(value) {
+  return String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function decodeHtmlEntities(value) {
+  return String(value || '')
+    .replace(/&nbsp;/gi, ' ')
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+    .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)));
+}
+
+function stripHtmlToText(value) {
+  return decodeHtmlEntities(String(value || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '')
+    .replace(/<\/(p|div|section|article|header|footer|h[1-6]|li|tr)>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, ''))
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function htmlToMarkdown(value) {
+  let text = String(value || '')
+    .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '')
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, '');
+  for (let level = 6; level >= 1; level -= 1) {
+    text = text.replace(new RegExp(`<h${level}\\b[^>]*>([\\s\\S]*?)<\\/h${level}>`, 'gi'), (_, body) => `${'#'.repeat(level)} ${stripHtmlToText(body)}\n\n`);
+  }
+  text = text
+    .replace(/<strong\b[^>]*>([\s\S]*?)<\/strong>/gi, '**$1**')
+    .replace(/<b\b[^>]*>([\s\S]*?)<\/b>/gi, '**$1**')
+    .replace(/<em\b[^>]*>([\s\S]*?)<\/em>/gi, '*$1*')
+    .replace(/<i\b[^>]*>([\s\S]*?)<\/i>/gi, '*$1*')
+    .replace(/<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => `[${stripHtmlToText(label)}](${href})`)
+    .replace(/<li\b[^>]*>([\s\S]*?)<\/li>/gi, (_, body) => `- ${stripHtmlToText(body)}\n`)
+    .replace(/<\/(p|div|section|article|header|footer)>/gi, '\n\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '');
+  return decodeHtmlEntities(text).replace(/\n{3,}/g, '\n\n').trim();
+}
+
+function markdownToText(value) {
+  return String(value || '')
+    .replace(/```[\s\S]*?```/g, (match) => match.replace(/^```[^\n]*\n?|\n?```$/g, ''))
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+\.\s+/gm, '')
+    .replace(/[*_`~>#]/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function markdownToHtml(value, title = '') {
+  const lines = String(value || '').split(/\r?\n/);
+  const body = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (!paragraph.length) return;
+    body.push(`<p>${escapeHtml(paragraph.join(' '))}</p>`);
+    paragraph = [];
+  };
+  for (const line of lines) {
+    const heading = line.match(/^(#{1,6})\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      body.push(`<h${heading[1].length}>${escapeHtml(heading[2])}</h${heading[1].length}>`);
+    } else if (/^\s*[-*+]\s+/.test(line)) {
+      flushParagraph();
+      body.push(`<p>${escapeHtml(line.replace(/^\s*[-*+]\s+/, '- '))}</p>`);
+    } else if (!line.trim()) {
+      flushParagraph();
+    } else {
+      paragraph.push(line.trim());
+    }
+  }
+  flushParagraph();
+  return [
+    '<!doctype html>',
+    '<html>',
+    '<head>',
+    '<meta charset="utf-8">',
+    title ? `<title>${escapeHtml(title)}</title>` : '',
+    '</head>',
+    '<body>',
+    body.join('\n'),
+    '</body>',
+    '</html>',
+    '',
+  ].filter(Boolean).join('\n');
+}
+
+function textToMarkdown(value, title = '') {
+  const text = String(value || '').trim();
+  if (!text) return title ? `# ${title}\n` : '';
+  if (/^#{1,6}\s+/m.test(text)) return `${text}\n`;
+  return `${title ? `# ${title}\n\n` : ''}${text}\n`;
+}
+
+function textToHtml(value, title = '') {
+  const paragraphs = String(value || '').trim().split(/\n{2,}/).filter(Boolean);
+  return [
+    '<!doctype html>',
+    '<html>',
+    '<head>',
+    '<meta charset="utf-8">',
+    title ? `<title>${escapeHtml(title)}</title>` : '',
+    '</head>',
+    '<body>',
+    ...paragraphs.map((item) => `<p>${escapeHtml(item).replace(/\n/g, '<br>')}</p>`),
+    '</body>',
+    '</html>',
+    '',
+  ].filter(Boolean).join('\n');
+}
+
+function parseDelimitedRows(value, delimiter) {
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  const text = String(value || '');
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (quoted) {
+      if (char === '"' && next === '"') {
+        cell += '"';
+        index += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        cell += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === delimiter) {
+      row.push(cell);
+      cell = '';
+    } else if (char === '\n') {
+      row.push(cell);
+      rows.push(row);
+      row = [];
+      cell = '';
+    } else if (char !== '\r') {
+      cell += char;
+    }
+  }
+  row.push(cell);
+  if (row.length > 1 || row[0]) rows.push(row);
+  return rows;
+}
+
+function serializeDelimitedRows(rows, delimiter) {
+  return rows
+    .map((row) => row.map((cell) => {
+      const text = String(cell ?? '');
+      return /[",\n\r\t]/.test(text) || text.includes(delimiter)
+        ? `"${text.replace(/"/g, '""')}"`
+        : text;
+    }).join(delimiter))
+    .join('\n') + '\n';
+}
+
+function delimitedRowsToMarkdown(rows, title = '') {
+  if (!rows.length) return title ? `# ${title}\n` : '';
+  const header = rows[0].map((item) => String(item || '').replace(/\|/g, '\\|') || ' ');
+  const body = rows.slice(1).map((row) => row.map((item) => String(item || '').replace(/\|/g, '\\|')));
+  return [
+    title ? `# ${title}` : '',
+    '',
+    `| ${header.join(' | ')} |`,
+    `| ${header.map(() => '---').join(' | ')} |`,
+    ...body.map((row) => `| ${header.map((_, index) => row[index] || '').join(' | ')} |`),
+    '',
+  ].filter((line, index) => line || index !== 1).join('\n');
+}
+
+function delimitedRowsToHtml(rows, title = '') {
+  const [header = [], ...body] = rows;
+  return [
+    '<!doctype html>',
+    '<html>',
+    '<head>',
+    '<meta charset="utf-8">',
+    title ? `<title>${escapeHtml(title)}</title>` : '',
+    '</head>',
+    '<body>',
+    '<table>',
+    header.length ? `<thead><tr>${header.map((cell) => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead>` : '',
+    '<tbody>',
+    ...body.map((row) => `<tr>${row.map((cell) => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`),
+    '</tbody>',
+    '</table>',
+    '</body>',
+    '</html>',
+    '',
+  ].filter(Boolean).join('\n');
+}
+
+function delimitedRowsToJson(rows) {
+  if (!rows.length) return '[]\n';
+  const [header, ...body] = rows;
+  const keys = header.map((item, index) => String(item || `column_${index + 1}`).trim() || `column_${index + 1}`);
+  return `${JSON.stringify(body.map((row) => Object.fromEntries(keys.map((key, index) => [key, row[index] ?? '']))), null, 2)}\n`;
+}
+
+function semanticTextConversion(content, sourceExtension, targetExtension, baseName) {
+  const source = normalizeTextConversionExtension(sourceExtension);
+  const target = normalizeTextConversionExtension(targetExtension);
+  const title = sanitizeGeneratedFileName(baseName || 'Converted File');
+  const text = String(content || '');
+  if (!canSemanticallyConvertText(source, target)) {
+    throw new Error(`Semantic conversion is not supported from ${source || 'unknown'} to ${target || 'unknown'}.`);
+  }
+
+  if (target === '.txt') {
+    if (source === '.html') return `${stripHtmlToText(text)}\n`;
+    if (source === '.md') return `${markdownToText(text)}\n`;
+    if (source === '.json') return `${JSON.stringify(JSON.parse(text), null, 2)}\n`;
+    return `${text.trim()}\n`;
+  }
+
+  if (target === '.md') {
+    if (source === '.html') return `${htmlToMarkdown(text)}\n`;
+    if (source === '.json') return `# ${title}\n\n\`\`\`json\n${JSON.stringify(JSON.parse(text), null, 2)}\n\`\`\`\n`;
+    if (source === '.csv' || source === '.tsv') return delimitedRowsToMarkdown(parseDelimitedRows(text, source === '.csv' ? ',' : '\t'), title);
+    return textToMarkdown(source === '.txt' ? text : markdownToText(text), title);
+  }
+
+  if (target === '.html') {
+    if (source === '.html') return text;
+    if (source === '.json') return textToHtml(JSON.stringify(JSON.parse(text), null, 2), title);
+    if (source === '.csv' || source === '.tsv') return delimitedRowsToHtml(parseDelimitedRows(text, source === '.csv' ? ',' : '\t'), title);
+    return source === '.md' ? markdownToHtml(text, title) : textToHtml(text, title);
+  }
+
+  if (target === '.json') {
+    if (source === '.json') return `${JSON.stringify(JSON.parse(text), null, 2)}\n`;
+    if (source === '.csv' || source === '.tsv') return delimitedRowsToJson(parseDelimitedRows(text, source === '.csv' ? ',' : '\t'));
+    return `${JSON.stringify({ title, text: source === '.html' ? stripHtmlToText(text) : source === '.md' ? markdownToText(text) : text.trim() }, null, 2)}\n`;
+  }
+
+  if (target === '.csv' || target === '.tsv') {
+    const targetDelimiter = target === '.csv' ? ',' : '\t';
+    if (source === '.csv' || source === '.tsv') {
+      return serializeDelimitedRows(parseDelimitedRows(text, source === '.csv' ? ',' : '\t'), targetDelimiter);
+    }
+    return serializeDelimitedRows([['title', 'text'], [title, source === '.html' ? stripHtmlToText(text) : source === '.md' ? markdownToText(text) : text.trim()]], targetDelimiter);
+  }
+
+  throw new Error(`Semantic conversion is not supported from ${source} to ${target}.`);
 }
 
 function transformFileBaseName(baseName, options = {}) {
@@ -15287,6 +15582,22 @@ function fileRenameNameForEntry(entry, index, options = {}) {
   return sanitized;
 }
 
+function redactedFilePlan(plan) {
+  if (plan.action !== 'write_file' || typeof plan.args?.content !== 'string') return plan;
+  const bytes = Buffer.byteLength(plan.args.content, 'utf8');
+  return {
+    ...plan,
+    args: {
+      ...plan.args,
+      content: `[redacted ${bytes} bytes generated locally]`,
+    },
+    metadata: {
+      ...(plan.metadata || {}),
+      contentRedacted: true,
+    },
+  };
+}
+
 function blockedPlannedFileStep(action, args, error) {
   return {
     ok: false,
@@ -15300,7 +15611,7 @@ function blockedPlannedFileStep(action, args, error) {
   };
 }
 
-function finalizeFilePlan({ intent, directoryPath, title, entries, steps, source = 'file_plan' }) {
+function finalizeFilePlan({ intent, directoryPath, title, entries, steps, source = 'file_plan', conversionMode = '' }) {
   const blocked = steps.filter((step) => !step.ok || step.evaluation?.blocked).length;
   const approvals = steps.filter((step) => step.ok && step.evaluation?.needsApproval).length;
   const summary = steps.length
@@ -15319,6 +15630,7 @@ function finalizeFilePlan({ intent, directoryPath, title, entries, steps, source
     ok: blocked === 0,
     intent,
     planIntent: intent,
+    conversionMode: conversionMode || undefined,
     path: directoryPath,
     title,
     summary,
@@ -15465,11 +15777,14 @@ async function planFileConvert(options = {}) {
   const destinationDirectory = String(options.destinationDirectory || options.destinationPath || '').trim();
   const destinationRoot = destinationDirectory ? resolvePath(destinationDirectory) : directoryPath;
   const destinationNames = new Set();
-  const steps = entries.map((entry) => {
+  const plannedModes = new Set();
+  const steps = await Promise.all(entries.map(async (entry) => {
     const sourceExtension = path.extname(entry.name || '');
     const baseName = path.basename(entry.name || '', sourceExtension);
     const destinationName = sanitizeGeneratedFileName(`${baseName}${targetExtension}`);
     const destinationPath = path.join(destinationRoot, destinationName);
+    const conversionMode = normalizeFileConversionMode(options, sourceExtension, targetExtension);
+    plannedModes.add(conversionMode);
     const duplicateKey = destinationPath.toLowerCase();
     if (destinationNames.has(duplicateKey)) {
       return blockedPlannedFileStep('copy_file', {
@@ -15484,13 +15799,28 @@ async function planFileConvert(options = {}) {
         destinationPath,
       }, 'Conversion target matches the source path.');
     }
+    if (conversionMode === 'semantic') {
+      try {
+        const content = await executeFileAction({ action: 'read_file', path: entry.path });
+        return previewPlannedFileStep({
+          action: 'write_file',
+          path: destinationPath,
+          content: semanticTextConversion(content, sourceExtension, targetExtension, baseName),
+          overwrite: Boolean(options.overwrite),
+        });
+      } catch (error) {
+        return blockedPlannedFileStep('write_file', {
+          path: destinationPath,
+        }, error instanceof Error ? error.message : String(error));
+      }
+    }
     return previewPlannedFileStep({
       action: 'copy_file',
       sourcePath: entry.path,
       destinationPath,
       overwrite: Boolean(options.overwrite),
     });
-  });
+  }));
 
   return finalizeFilePlan({
     intent: 'convert',
@@ -15498,6 +15828,7 @@ async function planFileConvert(options = {}) {
     title: `convert · ${path.basename(directoryPath) || directoryPath}`.slice(0, 180),
     entries,
     steps,
+    conversionMode: plannedModes.size > 1 ? 'mixed' : plannedModes.values().next().value || 'copy',
     source: options.source || 'file_convert_plan',
   });
 }
@@ -15512,7 +15843,7 @@ function planFileBatchPlan(options = {}) {
 function filePlanExecutableSteps(plan) {
   return (plan.steps || [])
     .filter((step) => step?.ok && step?.plan?.args && ['create_directory', 'copy_file', 'move_file', 'write_file'].includes(step.action))
-    .map((step) => step.plan.args);
+    .map((step) => step.executionArgs || step.plan.args);
 }
 
 function formatFilePlanApplyResults(results = []) {
@@ -28080,9 +28411,9 @@ function createRealtimeSessionConfig(options = {}) {
       'Use read_browser_dom when the user asks what controls are visible on the current webpage or when a browser DOM target is needed.',
       'Use control_browser_dom for guarded webpage element click/fill/select actions after the target is clear.',
       'Use run_browser_workflow for webpage summarization, action extraction, drafting, page-specific questions, web search, search-result review, or multi-page research. Use intent:research when the user asks you to look something up, inspect multiple sources, or synthesize web evidence; use background/Codex/Claude mode for longer work.',
-      'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, or non-destructive copy-convert previews.',
+      'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, semantic text-conversion previews, or non-destructive copy-convert previews.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
-      'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves or copies files by itself.',
+      'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
       'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
       'Use get_lane_contracts when routing, ownership, scope, handoff, or worker boundaries are unclear.',
       'Use route_task when the user asks for something that might be quick or might need background/Codex/Claude work; it keeps the voice lane responsive.',
@@ -29389,7 +29720,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_file_workflow',
-        description: 'Run a practical workflow over an allowed local file or folder: list, search, summarize, answer a file-specific question, plan safe folder organization, preview batch rename, or preview non-destructive copy-convert.',
+        description: 'Run a practical workflow over an allowed local file or folder: list, search, summarize, answer a file-specific question, plan safe folder organization, preview batch rename, preview semantic text conversion, or preview non-destructive copy-convert.',
         parameters: {
           type: 'object',
           properties: {
@@ -29414,6 +29745,7 @@ function createRealtimeSessionConfig(options = {}) {
             startIndex: { type: 'number' },
             pad: { type: 'number' },
             targetExtension: { type: 'string' },
+            conversionMode: { type: 'string', enum: ['semantic', 'copy'] },
             destinationDirectory: { type: 'string' },
             overwrite: { type: 'boolean' },
             scope: { type: 'string' },
@@ -29440,7 +29772,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'plan_file_batch',
-        description: 'Create a policy-aware preview plan for file organization, batch rename, or non-destructive copy-convert. Does not execute file moves or copies.',
+        description: 'Create a policy-aware preview plan for file organization, batch rename, semantic text conversion, or non-destructive copy-convert. Does not execute file moves, copies, or writes.',
         parameters: {
           type: 'object',
           properties: {
@@ -29461,6 +29793,7 @@ function createRealtimeSessionConfig(options = {}) {
             startIndex: { type: 'number' },
             pad: { type: 'number' },
             targetExtension: { type: 'string' },
+            conversionMode: { type: 'string', enum: ['semantic', 'copy'] },
             destinationDirectory: { type: 'string' },
             overwrite: { type: 'boolean' },
           },
@@ -29493,6 +29826,7 @@ function createRealtimeSessionConfig(options = {}) {
             startIndex: { type: 'number' },
             pad: { type: 'number' },
             targetExtension: { type: 'string' },
+            conversionMode: { type: 'string', enum: ['semantic', 'copy'] },
             destinationDirectory: { type: 'string' },
             overwrite: { type: 'boolean' },
             confirm: { type: 'boolean' },
