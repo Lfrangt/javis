@@ -44,10 +44,21 @@ export default {
 
     const autopilot = await ctx.api('/api/autopilot');
     const ap = autopilot.data?.autopilot;
+    const autopilotDecision = autopilot.data?.decisionPreview || ap?.lastDecision || null;
     out.push(
       autopilot.ok && ap && typeof ap.tickCount === 'number'
         ? ok('workers.autopilot', 'Autopilot status', `enabled=${ap.enabled} running=${ap.running} ticks=${ap.tickCount} executed=${ap.executedCount} skipped=${ap.skippedCount}${ap.lastError ? ` lastError=${String(ap.lastError).slice(0, 40)}` : ''}`)
         : warn('workers.autopilot', 'Autopilot status', `GET /api/autopilot ${autopilot.status} ${autopilot.error || ''}`),
+    );
+    out.push(
+      autopilot.ok &&
+        autopilotDecision &&
+        typeof autopilotDecision.outcome === 'string' &&
+        typeof autopilotDecision.nextWait === 'string' &&
+        Array.isArray(autopilotDecision.candidates) &&
+        autopilotDecision.candidates.every((candidate) => candidate.id && candidate.decision && typeof candidate.decision.reason === 'string')
+        ? ok('workers.autopilot_decision_evidence', 'Autopilot decision evidence', `${autopilotDecision.outcome}${autopilotDecision.reason ? `/${autopilotDecision.reason}` : ''} · ${autopilotDecision.candidates.length} candidate(s)`)
+        : fail('workers.autopilot_decision_evidence', 'Autopilot decision evidence', 'autopilot did not expose structured decision preview/candidates', autopilot.data),
     );
     out.push(
       autopilot.ok && ap?.maintenance && typeof ap.maintenance.minIntervalMs === 'number'

@@ -614,6 +614,7 @@ let autopilotState = {
   lastTickAt: 0,
   lastExecutedAt: 0,
   lastAction: null,
+  lastDecision: null,
   lastResult: '',
   lastError: '',
 };
@@ -15375,31 +15376,177 @@ function autopilotStateSnapshot() {
   };
 }
 
-function isAutopilotExecutableAction(action) {
-  if (!action || typeof action !== 'object') return false;
-  if (action.manualOnly || action.autopilotEligible === false) return false;
+function autopilotEligibilityDecision(action) {
+  if (!action || typeof action !== 'object') {
+    return {
+      executable: false,
+      reason: 'missing_action',
+      detail: 'No action was available for autopilot.',
+    };
+  }
+  if (action.manualOnly) {
+    return {
+      executable: false,
+      reason: 'manual_only',
+      detail: action.manualOnlyReason || 'This action requires explicit user presence.',
+    };
+  }
+  if (action.autopilotEligible === false) {
+    return {
+      executable: false,
+      reason: 'autopilot_disabled_for_action',
+      detail: 'This action is intentionally excluded from unattended autopilot.',
+    };
+  }
   if (action.source === 'maintenance') {
-    return Boolean(action.executable && action.autoEligible && Number(action.riskLevel || 0) <= 1);
+    const executable = Boolean(action.executable && action.autoEligible && Number(action.riskLevel || 0) <= 1);
+    return {
+      executable,
+      reason: executable ? 'eligible_maintenance' : 'maintenance_not_low_risk',
+      detail: executable
+        ? 'Read-only maintenance snapshot is safe for unattended autopilot.'
+        : 'Maintenance action is not marked as low-risk executable.',
+    };
   }
   if (action.source === 'recovery') {
     if (action.trustedAutoEligible && Number(action.recoveryAttempts || 0) < Number(action.maxRecoveryAttempts || MAX_RECOVERY_JOB_ATTEMPTS)) {
-      return true;
+      return {
+        executable: true,
+        reason: 'eligible_trusted_recovery',
+        detail: 'Trusted local mode can queue this bounded recovery worker.',
+      };
     }
-    return Boolean(action.autoEligible && Number(action.riskLevel || 0) <= 1);
+    const executable = Boolean(action.autoEligible && Number(action.riskLevel || 0) <= 1);
+    return {
+      executable,
+      reason: executable ? 'eligible_low_risk_recovery_review' : 'recovery_needs_user_or_trust',
+      detail: executable
+        ? 'Low-risk recovery review can run unattended.'
+        : 'Recovery is not low-risk auto-eligible, or trusted local mode cannot queue it.',
+    };
   }
   if (action.source === 'workflows' && action.workflowAction === 'retry_app_workflow') {
-    return Boolean(action.executable && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
+    const executable = Boolean(action.executable && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
+    return {
+      executable,
+      reason: executable ? 'eligible_trusted_workflow_retry' : 'workflow_retry_needs_trusted_local',
+      detail: executable
+        ? 'Trusted local mode can retry this blocked app workflow.'
+        : 'Workflow retry needs local execution and trusted local mode.',
+    };
   }
-  return false;
+  return {
+    executable: false,
+    reason: 'unsupported_action_source',
+    detail: 'Autopilot only runs bounded maintenance, recovery, and trusted retry actions.',
+  };
+}
+
+function isAutopilotExecutableAction(action) {
+  return autopilotEligibilityDecision(action).executable;
 }
 
 function firstAutopilotExecutableAction(actions = []) {
   return (actions || []).find((action) => isAutopilotExecutableAction(action)) || null;
 }
 
+function autopilotActionDecision(action, index = 0) {
+  if (!action) return null;
+  const eligibility = autopilotEligibilityDecision(action);
+  return {
+    index,
+    id: String(action.id || '').slice(0, 180),
+    label: compactRecordText(action.label || action.title || action.id || 'Action', 140),
+    source: compactRecordText(action.source || '', 80),
+    priority: Number(action.priority ?? index),
+    summary: compactRecordText(action.summary || action.manualOnlyReason || '', 240),
+    executable: Boolean(action.executable),
+    autoEligible: Boolean(action.autoEligible),
+    autopilotEligible: action.autopilotEligible !== false,
+    manualOnly: Boolean(action.manualOnly),
+    requiresUserPresence: Boolean(action.requiresUserPresence),
+    riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+    recoveryType: compactRecordText(action.recoveryType || '', 80),
+    workflowAction: compactRecordText(action.workflowAction || '', 80),
+    phase: compactRecordText(action.phase || '', 80),
+    decision: eligibility,
+  };
+}
+
+function autopilotNextWaitReason(reason, selectedAction = null, firstAction = null) {
+  const action = selectedAction || firstAction;
+  if (reason === 'autopilot_disabled') return 'Enable overnight autopilot before unattended work can run.';
+  if (reason === 'preview_only') return 'Preview only; run a tick with execute=true to act.';
+  if (reason === 'conversation_active') return 'Wait for the live voice conversation to finish before unattended work takes over.';
+  if (reason === 'active_job_running') return 'Wait for the current worker job to finish or expose progress.';
+  if (reason === 'manual_only_action') return action?.manualOnlyReason || 'Waiting for explicit user action.';
+  if (reason === 'no_auto_executable_action') return 'Waiting for a low-risk recovery, maintenance, or trusted retry action.';
+  if (reason === 'no_action') return 'No queued work is available; stand by for a user request or new evidence.';
+  if (!reason && selectedAction) return `Run ${selectedAction.label || selectedAction.id || 'selected action'} now.`;
+  return 'Review work-next for the safest next action.';
+}
+
+function autopilotSkipReason({ execute, selectedAction, firstAction, conversation } = {}) {
+  const firstActionManualOnly = Boolean(firstAction?.manualOnly || firstAction?.autopilotEligible === false);
+  if (!AUTOPILOT_ENABLED) return 'autopilot_disabled';
+  if (!execute) return 'preview_only';
+  if (conversation?.active) return 'conversation_active';
+  if (activeJobRuns.size) return 'active_job_running';
+  if (!selectedAction && firstActionManualOnly) return 'manual_only_action';
+  if (!selectedAction) return firstAction ? 'no_auto_executable_action' : 'no_action';
+  return '';
+}
+
+function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = null, selectedAction = null, firstAction = null, reason = '', outcome = 'preview', resultSummary = '' } = {}) {
+  const actions = Array.isArray(briefing?.nextActions) ? briefing.nextActions : [];
+  const candidates = actions.slice(0, 6).map(autopilotActionDecision).filter(Boolean);
+  const selected = selectedAction ? autopilotActionDecision(selectedAction, actions.indexOf(selectedAction)) : null;
+  const first = firstAction ? autopilotActionDecision(firstAction, actions.indexOf(firstAction)) : null;
+  return {
+    generatedAt: new Date().toISOString(),
+    source: String(source || 'api').slice(0, 80),
+    execute: Boolean(execute),
+    outcome,
+    reason,
+    resultSummary: compactRecordText(resultSummary || '', 500),
+    enabled: AUTOPILOT_ENABLED,
+    conversationActive: Boolean(conversationStateSnapshot().active),
+    activeJobs: activeJobRuns.size,
+    nextActionCount: actions.length,
+    selectedAction: selected,
+    firstAction: first,
+    candidates,
+    nextWait: autopilotNextWaitReason(reason, selectedAction, firstAction),
+  };
+}
+
+function autopilotDecisionPreview(options = {}) {
+  const briefing = options.briefing || workflowBriefing({
+    workflowLimit: options.workflowLimit || 6,
+    jobLimit: options.jobLimit || 6,
+    includeMaintenance: true,
+    forceMaintenance: options.forceMaintenance,
+  });
+  const firstAction = (briefing.nextActions || [])[0] || null;
+  const selectedAction = firstAutopilotExecutableAction(briefing.nextActions || []);
+  const conversation = conversationStateSnapshot();
+  const execute = options.execute === true;
+  const reason = autopilotSkipReason({ execute, selectedAction, firstAction, conversation });
+  return autopilotDecisionSnapshot({
+    source: options.source || 'status',
+    execute,
+    briefing,
+    selectedAction,
+    firstAction,
+    reason,
+    outcome: reason ? 'skipped' : 'ready',
+  });
+}
+
 async function autopilotTick(options = {}) {
   const source = String(options.source || 'api').slice(0, 80);
   const execute = options.execute !== false;
+  let decision = null;
   if (autopilotBusy) {
     return { ok: true, executed: false, skipped: true, reason: 'autopilot_busy', autopilot: autopilotStateSnapshot() };
   }
@@ -15420,21 +15567,24 @@ async function autopilotTick(options = {}) {
     });
     const firstAction = (briefing.nextActions || [])[0] || null;
     const action = firstAutopilotExecutableAction(briefing.nextActions);
-    const firstActionManualOnly = Boolean(firstAction?.manualOnly || firstAction?.autopilotEligible === false);
     const conversation = conversationStateSnapshot();
-    let reason = '';
-    if (!AUTOPILOT_ENABLED) reason = 'autopilot_disabled';
-    else if (!execute) reason = 'preview_only';
-    else if (conversation.active) reason = 'conversation_active';
-    else if (activeJobRuns.size) reason = 'active_job_running';
-    else if (!action && firstActionManualOnly) reason = 'manual_only_action';
-    else if (!action) reason = firstAction ? 'no_auto_executable_action' : 'no_action';
+    const reason = autopilotSkipReason({ execute, selectedAction: action, firstAction, conversation });
+    decision = autopilotDecisionSnapshot({
+      source,
+      execute,
+      briefing,
+      selectedAction: action,
+      firstAction,
+      reason,
+      outcome: reason ? 'skipped' : 'ready',
+    });
 
     if (reason) {
       autopilotState = {
         ...autopilotState,
         skippedCount: Number(autopilotState.skippedCount || 0) + 1,
         lastAction: action || firstAction,
+        lastDecision: decision,
         lastResult: reason,
       };
       appendAudit('autopilot.skipped', {
@@ -15442,8 +15592,13 @@ async function autopilotTick(options = {}) {
         reason,
         action: action?.id || firstAction?.id || '',
         actionSource: action?.source || firstAction?.source || '',
-        manualOnlyReason: firstActionManualOnly ? compactRecordText(firstAction?.manualOnlyReason || '', 180) : '',
+        nextWait: decision.nextWait,
         nextActions: (briefing.nextActions || []).length,
+        candidates: decision.candidates.map((candidate) => ({
+          id: candidate.id,
+          source: candidate.source,
+          decision: candidate.decision.reason,
+        })),
       });
       return { ok: true, executed: false, skipped: true, reason, action: action || firstAction, selectedAction: action, briefing, autopilot: autopilotStateSnapshot() };
     }
@@ -15461,6 +15616,11 @@ async function autopilotTick(options = {}) {
       executedCount: Number(autopilotState.executedCount || 0) + 1,
       lastExecutedAt: Date.now(),
       lastAction: action,
+      lastDecision: {
+        ...decision,
+        outcome: 'executed',
+        resultSummary: compactRecordText(result.output || '', 500),
+      },
       lastResult: compactRecordText(result.output || '', 1000),
     };
     appendAudit('autopilot.executed', {
@@ -15471,9 +15631,13 @@ async function autopilotTick(options = {}) {
     });
     return { ok: true, executed: true, skipped: false, action, result, briefing, autopilot: autopilotStateSnapshot() };
   } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
     autopilotState = {
       ...autopilotState,
-      lastError: error instanceof Error ? error.message : String(error),
+      lastError: errorMessage,
+      lastDecision: decision
+        ? { ...decision, outcome: 'failed', resultSummary: errorMessage }
+        : autopilotState.lastDecision,
     };
     appendAudit('autopilot.failed', { source, error: autopilotState.lastError });
     return { ok: false, executed: false, skipped: false, error: autopilotState.lastError, autopilot: autopilotStateSnapshot() };
@@ -26157,7 +26321,10 @@ function startApiServer() {
   });
 
   api.get('/api/autopilot', (_req, res) => {
-    res.json({ autopilot: autopilotStateSnapshot() });
+    res.json({
+      autopilot: autopilotStateSnapshot(),
+      decisionPreview: autopilotDecisionPreview({ source: 'status', execute: true }),
+    });
   });
 
   api.post('/api/autopilot/tick', express.json({ limit: '64kb' }), async (req, res) => {

@@ -244,10 +244,12 @@ async function printStatus() {
     if (autopilotResult.autopilot) {
       const autopilot = autopilotResult.autopilot;
       const maintenance = autopilot.maintenance || {};
+      const decision = autopilotResult.decisionPreview || autopilot.lastDecision || null;
       const maintenanceText = maintenance.minIntervalMs
         ? ` · maintenance ${maintenance.due ? 'due' : 'cooldown'}${maintenance.lastSnapshotAt ? ` last ${formatTime(maintenance.lastSnapshotAt)}` : ''}`
         : '';
-      console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · every ${formatInterval(autopilot.intervalMs)} · ticks ${autopilot.tickCount || 0} · ran ${autopilot.executedCount || 0} · last ${compact(autopilot.lastResult || 'none', 80)}${maintenanceText}`);
+      const decisionText = decision?.reason || decision?.selectedAction?.decision?.reason || decision?.outcome || 'none';
+      console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · every ${formatInterval(autopilot.intervalMs)} · ticks ${autopilot.tickCount || 0} · ran ${autopilot.executedCount || 0} · decision ${compact(decisionText, 60)} · last ${compact(autopilot.lastResult || 'none', 80)}${maintenanceText}`);
     }
     if (browserJs.javascript?.supported && browserJs.javascript?.available) {
       const bridge = browserJs.javascript.bridge || '';
@@ -448,7 +450,26 @@ async function setControlMode(rl) {
   console.log(`Effective auto Level ${next.effective?.maxAutoRiskLevel ?? '-'}; approval at Level ${next.effective?.requireApprovalAtRiskLevel ?? '-'}.`);
 }
 
-function printAutopilotDetails(autopilot) {
+function printAutopilotDecision(decision, label = 'Decision') {
+  if (!decision) return;
+  const selected = decision.selectedAction || null;
+  const first = decision.firstAction || null;
+  const target = selected || first;
+  const targetText = target ? `${target.label || target.id || 'action'} (${target.source || 'unknown'})` : 'none';
+  const reason = decision.reason ? ` · reason ${decision.reason}` : '';
+  console.log(`${label}: ${decision.outcome || 'preview'}${reason} · target ${targetText}`);
+  if (decision.nextWait) console.log(`Wait: ${compact(decision.nextWait, 220)}`);
+  const candidates = Array.isArray(decision.candidates) ? decision.candidates : [];
+  if (candidates.length) {
+    const lines = candidates.slice(0, 3).map((candidate, index) => {
+      const state = candidate.decision?.executable ? 'auto' : candidate.decision?.reason || 'blocked';
+      return `${index + 1}. ${candidate.label || candidate.id} · ${candidate.source || '-'} · ${state}`;
+    });
+    console.log(`Candidates: ${lines.join(' | ')}`);
+  }
+}
+
+function printAutopilotDetails(autopilot, decisionPreview = null) {
   console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'}${autopilot.busy || autopilot.running ? ' · busy' : ''}`);
   console.log(`Interval: ${formatInterval(autopilot.intervalMs)} (${autopilot.intervalMs || 0}ms)`);
   console.log(`Ticks: ${autopilot.tickCount || 0} · executed ${autopilot.executedCount || 0} · skipped ${autopilot.skippedCount || 0}`);
@@ -458,6 +479,8 @@ function printAutopilotDetails(autopilot) {
     const maintenance = autopilot.maintenance;
     console.log(`Maintenance: ${maintenance.due ? 'due' : 'cooldown'} · every ${formatInterval(maintenance.minIntervalMs)} · last ${formatTime(maintenance.lastSnapshotAt)} · ran ${maintenance.runCount || 0}`);
   }
+  printAutopilotDecision(autopilot.lastDecision, 'Last decision');
+  printAutopilotDecision(decisionPreview, 'Preview');
   if (autopilot.lastResult) console.log(`Last result: ${compact(autopilot.lastResult, 260)}`);
   if (autopilot.lastError) console.log(`Last error: ${compact(autopilot.lastError, 260)}`);
 }
@@ -546,7 +569,7 @@ async function showAutopilotStatus() {
     })),
   ]);
   console.log('');
-  printAutopilotDetails(autopilotResult.autopilot || {});
+  printAutopilotDetails(autopilotResult.autopilot || {}, autopilotResult.decisionPreview || null);
   if (next.error) {
     console.log(`Next action: unavailable · ${next.error}`);
   } else {
@@ -572,7 +595,7 @@ async function runAutopilotTick(rl) {
   const reason = result.tick?.reason ? ` · ${result.tick.reason}` : '';
   console.log(`\nAutopilot tick ${executed}${reason}.`);
   if (result.tick?.result?.output) console.log(compact(result.tick.result.output, 600));
-  printAutopilotDetails(result.autopilot || result.tick?.autopilot || {});
+  printAutopilotDetails(result.autopilot || result.tick?.autopilot || {}, result.autopilot?.lastDecision || result.tick?.autopilot?.lastDecision || null);
 }
 
 async function toggleAutopilot(rl) {
