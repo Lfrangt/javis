@@ -84,11 +84,29 @@ export default {
         },
       },
     });
+    const maskPreview = await ctx.api('/api/screen/privacy/region-mask-preview', {
+      method: 'POST',
+      body: {
+        width: 64,
+        height: 64,
+        mode,
+        rules: [
+          {
+            id: 'eval_screen_privacy_region_preview',
+            kind: 'region',
+            effect: 'blur',
+            label: 'Eval top-right preview region',
+            region: { unit: 'percent', x: 75, y: 0, width: 25, height: 25 },
+          },
+        ],
+      },
+    });
     out.push(
       privacyWithRules.ok &&
         withRules.ruleCounts?.enabled >= 3 &&
         withRules.enforcement?.appWindowContextFilter === true &&
-        withRules.enforcement?.regionRendererMaskStatus === 'pending_renderer_mask' &&
+        withRules.enforcement?.regionRendererMask === true &&
+        withRules.enforcement?.regionRendererMaskStatus === 'resident_region_mask' &&
         appCheck.ok &&
         appCheck.data?.policy?.blocked === true &&
         appCheck.data?.policy?.reason?.includes('eval_screen_privacy_app') &&
@@ -97,13 +115,18 @@ export default {
         windowCheck.data?.policy?.reason?.includes('eval_screen_privacy_window') &&
         safeCheck.ok &&
         safeCheck.data?.policy?.allowed === true &&
-        safeCheck.data?.policy?.regionRuleCount >= 1
-        ? ok('screen.privacy_rules', 'Screen privacy rules', 'app/window exclusions block model screen context; region rule is tracked for renderer masking')
-        : fail('screen.privacy_rules', 'Screen privacy rules', 'screen privacy rule policy did not match expected app/window/region behavior', {
+        safeCheck.data?.policy?.regionRuleCount >= 1 &&
+        maskPreview.ok &&
+        maskPreview.data?.preview?.mask?.applied === true &&
+        maskPreview.data?.preview?.samples?.insideMasked === true &&
+        maskPreview.data?.preview?.samples?.outsidePreserved === true
+        ? ok('screen.privacy_rules', 'Screen privacy rules', 'app/window exclusions block model screen context; region rule is pixel-masked before Realtime/API image use')
+        : fail('screen.privacy_rules', 'Screen privacy rules', 'screen privacy rule policy did not match expected app/window/region mask behavior', {
           privacy: withRules,
           appCheck: appCheck.data,
           windowCheck: windowCheck.data,
           safeCheck: safeCheck.data,
+          maskPreview: maskPreview.data,
         }),
     );
 

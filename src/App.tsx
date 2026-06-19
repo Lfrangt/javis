@@ -1239,7 +1239,7 @@ function App() {
   const pushRealtimeScreenContext = useCallback(
     (imageDataUrl: string, width: number, height: number, force = false) => {
       if (!realtimeScreenContext) return false
-      const regionRuleCount = Number(screenPrivacy.ruleCounts?.region || 0)
+      const regionRuleCount = Number(screenPrivacy.enforcement?.regionRuleCount || screenPrivacy.ruleCounts?.region || 0)
       if (regionRuleCount > 0 && screenPrivacy.enforcement?.regionRendererMask !== true) {
         return false
       }

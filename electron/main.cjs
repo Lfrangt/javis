@@ -2202,6 +2202,7 @@ function normalizeScreenPrivacy(value = {}) {
   const privateMode = mode === 'private';
   const rules = normalizeScreenPrivacyRules(value.rules);
   const ruleCounts = screenPrivacyRuleCounts(rules);
+  const regionMaskRuleCount = enabledScreenPrivacyRegionRules({ rules }).length;
   return {
     version: 1,
     mode,
@@ -2217,8 +2218,12 @@ function normalizeScreenPrivacy(value = {}) {
       globalTransform: privateMode ? 'downscale_blur' : 'clear_frame',
       appWindowContextFilter: true,
       browserHostContextFilter: true,
-      regionRendererMask: false,
-      regionRendererMaskStatus: ruleCounts.region ? 'pending_renderer_mask' : 'not_configured',
+      regionRendererMask: regionMaskRuleCount > 0,
+      regionRendererMaskStatus: regionMaskRuleCount ? 'resident_region_mask' : 'not_configured',
+      residentRegionMask: regionMaskRuleCount > 0,
+      residentRegionMaskStatus: regionMaskRuleCount ? 'enabled_before_storage' : 'not_configured',
+      regionRuleCount: regionMaskRuleCount,
+      regionMaskAppliesBeforeStorage: true,
     },
     updatedAt: Number(value.updatedAt || Date.now()),
   };
@@ -2326,6 +2331,212 @@ function normalizeScreenPrivacyRules(value = []) {
     })
     .filter(Boolean)
     .slice(0, 40);
+}
+
+function enabledScreenPrivacyRegionRules(privacy = {}) {
+  return (Array.isArray(privacy.rules) ? privacy.rules : [])
+    .filter((rule) => rule?.enabled && rule.kind === 'region' && rule.region);
+}
+
+function screenPrivacyRegionRect(rule, width, height) {
+  const region = rule?.region || {};
+  const unit = region.unit === 'px' ? 'px' : 'percent';
+  const leftRaw = unit === 'px' ? Number(region.x) : (Number(region.x) / 100) * width;
+  const topRaw = unit === 'px' ? Number(region.y) : (Number(region.y) / 100) * height;
+  const widthRaw = unit === 'px' ? Number(region.width) : (Number(region.width) / 100) * width;
+  const heightRaw = unit === 'px' ? Number(region.height) : (Number(region.height) / 100) * height;
+  if (![leftRaw, topRaw, widthRaw, heightRaw].every(Number.isFinite)) return null;
+  const left = Math.max(0, Math.min(width, Math.floor(leftRaw)));
+  const top = Math.max(0, Math.min(height, Math.floor(topRaw)));
+  const right = Math.max(left, Math.min(width, Math.ceil(leftRaw + widthRaw)));
+  const bottom = Math.max(top, Math.min(height, Math.ceil(topRaw + heightRaw)));
+  const rectWidth = right - left;
+  const rectHeight = bottom - top;
+  if (rectWidth <= 0 || rectHeight <= 0) return null;
+  return { x: left, y: top, width: rectWidth, height: rectHeight, right, bottom };
+}
+
+function screenPrivacyBitmapPixelOffset(width, x, y) {
+  return ((y * width) + x) * 4;
+}
+
+function sampleScreenPrivacyBitmapPixel(image, x, y) {
+  const size = image.getSize();
+  if (!size.width || !size.height || image.isEmpty()) return null;
+  const sampleX = Math.max(0, Math.min(size.width - 1, Math.round(Number(x) || 0)));
+  const sampleY = Math.max(0, Math.min(size.height - 1, Math.round(Number(y) || 0)));
+  const bitmap = image.toBitmap();
+  const offset = screenPrivacyBitmapPixelOffset(size.width, sampleX, sampleY);
+  if (!bitmap || bitmap.length < offset + 4) return null;
+  return {
+    x: sampleX,
+    y: sampleY,
+    channels: [bitmap[offset], bitmap[offset + 1], bitmap[offset + 2], bitmap[offset + 3]],
+  };
+}
+
+function applyScreenPrivacyRegionMasks(image, privacy = {}) {
+  const normalizedPrivacy = normalizeScreenPrivacy(privacy);
+  const rules = enabledScreenPrivacyRegionRules(normalizedPrivacy);
+  if (!rules.length) {
+    return {
+      image,
+      applied: false,
+      required: false,
+      ruleCount: 0,
+      maskedPixels: 0,
+      regions: [],
+      status: 'not_configured',
+    };
+  }
+
+  const size = image.getSize();
+  if (!size.width || !size.height || image.isEmpty()) {
+    return {
+      image,
+      applied: false,
+      required: true,
+      ruleCount: rules.length,
+      maskedPixels: 0,
+      regions: [],
+      status: 'failed_empty_image',
+    };
+  }
+
+  const bitmap = image.toBitmap();
+  const expectedBytes = size.width * size.height * 4;
+  if (!bitmap || bitmap.length < expectedBytes) {
+    return {
+      image,
+      applied: false,
+      required: true,
+      ruleCount: rules.length,
+      maskedPixels: 0,
+      regions: [],
+      status: `failed_bitmap_bytes_${bitmap?.length || 0}`,
+    };
+  }
+
+  const output = Buffer.from(bitmap);
+  const regions = [];
+  let maskedPixels = 0;
+  for (const rule of rules) {
+    const rect = screenPrivacyRegionRect(rule, size.width, size.height);
+    if (!rect) continue;
+    regions.push({ id: rule.id, label: rule.label, ...rect });
+    for (let y = rect.y; y < rect.bottom; y += 1) {
+      for (let x = rect.x; x < rect.right; x += 1) {
+        const offset = screenPrivacyBitmapPixelOffset(size.width, x, y);
+        output[offset] = 18;
+        output[offset + 1] = 18;
+        output[offset + 2] = 18;
+        output[offset + 3] = 255;
+        maskedPixels += 1;
+      }
+    }
+  }
+
+  if (!regions.length || maskedPixels <= 0) {
+    return {
+      image,
+      applied: false,
+      required: true,
+      ruleCount: rules.length,
+      maskedPixels: 0,
+      regions,
+      status: 'failed_no_pixels',
+    };
+  }
+
+  const maskedImage = nativeImage.createFromBitmap(output, { width: size.width, height: size.height });
+  if (maskedImage.isEmpty()) {
+    return {
+      image,
+      applied: false,
+      required: true,
+      ruleCount: rules.length,
+      maskedPixels,
+      regions,
+      status: 'failed_create_image',
+    };
+  }
+
+  return {
+    image: maskedImage,
+    applied: true,
+    required: true,
+    ruleCount: rules.length,
+    maskedPixels,
+    regions,
+    status: 'resident_region_mask',
+  };
+}
+
+function screenPrivacyRegionMaskPreview(options = {}) {
+  const width = Math.max(16, Math.min(320, Math.round(Number(options.width || 64))));
+  const height = Math.max(16, Math.min(320, Math.round(Number(options.height || 64))));
+  const rules = Array.isArray(options.rules) && options.rules.length
+    ? options.rules
+    : [{
+        id: 'preview_screen_privacy_region',
+        kind: 'region',
+        effect: 'blur',
+        label: 'Preview top-right region',
+        region: { unit: 'percent', x: 75, y: 0, width: 25, height: 25 },
+      }];
+  const privacy = normalizeScreenPrivacy({
+    ...(options.privacy || {}),
+    mode: options.mode || options.privacy?.mode || screenPrivacy?.mode || 'private',
+    rules,
+  });
+  const buffer = Buffer.alloc(width * height * 4);
+  for (let offset = 0; offset < buffer.length; offset += 4) {
+    buffer[offset] = 210;
+    buffer[offset + 1] = 210;
+    buffer[offset + 2] = 210;
+    buffer[offset + 3] = 255;
+  }
+  const image = nativeImage.createFromBitmap(buffer, { width, height });
+  if (image.isEmpty()) throw new Error('Synthetic preview image could not be created.');
+
+  const mask = applyScreenPrivacyRegionMasks(image, privacy);
+  const firstRegion = mask.regions[0] || screenPrivacyRegionRect(enabledScreenPrivacyRegionRules(privacy)[0], width, height);
+  const inside = firstRegion
+    ? sampleScreenPrivacyBitmapPixel(
+        mask.image,
+        Math.min(firstRegion.right - 1, firstRegion.x + Math.floor(firstRegion.width / 2)),
+        Math.min(firstRegion.bottom - 1, firstRegion.y + Math.floor(firstRegion.height / 2)),
+      )
+    : null;
+  const outside = sampleScreenPrivacyBitmapPixel(mask.image, 1, height - 2);
+  const insideMasked = Boolean(inside && inside.channels.slice(0, 3).every((value) => value <= 40));
+  const outsidePreserved = Boolean(outside && outside.channels.slice(0, 3).every((value) => value >= 180));
+  return {
+    ok: Boolean(mask.applied && insideMasked && outsidePreserved),
+    preview: {
+      width,
+      height,
+      mask: {
+        applied: mask.applied,
+        required: mask.required,
+        ruleCount: mask.ruleCount,
+        maskedPixels: mask.maskedPixels,
+        regions: mask.regions,
+        status: mask.status,
+      },
+      samples: {
+        inside,
+        outside,
+        insideMasked,
+        outsidePreserved,
+      },
+      privacy: {
+        mode: privacy.mode,
+        ruleCounts: privacy.ruleCounts,
+        enforcement: privacy.enforcement,
+      },
+    },
+  };
 }
 
 function screenPrivacyComparable(value) {
@@ -2512,6 +2723,7 @@ function latestScreenSnapshot(options = {}) {
     displayId: latestScreen.displayId || '',
     displayName: latestScreen.displayName || '',
   };
+  if (latestScreen.regionMask) snapshot.regionMask = latestScreen.regionMask;
   if (options.includeImage) snapshot.imageDataUrl = latestScreen.imageDataUrl || '';
   return snapshot;
 }
@@ -2554,8 +2766,18 @@ function resizeScreenImageForPrivacy(image, privacy) {
   });
 }
 
-function prepareScreenImageForStorage(image, privacy) {
-  return transformScreenImageForPrivacy(resizeScreenImageForPrivacy(image, privacy), privacy);
+function prepareScreenImageForStorage(image, privacy, options = {}) {
+  const normalizedPrivacy = normalizeScreenPrivacy(privacy);
+  const transformed = transformScreenImageForPrivacy(resizeScreenImageForPrivacy(image, normalizedPrivacy), normalizedPrivacy);
+  const mask = applyScreenPrivacyRegionMasks(transformed, normalizedPrivacy);
+  if (mask.required && !mask.applied && options.requireRegionMask !== false) {
+    throw new Error(`Screen privacy region mask failed: ${mask.status}`);
+  }
+  const result = {
+    ...mask,
+    image: mask.image || transformed,
+  };
+  return options.withEvidence ? result : result.image;
 }
 
 function nativeImageToDataUrl(image, privacy) {
@@ -2606,8 +2828,17 @@ async function captureResidentScreen(options = {}) {
     capturedImage = await captureScreenWithScreencapture();
     captureSource = 'screencapture';
   }
-  const storedImage = prepareScreenImageForStorage(capturedImage, privacy);
+  const prepared = prepareScreenImageForStorage(capturedImage, privacy, { withEvidence: true });
+  const storedImage = prepared.image;
   const storedSize = storedImage.getSize();
+  const regionMask = {
+    applied: prepared.applied,
+    required: prepared.required,
+    ruleCount: prepared.ruleCount,
+    maskedPixels: prepared.maskedPixels,
+    regions: prepared.regions,
+    status: prepared.status,
+  };
 
   latestScreen = {
     imageDataUrl: nativeImageToDataUrl(storedImage, privacy),
@@ -2617,6 +2848,7 @@ async function captureResidentScreen(options = {}) {
     source: 'resident',
     displayId: String(source?.display_id || display.id || ''),
     displayName: source?.name || captureSource,
+    regionMask,
     updatedAt: Date.now(),
   };
   appendAudit('screen.frame_captured', {
@@ -2627,6 +2859,9 @@ async function captureResidentScreen(options = {}) {
     privacy: privacy.mode,
     displayId: latestScreen.displayId,
     displayName: latestScreen.displayName,
+    regionMaskApplied: regionMask.applied,
+    regionMaskRules: regionMask.ruleCount,
+    regionMaskPixels: regionMask.maskedPixels,
   });
   return latestScreenSnapshot({ includeImage: Boolean(options.includeImage) });
 }
@@ -33212,24 +33447,63 @@ function startApiServer() {
     }
   });
 
-  api.post('/api/screen/frame', (req, res) => {
-    const imageDataUrl = String(req.body?.imageDataUrl || '');
-    if (!imageDataUrl.startsWith('data:image/')) {
-      jsonError(res, 400, 'Invalid screen frame');
-      return;
+  api.post('/api/screen/privacy/region-mask-preview', (req, res) => {
+    try {
+      res.json(screenPrivacyRegionMaskPreview(req.body || {}));
+    } catch (error) {
+      jsonError(res, 500, 'Screen privacy region mask preview failed', error instanceof Error ? error.message : String(error));
     }
-    latestScreen = {
-      imageDataUrl,
-      width: Number(req.body?.width || 0),
-      height: Number(req.body?.height || 0),
-      privacy: normalizeScreenPrivacy(req.body?.privacy || screenPrivacy),
-      source: 'renderer',
-      updatedAt: Date.now(),
-    };
-    res.json({
-      ok: true,
-      screen: latestScreenSnapshot(),
-    });
+  });
+
+  api.post('/api/screen/frame', (req, res) => {
+    try {
+      const imageDataUrl = String(req.body?.imageDataUrl || '');
+      if (!imageDataUrl.startsWith('data:image/')) {
+        jsonError(res, 400, 'Invalid screen frame');
+        return;
+      }
+      const privacy = normalizeScreenPrivacy(req.body?.privacy || screenPrivacy);
+      const frameImage = nativeImage.createFromDataURL(imageDataUrl);
+      if (frameImage.isEmpty()) {
+        jsonError(res, 400, 'Invalid screen frame image');
+        return;
+      }
+      const prepared = prepareScreenImageForStorage(frameImage, privacy, { withEvidence: true });
+      const storedImage = prepared.image;
+      const storedSize = storedImage.getSize();
+      const regionMask = {
+        applied: prepared.applied,
+        required: prepared.required,
+        ruleCount: prepared.ruleCount,
+        maskedPixels: prepared.maskedPixels,
+        regions: prepared.regions,
+        status: prepared.status,
+      };
+      latestScreen = {
+        imageDataUrl: nativeImageToDataUrl(storedImage, privacy),
+        width: storedSize.width || Number(req.body?.width || 0),
+        height: storedSize.height || Number(req.body?.height || 0),
+        privacy,
+        source: 'renderer',
+        regionMask,
+        updatedAt: Date.now(),
+      };
+      appendAudit('screen.frame_received', {
+        source: 'renderer',
+        width: latestScreen.width,
+        height: latestScreen.height,
+        privacy: privacy.mode,
+        regionMaskApplied: regionMask.applied,
+        regionMaskRules: regionMask.ruleCount,
+        regionMaskPixels: regionMask.maskedPixels,
+      });
+      res.json({
+        ok: true,
+        screen: latestScreenSnapshot(),
+      });
+    } catch (error) {
+      jsonError(res, 400, 'Screen frame processing failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.post('/api/screen/capture-now', async (req, res) => {
