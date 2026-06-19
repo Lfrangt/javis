@@ -39,6 +39,14 @@ export default {
     );
 
     out.push(
+      realtime.voiceHealth?.summary && realtime.voiceHealth?.status
+        ? realtime.voiceHealth.status === 'ready'
+          ? ok('realtime.voice_health', 'Realtime voice health', realtime.voiceHealth.summary)
+          : warn('realtime.voice_health', 'Realtime voice health', realtime.voiceHealth.summary, realtime.voiceHealth)
+        : fail('realtime.voice_health', 'Realtime voice health', 'config snapshot did not expose provider health state'),
+    );
+
+    out.push(
       realtime.preflightContextEnabled
         ? ok('realtime.preflight.enabled', 'Realtime preflight', 'preflight context injection is enabled')
         : fail('realtime.preflight.enabled', 'Realtime preflight', 'JAVIS_REALTIME_PREFLIGHT_CONTEXT_ENABLED is disabled'),

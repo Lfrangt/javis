@@ -92,6 +92,23 @@ function issueLines(doctor) {
     .map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.next || check.summary}`);
 }
 
+function summarizeVoiceHealth(voiceHealth, conversation, doctor) {
+  const doctorVoice = (doctor?.checks || []).find((check) => check.id === 'realtime_voice_provider');
+  if (doctorVoice && doctorVoice.status !== 'ready') {
+    return `${doctorVoice.status} · ${compact(doctorVoice.summary, 130)}`;
+  }
+  if (voiceHealth?.status && voiceHealth.status !== 'ready') {
+    return `${voiceHealth.status} · ${compact(voiceHealth.summary || voiceHealth.error || '-', 130)}`;
+  }
+  if (conversation?.error) {
+    return `error · ${compact(conversation.error, 130)}`;
+  }
+  if (voiceHealth?.kind === 'last_success') {
+    return 'provider ok';
+  }
+  return '';
+}
+
 function ensureEnvFile() {
   if (fs.existsSync(ENV_FILE)) return false;
   if (fs.existsSync(ENV_EXAMPLE_FILE)) {
@@ -191,7 +208,8 @@ async function printStatus() {
     }
     if (status.conversation) {
       const conversation = status.conversation;
-      console.log(`Voice: ${conversation.status || 'idle'} · mic ${conversation.micMode || 'open'} · screen ${conversation.screenLive ? 'on' : 'off'}${conversation.stale ? ' · stale' : ''}${conversation.error ? ` · ${conversation.error}` : ''}`);
+      const voiceHealth = summarizeVoiceHealth(status.voiceHealth, conversation, doctor.doctor);
+      console.log(`Voice: ${conversation.status || 'idle'} · mic ${conversation.micMode || 'open'} · screen ${conversation.screenLive ? 'on' : 'off'}${conversation.stale ? ' · stale' : ''}${voiceHealth ? ` · ${voiceHealth}` : ''}`);
     }
     if (status.ambient) {
       console.log(`Ambient: ${status.ambient.enabled ? 'on' : 'off'} · screen ${status.ambient.captureScreen ? 'on' : 'off'} · ${status.ambient.count || 0} sample(s)`);
@@ -702,6 +720,7 @@ function printRealtimeEvidence(result) {
   const evidence = result?.evidence || result || {};
   const checks = evidence.checks || {};
   const conversation = evidence.conversation || {};
+  const voiceHealth = evidence.voiceHealth || {};
   const negotiation = conversation.lastRealtimeSessionNegotiation || {};
   const injection = conversation.lastRealtimeProgressInjection || {};
   const progress = evidence.progress || {};
@@ -726,6 +745,10 @@ function printRealtimeEvidence(result) {
   }
   console.log('\nVoice session:');
   console.log(`- status ${conversation.status || 'idle'} · mic ${conversation.micMode || '-'} · session ${conversation.sessionId || '-'}`);
+  if (voiceHealth.summary) {
+    console.log(`- provider ${voiceHealth.status || 'unknown'} · ${compact(voiceHealth.summary, 220)}`);
+    if (voiceHealth.next) console.log(`- next ${compact(voiceHealth.next, 220)}`);
+  }
   if (Object.keys(negotiation).length) {
     console.log(`- negotiation ok=${negotiation.ok === true ? 'yes' : 'no'} · status=${negotiation.statusCode || '-'} · offer=${negotiation.offerBytes || 0}B · answer=${negotiation.answerBytes || 0}B · ${formatInterval(negotiation.durationMs)}`);
   } else {

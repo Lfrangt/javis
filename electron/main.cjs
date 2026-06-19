@@ -85,6 +85,7 @@ const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true'
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
+const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const API_AUTH_ENABLED = process.env.JAVIS_API_AUTH !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
@@ -13939,6 +13940,162 @@ function normalizeRealtimeSessionNegotiation(options = {}) {
   };
 }
 
+function parseRealtimeErrorPayload(value) {
+  if (!value) return '';
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return '';
+    if ((text.startsWith('{') && text.endsWith('}')) || (text.startsWith('[') && text.endsWith(']'))) {
+      try {
+        const parsed = JSON.parse(text);
+        const parsedText = parseRealtimeErrorPayload(parsed);
+        return parsedText || text;
+      } catch {
+        return text;
+      }
+    }
+    return text;
+  }
+  if (Array.isArray(value)) {
+    return value.map(parseRealtimeErrorPayload).filter(Boolean).join(' ');
+  }
+  if (typeof value === 'object') {
+    return [
+      value.message,
+      value.code,
+      value.type,
+      value.error,
+      value.error?.message,
+      value.error?.code,
+      value.error?.type,
+      value.details,
+    ].map(parseRealtimeErrorPayload).filter(Boolean).join(' ');
+  }
+  return String(value);
+}
+
+function realtimeNegotiationFromAuditEvent(event = {}) {
+  if (event.type !== 'realtime.session_negotiation') return null;
+  const data = event.data || {};
+  const createdAt = Date.parse(event.ts || '') || 0;
+  if (!createdAt || Date.now() - createdAt > REALTIME_PROVIDER_WARNING_MAX_AGE_MS) return null;
+  return {
+    source: compactRecordText(data.source || 'audit', 80),
+    sessionId: String(data.sessionId || '').slice(0, 120),
+    micMode: normalizeConversationMicMode(data.micMode),
+    model: compactRecordText(data.model || models.realtime, 80),
+    voice: compactRecordText(data.voice || models.realtimeVoice, 80),
+    offerBytes: boundedCount(data.offerBytes, 10_000_000),
+    answerBytes: boundedCount(data.answerBytes, 10_000_000),
+    statusCode: boundedCount(data.statusCode, 999),
+    ok: Boolean(data.ok),
+    durationMs: boundedCount(data.durationMs, 600000),
+    error: compactRecordText(data.error || '', 300),
+    createdAt,
+    auditTs: event.ts || '',
+    fromAudit: true,
+  };
+}
+
+function latestRealtimeNegotiationAuditSnapshot(limit = 80) {
+  const events = readRecentAudit(limit);
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const negotiation = realtimeNegotiationFromAuditEvent(events[index]);
+    if (negotiation) return negotiation;
+  }
+  return null;
+}
+
+function latestRealtimeNegotiationSnapshot(conversation, options = {}) {
+  const current = conversation?.lastRealtimeSessionNegotiation || null;
+  const audit = options.includeRecentAudit ? latestRealtimeNegotiationAuditSnapshot() : null;
+  if (!current) return audit;
+  if (!audit) return current;
+  return Number(audit.createdAt || 0) > Number(current.createdAt || 0) ? audit : current;
+}
+
+function classifyRealtimeProviderIssue(details = {}) {
+  const statusCode = Number(details.statusCode || 0);
+  const rawError = parseRealtimeErrorPayload(details.error || '');
+  const text = `${statusCode || ''} ${rawError}`.toLowerCase();
+  if (!rawError && !statusCode && details.ok !== false) return null;
+  if (statusCode === 429 || /insufficient[_ -]?quota|quota|billing|rate[_ -]?limit|too many requests|exceeded your current quota/i.test(text)) {
+    return {
+      kind: 'quota_or_rate_limit',
+      status: 'warning',
+      summary: statusCode === 429
+        ? 'Realtime voice last hit an OpenAI quota/rate-limit error (HTTP 429).'
+        : 'Realtime voice last hit an OpenAI quota or billing error.',
+      next: 'Check OpenAI billing/quota, wait for rate-limit recovery, or switch the Realtime model/provider before relying on live voice.',
+    };
+  }
+  if ([401, 403].includes(statusCode) || /invalid[_ -]?api[_ -]?key|incorrect api key|unauthorized|forbidden|permission denied|not allowed/i.test(text)) {
+    return {
+      kind: 'auth_or_permission',
+      status: 'blocked',
+      summary: `Realtime voice provider rejected auth or permissions${statusCode ? ` (HTTP ${statusCode})` : ''}.`,
+      next: 'Update OPENAI_API_KEY, confirm the project has Realtime access, then restart JAVIS.',
+    };
+  }
+  if (statusCode >= 400 || details.ok === false) {
+    return {
+      kind: 'provider_error',
+      status: 'warning',
+      summary: `Realtime voice last provider call failed${statusCode ? ` (HTTP ${statusCode})` : ''}.`,
+      next: 'Open the terminal CUI Realtime evidence monitor or retry a live voice session after checking provider status.',
+    };
+  }
+  if (/fetch failed|network|timeout|timed out|econn|enotfound|socket/i.test(text)) {
+    return {
+      kind: 'network',
+      status: 'warning',
+      summary: 'Realtime voice last failed before reaching the provider.',
+      next: 'Check network connectivity and retry a live voice session.',
+    };
+  }
+  return null;
+}
+
+function realtimeVoiceHealthSnapshot(options = {}) {
+  const conversation = options.conversation || conversationStateSnapshot();
+  const negotiation = latestRealtimeNegotiationSnapshot(conversation, {
+    includeRecentAudit: options.includeRecentAudit === true,
+  });
+  const errorText = parseRealtimeErrorPayload([
+    conversation?.error || '',
+    negotiation?.error || '',
+  ]);
+  const issue = OPENAI_API_KEY
+    ? classifyRealtimeProviderIssue({
+      ok: negotiation?.ok,
+      statusCode: negotiation?.statusCode,
+      error: errorText,
+    })
+    : {
+      kind: 'missing_key',
+      status: 'blocked',
+      summary: 'Realtime voice cannot start because OPENAI_API_KEY is missing.',
+      next: 'Add OPENAI_API_KEY to .env and restart JAVIS.',
+    };
+  const lastSuccess = Boolean(negotiation?.ok && Number(negotiation?.statusCode || 0) >= 200 && Number(negotiation?.statusCode || 0) < 300);
+  const status = issue?.status || 'ready';
+  const summary = issue?.summary
+    || (lastSuccess
+      ? `Last Realtime WebRTC negotiation succeeded${negotiation.statusCode ? ` (HTTP ${negotiation.statusCode})` : ''}.`
+      : 'No Realtime voice provider error recorded.');
+  return {
+    ok: status !== 'blocked',
+    status,
+    kind: issue?.kind || (lastSuccess ? 'last_success' : 'no_provider_error'),
+    summary,
+    next: issue?.next || '',
+    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    maxAuditAgeMs: REALTIME_PROVIDER_WARNING_MAX_AGE_MS,
+    lastNegotiation: negotiation,
+    error: compactRecordText(errorText, 300),
+  };
+}
+
 function recordRealtimeSessionNegotiation(options = {}) {
   const negotiation = normalizeRealtimeSessionNegotiation(options);
   if (options.dryRun === true) {
@@ -14073,6 +14230,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const conversation = conversationStateSnapshot();
   const negotiation = conversation.lastRealtimeSessionNegotiation || null;
   const injection = conversation.lastRealtimeProgressInjection || null;
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
   const checks = {
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
@@ -14104,6 +14262,7 @@ function realtimeVoiceEvidenceSnapshot() {
       lastRealtimeSessionNegotiation: negotiation,
       lastRealtimeProgressInjection: injection,
     },
+    voiceHealth,
     progress: {
       spokenSummary: progress.spokenSummary,
       workerSummary: progress.workerSummary,
@@ -16608,7 +16767,7 @@ function readinessItem(id, label, status, summary, next = '') {
   return { id, label, status, summary, next };
 }
 
-function readinessSnapshot() {
+function readinessSnapshot(options = {}) {
   const counts = queueCounts();
   const storageCheck = storageWriteCheck(DATA_DIR);
   const accessibilityTrusted =
@@ -16620,6 +16779,7 @@ function readinessSnapshot() {
   const pendingApprovals = pendingApprovalSnapshot(20);
   const writeFileRoots = actionPolicy.allow?.write_file?.allowedRoots || [];
   const writeFileLimited = writeFileRoots.length > 0 && !writeFileRoots.includes('*');
+  const realtimeVoiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: options.includeRecentAudit === true });
   const trustedLevel3Mode =
     TRUSTED_LOCAL_MODE &&
     LOCAL_EXEC_ENABLED &&
@@ -16655,6 +16815,13 @@ function readinessSnapshot() {
       OPENAI_API_KEY ? 'ready' : 'blocked',
       OPENAI_API_KEY ? 'Configured for realtime and model lanes.' : 'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
       OPENAI_API_KEY ? '' : 'Add OPENAI_API_KEY to .env and restart JAVIS.',
+    ),
+    readinessItem(
+      'realtime_voice_provider',
+      'Realtime voice provider',
+      realtimeVoiceHealth.status,
+      realtimeVoiceHealth.summary,
+      realtimeVoiceHealth.next,
     ),
     readinessItem(
       'runtime_storage',
@@ -17224,7 +17391,7 @@ function realtimeBrowserWorkflowToolSnapshot() {
 
 async function doctorReportSnapshot() {
   const health = healthSnapshot();
-  const readiness = readinessSnapshot();
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
   const config = configCheckSnapshot();
   const resident = await residentStatusSnapshot();
   const readFilePreview = previewDoctorAction({ action: 'list_directory', path: '.', maxEntries: 1 });
@@ -17329,6 +17496,7 @@ async function doctorReportSnapshot() {
 
   for (const id of [
     'openai_key',
+    'realtime_voice_provider',
     'runtime_storage',
     'microphone_permission',
     'screen_permission',
@@ -21172,6 +21340,7 @@ function realtimeConfigSnapshot(options = {}) {
     audio: config.audio,
     screenPrivacy: screenPrivacySnapshot(),
     conversation: conversationStateSnapshot(),
+    voiceHealth: realtimeVoiceHealthSnapshot(),
     wake: wakeStatusSnapshot(),
     toolCount: toolNames.length,
     toolNames,
@@ -21741,6 +21910,7 @@ function startApiServer() {
       screenPrivacy: screenPrivacySnapshot(),
       presence,
       conversation,
+      voiceHealth: realtimeVoiceHealthSnapshot({ conversation }),
       ambient: ambientStateSnapshot(5),
       learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),

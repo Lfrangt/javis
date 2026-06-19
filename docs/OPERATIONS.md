@@ -74,6 +74,8 @@ npm --silent run doctor -- --json --allow-blocked
 curl http://127.0.0.1:3417/api/doctor/report
 ```
 
+Doctor also reports Realtime voice provider health. A configured `OPENAI_API_KEY` is not enough: recent WebRTC session negotiation failures, including HTTP 429 quota/rate-limit and billing errors, show as a warning for up to `JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS` (24 hours by default). This keeps the desktop pet minimal while the terminal CUI and `/api/doctor/report` explain why live voice is not usable.
+
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
 ```bash
