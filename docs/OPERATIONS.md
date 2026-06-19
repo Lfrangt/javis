@@ -998,6 +998,21 @@ Jobs are persisted after creation and on every status transition. If JAVIS exits
 
 Running Codex, Claude, and explicit CLI jobs write stdout/stderr into the job log while they run. Use the buddy panel or `POST /api/jobs/<job-id>/cancel` to stop queued or running work.
 
+## Live Worker Dogfood
+
+Use the live worker dogfood scripts when you need proof that JAVIS can actually delegate work to Codex, Claude, and local CLI lanes instead of only previewing routes:
+
+```bash
+npm run dogfood:workers-live
+npm run dogfood:realtime-live
+```
+
+`dogfood:workers-live` queues real read-only Codex, Claude, and local CLI jobs, waits for completion, and verifies logs, attempts, cancellation state, recent job surfacing, and grouped worker progress.
+
+`dogfood:realtime-live` simulates a live Realtime conversation state without starting microphone capture, queues the same read-only worker mix, builds passive Realtime progress context, records `realtime.progress_injection`, and verifies the spoken progress summary is short enough for voice.
+
+These scripts are intentionally opt-in because they run local worker commands. The built-in tasks are read-only and explicitly tell Codex/Claude/local CLI not to write files, edit files, or commit.
+
 ## Resident Pet Load
 
 The desktop pet should stay quiet and cheap while it is parked. The renderer polls `GET /api/pet/status` every 5 seconds for traffic-light state, voice/session state, window position, approvals, inbox/session counts, and a small job snapshot.
