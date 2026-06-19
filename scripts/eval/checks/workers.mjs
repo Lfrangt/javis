@@ -40,8 +40,13 @@ export default {
     const p = progress.data?.progress;
     out.push(
       progress.ok && p
-        ? ok('workers.progress', 'Unified progress', `activeJobs=${(p.activeJobs || []).length} blockedWorkflows=${(p.blockedWorkflows || []).length} nextActions=${(p.nextActions || []).length}`)
+        ? ok('workers.progress', 'Unified progress', `activeJobs=${(p.activeJobs || []).length} blockedWorkflows=${(p.blockedWorkflows || []).length} workerGroups=${(p.workerGroups || []).length} nextActions=${(p.nextActions || []).length}`)
         : warn('workers.progress', 'Unified progress', `GET /api/work/progress ${progress.status} ${progress.error || ''}`),
+    );
+    out.push(
+      progress.ok && p && Array.isArray(p.workerGroups) && typeof p.workerSummary === 'string'
+        ? ok('workers.progress_groups', 'Worker progress groups', `${p.workerSummary || 'empty summary'}`)
+        : warn('workers.progress_groups', 'Worker progress groups', 'progress response does not expose workerGroups/workerSummary yet'),
     );
 
     const audit = await ctx.api('/api/audit/recent?limit=5');

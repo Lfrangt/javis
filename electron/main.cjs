@@ -15228,6 +15228,100 @@ function formatRoutingProgressLine(record) {
   return `${entry.lane}/${entry.status} · owner:${entry.owner} · group:${entry.parallelGroup}${ownership} · ${compactRecordText(entry.taskTitle, 90)} · ${progressAgeLabel(entry.updatedAt)} · ${entry.resultLink}${blocker}${next}${detail}`;
 }
 
+function routeForWorkerJob(job) {
+  const routes = routingRecordsForJob(job?.id);
+  return routes[0] || null;
+}
+
+function workerJobProgressItem(job) {
+  const route = routeForWorkerJob(job);
+  const routeEntry = route ? routingLedgerEntry(route) : null;
+  const recoveryHint = job.recoveryPlan?.nextActions?.[0]
+    ? `${job.recoveryPlan.nextActions[0].label}: ${compactRecordText(job.recoveryPlan.nextActions[0].reason || '', 160)}`
+    : routeEntry?.nextAction || '';
+  return {
+    id: job.id,
+    title: job.title,
+    mode: job.mode,
+    lane: route?.lane || (job.mode === 'cli' ? 'local' : job.mode),
+    owner: route?.owner || ownerForRoutingLane(job.mode === 'cli' ? 'local' : job.mode),
+    parallelGroup: route?.parallelGroup || job.source || job.mode,
+    status: job.status,
+    source: job.source,
+    updatedAt: job.updatedAt,
+    resultLink: routeEntry?.resultLink || `/api/jobs/${job.id}`,
+    resultSummary: compactRecordText(job.result || job.log || route?.resultSummary || '', 240),
+    recoveryHint,
+    failureKind: job.failureKind || route?.failureKind || '',
+  };
+}
+
+function buildWorkerProgressGroups(jobs = []) {
+  const relevant = uniqueProgressRecords(
+    jobs.filter((job) => ['queued', 'running', 'done', 'failed', 'cancelled'].includes(job.status)),
+    (job) => job.id,
+  ).map(workerJobProgressItem);
+  const groups = new Map();
+  for (const item of relevant) {
+    const key = `${item.parallelGroup}:${item.owner}:${item.lane}`;
+    const group = groups.get(key) || {
+      id: key,
+      parallelGroup: item.parallelGroup,
+      owner: item.owner,
+      lane: item.lane,
+      total: 0,
+      statusCounts: { queued: 0, running: 0, done: 0, failed: 0, cancelled: 0 },
+      active: 0,
+      done: 0,
+      failed: 0,
+      latestUpdatedAt: 0,
+      latestResultLink: '',
+      nextAction: '',
+      jobs: [],
+    };
+    group.total += 1;
+    group.statusCounts[item.status] = (group.statusCounts[item.status] || 0) + 1;
+    if (item.status === 'queued' || item.status === 'running') group.active += 1;
+    if (item.status === 'done') group.done += 1;
+    if (item.status === 'failed') group.failed += 1;
+    if (item.updatedAt >= group.latestUpdatedAt) {
+      group.latestUpdatedAt = item.updatedAt;
+      group.latestResultLink = item.resultLink;
+      group.nextAction = item.recoveryHint || item.resultLink;
+    }
+    group.jobs.push(item);
+    groups.set(key, group);
+  }
+  return Array.from(groups.values())
+    .sort((a, b) => b.latestUpdatedAt - a.latestUpdatedAt)
+    .slice(0, 8);
+}
+
+function formatWorkerGroupLine(group) {
+  const counts = [
+    group.active ? `${group.active} active` : '',
+    group.done ? `${group.done} done` : '',
+    group.failed ? `${group.failed} failed` : '',
+    group.statusCounts.cancelled ? `${group.statusCounts.cancelled} cancelled` : '',
+  ].filter(Boolean).join(', ') || `${group.total} tracked`;
+  const next = group.nextAction ? ` · next: ${compactRecordText(group.nextAction, 120)}` : '';
+  return `${group.owner}/${group.lane} · group:${compactRecordText(group.parallelGroup, 60)} · ${counts} · ${progressAgeLabel(group.latestUpdatedAt)}${next}`;
+}
+
+function workerProgressSummary(workerGroups = []) {
+  if (!workerGroups.length) return 'No worker groups are active or recent.';
+  const active = workerGroups.reduce((sum, group) => sum + group.active, 0);
+  const done = workerGroups.reduce((sum, group) => sum + group.done, 0);
+  const failed = workerGroups.reduce((sum, group) => sum + group.failed, 0);
+  const pieces = [
+    `${workerGroups.length} worker group(s)`,
+    active ? `${active} active` : '',
+    done ? `${done} done` : '',
+    failed ? `${failed} failed` : '',
+  ].filter(Boolean);
+  return pieces.join(', ');
+}
+
 function uniqueProgressRecords(list, keyForRecord) {
   const seen = new Set();
   return list.filter((item) => {
@@ -15265,6 +15359,8 @@ function workProgressCheckIn(options = {}) {
   const briefing = workflowBriefing({ workflowLimit, jobLimit });
   const collaboration = collaborationSnapshot(5);
   const nextActions = (briefing.nextActions || []).slice(0, 3);
+  const workerGroups = buildWorkerProgressGroups([...activeJobs, ...recentJobs]);
+  const workerSummary = workerProgressSummary(workerGroups);
 
   const lines = [
     collaboration.counts.active
@@ -15277,6 +15373,7 @@ function workProgressCheckIn(options = {}) {
       ? `现在有 ${activeJobs.length} 个后台任务正在排队或运行。`
       : '当前没有正在运行的后台任务。',
     activeJobs.length ? `运行中:\n${activeJobs.map((job, index) => `${index + 1}. ${formatJobProgressLine(job)}`).join('\n')}` : '',
+    workerGroups.length ? `Worker groups: ${workerSummary}\n${workerGroups.slice(0, 5).map((group, index) => `${index + 1}. ${formatWorkerGroupLine(group)}`).join('\n')}` : '',
     activeWorkflows.length
       ? `活跃工作流:\n${activeWorkflows.map((workflow, index) => `${index + 1}. ${formatWorkflowProgressLine(workflow)}`).join('\n')}`
       : '',
@@ -15299,6 +15396,7 @@ function workProgressCheckIn(options = {}) {
     blockedWorkflows: blockedWorkflows.length,
     activeRoutes: activeRoutes.length,
     activeCollaborationClaims: collaboration.counts.active,
+    workerGroups: workerGroups.length,
     recentJobs: recentJobs.length,
     recentWorkflows: recentWorkflows.length,
     recentRoutes: recentRoutes.length,
@@ -15325,6 +15423,8 @@ function workProgressCheckIn(options = {}) {
     recentRoutes,
     activeJobs,
     recentJobs,
+    workerGroups,
+    workerSummary,
     activeWorkflows,
     blockedWorkflows,
     recentWorkflows,

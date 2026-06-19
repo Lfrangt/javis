@@ -23,6 +23,11 @@ function jobHasEvidence(job = {}) {
   );
 }
 
+function groupsContainJobs(groups = [], jobs = []) {
+  const ids = new Set(groups.flatMap((group) => (group.jobs || []).map((job) => job.id)));
+  return jobs.every((job) => ids.has(job.id));
+}
+
 async function waitForJobs(ctx, jobs, timeoutMs = DEFAULT_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   let latest = jobs;
@@ -154,6 +159,18 @@ export default {
         : fail('workers_live.progress_after', 'Progress after completion', 'work progress did not surface every completed live worker job', {
           jobIds: completed.map((job) => job.id),
           recentIds: Array.from(recentIds),
+        }),
+    );
+    const groups = Array.isArray(after?.workerGroups) ? after.workerGroups : [];
+    const groupsHaveJobs = groupsContainJobs(groups, completed);
+    const hasSummary = typeof after?.workerSummary === 'string' && after.workerSummary.includes('worker group');
+    out.push(
+      progressAfter.ok && groupsHaveJobs && hasSummary
+        ? ok('workers_live.progress_groups', 'Grouped worker progress', `${after.workerSummary}; groups=${groups.length}`)
+        : fail('workers_live.progress_groups', 'Grouped worker progress', 'work progress did not group every live worker job by owner/lane/group', {
+          workerSummary: after?.workerSummary,
+          workerGroups: groups,
+          jobIds: completed.map((job) => job.id),
         }),
     );
 

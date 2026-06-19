@@ -65,7 +65,7 @@
 - Creative app bridge: current build recognizes video editing and music composition tasks, chooses common NLE/DAW apps, records stage action packs for imports, timeline edits, subtitles, MIDI sketches, mix/export previews, executes one guarded action at a time, and performs post-action screen/UI verification with recovery hints; next, add app-specific result checks for Final Cut Pro, Resolve, Logic, GarageBand, and Ableton.
 - Coding workflows through Codex and Claude Code with clear owner/scope boundaries, progress updates, and parallel routing for independent work. Current build records per-task ownership metadata and serializes overlapping write scopes instead of launching competing agents against the same files; `npm run eval -- --only=parallel` dogfoods two read-only investigations plus two overlapping scoped documentation edits and verifies owner/scope/status/result-link metadata.
 - Live worker dogfood is opt-in: `JAVIS_EVAL_LIVE_WORKERS=true npm run eval -- --only=workers-live` queues real read-only Codex, Claude, and local CLI jobs, then verifies job logs, attempts, cancel state, and `/api/work/progress` recent job links.
-- Verifiable next task: use the live worker evidence to improve spoken progress check-ins for multi-worker batches, especially grouped status by owner/lane and concise recovery hints.
+- Verifiable next task: use grouped worker progress to improve active Realtime spoken progress injection, so long Codex/Claude/local batches can be summarized without interrupting the user.
 
 ## Phase 3: Natural Collaboration
 

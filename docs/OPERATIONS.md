@@ -222,7 +222,7 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -d '{"intent":"research","query":"OpenAI Realtime API voice agent WebRTC docs","maxPages":2,"mode":"quick"}'
 ```
 
-The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, and workflows, including active work, recent completions, blockers, and next actions.
+The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, grouped Codex/Claude/local worker batches, and workflows, including active work, recent completions, blockers, recovery hints, and next actions. Use `workerGroups` / `workerSummary` when a voice or remote surface needs compact multi-agent progress instead of raw job rows.
 
 `/api/lanes/contracts` exposes the runtime owner/scope/handoff/risk contract for each lane. The Realtime tool `get_lane_contracts` uses the same registry, so the voice model can check boundaries before deciding whether to answer quickly, delegate to background, call Codex/Claude, or use browser/file/app/local tool surfaces.
 
