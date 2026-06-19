@@ -2431,6 +2431,35 @@ function upsertShortcutFromPromotion(options = {}) {
   };
 }
 
+function removeShortcut(options = {}) {
+  const id = String(options.id || options.shortcutId || '').trim();
+  const phrase = normalizeShortcutPhrase(options.phrase || options.trigger || options.name);
+  const existing = id
+    ? shortcuts.get(id)
+    : Array.from(shortcuts.values()).find((item) => item.normalizedPhrase === phrase) || null;
+  if (!existing) {
+    return {
+      ok: false,
+      status: 404,
+      error: 'Shortcut not found',
+      output: 'Shortcut not found.',
+    };
+  }
+  shortcuts.delete(existing.id);
+  persistShortcuts();
+  appendAudit('shortcut.removed', {
+    id: existing.id,
+    phrase: existing.phrase,
+    source: compactRecordText(options.source || 'api', 80),
+  });
+  return {
+    ok: true,
+    removed: existing,
+    shortcuts: shortcutSnapshot(20),
+    output: `Shortcut removed: "${existing.phrase}".`,
+  };
+}
+
 function markShortcutUsed(shortcut, source = 'router') {
   if (!shortcut?.id || !shortcuts.has(shortcut.id)) return shortcut;
   const next = {
@@ -21683,6 +21712,38 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(result) };
   }
 
+  if (name === 'get_skill_shortcuts') {
+    return {
+      ok: true,
+      output: JSON.stringify(shortcutSnapshot(args?.limit || 20)),
+    };
+  }
+
+  if (name === 'get_skill_shortcut_candidates') {
+    return {
+      ok: true,
+      output: JSON.stringify(shortcutPromotionCandidates({ limit: args?.limit || 8 })),
+    };
+  }
+
+  if (name === 'save_skill_shortcut') {
+    try {
+      const result = upsertShortcutFromPromotion({
+        ...(args || {}),
+        source: 'voice',
+        confirm: args?.confirm === true || args?.confirmed === true,
+      });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'forget_skill_shortcut') {
+    const result = removeShortcut({ ...(args || {}), source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_learning_profile') {
     return { ok: true, output: JSON.stringify(learningStateSnapshot()) };
   }
@@ -22131,6 +22192,11 @@ function createRealtimeSessionConfig(options = {}) {
       'Use remember_memory only when the user explicitly asks you to remember a preference, durable fact, or project note.',
       'Use search_memory when the user asks what you remember or when a task may depend on prior remembered local preferences.',
       'Use search_local_skills when the user asks to repeat, adapt, recall, or use a previously learned local workflow or demonstration-derived skill. Local skills are procedures, not permission to act without confirmation.',
+      'Use get_skill_shortcuts when the user asks what shortcut phrases are saved for repeated local skill workflows.',
+      'Use get_skill_shortcut_candidates when the user asks what repeated skill-plan workflows can be saved as shortcuts.',
+      'Use save_skill_shortcut only after the user explicitly asks to save a shortcut phrase for a recalled skill plan. Pass confirm:true only after the user confirms saving that specific phrase.',
+      'Use forget_skill_shortcut when the user explicitly asks to delete, forget, or remove a saved skill shortcut phrase.',
+      'Skill shortcuts only recall a skillRecallPlan for routing; they do not execute skills, approve actions, or expand permissions.',
       'Use get_learning_profile when the user asks what you have learned from passive local observation, recent app/browser focus, or inferred work patterns.',
       'Treat the learning profile as local inferred context, not as user-confirmed memory or a reason to act without being asked.',
       'Use draft_learning_skill when the user asks to turn learned habits, repeated workflows, or a demonstrated local process into a reviewable Codex-style skill draft. This does not save files.',
@@ -22800,6 +22866,68 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'get_skill_shortcuts',
+        description: 'List saved local shortcut phrases that recall reusable skill plans. Read-only; shortcuts do not grant action permission.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_skill_shortcut_candidates',
+        description: 'List completed skill-plan route/job evidence that can be saved as shortcut phrases after user confirmation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'save_skill_shortcut',
+        description: 'Save a local shortcut phrase for a recalled skill plan only after explicit user confirmation. Without confirm:true, returns a confirmation-required response.',
+        parameters: {
+          type: 'object',
+          properties: {
+            phrase: { type: 'string' },
+            title: { type: 'string' },
+            routeId: { type: 'string' },
+            jobId: { type: 'string' },
+            aliases: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            skillRecallPlan: { type: 'object', additionalProperties: true },
+            plan: { type: 'object', additionalProperties: true },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+          },
+          required: ['phrase'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'forget_skill_shortcut',
+        description: 'Delete a saved local skill shortcut phrase by id or phrase after the user explicitly asks to forget/remove it.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            shortcutId: { type: 'string' },
+            phrase: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_learning_profile',
         description: 'Get the local inferred learning profile distilled from passive ambient app/window/browser metadata. This is not explicit user-approved memory.',
         parameters: {
@@ -23431,6 +23559,10 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_work_progress',
   'get_collaboration_state',
   'search_local_skills',
+  'get_skill_shortcuts',
+  'get_skill_shortcut_candidates',
+  'save_skill_shortcut',
+  'forget_skill_shortcut',
   'get_ui_demonstrations',
   'start_ui_demonstration',
   'capture_ui_demonstration_step',
@@ -23457,6 +23589,7 @@ function realtimeInstructionChecks(instructions = '') {
     screenGrounding: /describe_screen/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
+    skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
     localExecution: /run_cli_tool|run_mac_action|run_file_action/i.test(text),
@@ -24264,16 +24397,12 @@ function startApiServer() {
   });
 
   api.delete('/api/shortcuts/:id', (req, res) => {
-    const id = String(req.params.id || '');
-    const existing = shortcuts.get(id);
-    if (!existing) {
-      jsonError(res, 404, 'Shortcut not found');
+    const result = removeShortcut({ id: req.params.id, source: req.query.source || 'api' });
+    if (!result.ok) {
+      jsonError(res, result.status || 404, result.error || 'Shortcut not found');
       return;
     }
-    shortcuts.delete(id);
-    persistShortcuts();
-    appendAudit('shortcut.removed', { id, phrase: existing.phrase, source: req.query.source || 'api' });
-    res.json({ ok: true, removed: existing, shortcuts: shortcutSnapshot(20) });
+    res.json(result);
   });
 
   api.post('/api/skills/local/search', express.json({ limit: '128kb' }), (req, res) => {

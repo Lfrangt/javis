@@ -90,7 +90,7 @@ This learning system is part of the product, not a hidden analytics feature:
 - Codex and Claude handle repo-bound or code-heavy work: implementation, tests, review, documentation updates, issue investigation, and scoped edits with explicit ownership.
 - Browser, file, and Mac-app workers handle their own tool surfaces through scoped capabilities, audit logs, and policy checks.
 - Parallel execution is allowed only for independent work scopes: separate repos, separate files, separate research tracks, or read-only investigations. Shared files, secrets, irreversible actions, and user approvals serialize through one visible owner.
-- Next verifiable engineering task: dogfood promoted shortcuts from the CUI through a live voice task, then add spoken promotion/forget controls once evidence shows the shortcut is being recalled without extra context capture.
+- Next verifiable engineering task: dogfood shortcut recall plus save/forget controls from a real renderer/WebRTC voice session, with the CUI evidence monitor open until the shortcut tool calls and routed recall are visible in local evidence.
 
 ## Scope
 

@@ -10,6 +10,10 @@ const REQUIRED_TOOLS = [
   'get_work_progress',
   'get_collaboration_state',
   'search_local_skills',
+  'get_skill_shortcuts',
+  'get_skill_shortcut_candidates',
+  'save_skill_shortcut',
+  'forget_skill_shortcut',
   'get_ui_demonstrations',
   'start_ui_demonstration',
   'capture_ui_demonstration_step',
@@ -27,6 +31,14 @@ const REQUIRED_TOOLS = [
   'run_mac_action',
   'run_file_action',
 ];
+
+function parseToolOutput(response) {
+  try {
+    return JSON.parse(response.data?.output || '{}');
+  } catch {
+    return null;
+  }
+}
 
 export default {
   lane: 'realtime',
@@ -84,6 +96,134 @@ export default {
         ? ok('realtime.instructions', 'Realtime instruction guardrails', `${Object.keys(realtime.instructionChecks || {}).length} invariant(s) present`)
         : fail('realtime.instructions', 'Realtime instruction guardrails', `missing invariant(s): ${failedInstructions.join(', ')}`),
     );
+
+    const shortcutList = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { name: 'get_skill_shortcuts', arguments: { limit: 3 } },
+    });
+    const shortcutListOutput = parseToolOutput(shortcutList);
+    out.push(
+      shortcutList.ok &&
+        shortcutList.data?.ok === true &&
+        shortcutListOutput?.counts &&
+        Array.isArray(shortcutListOutput.items)
+        ? ok('realtime.shortcut_list_tool', 'Realtime shortcut list tool', `${shortcutListOutput.counts.total || 0} saved shortcut(s)`)
+        : fail('realtime.shortcut_list_tool', 'Realtime shortcut list tool', `tool execute ${shortcutList.status}`, shortcutList.data),
+    );
+
+    const shortcutCandidates = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { name: 'get_skill_shortcut_candidates', arguments: { limit: 3 } },
+    });
+    const shortcutCandidateOutput = parseToolOutput(shortcutCandidates);
+    out.push(
+      shortcutCandidates.ok &&
+        shortcutCandidates.data?.ok === true &&
+        typeof shortcutCandidateOutput?.count === 'number' &&
+        Array.isArray(shortcutCandidateOutput.items)
+        ? ok('realtime.shortcut_candidate_tool', 'Realtime shortcut candidate tool', `${shortcutCandidateOutput.count} candidate(s)`)
+        : fail('realtime.shortcut_candidate_tool', 'Realtime shortcut candidate tool', `tool execute ${shortcutCandidates.status}`, shortcutCandidates.data),
+    );
+
+    const shortcutPhrase = `eval realtime shortcut ${Date.now().toString(36)}`;
+    let savedShortcutId = '';
+    try {
+      const skillRecallPlan = {
+        applied: true,
+        matched: 1,
+        decisionEffect: 'eval_realtime_shortcut_tool',
+        summary: 'Eval-only realtime shortcut tool plan.',
+        primarySkill: {
+          name: 'eval-realtime-shortcut-skill',
+          kind: 'eval',
+          summary: 'Eval-only shortcut tool skill.',
+        },
+        skills: [{
+          name: 'eval-realtime-shortcut-skill',
+          kind: 'eval',
+          summary: 'Eval-only shortcut tool skill.',
+        }],
+        recommendedTools: ['search_local_skills'],
+        planSteps: ['Use this only as eval evidence.'],
+        confirmationRequired: true,
+        confirmationGates: ['action_policy', 'control_mode'],
+        shortcutCandidate: {
+          eligible: true,
+          reason: 'Eval verifies realtime shortcut save gate.',
+          nextAction: 'Confirm before save.',
+        },
+      };
+      const savePreview = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          name: 'save_skill_shortcut',
+          arguments: {
+            phrase: shortcutPhrase,
+            skillRecallPlan,
+          },
+        },
+        retries: 0,
+      });
+      const savePreviewOutput = parseToolOutput(savePreview);
+      out.push(
+        savePreview.ok &&
+          savePreview.data?.ok === false &&
+          savePreviewOutput?.requiresConfirmation === true &&
+          savePreviewOutput?.status === 409
+          ? ok('realtime.shortcut_save_gate_tool', 'Realtime shortcut save gate', 'save_skill_shortcut requires confirm:true before writing')
+          : fail('realtime.shortcut_save_gate_tool', 'Realtime shortcut save gate', 'expected save tool to require confirmation', savePreview.data),
+      );
+
+      const saveConfirmed = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          name: 'save_skill_shortcut',
+          arguments: {
+            phrase: shortcutPhrase,
+            skillRecallPlan,
+            confirm: true,
+          },
+        },
+        retries: 0,
+      });
+      const saveConfirmedOutput = parseToolOutput(saveConfirmed);
+      savedShortcutId = saveConfirmedOutput?.shortcut?.id || '';
+      out.push(
+        saveConfirmed.ok &&
+          saveConfirmed.data?.ok === true &&
+          savedShortcutId &&
+          saveConfirmedOutput?.shortcut?.phrase === shortcutPhrase
+          ? ok('realtime.shortcut_save_tool', 'Realtime shortcut save tool', `saved ${shortcutPhrase}`)
+          : fail('realtime.shortcut_save_tool', 'Realtime shortcut save tool', 'expected confirmed save tool to persist shortcut', saveConfirmed.data),
+      );
+
+      const forget = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          name: 'forget_skill_shortcut',
+          arguments: {
+            id: savedShortcutId,
+          },
+        },
+        retries: 0,
+      });
+      const forgetOutput = parseToolOutput(forget);
+      if (forgetOutput?.ok) savedShortcutId = '';
+      out.push(
+        forget.ok &&
+          forget.data?.ok === true &&
+          forgetOutput?.removed?.phrase === shortcutPhrase
+          ? ok('realtime.shortcut_forget_tool', 'Realtime shortcut forget tool', `removed ${shortcutPhrase}`)
+          : fail('realtime.shortcut_forget_tool', 'Realtime shortcut forget tool', 'expected forget tool to delete saved shortcut', forget.data),
+      );
+    } finally {
+      if (savedShortcutId) {
+        await ctx.api(`/api/shortcuts/${encodeURIComponent(savedShortcutId)}?source=eval_cleanup`, {
+          method: 'DELETE',
+          retries: 0,
+        });
+      }
+    }
 
     const context = await ctx.api('/api/realtime/context?source=eval');
     const c = context.data?.context;

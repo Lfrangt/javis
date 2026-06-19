@@ -54,7 +54,7 @@ Renderer
 - Realtime work-progress lane: while voice is live, sends deduplicated silent `/api/work/progress` updates when background jobs, grouped Codex/Claude/local workers, or workflows change. The progress payload includes a short `spokenSummary` for voice answers. The resident records sanitized `/api/realtime/session` negotiation metadata for the OpenAI WebRTC offer/answer, and the renderer reports a sanitized `/api/realtime/progress-injection` receipt with WebRTC data-channel metadata. `/api/realtime/evidence` combines those receipts into one checklist for active-session dogfood.
 - Lane contract registry lane: deterministic OpenClaw-inspired contracts for realtime/background/Codex/Claude/local/browser/file/app ownership, non-goals, handoff tools, tool posture, and risk boundaries, exposed to API, Realtime tools, briefing, status, and doctor checks.
 - Task routing ledger lane: persists each quick/background/Codex/Claude/local routing decision with owner, scope, parallel group, approval requirement, status, and result link.
-- Skill shortcut lane: persists confirmed phrase triggers for previously recalled local skill plans, exposes CUI/API promotion and deletion, and feeds matched shortcuts back into routing without granting execution permission.
+- Skill shortcut lane: persists confirmed phrase triggers for previously recalled local skill plans, exposes CUI/API/Realtime voice promotion and deletion, and feeds matched shortcuts back into routing without granting execution permission.
 - Parallel task group lane: routes a bounded set of independent tasks under one `parallelGroup`, preserving per-task owner, scope, lane, status, and result link for progress check-ins.
 - Agent collaboration ledger lane: persists short-lived scope claims from external Claude Code, Codex, or local CLI workers, with heartbeat/release APIs and conflict counts used by briefing, CUI, voice, doctor, and the parallel ownership guard.
 - Push-to-talk lane: keeps resident voice from becoming an always-open microphone.
@@ -73,7 +73,7 @@ Renderer
 - Fast text lane: lightweight Q&A.
 - No-model local command lane: deterministic status, Inbox, open-app/open-URL, and web-search commands that run before model routing.
 - Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories, recalled local skill procedures, a persisted `contextPlan`, and `skillRecallPlan` evidence attached when model lanes or queued workers are used.
-- Skill shortcut lane: local phrase-to-`skillRecallPlan` recall for repeated successful workflows, managed through `/api/shortcuts` and the terminal CUI.
+- Skill shortcut lane: local phrase-to-`skillRecallPlan` recall for repeated successful workflows, managed through `/api/shortcuts`, the terminal CUI, and Realtime voice tools.
 - Background lane: slower higher-quality model work.
 - Delegation lane: hands code or long tasks to Codex or Claude Code with streamed logs, PID tracking, and cancellation.
 - Action lane: small local Mac actions, guarded by allowlists and confirmation.
@@ -148,7 +148,7 @@ Each routing record also stores `contextPlan`, which explains the planned contex
 
 `demonstrations.json` preserves explicit UI demonstrations started by the user through API/CUI/voice. Records store a goal, short user notes, sanitized current-app/browser context, screen metadata, Accessibility outline summaries, and a deterministic manual-preview playbook. Replay planning converts completed records into app workflow steps that re-observe live UI targets before any later action; replay execution requires explicit confirmation and still enters the normal app workflow, action-policy, control-mode, approval, and audit path. Completed demonstrations can also generate reviewable Codex-style skill drafts, and saving them to the local user skills directory requires explicit confirmation. They do not store screenshots or raw clipboard text.
 
-`shortcuts.json` preserves confirmed local trigger phrases for recalled skill plans. Shortcut candidates are built only from completed routing/job evidence that already carried an applied `skillRecallPlan`; saving a shortcut requires explicit confirmation through CUI/API. Later routing can match the phrase and attach that same plan even when broad memory search is disabled, but the shortcut does not execute the skill, approve a replay, or change action-policy/control-mode gates.
+`shortcuts.json` preserves confirmed local trigger phrases for recalled skill plans. Shortcut candidates are built only from completed routing/job evidence that already carried an applied `skillRecallPlan`; saving a shortcut requires explicit confirmation through CUI/API/Realtime voice tools. Later routing can match the phrase and attach that same plan even when broad memory search is disabled, but the shortcut does not execute the skill, approve a replay, or change action-policy/control-mode gates.
 
 `memories.json` preserves explicit local memories only when the user asks JAVIS to remember something. Memory records store text, kind, scope, tags, source, and timestamps, and can be searched or deleted through the local API.
 
