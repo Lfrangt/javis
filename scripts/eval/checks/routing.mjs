@@ -45,6 +45,8 @@ function cleanupEvalRoutingSkill(skill) {
   }
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 export default {
   lane: 'routing',
   async run(ctx) {
@@ -96,6 +98,7 @@ export default {
     );
 
     let evalSkill = null;
+    let evalWorkerJobId = '';
     try {
       evalSkill = writeEvalRoutingSkill();
       const routedWithSkill = await ctx.api('/api/tasks/route', {
@@ -121,9 +124,51 @@ export default {
           ? ok('routing.local_skill_plan', 'Local skill plan in routing', `${evalSkill.name} changed route plan with ${tools.length} tool hint(s)`)
           : fail('routing.local_skill_plan', 'Local skill plan in routing', 'expected recalled local skill plan in preview route and ledger record', routedWithSkill.data),
       );
+
+      const routedWorker = await ctx.api('/api/tasks/route', {
+        method: 'POST',
+        body: {
+          message: `Prepare the target panel saved state workflow with ${evalSkill.name}; start worker but do not mutate anything.`,
+          execute: true,
+          mode: 'background',
+          useMemory: true,
+          source: 'eval_skill_worker',
+          skillLimit: 5,
+          timeoutMs: 60000,
+        },
+      });
+      evalWorkerJobId = routedWorker.data?.job?.id || '';
+      let observedJob = routedWorker.data?.job || null;
+      if (evalWorkerJobId) {
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          const jobResponse = await ctx.api(`/api/jobs/${encodeURIComponent(evalWorkerJobId)}`);
+          observedJob = jobResponse.data?.job || observedJob;
+          if (/Using recalled skill plan/.test(String(observedJob?.log || ''))) break;
+          if (observedJob && !['queued', 'running'].includes(observedJob.status)) break;
+          await sleep(250);
+        }
+      }
+      const jobPlan = observedJob?.skillRecallPlan || routedWorker.data?.job?.skillRecallPlan;
+      const jobUsedPlan = /Using recalled skill plan/.test(String(observedJob?.log || ''));
+      out.push(
+        routedWorker.ok
+          && evalWorkerJobId
+          && jobPlan?.applied === true
+          && jobPlan?.primarySkill?.name === evalSkill.name
+          && jobUsedPlan
+          ? ok('routing.local_skill_worker', 'Local skill plan reaches worker', `${evalSkill.name} attached to job ${evalWorkerJobId}`)
+          : fail('routing.local_skill_worker', 'Local skill plan reaches worker', 'expected queued worker job to persist and log recalled skill plan use', { routedWorker: routedWorker.data, observedJob }),
+      );
     } catch (error) {
       out.push(fail('routing.local_skill_plan', 'Local skill plan in routing', error instanceof Error ? error.message : String(error)));
     } finally {
+      if (evalWorkerJobId) {
+        await ctx.api(`/api/jobs/${encodeURIComponent(evalWorkerJobId)}/cancel`, {
+          method: 'POST',
+          body: { reason: 'eval skill worker check complete' },
+          retries: 0,
+        });
+      }
       cleanupEvalRoutingSkill(evalSkill);
     }
 

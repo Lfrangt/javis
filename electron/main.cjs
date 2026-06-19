@@ -1973,6 +1973,7 @@ function normalizePersistedJob(job) {
     attempts: normalizeJobAttempts(job.attempts),
     failureKind: String(job.failureKind || '').slice(0, 80),
     recoveryPlan: normalizeRecoveryPlan(job.recoveryPlan),
+    skillRecallPlan: normalizeSkillRecallPlan(job.skillRecallPlan),
   };
 }
 
@@ -4758,6 +4759,28 @@ function formatSkillRecallPlanForPrompt(plan) {
     skillPlan.planSteps.map((step, index) => `${index + 1}. ${step}`).join('\n'),
     skillPlan.confirmationGates.length ? `Confirmation gates: ${skillPlan.confirmationGates.join(', ')}` : '',
   ].filter(Boolean).join('\n');
+}
+
+function formatSkillRecallPlanForWorker(plan) {
+  const skillPlan = normalizeSkillRecallPlan(plan);
+  if (!skillPlan.applied) return '';
+  return [
+    'Persisted skillRecallPlan for this worker. Use it as reusable procedure context, not as permission.',
+    `Primary recalled skill: [${skillPlan.primarySkill.kind}] ${skillPlan.primarySkill.name}`,
+    `Decision effect: ${skillPlan.decisionEffect}`,
+    skillPlan.recommendedTools.length ? `Relevant tools: ${skillPlan.recommendedTools.join(', ')}` : '',
+    skillPlan.planSteps.length ? `Required worker steps:\n${skillPlan.planSteps.map((step, index) => `${index + 1}. ${step}`).join('\n')}` : '',
+    skillPlan.confirmationGates.length ? `Confirmation gates that still apply: ${skillPlan.confirmationGates.join(', ')}` : '',
+    skillPlan.shortcutCandidate?.eligible ? `Shortcut candidate: ${skillPlan.shortcutCandidate.reason}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function taskWithWorkerSkillRecallPlan(task, job = {}) {
+  const text = String(task || job.task || '').trim();
+  const workerPlan = formatSkillRecallPlanForWorker(job.skillRecallPlan);
+  if (!workerPlan) return text;
+  if (/Persisted skillRecallPlan for this worker/i.test(text)) return text;
+  return [workerPlan, '', text].filter(Boolean).join('\n\n');
 }
 
 function uniqueMemories(list) {
@@ -13540,7 +13563,11 @@ async function routeTask(options = {}) {
   }
 
   const jobTask = taskInput;
-  const job = createJob(jobTask, decision.lane === 'background' ? 'background' : decision.lane, 'router', { title: task });
+  const job = createJob(jobTask, decision.lane === 'background' ? 'background' : decision.lane, routingContext.source || 'router', {
+    title: task,
+    skillRecallPlan,
+    timeoutMs: options.timeoutMs,
+  });
   return finalizeRouteResult({
     ok: true,
     executed: true,
@@ -14776,6 +14803,7 @@ function presenceStateSnapshot(options = {}) {
         mode: job.mode,
         status: job.status,
         title: job.title,
+        skill: normalizeSkillRecallPlan(job.skillRecallPlan).primarySkill.name || '',
         updatedAt: job.updatedAt,
       })).slice(0, 6),
       activeRoutes,
@@ -16532,12 +16560,15 @@ function updateRoutingRecordsForJob(job) {
   if (!job?.id) return;
   for (const record of routingRecords.values()) {
     if (record.jobId !== job.id) continue;
+    const existingSkillPlan = normalizeSkillRecallPlan(record.skillRecallPlan);
+    const jobSkillPlan = normalizeSkillRecallPlan(job.skillRecallPlan);
     setRoutingRecord(record.id, {
       status: normalizeRoutingStatus(job.status),
       resultSummary: compactRecordText(job.result || job.log || record.resultSummary, 500),
       attempts: normalizeJobAttempts(job.attempts),
       failureKind: job.failureKind || '',
       recoveryPlan: normalizeRecoveryPlan(job.recoveryPlan),
+      skillRecallPlan: existingSkillPlan.applied ? existingSkillPlan : jobSkillPlan,
       resultLink: routeResultLink(record),
     });
   }
@@ -16773,6 +16804,7 @@ function createRoutingRecordForWorkflow(options = {}) {
     resultSummary: options.resultSummary || workflow.result || '',
     ownership: options.ownership,
     contextPlan: options.contextPlan || decision.contextPlan,
+    skillRecallPlan: options.skillRecallPlan || job?.skillRecallPlan || decision.skillRecallPlan,
   });
 }
 
@@ -17245,6 +17277,7 @@ function routeForWorkerJob(job) {
 function workerJobProgressItem(job) {
   const route = routeForWorkerJob(job);
   const routeEntry = route ? routingLedgerEntry(route) : null;
+  const skillRecallPlan = normalizeSkillRecallPlan(job.skillRecallPlan || route?.skillRecallPlan);
   const recoveryHint = job.recoveryPlan?.nextActions?.[0]
     ? `${job.recoveryPlan.nextActions[0].label}: ${compactRecordText(job.recoveryPlan.nextActions[0].reason || '', 160)}`
     : routeEntry?.nextAction || '';
@@ -17262,6 +17295,10 @@ function workerJobProgressItem(job) {
     resultSummary: compactRecordText(job.result || job.log || route?.resultSummary || '', 240),
     recoveryHint,
     failureKind: job.failureKind || route?.failureKind || '',
+    skillRecallPlan: skillRecallPlan.applied ? skillRecallPlan : null,
+    skillPlanSummary: skillRecallPlan.applied
+      ? compactRecordText(`${skillRecallPlan.primarySkill.name}: ${skillRecallPlan.decisionEffect}`, 180)
+      : '',
   };
 }
 
@@ -17286,6 +17323,8 @@ function buildWorkerProgressGroups(jobs = []) {
       latestUpdatedAt: 0,
       latestResultLink: '',
       nextAction: '',
+      skillPlans: 0,
+      skills: [],
       jobs: [],
     };
     group.total += 1;
@@ -17297,6 +17336,11 @@ function buildWorkerProgressGroups(jobs = []) {
       group.latestUpdatedAt = item.updatedAt;
       group.latestResultLink = item.resultLink;
       group.nextAction = item.recoveryHint || item.resultLink;
+    }
+    if (item.skillRecallPlan?.applied) {
+      group.skillPlans += 1;
+      const skillName = item.skillRecallPlan.primarySkill?.name || '';
+      if (skillName && !group.skills.includes(skillName)) group.skills.push(skillName);
     }
     group.jobs.push(item);
     groups.set(key, group);
@@ -17313,8 +17357,9 @@ function formatWorkerGroupLine(group) {
     group.failed ? `${group.failed} failed` : '',
     group.statusCounts.cancelled ? `${group.statusCounts.cancelled} cancelled` : '',
   ].filter(Boolean).join(', ') || `${group.total} tracked`;
+  const skills = group.skills?.length ? ` · skills: ${group.skills.slice(0, 3).map((item) => compactRecordText(item, 50)).join(', ')}` : '';
   const next = group.nextAction ? ` · next: ${compactRecordText(group.nextAction, 120)}` : '';
-  return `${group.owner}/${group.lane} · group:${compactRecordText(group.parallelGroup, 60)} · ${counts} · ${progressAgeLabel(group.latestUpdatedAt)}${next}`;
+  return `${group.owner}/${group.lane} · group:${compactRecordText(group.parallelGroup, 60)} · ${counts} · ${progressAgeLabel(group.latestUpdatedAt)}${skills}${next}`;
 }
 
 function workerProgressSummary(workerGroups = []) {
@@ -18102,6 +18147,7 @@ function queueRecoveryJob(job, action = {}, options = {}) {
     recoveryForJobId: job.id,
     task: prompt,
     timeoutMs: Math.max(180000, Math.min(3600000, Number(job.timeoutMs || 180000))),
+    skillRecallPlan: job.skillRecallPlan,
   });
   appendJobLog(job.id, `Recovery job queued via work_next: ${recoveryJob.id} (${mode}).`);
   appendAudit('job.recovery_queued', {
@@ -18138,6 +18184,7 @@ function createJob(task, mode, source, metadata = {}) {
     task: String(metadata.task || task).slice(0, 24000),
     command: String(metadata.command || (mode === 'cli' ? task : '')).slice(0, 4000),
     timeoutMs: Math.max(1000, Math.min(3600000, Number(metadata.timeoutMs || 180000))),
+    skillRecallPlan: normalizeSkillRecallPlan(metadata.skillRecallPlan),
     cancelRequested: false,
     log: `Queued${source ? ` from ${source}` : ''}.`,
     result: '',
@@ -18169,6 +18216,7 @@ function setJob(id, patch) {
     attempts: patch.attempts === undefined ? existing.attempts || [] : normalizeJobAttempts(patch.attempts),
     failureKind: patch.failureKind === undefined ? existing.failureKind || '' : String(patch.failureKind || '').slice(0, 80),
     recoveryPlan: patch.recoveryPlan === undefined ? existing.recoveryPlan || null : normalizeRecoveryPlan(patch.recoveryPlan),
+    skillRecallPlan: patch.skillRecallPlan === undefined ? normalizeSkillRecallPlan(existing.skillRecallPlan) : normalizeSkillRecallPlan(patch.skillRecallPlan),
   };
   jobs.set(id, next);
   persistJobs();
@@ -20177,13 +20225,28 @@ async function processJob(job, task) {
   const abortController = new AbortController();
   activeJobRuns.set(job.id, { abortController, cancelled: false });
   setJob(job.id, { status: 'running', startedAt: Date.now(), log: `${job.log}\nStarted.` });
+  const currentJob = jobs.get(job.id) || job;
+  const skillPlan = normalizeSkillRecallPlan(currentJob.skillRecallPlan);
+  if (skillPlan.applied) {
+    appendJobLog(job.id, `Using recalled skill plan: ${skillPlan.primarySkill.name}; gates: ${skillPlan.confirmationGates.join(', ') || 'normal policy'}.`);
+    appendAudit('job.skill_recall_plan_attached', {
+      id: job.id,
+      mode: job.mode,
+      primarySkill: skillPlan.primarySkill.name,
+      matched: skillPlan.matched,
+      tools: skillPlan.recommendedTools.length,
+    });
+  }
+  const executionTask = job.mode === 'cli'
+    ? task
+    : taskWithWorkerSkillRecallPlan(task, currentJob);
   try {
     const result =
       job.mode === 'codex' || job.mode === 'claude'
-        ? await runDelegatedJob(job, task)
+        ? await runDelegatedJob(job, executionTask)
         : job.mode === 'cli'
-          ? await runCliJob(job, task)
-          : await runModelJob(job, task, abortController.signal);
+          ? await runCliJob(job, executionTask)
+          : await runModelJob(job, executionTask, abortController.signal);
     activeJobRuns.delete(job.id);
     finishJob(job.id, 'done', { result, log: `${jobs.get(job.id)?.log || ''}\nFinished.` });
   } catch (error) {

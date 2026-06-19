@@ -71,7 +71,7 @@ Renderer
 - Presence lane: read-only standby/watch/work/attention state that packages ambient context, wake status, local learning, active work, and intervention guardrails for CUI/API/voice use.
 - Fast text lane: lightweight Q&A.
 - No-model local command lane: deterministic status, Inbox, open-app/open-URL, and web-search commands that run before model routing.
-- Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories, recalled local skill procedures, a persisted `contextPlan`, and `skillRecallPlan` evidence attached when model lanes are used.
+- Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories, recalled local skill procedures, a persisted `contextPlan`, and `skillRecallPlan` evidence attached when model lanes or queued workers are used.
 - Background lane: slower higher-quality model work.
 - Delegation lane: hands code or long tasks to Codex or Claude Code with streamed logs, PID tracking, and cancellation.
 - Action lane: small local Mac actions, guarded by allowlists and confirmation.
@@ -137,7 +137,7 @@ By default, local runtime state lives in:
 `workflows.json` preserves recent user-level workflows, such as current-page summaries or background browser tasks. Workflow records store target app/page metadata, status, linked job id, parent workflow id, request text, and result summary so JAVIS can explain, continue, or copy recent work back to the clipboard.
 
 `routing.json` preserves user-level lane decisions across quick, background, Codex, Claude, local CLI, browser workflow, file workflow, and continuation paths. Records store lane, owner, scope, parallel group, approval requirement, status, result link, job/workflow ids, and compact result summaries so progress check-ins can explain who owns active work and what the next step is.
-Each routing record also stores `contextPlan`, which explains the planned context budget and why screen, vision, Accessibility, browser page/DOM, clipboard text, file, memory, local skills, learning, or delegated-worker context was included or skipped.
+Each routing record also stores `contextPlan`, which explains the planned context budget and why screen, vision, Accessibility, browser page/DOM, clipboard text, file, memory, local skills, learning, or delegated-worker context was included or skipped. When local skill recall applies, the record also stores `skillRecallPlan`, which names the recalled skill, recommended tools, worker steps, shortcut candidacy, and confirmation gates.
 
 `collaboration.json` preserves short-lived agent scope claims across resident restarts. External workers can claim an owner/scope/access pair, heartbeat it while editing, and release it when done. Active write claims seed the parallel router's ownership guard so JAVIS avoids launching overlapping Codex/Claude/local workers against the same file or folder.
 
@@ -151,7 +151,7 @@ Each routing record also stores `contextPlan`, which explains the planned contex
 
 `inbox.json` preserves local Inbox captures for pending follow-up items. Records store title, body, status, priority, source, tags, route metadata, and timestamps. Open items feed the resident status, menu bar, buddy panel, briefing next-action list, read-only triage output, and explicit next-action processing; routed items retain the selected lane, queued job id when present, and a short output summary.
 
-Running jobs keep their latest log in `jobs.json`. Codex and Claude workers are launched in their own process group so cancellation can stop the worker tree instead of only the shell wrapper.
+Running jobs keep their latest log in `jobs.json`. Jobs launched from a routed task also retain `skillRecallPlan` when one was available, and worker prompts/logs include that plan as reusable procedure context without turning it into permission. Codex and Claude workers are launched in their own process group so cancellation can stop the worker tree instead of only the shell wrapper.
 
 `audit.jsonl` records structured process, job, tool, and local-action events for debugging and later replay/audit work.
 

@@ -16,7 +16,7 @@ Local Mac-first realtime desktop buddy.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, browser page metadata, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
-- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, and attach recalled local skills as structured `skillRecallPlan` evidence during later task routing.
+- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, attach recalled local skills as structured `skillRecallPlan` evidence during later task routing, and pass that plan into queued background/Codex/Claude workers.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
@@ -35,7 +35,7 @@ Local Mac-first realtime desktop buddy.
 - Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, and avoid overlapping write races.
 - No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
 - Fast lane for lightweight Q&A.
-- Deep lane for slower background tasks with persisted logs and cancellation.
+- Deep lane for slower background tasks with persisted logs, cancellation, and recalled skill-plan context when routing found a matching local workflow.
 - Background CLI tool runner for explicit local commands such as `gh`, `git`, `npm`, Codex CLI, and Claude Code without blocking the voice lane.
 - Workflow history for recent browser, voice, and background work.
 - Local work briefing for recent progress, blockers, active work, and next actions.
