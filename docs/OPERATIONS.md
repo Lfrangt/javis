@@ -108,7 +108,7 @@ Use option `10. Toggle trusted local mode` when this Mac is intentionally being 
 
 Use option `11. Set control mode` to switch the runtime posture without editing JSON. `observe_only` keeps JAVIS watching and reading but blocks local actions, `ask_before_action` requires approval for Level 2+ actions, and `trusted_local` / `takeover_supervised` stay bounded by action policy.
 
-Use option `V. Watch Realtime voice evidence` while dogfooding a real WebRTC voice session. It polls `/api/realtime/evidence` and shows a structured `status`, `phase`, `blocker`, checklist, and manual dogfood runbook for provider readiness, renderer WebRTC negotiation, passive worker-progress injection through the WebRTC data channel, and the short spoken progress summary. `/api/realtime/dogfood` returns the same runbook without starting microphone capture. When the evidence reaches `READY`, ask the live voice session: `后台现在怎么样`.
+Use option `V. Watch Realtime voice evidence` while dogfooding a real WebRTC voice session. It polls `/api/realtime/evidence` and shows a structured `status`, `phase`, `blocker`, checklist, and manual dogfood runbook for provider readiness, renderer WebRTC negotiation, passive worker-progress injection through the WebRTC data channel, and the short spoken progress summary. `/api/realtime/dogfood` returns the same runbook without starting microphone capture. `POST /api/realtime/dogfood/prepare` can manually queue a short local read-only progress sample so a live voice session has fresh worker progress to receive. When the evidence reaches `READY`, ask the live voice session: `后台现在怎么样`.
 
 In trusted local mode, file write/create/copy/move roots default to the project, Desktop, Documents,
 and Downloads. Set `JAVIS_ALLOWED_WRITE_ROOTS` or edit `action-policy.json` in the CUI if you want a
@@ -276,6 +276,9 @@ curl http://127.0.0.1:3417/api/conversation/state
 curl http://127.0.0.1:3417/api/realtime/context
 curl http://127.0.0.1:3417/api/realtime/evidence
 curl http://127.0.0.1:3417/api/realtime/dogfood
+curl -X POST http://127.0.0.1:3417/api/realtime/dogfood/prepare \
+  -H 'Content-Type: application/json' \
+  -d '{"execute":true,"durationMs":45000}'
 # /api/realtime/evidence returns status/phase/checklist/blocker and a manual-only dogfood runbook
 # so CUI, eval, and future voice work-next flows can tell which real-session dogfood step is missing.
 curl -X POST http://127.0.0.1:3417/api/realtime/session-negotiation \

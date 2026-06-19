@@ -14415,6 +14415,12 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
         manualOnlyReason: 'Starting microphone/live voice requires explicit user action.',
       },
     },
+    prepareProgress: {
+      method: 'POST',
+      path: '/api/realtime/dogfood/prepare',
+      body: { execute: true, durationMs: 45000 },
+      manualOnlyReason: 'Preparing a progress sample queues a local read-only worker for live voice dogfood.',
+    },
     monitor: {
       endpoint: '/api/realtime/evidence',
       cui: 'npm run config -> V. Watch Realtime voice evidence',
@@ -14432,6 +14438,51 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
 function realtimeDogfoodRunbookSnapshot() {
   const evidence = realtimeVoiceEvidenceSnapshot();
   return realtimeDogfoodRunbookFromEvidence(evidence);
+}
+
+function realtimeDogfoodProgressSampleCommand(durationMs) {
+  const safeDurationMs = Math.max(5000, Math.min(120000, Number(durationMs || 45000)));
+  const script = [
+    `const ms=${safeDurationMs};`,
+    "console.log('JAVIS realtime dogfood progress sample started for ' + ms + 'ms at ' + new Date().toISOString());",
+    "setTimeout(() => { console.log('JAVIS realtime dogfood progress sample complete at ' + new Date().toISOString()); }, ms);",
+  ].join('');
+  return {
+    durationMs: safeDurationMs,
+    command: `node -e ${shQuote(script)}`,
+  };
+}
+
+async function prepareRealtimeDogfoodProgressSample(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const { durationMs, command } = realtimeDogfoodProgressSampleCommand(options.durationMs);
+  const task = {
+    task: `Prepare live Realtime voice worker-progress sample for ${Math.round(durationMs / 1000)}s`,
+    title: 'Realtime voice dogfood progress sample',
+    command,
+    mode: 'cli',
+    owner: 'local',
+    scope: 'runtime:realtime-dogfood-progress-sample',
+    access: 'read',
+    timeoutMs: durationMs + 30000,
+  };
+  const result = await routeParallelTasks({
+    execute,
+    parallelGroup: options.parallelGroup || `realtime-dogfood:${crypto.randomUUID()}`,
+    source: options.source || 'realtime_dogfood_prepare',
+    tasks: [task],
+  });
+  return {
+    ok: result.ok,
+    executed: execute,
+    durationMs,
+    manualOnly: true,
+    reason: 'This queues a short local read-only worker so a live Realtime session has fresh progress to receive.',
+    result,
+    output: execute
+      ? `Queued Realtime voice dogfood progress sample for ${Math.round(durationMs / 1000)}s. Keep voice live and watch /api/realtime/evidence.`
+      : `Preview Realtime voice dogfood progress sample for ${Math.round(durationMs / 1000)}s.`,
+  };
 }
 
 function realtimeVoiceEvidenceSnapshot() {
@@ -22286,6 +22337,18 @@ function startApiServer() {
       res.json({ dogfood: realtimeDogfoodRunbookSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood runbook failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/prepare', express.json({ limit: '128kb' }), async (req, res) => {
+    try {
+      const result = await prepareRealtimeDogfoodProgressSample({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_dogfood_prepare',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood progress sample failed', error instanceof Error ? error.message : String(error));
     }
   });
 

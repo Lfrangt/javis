@@ -181,11 +181,36 @@ export default {
         d.requiresUserPresence === true &&
         d.safety?.startsMicrophoneOnlyAfterUserAction === true &&
         d.start?.workNext?.path === '/api/work/next' &&
+        d.prepareProgress?.path === '/api/realtime/dogfood/prepare' &&
         d.monitor?.endpoint === '/api/realtime/evidence' &&
         typeof d.promptWhenReady === 'string' &&
         dogfoodRequiredSteps.every((id) => dogfoodStepIds.has(id))
         ? ok('realtime.dogfood_runbook', 'Realtime dogfood runbook', `${d.status}/${d.phase || '-'} · manual-only · ${d.nextAction || ''}`)
         : fail('realtime.dogfood_runbook', 'Realtime dogfood runbook', `GET /api/realtime/dogfood ${dogfood.status}`, dogfood.data),
+    );
+
+    const prepare = await ctx.api('/api/realtime/dogfood/prepare', {
+      method: 'POST',
+      body: {
+        execute: false,
+        durationMs: 5000,
+        source: 'eval',
+      },
+    });
+    const prep = prepare.data;
+    const prepResult = prep?.result || {};
+    out.push(
+      prepare.ok &&
+        prep &&
+        prep.manualOnly === true &&
+        prep.executed === false &&
+        prep.durationMs === 5000 &&
+        prepResult.executed === false &&
+        prepResult.parallelGroup &&
+        Array.isArray(prepResult.results) &&
+        prepResult.results[0]?.ownership?.access === 'read'
+        ? ok('realtime.dogfood_prepare_preview', 'Realtime dogfood progress sample preview', `${prep.durationMs}ms · ${prepResult.parallelGroup}`)
+        : fail('realtime.dogfood_prepare_preview', 'Realtime dogfood progress sample preview', `POST /api/realtime/dogfood/prepare ${prepare.status}`, prepare.data),
     );
 
     return out;

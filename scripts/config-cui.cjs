@@ -765,6 +765,9 @@ function printRealtimeEvidence(result) {
     console.log(`- start: ${dogfood.start?.petAction || 'Click the desktop pet or use the summon hotkey.'}`);
     console.log(`- hotkey: ${dogfood.start?.hotkey || 'Option+Space'}`);
     console.log(`- work-next: ${dogfood.start?.workNext?.method || 'POST'} ${dogfood.start?.workNext?.path || '/api/work/next'} · manual only`);
+    if (dogfood.prepareProgress?.path) {
+      console.log(`- prepare progress: ${dogfood.prepareProgress.method || 'POST'} ${dogfood.prepareProgress.path} · ${dogfood.prepareProgress.body?.durationMs || 45000}ms sample`);
+    }
     console.log(`- monitor: ${dogfood.monitor?.cui || 'npm run config -> V'} · ${dogfood.monitor?.endpoint || '/api/realtime/evidence'}`);
     console.log(`- ask when READY: ${dogfood.promptWhenReady || '后台现在怎么样'}`);
     if (dogfood.currentStep?.label) {
