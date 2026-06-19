@@ -646,6 +646,21 @@ let conversationState = {
   realtimeSessionNegotiationCount: 0,
   lastRealtimeSessionNegotiation: null,
 };
+let realtimeDogfoodStartState = {
+  active: false,
+  id: '',
+  status: 'idle',
+  source: '',
+  sessionId: '',
+  prepareProgress: false,
+  prepareWhenLive: true,
+  durationMs: 0,
+  startedAt: 0,
+  updatedAt: 0,
+  progressQueuedAt: 0,
+  progressResult: null,
+  error: '',
+};
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
   sent: 0,
@@ -16072,8 +16087,8 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
     startDrill: {
       method: 'POST',
       path: '/api/realtime/dogfood/start',
-      body: { execute: true, prepareProgress: true, durationMs: 45000 },
-      manualOnlyReason: 'Starting microphone/live voice and preparing live progress dogfood requires explicit user action.',
+      body: { execute: true, prepareProgress: true, prepareWhenLive: true, durationMs: 45000 },
+      manualOnlyReason: 'Starting microphone/live voice and scheduling live progress dogfood requires explicit user action.',
     },
     prepareProgress: {
       method: 'POST',
@@ -16121,6 +16136,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const checks = evidence.checks || {};
   const progress = evidence.progress || {};
   const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
+  const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
   const steps = [
     realtimeDogfoodDrillStep({
@@ -16149,12 +16165,19 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       ok: Boolean(checks.progressInjectedFromRenderer && checks.passiveContextOnly),
       detail: checks.progressInjectedFromRenderer
         ? 'Renderer progress injection reached the Realtime data channel without forcing a response.'
-        : 'No open WebRTC data-channel progress injection has been recorded from the renderer.',
-      nextAction: 'Run POST /api/realtime/dogfood/prepare with execute:true, keep voice live, and let the renderer send the progress update.',
+        : dogfoodStart.pendingProgressOnLive
+          ? 'Progress sample is scheduled and will start after the renderer reports a live voice session.'
+          : dogfoodStart.progressQueuedAt
+            ? 'Progress sample was queued; keep voice live until the renderer sends it through the Realtime data channel.'
+            : 'No open WebRTC data-channel progress injection has been recorded from the renderer.',
+      nextAction: dogfoodStart.pendingProgressOnLive
+        ? 'Start the live voice session; JAVIS will prepare the progress sample after the renderer reports live.'
+        : 'Run POST /api/realtime/dogfood/start with execute:true, keep voice live, and let the renderer send the progress update.',
       evidence: {
         method: 'POST',
-        path: '/api/realtime/dogfood/prepare',
-        body: { execute: true, durationMs: 45000 },
+        path: '/api/realtime/dogfood/start',
+        body: { execute: true, prepareProgress: true, prepareWhenLive: true, durationMs: 45000 },
+        dogfoodStart,
       },
     }),
     realtimeDogfoodDrillStep({
@@ -16223,6 +16246,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
     steps,
     pending,
     shortcutRecall: recall,
+    dogfoodStart,
   };
 }
 
@@ -16276,9 +16300,85 @@ async function prepareRealtimeDogfoodProgressSample(options = {}) {
   };
 }
 
+function realtimeDogfoodStartStateSnapshot() {
+  return {
+    ...realtimeDogfoodStartState,
+    active: Boolean(realtimeDogfoodStartState.active),
+    pendingProgressOnLive: Boolean(
+      realtimeDogfoodStartState.active
+      && realtimeDogfoodStartState.prepareProgress
+      && realtimeDogfoodStartState.prepareWhenLive
+      && !realtimeDogfoodStartState.progressQueuedAt
+      && realtimeDogfoodStartState.status === 'waiting_for_live_session',
+    ),
+  };
+}
+
+function setRealtimeDogfoodStartState(patch = {}) {
+  realtimeDogfoodStartState = {
+    ...realtimeDogfoodStartState,
+    ...patch,
+    updatedAt: Date.now(),
+  };
+  return realtimeDogfoodStartStateSnapshot();
+}
+
+function clearRealtimeDogfoodStartState(status = 'idle') {
+  return setRealtimeDogfoodStartState({
+    active: false,
+    status,
+    sessionId: '',
+    prepareProgress: false,
+    progressQueuedAt: 0,
+  });
+}
+
+function maybeQueueRealtimeDogfoodProgressForLive(conversation = conversationStateSnapshot()) {
+  const state = realtimeDogfoodStartStateSnapshot();
+  if (!state.active || !state.prepareProgress || !state.prepareWhenLive || state.progressQueuedAt) return null;
+  if (state.status !== 'waiting_for_live_session') return null;
+  if (conversation.status !== 'live') return null;
+
+  setRealtimeDogfoodStartState({
+    status: 'preparing_progress',
+    sessionId: conversation.sessionId || state.sessionId,
+    progressQueuedAt: Date.now(),
+    error: '',
+  });
+  appendAudit('realtime.dogfood_progress_deferred_start', {
+    id: state.id,
+    source: state.source,
+    sessionId: conversation.sessionId || '',
+    durationMs: state.durationMs,
+  });
+  void prepareRealtimeDogfoodProgressSample({
+    execute: true,
+    durationMs: state.durationMs || 45000,
+    source: 'realtime_dogfood_live',
+    parallelGroup: `realtime-dogfood-live:${state.id || crypto.randomUUID()}`,
+  })
+    .then((progressResult) => {
+      setRealtimeDogfoodStartState({
+        active: false,
+        status: 'progress_queued',
+        progressResult,
+        error: '',
+      });
+    })
+    .catch((error) => {
+      setRealtimeDogfoodStartState({
+        active: false,
+        status: 'progress_failed',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  return realtimeDogfoodStartStateSnapshot();
+}
+
 async function startRealtimeDogfoodDrill(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const prepareProgress = options.prepareProgress !== false;
+  const prepareWhenLive = options.prepareWhenLive !== false;
   const durationMs = Math.max(5000, Math.min(120000, Number(options.durationMs || 45000)));
   const before = realtimeVoiceEvidenceSnapshot();
   const startInfo = {
@@ -16295,7 +16395,9 @@ async function startRealtimeDogfoodDrill(options = {}) {
       autoEligible: false,
       autopilotEligible: false,
       requiresUserPresence: true,
+      prepareWhenLive,
       start: startInfo,
+      dogfoodStart: realtimeDogfoodStartStateSnapshot(),
       drill: before.drill,
       evidence: before,
       output: [
@@ -16309,13 +16411,44 @@ async function startRealtimeDogfoodDrill(options = {}) {
 
   const summon = summonJavis(options.source || 'realtime_dogfood_start');
   let progressSample = null;
+  const conversation = conversationStateSnapshot();
+  const drillId = crypto.randomUUID();
+  setRealtimeDogfoodStartState({
+    active: true,
+    id: drillId,
+    status: prepareProgress && prepareWhenLive && conversation.status !== 'live' ? 'waiting_for_live_session' : 'started',
+    source: String(options.source || 'api').slice(0, 80),
+    sessionId: conversation.sessionId || '',
+    prepareProgress,
+    prepareWhenLive,
+    durationMs,
+    startedAt: Date.now(),
+    progressQueuedAt: 0,
+    progressResult: null,
+    error: '',
+  });
   if (prepareProgress) {
-    progressSample = await prepareRealtimeDogfoodProgressSample({
-      execute: true,
-      durationMs,
-      source: 'realtime_dogfood_start',
-      parallelGroup: options.parallelGroup || `realtime-dogfood-start:${crypto.randomUUID()}`,
-    });
+    if (prepareWhenLive && conversation.status !== 'live') {
+      progressSample = {
+        ok: true,
+        executed: false,
+        deferred: true,
+        output: 'Progress sample will start automatically after the renderer reports a live Realtime voice session.',
+      };
+    } else {
+      progressSample = await prepareRealtimeDogfoodProgressSample({
+        execute: true,
+        durationMs,
+        source: 'realtime_dogfood_start',
+        parallelGroup: options.parallelGroup || `realtime-dogfood-start:${drillId}`,
+      });
+      setRealtimeDogfoodStartState({
+        active: false,
+        status: 'progress_queued',
+        progressQueuedAt: Date.now(),
+        progressResult: progressSample,
+      });
+    }
   }
   const after = realtimeVoiceEvidenceSnapshot();
   appendAudit('realtime.dogfood_start', {
@@ -16336,6 +16469,7 @@ async function startRealtimeDogfoodDrill(options = {}) {
     start: startInfo,
     summon,
     progressSample,
+    dogfoodStart: realtimeDogfoodStartStateSnapshot(),
     drill: after.drill,
     before,
     after,
@@ -16357,6 +16491,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const progress = workProgressCheckIn({ source: 'realtime_evidence', jobLimit: 5, workflowLimit: 5 });
   const toolCalls = realtimeToolCallSnapshot(10);
   const shortcutTools = realtimeShortcutToolEvidence(8);
+  const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const checks = {
     providerReady: voiceHealth.status === 'ready',
     sessionNegotiated: Boolean(negotiation?.ok && negotiation.offerBytes > 0 && negotiation.answerBytes > 0),
@@ -16407,6 +16542,7 @@ function realtimeVoiceEvidenceSnapshot() {
       lastRealtimeProgressInjection: injection,
     },
     voiceHealth,
+    dogfoodStart,
     toolCalls,
     shortcutTools,
     progress: {
@@ -16527,7 +16663,13 @@ function updateConversationState(options = {}) {
     transitioned,
     error: conversationState.error ? compactRecordText(conversationState.error, 120) : '',
   });
-  return conversationStateSnapshot();
+  const snapshot = conversationStateSnapshot();
+  if (['idle', 'error'].includes(snapshot.status) && realtimeDogfoodStartState.active) {
+    clearRealtimeDogfoodStartState(`conversation_${snapshot.status}`);
+  } else if (snapshot.status === 'live') {
+    maybeQueueRealtimeDogfoodProgressForLive(snapshot);
+  }
+  return snapshot;
 }
 
 function lineMatchesWake(line) {

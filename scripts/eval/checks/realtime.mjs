@@ -433,6 +433,7 @@ export default {
         startPreview.data?.manualOnly === true &&
         startPreview.data?.executed === false &&
         startPreview.data?.autoEligible === false &&
+        startPreview.data?.prepareWhenLive === true &&
         startPreview.data?.drill?.manualOnly === true &&
         startPreview.data?.start?.hotkey &&
         typeof startPreview.data?.output === 'string' &&

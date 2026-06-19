@@ -849,6 +849,7 @@ function printRealtimeEvidence(result) {
   const shortcutEvents = Array.isArray(shortcutTools.recent) ? shortcutTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
   const drill = evidence.drill || dogfood.drill || {};
+  const dogfoodStart = evidence.dogfoodStart || drill.dogfoodStart || {};
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const checkLabels = [
     ['providerReady', 'Realtime provider'],
@@ -884,6 +885,9 @@ function printRealtimeEvidence(result) {
   if (Array.isArray(drill.steps) && drill.steps.length) {
     console.log('\nDogfood drill:');
     console.log(`- ${drill.status || 'pending'} · ${compact(drill.summary || '-', 240)}`);
+    if (dogfoodStart.active || dogfoodStart.status) {
+      console.log(`- start state: ${dogfoodStart.status || 'idle'} · pendingOnLive=${dogfoodStart.pendingProgressOnLive ? 'yes' : 'no'} · progressQueued=${dogfoodStart.progressQueuedAt ? 'yes' : 'no'}`);
+    }
     for (const step of drill.steps.slice(0, 8)) {
       console.log(`- ${step.status || (step.ok ? 'ready' : 'pending')} ${step.label || step.id || '-'} · ${compact(step.nextAction || step.detail || '-', 180)}`);
     }
@@ -921,7 +925,7 @@ function printRealtimeEvidence(result) {
     console.log(`- hotkey: ${dogfood.start?.hotkey || 'Option+Space'}`);
     console.log(`- work-next: ${dogfood.start?.workNext?.method || 'POST'} ${dogfood.start?.workNext?.path || '/api/work/next'} · manual only`);
     if (dogfood.startDrill?.path) {
-      console.log(`- start drill: ${dogfood.startDrill.method || 'POST'} ${dogfood.startDrill.path} · prepareProgress=${dogfood.startDrill.body?.prepareProgress !== false ? 'yes' : 'no'}`);
+      console.log(`- start drill: ${dogfood.startDrill.method || 'POST'} ${dogfood.startDrill.path} · prepareProgress=${dogfood.startDrill.body?.prepareProgress !== false ? 'yes' : 'no'} · whenLive=${dogfood.startDrill.body?.prepareWhenLive !== false ? 'yes' : 'no'}`);
     }
     if (dogfood.prepareProgress?.path) {
       console.log(`- prepare progress: ${dogfood.prepareProgress.method || 'POST'} ${dogfood.prepareProgress.path} · ${dogfood.prepareProgress.body?.durationMs || 45000}ms sample`);
@@ -987,14 +991,14 @@ async function startRealtimeDogfoodDrillFromCui(rl) {
     body: { execute: false, source: 'cui' },
   });
   if (preview.output) console.log(compact(preview.output, 900));
-  const answer = (await rl.question('Start drill now? Type RUN to summon JAVIS and prepare a progress sample: ')).trim();
+  const answer = (await rl.question('Start drill now? Type RUN to summon JAVIS and prepare a progress sample after voice is live: ')).trim();
   if (answer !== 'RUN') {
     console.log('\nNo drill started.');
     return;
   }
   const result = await request('/api/realtime/dogfood/start', {
     method: 'POST',
-    body: { execute: true, prepareProgress: true, durationMs: 45000, source: 'cui' },
+    body: { execute: true, prepareProgress: true, prepareWhenLive: true, durationMs: 45000, source: 'cui' },
   });
   console.log(`\nRealtime dogfood drill ${result.executed ? 'started' : 'reviewed'}.`);
   if (result.output) console.log(compact(result.output, 1200));
