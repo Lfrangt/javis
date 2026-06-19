@@ -1,5 +1,19 @@
 import { ok, warn, fail } from '../_client.mjs';
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function waitForJob(ctx, id, timeoutMs = 10000) {
+  const started = Date.now();
+  let latest = null;
+  while (Date.now() - started < timeoutMs) {
+    const response = await ctx.api(`/api/jobs/${encodeURIComponent(id)}`, { retries: 0 });
+    latest = response.data?.job || null;
+    if (latest && !['queued', 'running'].includes(latest.status)) return latest;
+    await sleep(250);
+  }
+  return latest;
+}
+
 // Background worker observability (ROADMAP: "persist background task history",
 // "cancellable background workers with visible logs", "replayable audit log").
 // Read-only — inspects history, autopilot status, the unified progress view,
@@ -63,6 +77,70 @@ export default {
         ? ok('workers.autopilot_maintenance_preview', 'Autopilot maintenance fallback', `${maintenance.action.label} · ${maintenance.action.cooldown}`)
         : fail('workers.autopilot_maintenance_preview', 'Autopilot maintenance fallback', 'work-next did not expose a read-only maintenance fallback preview', maintenancePreview.data),
     );
+
+    let recoveryJobId = '';
+    try {
+      const queuedRecoveryFixture = await ctx.api('/api/cli/run', {
+        method: 'POST',
+        body: {
+          command: 'node -e "console.error(\'intentional recovery contract failure\'); process.exit(7)"',
+          title: 'Recoverable worker contract check',
+          source: 'eval_recovery_contract',
+          scope: 'eval:worker_recovery_contract',
+          parallelGroup: 'eval_recovery_contract',
+          timeoutMs: 10000,
+        },
+        retries: 0,
+      });
+      recoveryJobId = queuedRecoveryFixture.data?.job?.id || '';
+      const failedJob = recoveryJobId ? await waitForJob(ctx, recoveryJobId) : null;
+      const recoveryPlan = failedJob?.recoveryPlan || {};
+      out.push(
+        queuedRecoveryFixture.ok &&
+          failedJob?.status === 'failed' &&
+          failedJob.failureKind === 'command_failed' &&
+          Array.isArray(failedJob.attempts) &&
+          failedJob.attempts.length >= 2 &&
+          recoveryPlan.diagnostics?.runtime &&
+          recoveryPlan.nextActions?.some((action) => action.type === 'diagnose') &&
+          recoveryPlan.nextActions?.some((action) => action.type === 'retry')
+          ? ok('workers.recovery_plan_contract', 'Worker recovery plan contract', `${failedJob.failureKind} · ${recoveryPlan.nextActions.length} recovery action(s)`, { jobId: recoveryJobId, recoveryPlan })
+          : fail('workers.recovery_plan_contract', 'Worker recovery plan contract', 'failed job did not preserve attempts, diagnostics, and recovery actions', { queued: queuedRecoveryFixture.data, failedJob }),
+      );
+
+      const recoverySnapshot = await ctx.api('/api/jobs/recovery?includeInternal=true&limit=20');
+      const recovery = recoverySnapshot.data?.recovery;
+      const recoveryItem = Array.isArray(recovery?.items) ? recovery.items.find((item) => item.id === recoveryJobId) : null;
+      out.push(
+        recoverySnapshot.ok &&
+          recoveryItem &&
+          recoveryItem.failureKind === 'command_failed' &&
+          recoveryItem.recovery?.recommended?.id?.startsWith(`recovery:${recoveryJobId}:`) &&
+          recoveryItem.recovery?.nextActions?.some((action) => action.recoveryType === 'diagnose') &&
+          recoveryItem.recovery?.nextActions?.some((action) => action.recoveryType === 'retry') &&
+          recoveryItem.recovery?.nextActions?.some((action) => action.recoveryType === 'retry' && action.trustedAutoEligible === true) &&
+          recovery?.counts?.recoverable >= 1
+          ? ok('workers.recovery_snapshot', 'Worker recovery snapshot', `${recovery.counts.recoverable} recoverable failed job(s); next=${recoveryItem.recovery.recommended.label}`)
+          : fail('workers.recovery_snapshot', 'Worker recovery snapshot', 'recovery snapshot did not expose the failed job and recommended action', recovery),
+      );
+
+      const recoveryProgress = await ctx.api('/api/work/progress?includeInternal=true&jobLimit=20');
+      const progressRecovery = recoveryProgress.data?.progress?.recovery;
+      out.push(
+        recoveryProgress.ok &&
+          progressRecovery?.items?.some((item) => item.id === recoveryJobId) &&
+          progressRecovery?.counts?.recoverable >= 1
+          ? ok('workers.recovery_progress', 'Recovery in work progress', recoveryProgress.data.progress.spokenSummary || progressRecovery.summary)
+          : fail('workers.recovery_progress', 'Recovery in work progress', 'work progress did not include recoverable worker evidence', recoveryProgress.data),
+      );
+    } finally {
+      if (recoveryJobId) {
+        await ctx.api(`/api/jobs/${encodeURIComponent(recoveryJobId)}`, {
+          method: 'DELETE',
+          retries: 0,
+        });
+      }
+    }
 
     const progress = await ctx.api('/api/work/progress');
     const p = progress.data?.progress;

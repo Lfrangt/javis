@@ -18071,6 +18071,101 @@ function recoveryActionCandidates(recentJobs, limit = 4) {
     .slice(0, limit);
 }
 
+function recoverySnapshotAction(job, action = {}, index = 0) {
+  const type = action.type || action.recoveryType || 'manual';
+  const childCount = recoveryChildJobs(job.id).length;
+  return {
+    id: `recovery:${job.id}:${type || index}`,
+    label: action.label || 'Recover failed job',
+    recoveryType: type,
+    mode: action.mode || '',
+    riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+    autoEligible: Boolean(action.autoEligible),
+    trustedAutoEligible: trustedRecoveryAutoEligible(job, action, childCount),
+    command: action.command || '',
+    reason: compactRecordText(action.reason || '', 300),
+    priority: recoveryActionPriority(job, action),
+  };
+}
+
+function jobRecoverySnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
+  const includeInternal = options.includeInternal === true || String(options.includeInternal || '').toLowerCase() === 'true';
+  const candidates = jobSnapshot(Math.max(limit, 100))
+    .filter((job) => job.status === 'failed')
+    .filter((job) => !job.recoveryForJobId)
+    .filter((job) => includeInternal || !isInternalJob(job))
+    .filter((job) => job.recoveryPlan?.nextActions?.length)
+    .slice(0, limit);
+  const items = candidates.map((job) => {
+    const children = recoveryChildJobs(job.id);
+    const activeChild = children.find((child) => child.status === 'queued' || child.status === 'running') || null;
+    const completedChild = children.find((child) => child.status === 'done') || null;
+    const actions = job.recoveryPlan.nextActions
+      .map((action, index) => recoverySnapshotAction(job, action, index))
+      .sort((a, b) => a.priority - b.priority);
+    return {
+      id: job.id,
+      title: job.title,
+      mode: job.mode,
+      source: job.source,
+      status: job.status,
+      failureKind: job.failureKind || job.recoveryPlan.failureKind || '',
+      updatedAt: job.updatedAt,
+      resultLink: `/api/jobs/${job.id}`,
+      summary: job.recoveryPlan.summary || compactRecordText(job.result || job.log || '', 500),
+      attempts: {
+        count: Array.isArray(job.attempts) ? job.attempts.length : 0,
+        recent: normalizeJobAttempts(job.attempts).slice(-3),
+      },
+      diagnostics: {
+        available: Boolean(job.recoveryPlan.diagnostics),
+        overall: job.recoveryPlan.diagnostics?.overall || '',
+        summary: job.recoveryPlan.diagnostics?.summary || '',
+      },
+      recovery: {
+        attempts: children.length,
+        maxAttempts: MAX_RECOVERY_JOB_ATTEMPTS,
+        active: activeChild ? {
+          id: activeChild.id,
+          mode: activeChild.mode,
+          status: activeChild.status,
+          resultLink: `/api/jobs/${activeChild.id}`,
+        } : null,
+        completed: completedChild ? {
+          id: completedChild.id,
+          mode: completedChild.mode,
+          status: completedChild.status,
+          resultLink: `/api/jobs/${completedChild.id}`,
+        } : null,
+        nextActions: actions,
+        recommended: actions[0] || null,
+      },
+    };
+  });
+  const recoverable = items.filter((item) => !item.recovery.completed && item.recovery.attempts < item.recovery.maxAttempts);
+  const trustedAutoEligible = items.filter((item) => item.recovery.nextActions.some((action) => action.trustedAutoEligible));
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    includeInternal,
+    counts: {
+      failedWithRecovery: items.length,
+      recoverable: recoverable.length,
+      activeRecovery: items.filter((item) => item.recovery.active).length,
+      completedRecovery: items.filter((item) => item.recovery.completed).length,
+      trustedAutoEligible: trustedAutoEligible.length,
+    },
+    items,
+    summary: recoverable.length
+      ? `${recoverable.length} failed job(s) have recovery actions; ${trustedAutoEligible.length} can auto-queue in trusted local mode.`
+      : 'No failed worker jobs currently need recovery.',
+    nextAction: recoverable[0]?.recovery.recommended
+      ? `${recoverable[0].recovery.recommended.label}: ${recoverable[0].recovery.recommended.reason}`
+      : 'Keep using work-next; new failed jobs will attach recovery diagnostics automatically.',
+  };
+}
+
 function retryableBlockedWorkflowPlan(workflow) {
   if (!workflow || !['blocked', 'failed'].includes(workflow.status)) return null;
   if (workflow.kind !== 'app' || workflow.intent !== 'run_app_workflow') return null;
@@ -18706,6 +18801,7 @@ function workProgressSpokenSummary(progress = {}) {
   const activeJobs = Array.isArray(progress.activeJobs) ? progress.activeJobs : [];
   const blockedWorkflows = Array.isArray(progress.blockedWorkflows) ? progress.blockedWorkflows : [];
   const nextActions = Array.isArray(progress.nextActions) ? progress.nextActions : [];
+  const recovery = progress.recovery || {};
   const latestDoneJob = progress.latestDone?.job || null;
   const latestDoneWorkflow = progress.latestDone?.workflow || null;
   const workerSummary = progress.workerSummary || workerProgressSummary(workerGroups);
@@ -18719,6 +18815,8 @@ function workProgressSpokenSummary(progress = {}) {
     parts.push(`后台 worker: ${workerSummary}. ${groupText}.`);
   } else if (activeJobs.length) {
     parts.push(`后台有 ${activeJobs.length} 个任务在跑。`);
+  } else if (recovery.counts?.recoverable) {
+    parts.push(`有 ${recovery.counts.recoverable} 个失败任务可恢复。`);
   } else {
     parts.push('当前没有正在运行的后台任务。');
   }
@@ -18783,6 +18881,7 @@ function workProgressCheckIn(options = {}) {
   const latestDoneRoute = recentRoutes.find((record) => record.status === 'done') || null;
   const briefing = workflowBriefing({ workflowLimit, jobLimit });
   const collaboration = collaborationSnapshot(5);
+  const recovery = jobRecoverySnapshot({ limit: 5, includeInternal });
   const nextActions = (briefing.nextActions || []).slice(0, 3);
   const workerGroups = buildWorkerProgressGroups([...activeJobs, ...recentJobs]);
   const workerSummary = workerProgressSummary(workerGroups);
@@ -18804,6 +18903,7 @@ function workProgressCheckIn(options = {}) {
       : '当前没有正在运行的后台任务。',
     activeJobs.length ? `运行中:\n${activeJobs.map((job, index) => `${index + 1}. ${formatJobProgressLine(job)}`).join('\n')}` : '',
     workerGroups.length ? `Worker groups: ${workerSummary}\n${workerGroups.slice(0, 5).map((group, index) => `${index + 1}. ${formatWorkerGroupLine(group)}`).join('\n')}` : '',
+    recovery.counts.recoverable ? `Worker recovery: ${recovery.summary}\n${recovery.items.slice(0, 3).map((item, index) => `${index + 1}. ${item.mode}/${item.failureKind} · ${compactRecordText(item.title, 90)} · next: ${compactRecordText(item.recovery.recommended?.label || 'inspect recovery plan', 80)}`).join('\n')}` : '',
     activeWorkflows.length
       ? `活跃工作流:\n${activeWorkflows.map((workflow, index) => `${index + 1}. ${formatWorkflowProgressLine(workflow)}`).join('\n')}`
       : '',
@@ -18827,6 +18927,7 @@ function workProgressCheckIn(options = {}) {
     activeRoutes: activeRoutes.length,
     activeCollaborationClaims: collaboration.counts.active,
     workerGroups: workerGroups.length,
+    recoveryJobs: recovery.counts.recoverable,
     recentJobs: recentJobs.length,
     recentWorkflows: recentWorkflows.length,
     recentRoutes: recentRoutes.length,
@@ -18847,6 +18948,7 @@ function workProgressCheckIn(options = {}) {
       activeRoutes: activeRoutes.length,
       routing: routingCounts(),
       collaboration: collaboration.counts,
+      recovery: recovery.counts,
     },
     includeInternal,
     routingLedger,
@@ -18858,6 +18960,7 @@ function workProgressCheckIn(options = {}) {
     recentJobs,
     workerGroups,
     workerSummary,
+    recovery,
     activeWorkflows,
     blockedWorkflows,
     recentWorkflows,
@@ -25355,6 +25458,15 @@ function startApiServer() {
       jobs: jobItems,
       routes: Object.fromEntries(jobItems.map((job) => [job.id, routingRecordsForJob(job.id)])),
       counts: queueCounts(),
+    });
+  });
+
+  api.get('/api/jobs/recovery', (req, res) => {
+    res.json({
+      recovery: jobRecoverySnapshot({
+        limit: req.query.limit || 10,
+        includeInternal: req.query.includeInternal,
+      }),
     });
   });
 
