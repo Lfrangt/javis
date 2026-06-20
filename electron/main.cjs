@@ -10248,6 +10248,284 @@ async function runCreativeWorkflowAction(options = {}) {
   };
 }
 
+function creativeBenchmarkCaseResult({ id, label, intent, ok, result, assertions = {} }) {
+  const finalOk = Boolean(ok);
+  const workflow = result?.workflow || {};
+  const routing = result?.routing || {};
+  const selectedApp = result?.selectedApp || result?.plan?.selectedApp || {};
+  const focusedStage = result?.focusedStage || result?.plan?.focusedStage || {};
+  const actionPack = result?.actionPack || result?.plan?.actionPack || {};
+  const action = result?.action || {};
+  return {
+    id,
+    label,
+    intent,
+    ok: finalOk,
+    status: finalOk ? 'pass' : 'fail',
+    previewOnly: result?.executed === false || result?.status === 'preview' || result?.status === 'blocked',
+    executed: Boolean(result?.executed),
+    blocked: String(result?.status || '').includes('blocked'),
+    confirmationRequired: Boolean(result?.requiresConfirmation || action.confirmationRequired),
+    modelCall: false,
+    creativeAction: false,
+    workflowId: workflow.id || '',
+    workflowStatus: workflow.status || '',
+    routingId: routing.id || '',
+    routingStatus: routing.status || '',
+    app: selectedApp.name || '',
+    appId: selectedApp.id || '',
+    stageId: focusedStage.id || actionPack.id || '',
+    actionId: action.id || '',
+    assertions,
+    summary: compactRecordText(result?.output || actionPack.summary || action.summary || '', 260),
+  };
+}
+
+async function creativeWorkflowBenchmarkSnapshot(options = {}) {
+  const source = String(options.source || 'creative_benchmark').slice(0, 80);
+  const sourcePrefix = source.startsWith('eval_') ? source : `${source}`;
+  const cases = [];
+
+  const videoImport = await planCreativeWorkflow({
+    instruction: '帮我剪辑一个竖屏短视频，用 Final Cut Pro 先规划导入素材和整理项目。',
+    intent: 'video_edit',
+    stage: 'import',
+    app: 'Final Cut Pro',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_video_import`,
+  });
+  cases.push(creativeBenchmarkCaseResult({
+    id: 'video_import_plan',
+    label: 'Video import workflow plan',
+    intent: 'video_edit',
+    result: videoImport,
+    assertions: {
+      selectedApp: videoImport.selectedApp?.id || '',
+      stage: videoImport.focusedStage?.id || '',
+      actionCount: Number(videoImport.actionPack?.actions?.length || 0),
+      safeAutoActions: Number(videoImport.actionPack?.safeAutoActionIds?.length || 0),
+      confirmationActions: Number(videoImport.actionPack?.confirmationActionIds?.length || 0),
+      inspectAssets: Boolean(videoImport.actionPack?.actions?.some((action) => action.id === 'inspect_assets')),
+      importGate: Boolean(videoImport.actionPack?.actions?.some((action) => action.id === 'open_import_ui' && action.confirmationRequired)),
+    },
+    ok: videoImport.ok === true &&
+      videoImport.intent === 'video_edit' &&
+      videoImport.selectedApp?.id === 'final_cut_pro' &&
+      videoImport.focusedStage?.id === 'import' &&
+      Number(videoImport.actionPack?.actions?.length || 0) >= 4 &&
+      videoImport.actionPack?.actions?.some((action) => action.id === 'inspect_assets') &&
+      videoImport.actionPack?.actions?.some((action) => action.id === 'open_import_ui' && action.confirmationRequired),
+  }));
+
+  const videoExportGate = await runCreativeWorkflowAction({
+    instruction: '用 Final Cut Pro 导出短视频成片，只打开导出面板，不要开始导出。',
+    intent: 'video_edit',
+    stage: 'export',
+    app: 'Final Cut Pro',
+    actionId: 'open_export_panel',
+    execute: true,
+    confirm: false,
+    verify: true,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_video_export_gate`,
+  });
+  cases.push(creativeBenchmarkCaseResult({
+    id: 'video_export_confirmation_gate',
+    label: 'Video export confirmation gate',
+    intent: 'video_edit',
+    result: videoExportGate,
+    assertions: {
+      status: videoExportGate.status || '',
+      requiresConfirmation: videoExportGate.requiresConfirmation === true,
+      verificationStatus: videoExportGate.verification?.status || '',
+      recoveryHints: Number(videoExportGate.verification?.recoveryHints?.length || 0),
+    },
+    ok: videoExportGate.ok === false &&
+      videoExportGate.executed === false &&
+      videoExportGate.status === 'blocked' &&
+      videoExportGate.requiresConfirmation === true &&
+      videoExportGate.verification?.status === 'blocked' &&
+      Number(videoExportGate.verification?.recoveryHints?.length || 0) >= 1,
+  }));
+
+  const musicSketch = await planCreativeWorkflow({
+    instruction: '用 Logic Pro 做一个 30 秒旋律 demo，先规划 BPM/key 和 MIDI 草稿。',
+    intent: 'music_compose',
+    stage: 'sketch',
+    app: 'Logic Pro',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_music_sketch`,
+  });
+  cases.push(creativeBenchmarkCaseResult({
+    id: 'music_sketch_plan',
+    label: 'Music sketch workflow plan',
+    intent: 'music_compose',
+    result: musicSketch,
+    assertions: {
+      selectedApp: musicSketch.selectedApp?.id || '',
+      stage: musicSketch.focusedStage?.id || '',
+      actionCount: Number(musicSketch.actionPack?.actions?.length || 0),
+      confirmTempoKey: Boolean(musicSketch.actionPack?.actions?.some((action) => action.id === 'confirm_tempo_key')),
+      midiPlan: Boolean(musicSketch.actionPack?.actions?.some((action) => action.id === 'plan_midi_entry')),
+      sketchGate: Boolean(musicSketch.actionPack?.actions?.some((action) => action.id === 'enter_short_sketch' && action.confirmationRequired)),
+    },
+    ok: musicSketch.ok === true &&
+      musicSketch.intent === 'music_compose' &&
+      musicSketch.selectedApp?.id === 'logic_pro' &&
+      musicSketch.focusedStage?.id === 'sketch' &&
+      musicSketch.actionPack?.actions?.some((action) => action.id === 'confirm_tempo_key') &&
+      musicSketch.actionPack?.actions?.some((action) => action.id === 'plan_midi_entry') &&
+      musicSketch.actionPack?.actions?.some((action) => action.id === 'enter_short_sketch' && action.confirmationRequired),
+  }));
+
+  const musicMix = await planCreativeWorkflow({
+    instruction: '用 Ableton Live 粗混一个 beat，先规划打开 mixer 并复查电平。',
+    intent: 'music_compose',
+    stage: 'mix',
+    app: 'Ableton Live',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_music_mix`,
+  });
+  cases.push(creativeBenchmarkCaseResult({
+    id: 'music_mix_plan',
+    label: 'Music mix workflow plan',
+    intent: 'music_compose',
+    result: musicMix,
+    assertions: {
+      selectedApp: musicMix.selectedApp?.id || '',
+      stage: musicMix.focusedStage?.id || '',
+      openMixerGate: Boolean(musicMix.actionPack?.actions?.some((action) => action.id === 'open_mixer' && action.confirmationRequired)),
+      verifyMix: Boolean(musicMix.actionPack?.actions?.some((action) => action.id === 'verify_mix' && action.safeToAutoRun)),
+    },
+    ok: musicMix.ok === true &&
+      musicMix.selectedApp?.id === 'ableton_live' &&
+      musicMix.focusedStage?.id === 'mix' &&
+      musicMix.actionPack?.actions?.some((action) => action.id === 'open_mixer' && action.confirmationRequired) &&
+      musicMix.actionPack?.actions?.some((action) => action.id === 'verify_mix' && action.safeToAutoRun),
+  }));
+
+  const tempoPromptPreview = await runCreativeWorkflowAction({
+    instruction: '用 Logic Pro 做一个 30 秒旋律 demo，先确认 BPM/key/小节长度。',
+    intent: 'music_compose',
+    stage: 'sketch',
+    app: 'Logic Pro',
+    actionId: 'confirm_tempo_key',
+    execute: false,
+    verify: true,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_tempo_prompt`,
+  });
+  cases.push(creativeBenchmarkCaseResult({
+    id: 'music_prompt_preview',
+    label: 'Music prompt action preview',
+    intent: 'music_compose',
+    result: tempoPromptPreview,
+    assertions: {
+      status: tempoPromptPreview.status || '',
+      actionId: tempoPromptPreview.action?.id || '',
+      verificationStatus: tempoPromptPreview.verification?.status || '',
+    },
+    ok: tempoPromptPreview.ok === true &&
+      tempoPromptPreview.executed === false &&
+      tempoPromptPreview.status === 'preview' &&
+      tempoPromptPreview.action?.id === 'confirm_tempo_key' &&
+      tempoPromptPreview.verification?.status === 'preview',
+  }));
+
+  const assetGate = await runCreativeWorkflowAction({
+    instruction: '帮我剪辑一个竖屏短视频，用 Final Cut Pro 先检查素材文件夹。',
+    intent: 'video_edit',
+    stage: 'import',
+    app: 'Final Cut Pro',
+    actionId: 'inspect_assets',
+    execute: true,
+    verify: true,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_asset_gate`,
+  });
+  cases.push(creativeBenchmarkCaseResult({
+    id: 'video_asset_requirement_gate',
+    label: 'Video asset path requirement gate',
+    intent: 'video_edit',
+    result: assetGate,
+    assertions: {
+      status: assetGate.status || '',
+      missingAssetPath: Array.isArray(assetGate.missingRequirements) && assetGate.missingRequirements.includes('assetPath'),
+      verificationStatus: assetGate.verification?.status || '',
+      recoveryHints: Number(assetGate.verification?.recoveryHints?.length || 0),
+    },
+    ok: assetGate.ok === false &&
+      assetGate.executed === false &&
+      assetGate.status === 'blocked' &&
+      Array.isArray(assetGate.missingRequirements) &&
+      assetGate.missingRequirements.includes('assetPath') &&
+      assetGate.verification?.status === 'blocked' &&
+      Number(assetGate.verification?.recoveryHints?.length || 0) >= 1,
+  }));
+
+  const counts = {
+    total: cases.length,
+    pass: cases.filter((item) => item.ok).length,
+    fail: cases.filter((item) => !item.ok).length,
+    previewOnly: cases.filter((item) => item.previewOnly).length,
+    executed: cases.filter((item) => item.executed).length,
+    blocked: cases.filter((item) => item.blocked).length,
+    confirmationRequired: cases.filter((item) => item.confirmationRequired).length,
+    video: cases.filter((item) => item.intent === 'video_edit').length,
+    music: cases.filter((item) => item.intent === 'music_compose').length,
+  };
+  const snapshot = {
+    ok: counts.fail === 0,
+    generatedAt: new Date().toISOString(),
+    source,
+    manualOnly: true,
+    previewOnly: true,
+    startsApps: false,
+    executesCreativeActions: false,
+    modelCalls: false,
+    mutatesUserFiles: false,
+    recordsWorkflowHistory: false,
+    summary: `${counts.pass}/${counts.total} creative benchmark case(s) passed.`,
+    counts,
+    cases,
+    nextAction: counts.fail
+      ? 'Fix failing creative benchmark cases before broadening app-specific creative automation.'
+      : 'Use these preview-only creative benchmarks before running live video/music app dogfood.',
+    safety: {
+      planOnly: true,
+      noAppLaunch: true,
+      noCreativeActions: true,
+      noModelCalls: true,
+      noUserFileMutation: true,
+      noWorkflowHistory: cases.every((item) => !item.workflowId && !item.routingId),
+      exportConfirmationGate: cases.find((item) => item.id === 'video_export_confirmation_gate')?.assertions?.requiresConfirmation === true,
+      assetPathGate: cases.find((item) => item.id === 'video_asset_requirement_gate')?.assertions?.missingAssetPath === true,
+      coversVideo: cases.some((item) => item.intent === 'video_edit' && item.ok),
+      coversMusic: cases.some((item) => item.intent === 'music_compose' && item.ok),
+    },
+  };
+  appendAudit('creative_benchmark.completed', {
+    source,
+    ok: snapshot.ok,
+    total: counts.total,
+    pass: counts.pass,
+    fail: counts.fail,
+    noAppLaunch: true,
+    noCreativeActions: true,
+    noModelCalls: true,
+  });
+  return snapshot;
+}
+
 function appNameFromInstruction(instruction) {
   const text = String(instruction || '').trim();
   const explicit = text.match(/(?:open|launch|打开|启动)\s+([A-Za-z][A-Za-z0-9 ._-]{1,40})/i);
@@ -24722,7 +25000,9 @@ function isInternalRoutingRecord(record) {
     || source.includes('browser_benchmark')
     || source.includes('browser_benchmarks')
     || source.includes('file_benchmark')
-    || source.includes('file_benchmarks');
+    || source.includes('file_benchmarks')
+    || source.includes('creative_benchmark')
+    || source.includes('creative_benchmarks');
 }
 
 function isInternalJob(job) {
@@ -25488,7 +25768,9 @@ function isInternalWorkflow(workflow) {
     source.includes('browser_benchmark') ||
     source.includes('browser_benchmarks') ||
     source.includes('file_benchmark') ||
-    source.includes('file_benchmarks')
+    source.includes('file_benchmarks') ||
+    source.includes('creative_benchmark') ||
+    source.includes('creative_benchmarks')
   ) return true;
   if (/(test|smoke|verification|diagnostic|internal)/.test(source)) return true;
   if (workflow.id) {
@@ -34585,6 +34867,17 @@ function startApiServer() {
       res.status(result.ok ? 200 : 202).json(result);
     } catch (error) {
       jsonError(res, 400, 'Creative workflow failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/creative/benchmarks', async (req, res) => {
+    try {
+      const benchmarks = await creativeWorkflowBenchmarkSnapshot({
+        source: req.query.source || 'api_creative_benchmarks',
+      });
+      res.json({ benchmarks });
+    } catch (error) {
+      jsonError(res, 500, 'Creative benchmarks failed', error instanceof Error ? error.message : String(error));
     }
   });
 

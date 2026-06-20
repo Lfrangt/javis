@@ -305,6 +305,7 @@ async function printStatus() {
   console.log('H. Show spoken work handoff');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
+  console.log('C. Show creative workflow benchmarks');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
   console.log('16. Show autopilot status');
@@ -970,6 +971,36 @@ async function showFileBenchmarks() {
   const result = await request('/api/files/benchmarks?source=cui_file_benchmarks');
   console.log('');
   printFileBenchmarks(result);
+}
+
+function printCreativeBenchmarks(result) {
+  const benchmarks = result?.benchmarks || result || {};
+  const counts = benchmarks.counts || {};
+  console.log('Creative Workflow Benchmarks');
+  console.log('============================');
+  console.log(benchmarks.summary || `${counts.pass || 0}/${counts.total || 0} benchmark case(s) passed.`);
+  console.log(`Mode: preview-only=${benchmarks.previewOnly ? 'yes' : 'no'} · starts apps=${benchmarks.startsApps ? 'yes' : 'no'} · creative actions=${benchmarks.executesCreativeActions ? 'yes' : 'no'} · model calls=${benchmarks.modelCalls ? 'yes' : 'no'}`);
+  console.log(`Counts: pass ${counts.pass || 0}/${counts.total || 0} · fail ${counts.fail || 0} · video ${counts.video || 0} · music ${counts.music || 0} · blocked gates ${counts.blocked || 0}`);
+  const safety = benchmarks.safety || {};
+  console.log(`Safety: plan-only=${safety.planOnly ? 'yes' : 'no'} · no app launch=${safety.noAppLaunch ? 'yes' : 'no'} · export gate=${safety.exportConfirmationGate ? 'yes' : 'no'} · asset gate=${safety.assetPathGate ? 'yes' : 'no'}`);
+  const cases = Array.isArray(benchmarks.cases) ? benchmarks.cases : [];
+  if (!cases.length) {
+    console.log('\nCases: none');
+    return;
+  }
+  console.log('\nCases:');
+  for (const item of cases) {
+    const target = [item.app, item.stageId, item.actionId].filter(Boolean).join(' · ') || item.intent || '-';
+    console.log(`- ${item.ok ? 'pass' : 'fail'} ${item.label || item.id || '-'} · ${target}`);
+    if (item.summary) console.log(`  ${compact(item.summary, 180)}`);
+  }
+  if (benchmarks.nextAction) console.log(`\nNext: ${benchmarks.nextAction}`);
+}
+
+async function showCreativeBenchmarks() {
+  const result = await request('/api/creative/benchmarks?source=cui_creative_benchmarks');
+  console.log('');
+  printCreativeBenchmarks(result);
 }
 
 function printPerceptionConsent(result) {
@@ -1850,6 +1881,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-creative-benchmarks') || process.argv.includes('--creative-benchmarks')) {
+    await showCreativeBenchmarks();
+    return;
+  }
+
   if (process.argv.includes('--print-perception') || process.argv.includes('--perception')) {
     await showPerceptionConsent();
     return;
@@ -1933,6 +1969,8 @@ async function main() {
         await showBrowserBenchmarks();
       } else if (answer === 'f' || answer === 'file benchmark' || answer === 'file benchmarks') {
         await showFileBenchmarks();
+      } else if (answer === 'c' || answer === 'creative benchmark' || answer === 'creative benchmarks') {
+        await showCreativeBenchmarks();
       } else if (answer === '14') {
         await showWorkbenchNext();
       } else if (answer === '15') {
