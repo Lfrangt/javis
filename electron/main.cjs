@@ -23911,6 +23911,15 @@ const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
 const REALTIME_CAPABILITY_TOOL_NAME = 'get_local_capabilities';
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
+const REALTIME_BROWSER_TOOL_NAMES = new Set([
+  'get_browser_context',
+  'get_browser_activity',
+  'read_browser_page',
+  'read_browser_dom',
+  'run_browser_workflow',
+  'control_browser',
+  'control_browser_dom',
+]);
 
 function realtimeToolOutputObject(result = {}) {
   if (!result || typeof result.output !== 'string') return null;
@@ -24126,6 +24135,83 @@ function realtimeLearningToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function browserActionForToolCall(name) {
+  if (name === 'get_browser_context') return 'context';
+  if (name === 'get_browser_activity') return 'activity';
+  if (name === 'read_browser_page') return 'read_page';
+  if (name === 'read_browser_dom') return 'read_dom';
+  if (name === 'run_browser_workflow') return 'workflow';
+  if (name === 'control_browser') return 'browser_control';
+  if (name === 'control_browser_dom') return 'dom_control';
+  return '';
+}
+
+function realtimeBrowserToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_BROWSER_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const context = output.context || output.current || {};
+  const page = output.page || output.target || output.context || output.current || output;
+  const workflow = output.workflow || {};
+  const routing = output.routing || {};
+  const privacy = output.privacy || {};
+  const domElements = Array.isArray(output.elements)
+    ? output.elements
+    : Array.isArray(output.controls)
+      ? output.controls
+      : Array.isArray(output.dom?.elements)
+        ? output.dom.elements
+        : [];
+  const recent = Array.isArray(output.recent) ? output.recent : [];
+  const topHosts = Array.isArray(output.topHosts) ? output.topHosts : [];
+  const linkCount = Number(page.linkCount ?? (Array.isArray(page.links) ? page.links.length : output.linkCount || 0));
+  const textChars = Number(page.returnedLength ?? page.textLength ?? (typeof page.text === 'string' ? page.text.length : 0));
+  const url = compactRecordText(page.url || context.url || args?.url || '', 500);
+  let host = compactRecordText(page.host || context.host || '', 120);
+  if (!host && url) {
+    try {
+      host = compactRecordText(new URL(url).hostname.replace(/^www\./i, ''), 120);
+    } catch {
+      host = '';
+    }
+  }
+  const executed = output.executed === true || output.execute === true;
+  const previewOnly = args?.execute === false || output.executed === false || output.preview === true || output.execute === false;
+  const confirmationRequired = output.confirmationRequired === true || output.requiresConfirmation === true;
+  return {
+    action: browserActionForToolCall(name),
+    intent: compactRecordText(args?.intent || output.intent || workflow.intent || '', 80),
+    mode: compactRecordText(args?.mode || output.mode || workflow.mode || '', 80),
+    execute: args?.execute === true || output.execute === true,
+    executed,
+    previewOnly,
+    safePreview: name === 'run_browser_workflow' && previewOnly && !executed,
+    confirmationRequired,
+    blocked: Boolean(output.blocked || output.status === 409 || workflow.status === 'blocked' || workflow.status === 'failed'),
+    ok: Boolean(output.ok ?? result.ok),
+    status: compactRecordText(output.status || workflow.status || routing.status || '', 80),
+    app: compactRecordText(page.app || context.app || output.app || args?.app || '', 120),
+    title: compactRecordText(page.title || context.title || output.title || '', 180),
+    url,
+    host,
+    workflowId: String(workflow.id || output.workflowId || '').slice(0, 120),
+    workflowStatus: compactRecordText(workflow.status || '', 80),
+    routingStatus: compactRecordText(routing.status || '', 80),
+    textChars: boundedCount(textChars, 10000000),
+    linkCount: boundedCount(linkCount, 10000),
+    controlCount: boundedCount(page.count ?? output.count ?? domElements.length, 10000),
+    resultCount: boundedCount(output.resultCount ?? page.resultCount ?? workflow.target?.resultCount ?? output.selectedLinks?.length, 10000),
+    recentCount: boundedCount(recent.length, 1000),
+    topHostCount: boundedCount(topHosts.length, 1000),
+    metadataOnly: privacy.metadataOnly === true || name === 'get_browser_activity',
+    noPageText: privacy.noPageText === true || name === 'get_browser_activity',
+    error: compactRecordText(output.error || page.error || '', 220),
+    recoveryHints: Array.isArray(output.recovery?.actions)
+      ? output.recovery.actions.map((action) => compactRecordText(action?.type || action?.label || '', 80)).filter(Boolean).slice(0, 5)
+      : [],
+    output: compactRecordText(output.output || workflow.result || '', 240),
+  };
+}
+
 function demonstrationActionForToolCall(name, output = {}) {
   if (name === 'get_ui_demonstrations') return 'list';
   if (name === 'start_ui_demonstration') return 'start';
@@ -24229,6 +24315,7 @@ function recordRealtimeToolCall(options = {}) {
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
   const capability = realtimeCapabilityToolSummary(name, options.args || {}, result);
   const learning = realtimeLearningToolSummary(name, options.args || {}, result);
+  const browser = realtimeBrowserToolSummary(name, options.args || {}, result);
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
   const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
   const event = {
@@ -24248,6 +24335,7 @@ function recordRealtimeToolCall(options = {}) {
     perception,
     capability,
     learning,
+    browser,
     demonstration,
     dogfoodSession,
   };
@@ -24291,6 +24379,17 @@ function recordRealtimeToolCall(options = {}) {
     learningSignalCount: learning?.signalCount || 0,
     learningLocalOnly: Boolean(learning?.localOnly),
     learningNoRawScreenshots: Boolean(learning?.noRawScreenshots),
+    browserAction: browser?.action || '',
+    browserIntent: browser?.intent || '',
+    browserMode: browser?.mode || '',
+    browserPreviewOnly: Boolean(browser?.previewOnly),
+    browserSafePreview: Boolean(browser?.safePreview),
+    browserConfirmationRequired: Boolean(browser?.confirmationRequired),
+    browserWorkflowId: browser?.workflowId || '',
+    browserTitle: browser?.title || '',
+    browserHost: browser?.host || '',
+    browserLinkCount: browser?.linkCount || 0,
+    browserControlCount: browser?.controlCount || 0,
     demonstrationAction: demonstration?.action || '',
     demonstrationId: demonstration?.demonstrationId || '',
     demonstrationStepCount: demonstration?.stepCount || 0,
@@ -24490,6 +24589,48 @@ function realtimeLearningToolEvidence(limit = 8) {
     nextAction: hasLearningProfile
       ? 'Ask live voice what local habits JAVIS has inferred and confirm it frames them as local inferred context, not explicit memory.'
       : 'Ask the live voice session: 你最近学到了我什么使用习惯？',
+  };
+}
+
+function realtimeBrowserToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_BROWSER_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.browser?.action).filter(Boolean));
+  const hasContext = recent.some((event) => event.ok && event.name === 'get_browser_context');
+  const hasActivity = recent.some((event) => event.ok && event.name === 'get_browser_activity' && event.browser?.metadataOnly === true);
+  const hasPageRead = recent.some((event) => event.ok && event.name === 'read_browser_page');
+  const hasDomRead = recent.some((event) => event.ok && event.name === 'read_browser_dom');
+  const hasWorkflow = recent.some((event) => event.ok && event.name === 'run_browser_workflow');
+  const hasSafeWorkflowPreview = recent.some((event) => (
+    event.ok &&
+    event.name === 'run_browser_workflow' &&
+    event.browser?.safePreview === true
+  ));
+  const hasControlPreviewOrGuard = recent.some((event) => (
+    (event.name === 'control_browser' || event.name === 'control_browser_dom') &&
+    (event.browser?.previewOnly === true || event.browser?.confirmationRequired === true || event.ok)
+  ));
+  return {
+    ok: recent.length > 0,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasContext,
+    hasActivity,
+    hasPageRead,
+    hasDomRead,
+    hasWorkflow,
+    hasSafeWorkflowPreview,
+    hasControlPreviewOrGuard,
+    privacySafe: recent.every((event) => (
+      event.name !== 'get_browser_activity' ||
+      (event.browser?.metadataOnly === true && event.browser?.noPageText === true)
+    )),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasWorkflow || hasPageRead
+      ? 'Ask live voice to inspect the current browser page safely and confirm it uses browser read/workflow evidence before acting.'
+      : 'Ask the live voice session: 帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
   };
 }
 
@@ -24810,10 +24951,11 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
   const learningTools = evidence.learningTools || {};
+  const browserTools = evidence.browserTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
-    goal: 'Prove a real Realtime voice session can speak current progress, call capability/work/status/privacy/learning tools, learn one demonstrated workflow as a safe replay/skill draft, and leave evidence.',
+    goal: 'Prove a real Realtime voice session can speak current progress, call browser/capability/work/status/privacy/learning tools, learn one demonstrated workflow as a safe replay/skill draft, and leave evidence.',
     manualOnly: true,
     requiresUserPresence: true,
     current: {
@@ -24845,6 +24987,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
       '你最近学到了我什么使用习惯？',
+      '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
       '我来教你一个流程，开始记录这个 UI 流程',
     ],
     expectedEvidence: [
@@ -24900,13 +25043,19 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: REALTIME_LEARNING_TOOL_NAME,
       },
       {
+        id: 'browser_tool',
+        label: 'Realtime used browser read/workflow tools safely',
+        ok: Boolean(browserTools.hasWorkflow || browserTools.hasPageRead),
+        tool: 'run_browser_workflow',
+      },
+      {
         id: 'demonstration_tool',
         label: 'Realtime recorded a UI demonstration and drafted a skill safely',
         ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
         tool: 'draft_ui_demonstration_skill',
       },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, capability, learning, and UI demonstration prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, capability, learning, browser, and UI demonstration prompts.',
   };
 }
 
@@ -24919,6 +25068,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
   const learningTools = evidence.learningTools || {};
+  const browserTools = evidence.browserTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
@@ -24944,7 +25094,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, learningTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, learningTools, browserTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -25038,6 +25188,18 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasSignals: Boolean(learningTools.hasSignals),
       nextAction: learningTools.nextAction || 'Ask the live voice session what local habits JAVIS has inferred.',
     },
+    browserTools: {
+      observed: Boolean(browserTools.ok),
+      count: Number(browserTools.count || 0),
+      observedActions: Array.isArray(browserTools.observedActions) ? browserTools.observedActions : [],
+      hasContext: Boolean(browserTools.hasContext),
+      hasActivity: Boolean(browserTools.hasActivity),
+      hasPageRead: Boolean(browserTools.hasPageRead),
+      hasDomRead: Boolean(browserTools.hasDomRead),
+      hasWorkflow: Boolean(browserTools.hasWorkflow),
+      hasSafeWorkflowPreview: Boolean(browserTools.hasSafeWorkflowPreview),
+      nextAction: browserTools.nextAction || 'Ask the live voice session to inspect the current browser page safely.',
+    },
     demonstrationTools: {
       observed: Boolean(demonstrationTools.ok),
       count: Number(demonstrationTools.count || 0),
@@ -25082,6 +25244,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
   const capabilityTools = options.capabilityTools || evidence.capabilityTools || {};
   const learningTools = options.learningTools || evidence.learningTools || {};
+  const browserTools = options.browserTools || evidence.browserTools || {};
   const demonstrationTools = options.demonstrationTools || evidence.demonstrationTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
@@ -25197,6 +25360,25 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_LEARNING_TOOL_NAME, count: Number(learningTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_browser_workflow',
+      label: 'Ask voice to inspect the current browser page safely',
+      ok: Boolean(browserTools.hasWorkflow || browserTools.hasPageRead),
+      detail: browserTools.hasWorkflow
+        ? 'run_browser_workflow was observed in recent Realtime browser evidence.'
+        : browserTools.hasPageRead
+          ? 'read_browser_page was observed in recent Realtime browser evidence.'
+          : 'No browser read/workflow tool call has been observed in recent Realtime evidence.',
+      nextAction: 'Ask: 帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
+      evidence: {
+        tool: 'run_browser_workflow',
+        count: Number(browserTools.count || 0),
+        observedActions: Array.isArray(browserTools.observedActions) ? browserTools.observedActions : [],
+        hasPageRead: Boolean(browserTools.hasPageRead),
+        hasWorkflow: Boolean(browserTools.hasWorkflow),
+        hasSafeWorkflowPreview: Boolean(browserTools.hasSafeWorkflowPreview),
+      },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'teach_ui_demonstration',
       label: 'Teach one repeatable UI workflow',
       ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
@@ -25276,6 +25458,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
       '你最近学到了我什么使用习惯？',
+      '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
       '我来教你一个流程，开始记录这个 UI 流程',
       '记录这一步：观察当前窗口并记住我要确认保存状态',
       '结束记录，并生成回放计划和 skill 草稿',
@@ -25368,6 +25551,12 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       copyText: '你最近学到了我什么使用习惯？',
       reason: 'This verifies the Realtime session calls get_learning_profile and frames it as local inferred context, not explicit memory.',
     },
+    ask_browser_workflow: {
+      promptType: 'spoken',
+      prompt: '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
+      copyText: '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
+      reason: 'This verifies the Realtime session can use browser read/workflow tools safely before any page action.',
+    },
     teach_ui_demonstration: {
       promptType: 'spoken_sequence',
       prompt: '我来教你一个流程，开始记录这个 UI 流程',
@@ -25454,6 +25643,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
     { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), label: 'local capability map', tool: REALTIME_CAPABILITY_TOOL_NAME },
     { id: 'learning', ok: Boolean(evidence.learningTools?.hasLearningProfile), label: 'local learning profile', tool: REALTIME_LEARNING_TOOL_NAME },
+    { id: 'browser', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), label: 'browser read/workflow', tool: 'run_browser_workflow' },
     {
       id: 'demonstration',
       ok: Boolean(
@@ -25626,6 +25816,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', label: 'local capability map', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), tool: REALTIME_CAPABILITY_TOOL_NAME },
     { id: 'learning', label: 'local learning profile', ok: Boolean(evidence.learningTools?.hasLearningProfile), tool: REALTIME_LEARNING_TOOL_NAME },
+    { id: 'browser', label: 'browser read/workflow', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), tool: 'run_browser_workflow' },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
     { id: 'shortcut', label: 'shortcut list/save/forget', ok: Boolean(evidence.shortcutTools?.hasList && evidence.shortcutTools?.hasSave && evidence.shortcutTools?.hasForget), tool: 'save_skill_shortcut' },
   ];
@@ -25849,6 +26040,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_perception_consent', 'voice_tools', 'Ask what JAVIS can see or control'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_local_capabilities', 'voice_tools', 'Ask which local capability or tool should handle the task'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_learning_profile', 'learning_loop', 'Ask what local habits JAVIS has inferred'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_browser_workflow', 'computer_tools', 'Ask voice to inspect the current browser page safely'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'teach_ui_demonstration', 'learning_loop', 'Teach one repeatable UI workflow'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'list_shortcuts', 'shortcut_loop', 'Ask voice to list saved shortcut phrases'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_shortcut_with_confirmation', 'shortcut_loop', 'Save a shortcut phrase after explicit confirmation'),
@@ -26994,6 +27186,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const perceptionTools = realtimePerceptionToolEvidence(8);
   const capabilityTools = realtimeCapabilityToolEvidence(8);
   const learningTools = realtimeLearningToolEvidence(8);
+  const browserTools = realtimeBrowserToolEvidence(8);
   const demonstrationTools = realtimeDemonstrationToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const liveAt = Number(conversation.liveAt || 0);
@@ -27062,6 +27255,7 @@ function realtimeVoiceEvidenceSnapshot() {
     perceptionTools,
     capabilityTools,
     learningTools,
+    browserTools,
     demonstrationTools,
     progressSync,
     progress: {
@@ -27221,6 +27415,16 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         hasSourceEvents: Boolean(evidence.learningTools?.hasSourceEvents),
         hasSignals: Boolean(evidence.learningTools?.hasSignals),
         nextAction: evidence.learningTools?.nextAction || '',
+      },
+      browser: {
+        observed: Boolean(evidence.browserTools?.ok),
+        count: Number(evidence.browserTools?.count || 0),
+        observedActions: Array.isArray(evidence.browserTools?.observedActions) ? evidence.browserTools.observedActions : [],
+        hasPageRead: Boolean(evidence.browserTools?.hasPageRead),
+        hasDomRead: Boolean(evidence.browserTools?.hasDomRead),
+        hasWorkflow: Boolean(evidence.browserTools?.hasWorkflow),
+        hasSafeWorkflowPreview: Boolean(evidence.browserTools?.hasSafeWorkflowPreview),
+        nextAction: evidence.browserTools?.nextAction || '',
       },
       demonstrations: {
         observed: Boolean(evidence.demonstrationTools?.ok),
@@ -34698,7 +34902,7 @@ async function executeTool(name, args) {
   }
 
   if (name === 'run_browser_workflow') {
-    const result = await runBrowserWorkflow({ ...(args || {}), source: 'voice' });
+    const result = await runBrowserWorkflow({ ...(args || {}), source: args?.source || 'voice' });
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 

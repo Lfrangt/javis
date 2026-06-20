@@ -145,6 +145,79 @@ export default {
         : fail('realtime.browser_activity_tool', 'Realtime browser activity tool', `tool execute ${browserActivityTool.status}`, browserActivityTool.data),
     );
 
+    const browserWorkflowTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'run_browser_workflow',
+        arguments: {
+          intent: 'extract_actions',
+          mode: 'quick',
+          execute: false,
+          instruction: 'Extract follow-up actions from this page without submitting any form.',
+          page: {
+            available: true,
+            supported: true,
+            app: 'FixtureBrowser',
+            title: 'Realtime Browser Fixture',
+            url: 'https://example.test/realtime-browser-fixture',
+            metaDescription: 'Fixture page for Realtime browser workflow evidence.',
+            headings: ['Realtime Browser Dogfood', 'Follow-up Actions'],
+            text: [
+              'JAVIS realtime browser fixture.',
+              'Action: inspect the current page before acting.',
+              'Action: keep form submission disabled until the user explicitly confirms.',
+              'Private fixture token: rt-browser-secret-do-not-return.',
+            ].join('\n'),
+            links: [
+              { text: 'Operator runbook', href: 'https://example.test/realtime-browser-runbook' },
+            ],
+          },
+          scope: 'eval:realtime:browser_workflow',
+          parallelGroup: 'realtime:browser_workflow',
+          source: 'eval_realtime_browser_workflow',
+        },
+      },
+    });
+    const browserWorkflowOutput = parseToolOutput(browserWorkflowTool);
+    const browserWorkflowBody = JSON.stringify(browserWorkflowOutput || {});
+    out.push(
+      browserWorkflowTool.ok &&
+        browserWorkflowTool.data?.ok === true &&
+        browserWorkflowOutput?.ok === true &&
+        browserWorkflowOutput?.intent === 'extract_actions' &&
+        browserWorkflowOutput?.preview === true &&
+        browserWorkflowOutput?.executed === false &&
+        browserWorkflowOutput?.queued === false &&
+        browserWorkflowOutput?.workflow?.status === 'done' &&
+        browserWorkflowOutput?.routing?.status === 'done' &&
+        browserWorkflowOutput?.page?.title === 'Realtime Browser Fixture' &&
+        browserWorkflowOutput?.page?.linkCount === 1 &&
+        /Preview only/.test(String(browserWorkflowOutput?.output || '')) &&
+        !browserWorkflowBody.includes('rt-browser-secret-do-not-return')
+        ? ok('realtime.browser_workflow_tool', 'Realtime browser workflow voice tool', 'previewed extract_actions without queue, model call, or browser action')
+        : fail('realtime.browser_workflow_tool', 'Realtime browser workflow voice tool', `tool execute ${browserWorkflowTool.status}`, browserWorkflowTool.data),
+    );
+
+    const browserEvidence = await ctx.api('/api/realtime/evidence');
+    const browserToolEvidence = browserEvidence.data?.evidence?.browserTools;
+    const browserToolEvents = Array.isArray(browserToolEvidence?.recent) ? browserToolEvidence.recent : [];
+    out.push(
+      browserEvidence.ok &&
+        browserToolEvidence?.hasWorkflow === true &&
+        browserToolEvidence?.hasSafeWorkflowPreview === true &&
+        browserToolEvents.some((event) => (
+          event.name === 'run_browser_workflow' &&
+          event.source === 'eval' &&
+          event.browser?.action === 'workflow' &&
+          event.browser?.intent === 'extract_actions' &&
+          event.browser?.safePreview === true &&
+          event.browser?.title === 'Realtime Browser Fixture'
+        ))
+        ? ok('realtime.browser_workflow_tool_evidence', 'Realtime browser workflow tool evidence', 'run_browser_workflow is visible in safe Realtime browser evidence')
+        : fail('realtime.browser_workflow_tool_evidence', 'Realtime browser workflow tool evidence', 'expected run_browser_workflow to appear in realtime evidence', browserToolEvidence),
+    );
+
     const perceptionTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: { source: 'eval', name: 'get_perception_consent', arguments: { limit: 5 } },
@@ -666,7 +739,8 @@ export default {
         realtimeEvidenceOutput.tools?.attention &&
         realtimeEvidenceOutput.tools?.perception &&
         realtimeEvidenceOutput.tools?.capabilities &&
-        realtimeEvidenceOutput.tools?.learning
+        realtimeEvidenceOutput.tools?.learning &&
+        realtimeEvidenceOutput.tools?.browser
         ? ok('realtime.evidence_tool', 'Realtime evidence voice tool', `${realtimeEvidenceOutput.status}/${realtimeEvidenceOutput.phase} · ${realtimeEvidenceOutput.nextAction}`)
         : fail('realtime.evidence_tool', 'Realtime evidence voice tool', `tool execute ${realtimeEvidenceTool.status}`, realtimeEvidenceTool.data),
     );
@@ -989,6 +1063,7 @@ export default {
           output.includes('Perception consent tool:') &&
           output.includes('Local capability tool:') &&
           output.includes('Local learning tool:') &&
+          output.includes('Browser tools:') &&
           output.includes('UI demonstration tools:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Latency:') &&
@@ -1007,9 +1082,10 @@ export default {
           output.includes('get_perception_consent') &&
           output.includes('get_local_capabilities') &&
           output.includes('get_learning_profile') &&
+          output.includes('run_browser_workflow') &&
           output.includes('draft_ui_demonstration_skill')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, UI demonstration, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -1261,6 +1337,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         e.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         e.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
+        e.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
         e.gapSummary?.manualOnly === true &&
         e.gapSummary?.startsMicrophone === false &&
@@ -1272,6 +1349,8 @@ export default {
         e.autopilotTools?.hasStatus === true &&
         e.capabilityTools?.hasCapabilityMap === true &&
         e.learningTools?.hasLearningProfile === true &&
+        e.browserTools?.hasWorkflow === true &&
+        e.browserTools?.hasSafeWorkflowPreview === true &&
         e.latency?.quality === 'fast' &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
@@ -1311,6 +1390,7 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
         d.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         d.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
+        d.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
         d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
         d.gapSummary?.manualOnly === true &&
         d.gapSummary?.startsMicrophone === false &&
@@ -1326,6 +1406,8 @@ export default {
         d.capabilityTools?.hasRecommendedTools === true &&
         d.learningTools?.hasLearningProfile === true &&
         d.learningTools?.privacySafe === true &&
+        d.browserTools?.hasWorkflow === true &&
+        d.browserTools?.hasSafeWorkflowPreview === true &&
         d.demonstrationTools?.hasSafeReplayPlan === true &&
         d.demonstrationTools?.hasDraft === true &&
         d.demonstrationTools?.hasConfirmationGate === true &&
@@ -1338,6 +1420,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
@@ -1346,6 +1429,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_local_capabilities') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_profile') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'run_browser_workflow') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
@@ -1369,6 +1453,7 @@ export default {
       'ask_perception_consent',
       'ask_local_capabilities',
       'ask_learning_profile',
+      'ask_browser_workflow',
       'teach_ui_demonstration',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
@@ -1387,12 +1472,14 @@ export default {
         drillGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
         Array.isArray(drillData.prompts) &&
         drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillData.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('能做什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('学到了')) &&
+        drillData.prompts.some((prompt) => prompt.includes('当前网页')) &&
         drillData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
@@ -1449,7 +1536,7 @@ export default {
         dogfoodBriefData?.monitor?.endpoint === '/api/realtime/evidence' &&
         dogfoodBriefData?.monitor?.brief?.includes('--print-realtime-dogfood-brief') &&
         dogfoodBriefData?.start?.hotkey &&
-        dogfoodBriefData?.counts?.steps >= 16 &&
+        dogfoodBriefData?.counts?.steps >= 17 &&
         dogfoodBriefData?.gapSummary?.counts?.total === dogfoodBriefData.counts.steps &&
         dogfoodBriefData?.gapSummary?.counts?.pending === dogfoodBriefData.counts.pending &&
         dogfoodBriefData?.gapSummary?.startsMicrophone === false &&
@@ -1458,10 +1545,12 @@ export default {
         Array.isArray(dogfoodBriefData.prompts) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('能做什么')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('学到了')) &&
+        dogfoodBriefData.prompts.some((prompt) => prompt.includes('当前网页')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodBriefData.evidenceTools) &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'capability' && item.tool === 'get_local_capabilities') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'learning' && item.tool === 'get_learning_profile') &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'browser' && item.tool === 'run_browser_workflow') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'demonstration' && item.tool === 'draft_ui_demonstration_skill')
         ? ok('realtime.dogfood_brief', 'Realtime dogfood operator brief', `${dogfoodBriefData.counts.ready}/${dogfoodBriefData.counts.steps} ready · next=${dogfoodBriefData.nextPrompt?.copyText || dogfoodBriefData.currentStep?.label || '-'}`)
         : fail('realtime.dogfood_brief', 'Realtime dogfood operator brief', `GET /api/realtime/dogfood/brief ${dogfoodBrief.status}`, dogfoodBrief.data),
@@ -1483,6 +1572,7 @@ export default {
           output.includes('Gap:') &&
           output.includes('get_local_capabilities') &&
           output.includes('get_learning_profile') &&
+          output.includes('run_browser_workflow') &&
           output.includes('开始记录') &&
           output.includes('/api/realtime/evidence')
           ? ok('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', 'config CUI prints one-page live dogfood brief without starting voice')
@@ -1506,6 +1596,7 @@ export default {
       'ask_perception_consent',
       'ask_local_capabilities',
       'ask_learning_profile',
+      'ask_browser_workflow',
       'teach_ui_demonstration',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
@@ -1518,10 +1609,10 @@ export default {
         acceptanceData?.requiresUserPresence === true &&
         acceptanceData?.accepted === false &&
         acceptanceData?.status === 'pending' &&
-        acceptanceData?.counts?.gates >= 17 &&
+        acceptanceData?.counts?.gates >= 18 &&
         acceptanceData?.counts?.gaps >= 1 &&
         requiredAcceptanceGates.every((id) => acceptanceGateIds.has(id)) &&
-        ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
+        ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'computer_tools', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
         acceptanceData?.nextGap?.id &&
         acceptanceData?.archive?.saved === false &&
         acceptanceData?.safety?.rawAudioStored === false &&
@@ -1590,7 +1681,7 @@ export default {
         acceptanceTool.data?.ok === true &&
         acceptanceToolOutput?.acceptance?.manualOnly === true &&
         acceptanceToolOutput?.acceptance?.startsMicrophone === false &&
-        acceptanceToolOutput?.acceptance?.counts?.gates >= 17 &&
+        acceptanceToolOutput?.acceptance?.counts?.gates >= 18 &&
         Array.isArray(acceptanceToolOutput?.acceptance?.gates)
         ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.acceptance.counts.passed}/${acceptanceToolOutput.acceptance.counts.gates} gate(s) pass`)
         : fail('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `tool execute ${acceptanceTool.status}`, acceptanceTool.data),

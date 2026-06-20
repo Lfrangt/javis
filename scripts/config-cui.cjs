@@ -1313,6 +1313,8 @@ function printRealtimeEvidence(result) {
   const capabilityEvents = Array.isArray(capabilityTools.recent) ? capabilityTools.recent : [];
   const learningTools = evidence.learningTools || {};
   const learningEvents = Array.isArray(learningTools.recent) ? learningTools.recent : [];
+  const browserTools = evidence.browserTools || {};
+  const browserEvents = Array.isArray(browserTools.recent) ? browserTools.recent : [];
   const demonstrationTools = evidence.demonstrationTools || {};
   const demonstrationEvents = Array.isArray(demonstrationTools.recent) ? demonstrationTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
@@ -1503,6 +1505,29 @@ function printRealtimeEvidence(result) {
     const summary = learning.spokenSummary ? ` · ${compact(learning.spokenSummary, 180)}` : '';
     console.log(`- ${event.name || 'get_learning_profile'} · ${bits.join(' · ')}${summary}`);
   }
+  console.log('\nBrowser tools:');
+  console.log(`- observed ${Number(browserTools.count || 0)} recent event(s) · actions ${(browserTools.observedActions || []).join(', ') || '-'}`);
+  console.log(`- gates page-read=${browserTools.hasPageRead ? 'yes' : 'no'} · dom-read=${browserTools.hasDomRead ? 'yes' : 'no'} · workflow=${browserTools.hasWorkflow ? 'yes' : 'no'} · safe-preview=${browserTools.hasSafeWorkflowPreview ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(browserTools.nextAction || dogfood.browserTools?.nextAction || 'Ask live voice to inspect the current browser page safely.', 220)}`);
+  for (const event of browserEvents.slice(0, 4)) {
+    const browser = event.browser || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      browser.action || event.name || '-',
+      browser.intent ? `intent=${browser.intent}` : '',
+      browser.mode ? `mode=${browser.mode}` : '',
+      browser.previewOnly ? 'preview-only' : '',
+      browser.safePreview ? 'safe-preview' : '',
+      browser.confirmationRequired ? 'confirmation' : '',
+      browser.host ? `host=${browser.host}` : '',
+      browser.linkCount ? `links=${browser.linkCount}` : '',
+      browser.controlCount ? `controls=${browser.controlCount}` : '',
+      browser.workflowId ? `workflow=${compact(browser.workflowId, 10)}` : '',
+    ].filter(Boolean);
+    const summary = browser.output ? ` · ${compact(browser.output, 160)}` : '';
+    console.log(`- ${event.name || 'browser_tool'} · ${bits.join(' · ')}${summary}`);
+  }
   console.log('\nUI demonstration tools:');
   console.log(`- observed ${Number(demonstrationTools.count || 0)} recent event(s) · actions ${(demonstrationTools.observedActions || []).join(', ') || '-'}`);
   console.log(`- replay=${demonstrationTools.hasSafeReplayPlan ? 'safe-preview' : 'pending'} · draft=${demonstrationTools.hasDraft ? 'yes' : 'no'} · confirm-gate=${demonstrationTools.hasConfirmationGate ? 'yes' : 'no'} · raw=${demonstrationTools.noRawStored ? 'none' : 'check'}`);
@@ -1529,7 +1554,8 @@ function printRealtimeEvidence(result) {
     for (const event of toolCalls.slice(0, 5)) {
       const resultShape = event.result || {};
       const shortcut = event.shortcut?.action ? ` · shortcut=${event.shortcut.action}` : '';
-      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}`);
+      const browser = event.browser?.action ? ` · browser=${event.browser.action}` : '';
+      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}${browser}`);
     }
   } else {
     console.log('- none yet');
