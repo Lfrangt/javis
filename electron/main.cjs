@@ -15019,6 +15019,314 @@ async function runBrowserWorkflow(options = {}) {
   };
 }
 
+function browserBenchmarkSecretLeaked(value, secrets = []) {
+  const text = JSON.stringify(value || {});
+  return secrets.some((secret) => secret && text.includes(secret));
+}
+
+function browserBenchmarkCaseResult({ id, label, intent, ok, result, assertions = {}, secrets = [] }) {
+  const leakedSecrets = browserBenchmarkSecretLeaked(result, secrets);
+  const finalOk = Boolean(ok && !leakedSecrets);
+  const workflow = result?.workflow || {};
+  const routing = result?.routing || {};
+  return {
+    id,
+    label,
+    intent,
+    ok: finalOk,
+    status: finalOk ? 'pass' : 'fail',
+    previewOnly: result?.executed === false || result?.preview === true,
+    executed: Boolean(result?.executed),
+    queued: Boolean(result?.queued),
+    modelCall: false,
+    browserAction: false,
+    workflowId: workflow.id || '',
+    workflowStatus: workflow.status || '',
+    routingId: routing.id || '',
+    routingStatus: routing.status || '',
+    assertions: {
+      ...assertions,
+      leakedSecrets,
+    },
+    summary: compactRecordText(result?.output || workflow.result || '', 260),
+  };
+}
+
+async function browserWorkflowBenchmarkSnapshot(options = {}) {
+  const source = String(options.source || 'browser_benchmark').slice(0, 80);
+  const sourcePrefix = source.startsWith('eval_') ? source : `${source}`;
+  const secrets = ['sk-bench-secret-do-not-return', 'bench-password-secret'];
+  const launchPage = {
+    available: true,
+    supported: true,
+    app: 'FixtureBrowser',
+    title: 'JAVIS Browser Benchmark Launch',
+    url: 'https://example.test/javis/browser-benchmark',
+    metaDescription: 'Fixture page for preview-only browser workflow benchmarks.',
+    headings: ['Launch Plan', 'Risks', 'Follow-up Actions'],
+    text: [
+      'JAVIS browser benchmark fixture.',
+      'Owner: browser lane.',
+      'Action: verify form fill draft before live browser execution.',
+      'Action: preserve quiet desktop pet behavior while logs stay in CUI.',
+      'Risk: never echo private tokens from page text.',
+      'Private fixture token: sk-bench-secret-do-not-return.',
+    ].join('\n'),
+    links: [
+      { text: 'Research A', href: 'https://example.test/javis/research-a' },
+      { text: 'Research B', href: 'https://example.test/javis/research-b' },
+    ],
+  };
+  const formPage = {
+    available: true,
+    supported: true,
+    app: 'FixtureBrowser',
+    title: 'Benchmark Signup Form',
+    url: 'https://example.test/javis/signup',
+    text: 'Name Email Plan Password',
+  };
+  const formDom = {
+    available: true,
+    supported: true,
+    app: 'FixtureBrowser',
+    title: 'Benchmark Signup Form',
+    url: 'https://example.test/javis/signup',
+    elements: [
+      { id: 'name', selector: '#name', tag: 'input', type: 'text', label: 'Name', placeholder: 'Full name', name: 'name', disabled: false },
+      { id: 'email', selector: '#email', tag: 'input', type: 'email', label: 'Email', placeholder: 'Email address', name: 'email', disabled: false },
+      { id: 'plan', selector: '#plan', tag: 'select', type: '', label: 'Plan', placeholder: '', name: 'plan', disabled: false },
+      { id: 'password', selector: '#password', tag: 'input', type: 'password', label: 'Password', placeholder: 'Password', name: 'password', disabled: false },
+    ],
+  };
+
+  const cases = [];
+  const extractActions = await runBrowserWorkflow({
+    intent: 'extract_actions',
+    mode: 'quick',
+    execute: false,
+    instruction: 'Extract follow-up actions from this benchmark page.',
+    page: launchPage,
+    source: `${sourcePrefix}_extract_actions`,
+    scope: 'eval:browser:benchmark:extract_actions',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'extract_actions_fixture',
+    label: 'Extract actions preview fixture',
+    intent: 'extract_actions',
+    result: extractActions,
+    secrets,
+    assertions: {
+      preview: extractActions.preview === true,
+      workflowDone: extractActions.workflow?.status === 'done',
+      pageTextCaptured: Number(extractActions.page?.returnedLength || 0) > 120,
+      linkCount: Number(extractActions.page?.linkCount || 0) === 2,
+    },
+    ok: extractActions.ok === true &&
+      extractActions.preview === true &&
+      extractActions.executed === false &&
+      extractActions.workflow?.status === 'done' &&
+      Number(extractActions.page?.returnedLength || 0) > 120 &&
+      Number(extractActions.page?.linkCount || 0) === 2,
+  }));
+
+  const summarize = await runBrowserWorkflow({
+    intent: 'summarize',
+    mode: 'quick',
+    execute: false,
+    instruction: 'Summarize this benchmark page without returning private tokens.',
+    page: launchPage,
+    source: `${sourcePrefix}_summarize`,
+    scope: 'eval:browser:benchmark:summarize',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'summarize_fixture',
+    label: 'Summarize preview fixture',
+    intent: 'summarize',
+    result: summarize,
+    secrets,
+    assertions: {
+      preview: summarize.preview === true,
+      headingsVisible: Array.isArray(summarize.page?.headings) && summarize.page.headings.includes('Launch Plan'),
+      noQueue: summarize.queued === false,
+    },
+    ok: summarize.ok === true &&
+      summarize.preview === true &&
+      summarize.executed === false &&
+      summarize.queued === false &&
+      Array.isArray(summarize.page?.headings) &&
+      summarize.page.headings.includes('Launch Plan'),
+  }));
+
+  const fillDraft = await runBrowserFillDraftWorkflow({
+    instruction: 'Benchmark safe form-fill draft.',
+    execute: false,
+    page: formPage,
+    dom: formDom,
+    fields: {
+      Name: 'Haoge',
+      Email: 'haoge@example.test',
+      Plan: 'Pro',
+      Password: 'bench-password-secret',
+    },
+    source: `${sourcePrefix}_fill_draft`,
+    scope: 'eval:browser:benchmark:fill_draft',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'fill_draft_fixture',
+    label: 'Form-fill draft fixture',
+    intent: 'fill_draft',
+    result: fillDraft,
+    secrets,
+    assertions: {
+      plannedFields: Number(fillDraft.plan?.steps?.length || 0),
+      blockedSensitiveFields: Number(fillDraft.plan?.blocked?.length || 0),
+      verificationStatus: fillDraft.verification?.status || '',
+      fixtureOnly: fillDraft.page?.app === 'FixtureBrowser',
+    },
+    ok: fillDraft.intent === 'fill_draft' &&
+      fillDraft.executed === false &&
+      Number(fillDraft.plan?.steps?.length || 0) === 3 &&
+      Number(fillDraft.plan?.blocked?.length || 0) === 1 &&
+      fillDraft.fields?.find((field) => field.name === 'Password')?.valuePreview === '[sensitive]' &&
+      fillDraft.verification?.status === 'preview_only',
+  }));
+
+  const research = await runBrowserWorkflow({
+    intent: 'research',
+    mode: 'quick',
+    execute: false,
+    instruction: 'Benchmark prepared multi-page browser research.',
+    urls: [
+      'https://example.test/javis/research-a',
+      'https://example.test/javis/research-b',
+      'https://example.test/javis/research-c',
+    ],
+    maxPages: 3,
+    source: `${sourcePrefix}_research`,
+    scope: 'eval:browser:benchmark:research',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'research_continuation_fixture',
+    label: 'Research continuation fixture',
+    intent: 'research',
+    result: research,
+    secrets,
+    assertions: {
+      selectedLinks: Number(research.selectedLinks?.length || 0),
+      continuationStatus: research.continuation?.status || '',
+      nextActions: Number(research.continuation?.nextActions?.length || 0),
+    },
+    ok: research.ok === true &&
+      research.executed === false &&
+      research.intent === 'research' &&
+      Number(research.selectedLinks?.length || 0) === 3 &&
+      research.continuation?.status === 'preview' &&
+      research.workflow?.continuation?.selectedLinks?.length === 3,
+  }));
+
+  const compare = await runBrowserWorkflow({
+    intent: 'compare',
+    mode: 'quick',
+    execute: false,
+    queries: ['JAVIS browser automation benchmark', 'desktop agent browser workflow benchmark'],
+    source: `${sourcePrefix}_compare`,
+    scope: 'eval:browser:benchmark:compare',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'compare_preview_fixture',
+    label: 'Compare search preview fixture',
+    intent: 'compare',
+    result: compare,
+    secrets,
+    assertions: {
+      queries: Number(compare.queries?.length || 0),
+      executed: Boolean(compare.executed),
+      workflowDone: compare.workflow?.status === 'done',
+    },
+    ok: compare.ok === true &&
+      compare.executed === false &&
+      compare.intent === 'compare' &&
+      Number(compare.queries?.length || 0) === 2 &&
+      compare.workflow?.status === 'done',
+  }));
+
+  const review = await runBrowserWorkflow({
+    intent: 'review_result',
+    mode: 'quick',
+    execute: false,
+    url: 'https://example.test/javis/review-target',
+    instruction: 'Benchmark explicit URL review preview.',
+    source: `${sourcePrefix}_review_result`,
+    scope: 'eval:browser:benchmark:review_result',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'review_result_preview_fixture',
+    label: 'Review result preview fixture',
+    intent: 'review_result',
+    result: review,
+    secrets,
+    assertions: {
+      selectedHref: review.selected?.href || '',
+      executed: Boolean(review.executed),
+      workflowDone: review.workflow?.status === 'done',
+    },
+    ok: review.ok === true &&
+      review.executed === false &&
+      review.intent === 'review_result' &&
+      review.selected?.href === 'https://example.test/javis/review-target' &&
+      review.workflow?.status === 'done',
+  }));
+
+  const counts = {
+    total: cases.length,
+    pass: cases.filter((item) => item.ok).length,
+    fail: cases.filter((item) => !item.ok).length,
+    previewOnly: cases.filter((item) => item.previewOnly).length,
+    executed: cases.filter((item) => item.executed).length,
+    queued: cases.filter((item) => item.queued).length,
+  };
+  const snapshot = {
+    ok: counts.fail === 0,
+    generatedAt: new Date().toISOString(),
+    source,
+    manualOnly: true,
+    previewOnly: true,
+    startsBrowser: false,
+    executesBrowserActions: false,
+    modelCalls: false,
+    storesRawPageText: false,
+    summary: `${counts.pass}/${counts.total} browser benchmark case(s) passed.`,
+    counts,
+    cases,
+    nextAction: counts.fail
+      ? 'Fix failing browser benchmark cases before broadening browser automation.'
+      : 'Use these preview-only browser benchmarks before adding broader live browser workflows.',
+    safety: {
+      fixtureOnly: true,
+      noBrowserActions: true,
+      noModelCalls: true,
+      noSecretEcho: cases.every((item) => item.assertions?.leakedSecrets === false),
+      sensitiveFieldsBlocked: cases.find((item) => item.id === 'fill_draft_fixture')?.assertions?.blockedSensitiveFields === 1,
+    },
+  };
+  appendAudit('browser_benchmark.completed', {
+    source,
+    ok: snapshot.ok,
+    total: counts.total,
+    pass: counts.pass,
+    fail: counts.fail,
+    noBrowserActions: true,
+    noModelCalls: true,
+  });
+  return snapshot;
+}
+
 function normalizeFileWorkflowIntent(value) {
   const intent = String(value || '').trim();
   if (['list', 'search', 'summarize', 'ask', 'organize', 'rename', 'convert'].includes(intent)) return intent;
@@ -24059,7 +24367,12 @@ function isRoutingAttentionStatus(status) {
 
 function isInternalRoutingRecord(record) {
   const source = String(record?.source || '').toLowerCase();
-  return source === 'eval' || source === 'doctor' || source === 'eval_restore' || source.startsWith('eval_');
+  return source === 'eval'
+    || source === 'doctor'
+    || source === 'eval_restore'
+    || source.startsWith('eval_')
+    || source.includes('browser_benchmark')
+    || source.includes('browser_benchmarks');
 }
 
 function isInternalJob(job) {
@@ -24817,7 +25130,14 @@ function retryableBlockedWorkflowPlan(workflow) {
 function isInternalWorkflow(workflow) {
   if (!workflow) return false;
   const source = String(workflow.source || '').toLowerCase();
-  if (source === 'eval' || source === 'doctor' || source === 'eval_restore' || source.startsWith('eval_')) return true;
+  if (
+    source === 'eval' ||
+    source === 'doctor' ||
+    source === 'eval_restore' ||
+    source.startsWith('eval_') ||
+    source.includes('browser_benchmark') ||
+    source.includes('browser_benchmarks')
+  ) return true;
   if (/(test|smoke|verification|diagnostic|internal)/.test(source)) return true;
   if (workflow.id) {
     const routes = Array.from(routingRecords.values()).filter((record) => record.workflowId === workflow.id);
@@ -33966,6 +34286,17 @@ function startApiServer() {
       res.json({ dom });
     } catch (error) {
       jsonError(res, 500, 'Browser DOM read failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/browser/benchmarks', async (req, res) => {
+    try {
+      const benchmarks = await browserWorkflowBenchmarkSnapshot({
+        source: req.query.source || 'api_browser_benchmarks',
+      });
+      res.json({ benchmarks });
+    } catch (error) {
+      jsonError(res, 500, 'Browser benchmarks failed', error instanceof Error ? error.message : String(error));
     }
   });
 

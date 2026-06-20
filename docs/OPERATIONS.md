@@ -264,9 +264,13 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
 curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -H 'Content-Type: application/json' \
   -d '{"intent":"research","query":"OpenAI Realtime API voice agent WebRTC docs","maxPages":2,"mode":"quick"}'
+npm run config -- --print-browser-benchmarks
+curl http://127.0.0.1:3417/api/browser/benchmarks
 ```
 
 The briefing combines readiness, routing records, jobs, workflows, approvals, memories, blockers, and deterministic next actions without calling a model. `/api/work/progress` is narrower: it returns a spoken-style update for routed work, background jobs, grouped Codex/Claude/local worker batches, and workflows, including active work, recent completions, blockers, recovery hints, and next actions. `/api/work/handoff` is the voice-friendly version for Realtime and remote surfaces: it compresses readiness, progress, the active work session, collaboration claims, next actions, and proactive workflow continuations into one short `spokenSummary`. Use `workerGroups` / `workerSummary` when a voice or remote surface needs compact multi-agent progress instead of raw job rows.
+
+`/api/browser/benchmarks` and CUI option `G. Show browser workflow benchmarks` run preview-only fixture checks for browser summarize, action extraction, form-fill draft redaction, compare/search preview, review-result preview, and research continuation metadata. They do not open a live browser page, execute browser actions, call a model, store raw fixture page text, or start voice; use them before broadening browser automation or debugging browser workflow regressions.
 
 `/api/workflows/follow-ups` proposes continuation candidates from recent completed or blocked workflows. Each suggestion carries the selected parent workflow, a continuation instruction, memory/skill/related-workflow counts, and a `continue:<workflow-id>` action id. Browser `research` workflows can also carry a persisted `browserWorkflow.body` with the next URL/search set to review. Pass the action id to `/api/work/next?actionId=...` for a safe preview, or POST it to `/api/work/next` with `"execute":true` when you want the resident to queue or run the continuation through the normal workbench gates.
 

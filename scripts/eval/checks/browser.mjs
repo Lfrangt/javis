@@ -1,4 +1,8 @@
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { ok, warn, fail } from '../_client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 export default {
   lane: 'browser',
@@ -190,6 +194,52 @@ export default {
         ? ok('browser.research_continuation_preview', 'Browser research continuation preview', 'preview persists selected links plus structured continuation metadata')
         : fail('browser.research_continuation_preview', 'Browser research continuation preview', `POST /api/browser/workflow ${researchPreview.status}`, researchPreview.data),
     );
+
+    const benchmarks = await ctx.api('/api/browser/benchmarks?source=eval_browser_benchmark');
+    const bench = benchmarks.data?.benchmarks;
+    const caseIds = new Set((Array.isArray(bench?.cases) ? bench.cases : []).map((item) => item.id));
+    out.push(
+      benchmarks.ok &&
+        bench?.ok === true &&
+        bench?.previewOnly === true &&
+        bench?.startsBrowser === false &&
+        bench?.executesBrowserActions === false &&
+        bench?.modelCalls === false &&
+        bench?.storesRawPageText === false &&
+        bench?.counts?.total >= 6 &&
+        bench?.counts?.pass === bench.counts.total &&
+        bench?.counts?.fail === 0 &&
+        bench?.safety?.noBrowserActions === true &&
+        bench?.safety?.noModelCalls === true &&
+        bench?.safety?.noSecretEcho === true &&
+        bench?.safety?.sensitiveFieldsBlocked === true &&
+        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
+        bench.cases.every((item) => item.ok === true && item.modelCall === false && item.browserAction === false)
+        ? ok('browser.workflow_benchmarks', 'Browser workflow benchmarks', `${bench.counts.pass}/${bench.counts.total} preview fixture(s) passed`)
+        : fail('browser.workflow_benchmarks', 'Browser workflow benchmarks', `GET /api/browser/benchmarks ${benchmarks.status}`, benchmarks.data),
+    );
+
+    try {
+      const cuiBench = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-browser-benchmarks'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cuiBench.stdout || ''}\n${cuiBench.stderr || ''}`;
+      out.push(
+        output.includes('Browser Workflow Benchmarks') &&
+          output.includes('preview-only=yes') &&
+          output.includes('starts browser=no') &&
+          output.includes('model calls=no') &&
+          output.includes('sensitive fields blocked=yes') &&
+          output.includes('Research continuation fixture')
+          ? ok('browser.cui_workflow_benchmarks', 'Browser CUI workflow benchmarks', 'config CUI prints preview-only benchmark status')
+          : fail('browser.cui_workflow_benchmarks', 'Browser CUI workflow benchmarks', 'expected CUI benchmark output to print preview-only safety and benchmark cases', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('browser.cui_workflow_benchmarks', 'Browser CUI workflow benchmarks', error instanceof Error ? error.message : String(error)));
+    }
 
     return out;
   },

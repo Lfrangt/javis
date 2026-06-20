@@ -303,6 +303,7 @@ async function printStatus() {
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
+  console.log('G. Show browser workflow benchmarks');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
   console.log('16. Show autopilot status');
@@ -910,6 +911,35 @@ async function showBrowserActivity() {
   const result = await request('/api/browser/activity?limit=10');
   console.log('');
   printBrowserActivity(result.activity || {});
+}
+
+function printBrowserBenchmarks(result) {
+  const benchmarks = result?.benchmarks || result || {};
+  const counts = benchmarks.counts || {};
+  console.log('Browser Workflow Benchmarks');
+  console.log('===========================');
+  console.log(benchmarks.summary || `${counts.pass || 0}/${counts.total || 0} benchmark case(s) passed.`);
+  console.log(`Mode: preview-only=${benchmarks.previewOnly ? 'yes' : 'no'} · starts browser=${benchmarks.startsBrowser ? 'yes' : 'no'} · model calls=${benchmarks.modelCalls ? 'yes' : 'no'}`);
+  console.log(`Counts: pass ${counts.pass || 0}/${counts.total || 0} · fail ${counts.fail || 0} · executed ${counts.executed || 0} · queued ${counts.queued || 0}`);
+  const safety = benchmarks.safety || {};
+  console.log(`Safety: no browser actions=${safety.noBrowserActions ? 'yes' : 'no'} · no model calls=${safety.noModelCalls ? 'yes' : 'no'} · sensitive fields blocked=${safety.sensitiveFieldsBlocked ? 'yes' : 'no'}`);
+  const cases = Array.isArray(benchmarks.cases) ? benchmarks.cases : [];
+  if (!cases.length) {
+    console.log('\nCases: none');
+    return;
+  }
+  console.log('\nCases:');
+  for (const item of cases) {
+    console.log(`- ${item.ok ? 'pass' : 'fail'} ${item.label || item.id || '-'} · ${item.intent || '-'} · workflow ${item.workflowStatus || '-'} · route ${item.routingStatus || '-'}`);
+    if (item.summary) console.log(`  ${compact(item.summary, 180)}`);
+  }
+  if (benchmarks.nextAction) console.log(`\nNext: ${benchmarks.nextAction}`);
+}
+
+async function showBrowserBenchmarks() {
+  const result = await request('/api/browser/benchmarks?source=cui_browser_benchmarks');
+  console.log('');
+  printBrowserBenchmarks(result);
 }
 
 function printPerceptionConsent(result) {
@@ -1780,6 +1810,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-browser-benchmarks') || process.argv.includes('--browser-benchmarks')) {
+    await showBrowserBenchmarks();
+    return;
+  }
+
   if (process.argv.includes('--print-perception') || process.argv.includes('--perception')) {
     await showPerceptionConsent();
     return;
@@ -1859,6 +1894,8 @@ async function main() {
         await manageRealtimeDogfoodSession(rl);
       } else if (answer === 'h' || answer === 'handoff' || answer === 'work handoff') {
         await showWorkHandoff();
+      } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {
+        await showBrowserBenchmarks();
       } else if (answer === '14') {
         await showWorkbenchNext();
       } else if (answer === '15') {
