@@ -10591,9 +10591,9 @@ function deterministicAppWorkflowPlan(options = {}, context = {}) {
     });
   }
 
-  const buttonMatch = instruction.match(/(?:press|click|tap|按|点击|点一下)\s*([^，。,.]+?(?:按钮|button|tab|menu|菜单|链接|link)?)/i);
+  const buttonMatch = instruction.match(/(?:press|click|tap|按|点击|点一下)\s*([^，。,.]+?)(?=\s*(?:按钮|button|tab|menu|菜单|链接|link)?(?:[，。,.]|$))/i);
   if (!wantsClose && buttonMatch) {
-    const target = buttonMatch[1].trim();
+    const target = buttonMatch[1].trim().replace(/\s*(?:按钮|button|tab|menu|菜单|链接|link)\s*$/i, '').trim();
     if (target) {
       steps.push({
         type: 'control_current_app',
@@ -10816,12 +10816,13 @@ async function runAppWorkflow(options = {}) {
   if (!steps.length) throw new Error('App workflow requires at least one step.');
 
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const recordWorkflow = options.recordWorkflow !== false;
   const stopOnError = options.continueOnError !== true;
   const instruction = String(options.instruction || options.goal || '').trim();
   const title = String(options.title || instruction || `app workflow · ${steps.length} step(s)`).slice(0, 180);
-  const workflow = createWorkflowRecord({
+  const workflowDraft = {
     kind: 'app',
-    source: 'app_workflow',
+    source: options.source || 'app_workflow',
     status: 'running',
     title,
     intent: 'run_app_workflow',
@@ -10831,10 +10832,18 @@ async function runAppWorkflow(options = {}) {
       stepCount: steps.length,
       execute,
     },
-  });
+  };
+  const workflow = recordWorkflow
+    ? createWorkflowRecord(workflowDraft)
+    : {
+        id: '',
+        ...workflowDraft,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      };
 
   appendAudit('app_workflow.requested', {
-    workflowId: workflow.id,
+    workflowId: workflow.id || '',
     execute,
     steps: steps.length,
     title,
@@ -10876,20 +10885,30 @@ async function runAppWorkflow(options = {}) {
   );
   const output = formatAppWorkflowResults(results);
   const status = counts.blocked || counts.approval_required ? 'blocked' : 'done';
-  const finalWorkflow = setWorkflow(workflow.id, {
-    status,
-    result: output,
-    completedAt: Date.now(),
-    target: {
-      stepCount: steps.length,
-      execute,
-      counts,
-      completedSteps: results.length,
-    },
-  });
+  const finalTarget = {
+    stepCount: steps.length,
+    execute,
+    counts,
+    completedSteps: results.length,
+  };
+  const finalWorkflow = recordWorkflow
+    ? setWorkflow(workflow.id, {
+        status,
+        result: output,
+        completedAt: Date.now(),
+        target: finalTarget,
+      })
+    : {
+        ...workflow,
+        status,
+        result: output,
+        target: finalTarget,
+        completedAt: Date.now(),
+        updatedAt: Date.now(),
+      };
 
   appendAudit('app_workflow.completed', {
-    workflowId: workflow.id,
+    workflowId: workflow.id || '',
     status,
     execute,
     counts,
@@ -10903,6 +10922,205 @@ async function runAppWorkflow(options = {}) {
     results,
     output,
   };
+}
+
+function appWorkflowBenchmarkCaseResult({ id, label, intent, ok, result = null, assertions = {} }) {
+  const finalOk = Boolean(ok);
+  const workflow = result?.workflow || {};
+  const plan = result?.plan || (Array.isArray(result?.steps) ? result : {});
+  const steps = Array.isArray(plan?.steps) ? plan.steps : [];
+  return {
+    id,
+    label,
+    intent,
+    ok: finalOk,
+    status: finalOk ? 'pass' : 'fail',
+    previewOnly: result?.executed === false || result?.previewOnly === true || !result,
+    executed: Boolean(result?.executed),
+    blocked: String(result?.status || workflow.status || '').includes('blocked'),
+    modelCall: false,
+    workflowId: workflow.id || '',
+    workflowStatus: workflow.status || '',
+    source: plan?.source || result?.source || '',
+    stepCount: steps.length || Number(result?.counts?.total || 0),
+    stepTypes: steps.map((step) => step.type).filter(Boolean),
+    assertions,
+    summary: compactRecordText(result?.output || plan?.reason || '', 260),
+  };
+}
+
+async function appWorkflowBenchmarkSnapshot(options = {}) {
+  const source = String(options.source || 'app_benchmark').slice(0, 80);
+  const sourcePrefix = source.startsWith('eval_') ? source : `${source}`;
+  const cases = [];
+
+  const calculatorClose = await planAppWorkflow({
+    instruction: '打开 Calculator 然后关闭窗口',
+    useModel: false,
+    maxNodes: 40,
+    maxDepth: 3,
+    source: `${sourcePrefix}_calculator_close`,
+  });
+  cases.push(appWorkflowBenchmarkCaseResult({
+    id: 'calculator_close_plan',
+    label: 'Calculator open and close plan',
+    intent: 'open_close',
+    result: { plan: calculatorClose, executed: false, output: calculatorClose.output },
+    assertions: {
+      source: calculatorClose.source || '',
+      hasOpenApp: calculatorClose.steps?.some((step) => step.type === 'open_app' && step.app === 'Calculator') === true,
+      hasWait: calculatorClose.steps?.some((step) => step.type === 'wait') === true,
+      hasCloseHotkey: calculatorClose.steps?.some((step) => step.type === 'hotkey' && normalizeHotkey(step.keys) === 'cmd+w') === true,
+    },
+    ok: calculatorClose.ok === true &&
+      calculatorClose.source === 'deterministic' &&
+      calculatorClose.steps?.some((step) => step.type === 'open_app' && step.app === 'Calculator') &&
+      calculatorClose.steps?.some((step) => step.type === 'wait') &&
+      calculatorClose.steps?.some((step) => step.type === 'hotkey' && normalizeHotkey(step.keys) === 'cmd+w'),
+  }));
+
+  const textEditTyping = await planAppWorkflow({
+    instruction: '打开 TextEdit 输入 benchmark note',
+    useModel: false,
+    maxNodes: 40,
+    maxDepth: 3,
+    source: `${sourcePrefix}_textedit_type`,
+  });
+  cases.push(appWorkflowBenchmarkCaseResult({
+    id: 'textedit_type_plan',
+    label: 'TextEdit type-text plan',
+    intent: 'type_text',
+    result: { plan: textEditTyping, executed: false, output: textEditTyping.output },
+    assertions: {
+      source: textEditTyping.source || '',
+      hasOpenApp: textEditTyping.steps?.some((step) => step.type === 'open_app' && step.app === 'TextEdit') === true,
+      hasTypeText: textEditTyping.steps?.some((step) => step.type === 'type_text' && step.text === 'benchmark note') === true,
+      hasUnsafeCloseWhileTyping: textEditTyping.steps?.some((step) => step.type === 'hotkey') === true,
+    },
+    ok: textEditTyping.ok === true &&
+      textEditTyping.source === 'deterministic' &&
+      textEditTyping.steps?.some((step) => step.type === 'open_app' && step.app === 'TextEdit') &&
+      textEditTyping.steps?.some((step) => step.type === 'type_text' && step.text === 'benchmark note') &&
+      !textEditTyping.steps?.some((step) => step.type === 'hotkey'),
+  }));
+
+  const systemSettingsPlan = await planAppWorkflow({
+    instruction: '打开 System Settings 点击 General 按钮',
+    useModel: false,
+    maxNodes: 40,
+    maxDepth: 3,
+    source: `${sourcePrefix}_settings_button`,
+  });
+  cases.push(appWorkflowBenchmarkCaseResult({
+    id: 'current_app_control_plan',
+    label: 'Current-app control planning',
+    intent: 'control_current_app',
+    result: { plan: systemSettingsPlan, executed: false, output: systemSettingsPlan.output },
+    assertions: {
+      source: systemSettingsPlan.source || '',
+      hasOpenApp: systemSettingsPlan.steps?.some((step) => step.type === 'open_app' && step.app === 'System Settings') === true,
+      hasControlStep: systemSettingsPlan.steps?.some((step) => step.type === 'control_current_app') === true,
+      targetIncludesGeneral: systemSettingsPlan.steps?.some((step) => step.type === 'control_current_app' && /General/i.test(step.instruction || step.label || '')) === true,
+    },
+    ok: systemSettingsPlan.ok === true &&
+      systemSettingsPlan.source === 'deterministic' &&
+      systemSettingsPlan.steps?.some((step) => step.type === 'open_app' && step.app === 'System Settings') &&
+      systemSettingsPlan.steps?.some((step) => step.type === 'control_current_app' && /General/i.test(step.instruction || step.label || '')),
+  }));
+
+  const explicitPreview = await runAppWorkflow({
+    title: 'App benchmark explicit preview',
+    instruction: 'Preview a Finder focus workflow.',
+    execute: false,
+    recordWorkflow: false,
+    source: `${sourcePrefix}_explicit_preview`,
+    steps: [
+      { type: 'open_app', app: 'Finder', label: 'Open Finder' },
+      { type: 'wait', ms: 250, label: 'Wait for Finder' },
+      { type: 'hotkey', keys: 'cmd+w', label: 'Close window' },
+    ],
+  });
+  cases.push(appWorkflowBenchmarkCaseResult({
+    id: 'explicit_workflow_preview',
+    label: 'Explicit multi-step workflow preview',
+    intent: 'preview_sequence',
+    result: explicitPreview,
+    assertions: {
+      status: explicitPreview.workflow?.status || '',
+      previewed: Number(explicitPreview.counts?.previewed || 0),
+      workflowId: explicitPreview.workflow?.id || '',
+      noHistoryRecord: !explicitPreview.workflow?.id,
+    },
+    ok: explicitPreview.ok === true &&
+      explicitPreview.executed === false &&
+      explicitPreview.workflow?.status === 'done' &&
+      Number(explicitPreview.counts?.previewed || 0) === 3 &&
+      !explicitPreview.workflow?.id,
+  }));
+
+  const unsafeDeletePlan = safeLocalAppWorkflowPlan('打开 Finder 删除 Downloads 里的文件');
+  cases.push(appWorkflowBenchmarkCaseResult({
+    id: 'unsafe_delete_rejected',
+    label: 'Unsafe delete instruction rejected',
+    intent: 'safety_gate',
+    result: { previewOnly: true, executed: false, output: 'Unsafe delete instruction was rejected.' },
+    assertions: {
+      rejected: unsafeDeletePlan === null,
+    },
+    ok: unsafeDeletePlan === null,
+  }));
+
+  const counts = {
+    total: cases.length,
+    pass: cases.filter((item) => item.ok).length,
+    fail: cases.filter((item) => !item.ok).length,
+    previewOnly: cases.filter((item) => item.previewOnly).length,
+    executed: cases.filter((item) => item.executed).length,
+    planned: cases.filter((item) => Number(item.stepCount || 0) > 0).length,
+    blocked: cases.filter((item) => item.blocked).length,
+  };
+  const snapshot = {
+    ok: counts.fail === 0,
+    generatedAt: new Date().toISOString(),
+    source,
+    manualOnly: true,
+    previewOnly: true,
+    startsApps: false,
+    executesAppActions: false,
+    modelCalls: false,
+    mutatesUserFiles: false,
+    recordsWorkflowHistory: false,
+    summary: `${counts.pass}/${counts.total} app workflow benchmark case(s) passed.`,
+    counts,
+    cases,
+    nextAction: counts.fail
+      ? 'Fix failing app workflow benchmark cases before broadening live Mac app automation.'
+      : 'Use these preview-only app workflow benchmarks before running live Mac app dogfood.',
+    safety: {
+      planOnly: true,
+      noAppLaunch: true,
+      noUiActions: true,
+      noModelCalls: true,
+      noUserFileMutation: true,
+      noWorkflowHistory: cases.every((item) => !item.workflowId),
+      unsafeDeleteRejected: cases.find((item) => item.id === 'unsafe_delete_rejected')?.assertions?.rejected === true,
+      coversOpenClose: cases.find((item) => item.id === 'calculator_close_plan')?.ok === true,
+      coversTypeText: cases.find((item) => item.id === 'textedit_type_plan')?.ok === true,
+      coversCurrentAppControl: cases.find((item) => item.id === 'current_app_control_plan')?.ok === true,
+      coversExplicitPreview: cases.find((item) => item.id === 'explicit_workflow_preview')?.ok === true,
+    },
+  };
+  appendAudit('app_benchmark.completed', {
+    source,
+    ok: snapshot.ok,
+    total: counts.total,
+    pass: counts.pass,
+    fail: counts.fail,
+    noAppLaunch: true,
+    noUiActions: true,
+    noModelCalls: true,
+  });
+  return snapshot;
 }
 
 function assertValidAccessibilityNodeId(value) {
@@ -24999,6 +25217,8 @@ function isInternalRoutingRecord(record) {
     || source.startsWith('eval_')
     || source.includes('browser_benchmark')
     || source.includes('browser_benchmarks')
+    || source.includes('app_benchmark')
+    || source.includes('app_benchmarks')
     || source.includes('file_benchmark')
     || source.includes('file_benchmarks')
     || source.includes('creative_benchmark')
@@ -25767,6 +25987,8 @@ function isInternalWorkflow(workflow) {
     source.startsWith('eval_') ||
     source.includes('browser_benchmark') ||
     source.includes('browser_benchmarks') ||
+    source.includes('app_benchmark') ||
+    source.includes('app_benchmarks') ||
     source.includes('file_benchmark') ||
     source.includes('file_benchmarks') ||
     source.includes('creative_benchmark') ||
@@ -34858,6 +35080,17 @@ function startApiServer() {
       res.status(result.ok ? 200 : 202).json(result);
     } catch (error) {
       jsonError(res, 400, 'App workflow plan failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/app/benchmarks', async (req, res) => {
+    try {
+      const benchmarks = await appWorkflowBenchmarkSnapshot({
+        source: req.query.source || 'api_app_benchmarks',
+      });
+      res.json({ benchmarks });
+    } catch (error) {
+      jsonError(res, 500, 'App benchmarks failed', error instanceof Error ? error.message : String(error));
     }
   });
 

@@ -306,6 +306,7 @@ async function printStatus() {
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
   console.log('C. Show creative workflow benchmarks');
+  console.log('U. Show app workflow benchmarks');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
   console.log('16. Show autopilot status');
@@ -1001,6 +1002,36 @@ async function showCreativeBenchmarks() {
   const result = await request('/api/creative/benchmarks?source=cui_creative_benchmarks');
   console.log('');
   printCreativeBenchmarks(result);
+}
+
+function printAppBenchmarks(result) {
+  const benchmarks = result?.benchmarks || result || {};
+  const counts = benchmarks.counts || {};
+  console.log('App Workflow Benchmarks');
+  console.log('=======================');
+  console.log(benchmarks.summary || `${counts.pass || 0}/${counts.total || 0} benchmark case(s) passed.`);
+  console.log(`Mode: preview-only=${benchmarks.previewOnly ? 'yes' : 'no'} · starts apps=${benchmarks.startsApps ? 'yes' : 'no'} · app actions=${benchmarks.executesAppActions ? 'yes' : 'no'} · model calls=${benchmarks.modelCalls ? 'yes' : 'no'}`);
+  console.log(`Counts: pass ${counts.pass || 0}/${counts.total || 0} · fail ${counts.fail || 0} · planned ${counts.planned || 0} · executed ${counts.executed || 0}`);
+  const safety = benchmarks.safety || {};
+  console.log(`Safety: plan-only=${safety.planOnly ? 'yes' : 'no'} · no app launch=${safety.noAppLaunch ? 'yes' : 'no'} · no UI actions=${safety.noUiActions ? 'yes' : 'no'} · unsafe delete=${safety.unsafeDeleteRejected ? 'yes' : 'no'}`);
+  const cases = Array.isArray(benchmarks.cases) ? benchmarks.cases : [];
+  if (!cases.length) {
+    console.log('\nCases: none');
+    return;
+  }
+  console.log('\nCases:');
+  for (const item of cases) {
+    const target = [item.intent, item.source, Array.isArray(item.stepTypes) ? item.stepTypes.join('/') : ''].filter(Boolean).join(' · ') || '-';
+    console.log(`- ${item.ok ? 'pass' : 'fail'} ${item.label || item.id || '-'} · ${target}`);
+    if (item.summary) console.log(`  ${compact(item.summary, 180)}`);
+  }
+  if (benchmarks.nextAction) console.log(`\nNext: ${benchmarks.nextAction}`);
+}
+
+async function showAppBenchmarks() {
+  const result = await request('/api/app/benchmarks?source=cui_app_benchmarks');
+  console.log('');
+  printAppBenchmarks(result);
 }
 
 function printPerceptionConsent(result) {
@@ -1886,6 +1917,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-app-benchmarks') || process.argv.includes('--app-benchmarks')) {
+    await showAppBenchmarks();
+    return;
+  }
+
   if (process.argv.includes('--print-perception') || process.argv.includes('--perception')) {
     await showPerceptionConsent();
     return;
@@ -1971,6 +2007,8 @@ async function main() {
         await showFileBenchmarks();
       } else if (answer === 'c' || answer === 'creative benchmark' || answer === 'creative benchmarks') {
         await showCreativeBenchmarks();
+      } else if (answer === 'u' || answer === 'app benchmark' || answer === 'app benchmarks') {
+        await showAppBenchmarks();
       } else if (answer === '14') {
         await showWorkbenchNext();
       } else if (answer === '15') {
