@@ -31,6 +31,7 @@
     "eval:routing": "node scripts/eval-routing.mjs",
     "dogfood:realtime-renderer": "node scripts/realtime-dogfood-renderer.mjs",
     "dogfood:realtime-acceptance": "node scripts/config-cui.cjs --print-realtime-dogfood-acceptance",
+    "dogfood:realtime-payload": "node scripts/realtime-payload-audit.mjs",
     "dogfood:browser-live-fill": "JAVIS_EVAL_BROWSER_LIVE_FILL=true node scripts/eval/run.mjs --only=browser-live-fill",
     "dogfood:productivity-live": "node scripts/productivity-dogfood.mjs",
     "dogfood:workers-live": "JAVIS_EVAL_LIVE_WORKERS=true node scripts/eval/run.mjs --only=workers-live",
