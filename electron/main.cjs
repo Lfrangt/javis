@@ -31262,12 +31262,127 @@ function summarizeAutonomyWorkNext(next = {}) {
   };
 }
 
+function summarizeAutonomyRecoverySnapshot(snapshot = {}) {
+  const items = Array.isArray(snapshot.items) ? snapshot.items : [];
+  const candidates = items
+    .map((item) => {
+      const action = item.recovery?.recommended || null;
+      return {
+        jobId: item.id || '',
+        title: compactRecordText(item.title || '', 140),
+        mode: item.mode || '',
+        status: item.status || '',
+        failureKind: item.failureKind || '',
+        recoveryAttempts: Number(item.recovery?.attempts || 0),
+        maxRecoveryAttempts: Number(item.recovery?.maxAttempts || MAX_RECOVERY_JOB_ATTEMPTS),
+        activeRecovery: Boolean(item.recovery?.active),
+        completedRecovery: Boolean(item.recovery?.completed),
+        recommended: action
+          ? {
+              id: action.id || '',
+              label: compactRecordText(action.label || '', 120),
+              recoveryType: action.recoveryType || '',
+              mode: action.mode || '',
+              riskLevel: Number(action.riskLevel || 0),
+              autoEligible: Boolean(action.autoEligible),
+              trustedAutoEligible: Boolean(action.trustedAutoEligible),
+              reason: compactRecordText(action.reason || '', 220),
+            }
+          : null,
+      };
+    })
+    .slice(0, 6);
+  return {
+    ok: snapshot.ok !== false,
+    summary: compactRecordText(snapshot.summary || '', 500),
+    nextAction: compactRecordText(snapshot.nextAction || '', 300),
+    counts: snapshot.counts || {},
+    candidates,
+  };
+}
+
+function autonomyRecoveryCandidate(snapshot = {}, options = {}) {
+  const requireExecutable = options.requireExecutable === true;
+  const items = Array.isArray(snapshot.items) ? snapshot.items : [];
+  const candidates = items
+    .filter((item) => item?.recovery?.recommended)
+    .filter((item) => !item.recovery.active && !item.recovery.completed)
+    .filter((item) => Number(item.recovery.attempts || 0) < Number(item.recovery.maxAttempts || MAX_RECOVERY_JOB_ATTEMPTS))
+    .map((item) => ({
+      jobId: item.id || '',
+      jobTitle: compactRecordText(item.title || '', 140),
+      mode: item.mode || '',
+      failureKind: item.failureKind || '',
+      recoveryAttempts: Number(item.recovery?.attempts || 0),
+      maxRecoveryAttempts: Number(item.recovery?.maxAttempts || MAX_RECOVERY_JOB_ATTEMPTS),
+      action: item.recovery.recommended,
+    }));
+  const executable = candidates.filter((candidate) => {
+    const action = candidate.action || {};
+    if (action.trustedAutoEligible) return true;
+    return Boolean(action.autoEligible && Number(action.riskLevel || 0) <= 1 && ['diagnose', 'policy', 'approval'].includes(action.recoveryType));
+  });
+  const selected = (requireExecutable ? executable[0] : executable[0] || candidates[0]) || null;
+  if (!selected) return null;
+  return {
+    jobId: selected.jobId,
+    jobTitle: selected.jobTitle,
+    mode: selected.mode,
+    failureKind: selected.failureKind,
+    recoveryAttempts: selected.recoveryAttempts,
+    maxRecoveryAttempts: selected.maxRecoveryAttempts,
+    action: {
+      id: selected.action?.id || '',
+      label: compactRecordText(selected.action?.label || '', 120),
+      recoveryType: selected.action?.recoveryType || '',
+      mode: selected.action?.mode || '',
+      riskLevel: Number(selected.action?.riskLevel || 0),
+      autoEligible: Boolean(selected.action?.autoEligible),
+      trustedAutoEligible: Boolean(selected.action?.trustedAutoEligible),
+      reason: compactRecordText(selected.action?.reason || '', 220),
+    },
+  };
+}
+
+function summarizeAutonomyRecoveryResult(result = {}) {
+  return {
+    ok: result.ok !== false,
+    executed: Boolean(result.executed),
+    queued: Boolean(result.queued),
+    output: compactRecordText(result.output || '', 700),
+    action: result.action
+      ? {
+          id: result.action.id || '',
+          label: compactRecordText(result.action.label || '', 120),
+          recoveryType: result.action.recoveryType || '',
+          mode: result.action.mode || '',
+          riskLevel: Number(result.action.riskLevel || 0),
+          autoEligible: Boolean(result.action.autoEligible),
+          trustedAutoEligible: Boolean(result.action.trustedAutoEligible),
+        }
+      : null,
+    job: result.job
+      ? {
+          id: result.job.id || '',
+          title: compactRecordText(result.job.title || '', 140),
+          mode: result.job.mode || '',
+          status: result.job.status || '',
+          failureKind: result.job.failureKind || '',
+        }
+      : null,
+    recoveryCounts: result.recovery?.counts || {},
+  };
+}
+
 async function runAutonomyLoop(options = {}) {
   const task = String(options.task || options.message || options.instruction || '').trim();
   if (!task) throw new Error('Autonomy loop requires task, message, or instruction.');
   const source = compactRecordText(options.source || 'api_autonomy', 80);
   const execute = autonomyBool(options.execute, false);
-  const maxSteps = Math.max(2, Math.min(8, Number(options.maxSteps || 5)));
+  const retryRecovery = autonomyBool(options.retry, false) || autonomyBool(options.autoRecover, false);
+  const maxRecoveryAttempts = Math.max(0, Math.min(3, Number(options.maxRecoveryAttempts || 1)));
+  const recoveryLimit = Math.max(1, Math.min(20, Number(options.recoveryLimit || 8)));
+  const maxSteps = Math.max(2, Math.min(10, Number(options.maxSteps || 8)));
   const runId = crypto.randomUUID();
   const startedAt = Date.now();
   const steps = [];
@@ -31394,14 +31509,123 @@ async function runAutonomyLoop(options = {}) {
     });
   }
 
+  let recoverySnapshot = null;
+  let recoverySummary = null;
+  let recoveryCandidate = null;
+  let recoveryAttempt = null;
+  let postRecoveryProgress = null;
+  if (steps.length < maxSteps) {
+    recoverySnapshot = jobRecoverySnapshot({
+      includeInternal: options.includeInternal,
+      limit: recoveryLimit,
+    });
+    recoverySummary = summarizeAutonomyRecoverySnapshot(recoverySnapshot);
+    recoveryCandidate = autonomyRecoveryCandidate(recoverySnapshot);
+    push({
+      id: 'recovery_scan',
+      label: 'Scan failed-worker recovery candidates',
+      ok: recoverySnapshot.ok !== false,
+      detail: recoverySummary.summary || 'recovery scan completed',
+      nextAction: recoveryCandidate
+        ? (execute && retryRecovery
+            ? `Retry ${recoveryCandidate.action.label || recoveryCandidate.action.recoveryType} within recovery budget.`
+            : `Review recovery candidate ${recoveryCandidate.action.label || recoveryCandidate.action.recoveryType} before retrying.`)
+        : recoverySummary.nextAction || 'Continue with the current route plan.',
+      evidence: recoverySummary,
+    });
+  }
+
+  if (execute && retryRecovery && maxRecoveryAttempts > 0 && steps.length < maxSteps) {
+    const executableCandidate = recoveryCandidate?.action?.trustedAutoEligible || (
+      recoveryCandidate?.action?.autoEligible
+      && recoveryCandidate.action.riskLevel <= 1
+      && ['diagnose', 'policy', 'approval'].includes(recoveryCandidate.action.recoveryType)
+    )
+      ? recoveryCandidate
+      : autonomyRecoveryCandidate(recoverySnapshot || {}, { requireExecutable: true });
+    const job = executableCandidate?.jobId ? jobs.get(executableCandidate.jobId) || null : null;
+    if (job && executableCandidate?.action) {
+      const recoveryResult = runRecoveryActionForJob(job, executableCandidate.action, {
+        execute: true,
+        autopilot: true,
+        source: `${source}:autonomy_recovery`,
+      });
+      recoveryAttempt = summarizeAutonomyRecoveryResult(recoveryResult);
+      push({
+        id: 'recovery_retry',
+        label: 'Run one budgeted recovery action',
+        ok: recoveryResult.ok !== false && (recoveryResult.executed || recoveryResult.queued),
+        status: recoveryResult.queued ? 'queued' : recoveryResult.executed ? 'done' : 'blocked',
+        detail: recoveryAttempt.output || 'recovery action reviewed',
+        nextAction: recoveryResult.queued
+          ? 'Watch the queued recovery worker and verify progress before taking another recovery step.'
+          : recoveryResult.executed
+            ? 'Verify whether the recovery action cleared the blocker.'
+            : 'Use manual recovery review for this failed worker.',
+        evidence: {
+          budget: {
+            used: 1,
+            maxRecoveryAttempts,
+            perJobMaxRecoveryAttempts: MAX_RECOVERY_JOB_ATTEMPTS,
+          },
+          candidate: executableCandidate,
+          result: recoveryAttempt,
+        },
+      });
+      if (steps.length < maxSteps) {
+        postRecoveryProgress = workProgressCheckIn({
+          source: `${source}:autonomy_recovery_verify`,
+          includeInternal: options.includeInternal,
+          jobLimit: 5,
+          workflowLimit: 5,
+        });
+        push({
+          id: 'verify_after_recovery',
+          label: 'Verify progress after recovery action',
+          ok: true,
+          detail: postRecoveryProgress.spokenSummary || postRecoveryProgress.output || 'post-recovery progress snapshot ready',
+          nextAction: postRecoveryProgress.recovery?.counts?.recoverable
+            ? postRecoveryProgress.recovery.nextAction || 'Wait for or review the remaining recovery candidate.'
+            : postRecoveryProgress.nextActions?.[0]?.summary || 'Continue with the route plan.',
+          evidence: {
+            counts: postRecoveryProgress.counts,
+            recovery: postRecoveryProgress.recovery?.counts || {},
+            activeJobs: postRecoveryProgress.activeJobs?.length || 0,
+            activeRoutes: postRecoveryProgress.activeRoutes?.length || 0,
+          },
+        });
+      }
+    } else if (recoveryCandidate) {
+      push({
+        id: 'recovery_retry',
+        label: 'Run one budgeted recovery action',
+        ok: false,
+        status: 'blocked',
+        detail: 'No trusted low-risk recovery candidate is executable by the autonomy loop.',
+        nextAction: 'Use work-next or run_worker_recovery after reviewing the failed worker.',
+        evidence: {
+          budget: {
+            used: 0,
+            maxRecoveryAttempts,
+            perJobMaxRecoveryAttempts: MAX_RECOVERY_JOB_ATTEMPTS,
+          },
+          candidate: recoveryCandidate,
+        },
+      });
+    }
+  }
+
   const finalStep = steps[steps.length - 1] || null;
-  const status = execute
-    ? execution?.ok === false
-      ? 'blocked'
-      : execution?.queued
-        ? 'running'
-        : 'done'
-    : 'preview';
+  let status = 'preview';
+  if (recoveryAttempt?.queued) {
+    status = 'recovering';
+  } else if (execute && execution?.ok === false) {
+    status = 'blocked';
+  } else if (execute && execution?.queued) {
+    status = 'running';
+  } else if (execute) {
+    status = 'done';
+  }
   const nextAction = finalStep?.nextAction || routeSummary.output || 'No next action.';
   const output = [
     execute ? `Autonomy loop executed through ${routeSummary.label || routeSummary.lane}.` : `Autonomy loop previewed ${routeSummary.label || routeSummary.lane}.`,
@@ -31418,7 +31642,7 @@ async function runAutonomyLoop(options = {}) {
     task: compactRecordText(task, 800),
     executeRequested: execute,
     executed: Boolean(execution),
-    queued: Boolean(execution?.queued || execution?.job),
+    queued: Boolean(execution?.queued || execution?.job || recoveryAttempt?.queued),
     steps,
     route: routeSummary,
     observation: observation ? summarizeAutonomyObservation(observation) : null,
@@ -31432,9 +31656,32 @@ async function runAutonomyLoop(options = {}) {
           recovery: progress.recovery,
         }
       : null,
+    recovery: recoverySummary
+      ? {
+          snapshot: recoverySummary,
+          candidate: recoveryCandidate,
+          retryRequested: retryRecovery,
+          attempt: recoveryAttempt,
+          postProgress: postRecoveryProgress
+            ? {
+                spokenSummary: postRecoveryProgress.spokenSummary,
+                counts: postRecoveryProgress.counts,
+                recovery: postRecoveryProgress.recovery,
+              }
+            : null,
+        }
+      : null,
     safety: {
       bounded: true,
       maxSteps,
+      recoveryBudget: {
+        retryRequested: retryRecovery,
+        maxRecoveryAttempts,
+        recoveryLimit,
+        attempted: recoveryAttempt ? 1 : 0,
+        queued: Boolean(recoveryAttempt?.queued),
+        perJobMaxRecoveryAttempts: MAX_RECOVERY_JOB_ATTEMPTS,
+      },
       defaultPreview: !execute,
       noDirectShell: true,
       noDirectUi: true,
@@ -31455,6 +31702,8 @@ async function runAutonomyLoop(options = {}) {
     lane: routeSummary.lane,
     steps: steps.length,
     queued: result.queued,
+    recoveryCandidates: recoverySummary?.counts?.recoverable || 0,
+    recoveryAttempted: Boolean(recoveryAttempt),
     durationMs: result.durationMs,
   });
   return result;
@@ -38974,7 +39223,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use save_productivity_dogfood_archive when the user asks to save, export, archive, or keep the productivity dogfood evidence. Do not pass execute:true and confirm:true unless the user explicitly asks for a live Mac run after reviewing the preview.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
-      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> observe -> preview -> verify steps by default; pass execute:true only after explicit user intent, and it still uses existing routing, action policy, approvals, and worker recovery gates.',
+      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> observe -> preview -> verify -> recovery-scan steps by default; pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
       'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
       'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
@@ -39699,7 +39948,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_autonomy_loop',
-        description: 'Run a bounded autonomy loop for one user task: route, observe local context, preview the next workbench action, optionally execute through existing routing/policy, then verify progress/recovery. Defaults to preview-only.',
+        description: 'Run a bounded autonomy loop for one user task: route, observe local context, preview the next workbench action, optionally execute through existing routing/policy, verify progress, and scan failed-worker recovery. Defaults to preview-only; recovery retry requires execute:true plus retry:true.',
         parameters: {
           type: 'object',
           properties: {
@@ -39707,6 +39956,8 @@ function createRealtimeSessionConfig(options = {}) {
             message: { type: 'string' },
             instruction: { type: 'string' },
             execute: { type: 'boolean' },
+            retry: { type: 'boolean' },
+            autoRecover: { type: 'boolean' },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             observe: { type: 'boolean' },
@@ -39718,6 +39969,8 @@ function createRealtimeSessionConfig(options = {}) {
             actionId: { type: 'string' },
             nextActionId: { type: 'string' },
             maxSteps: { type: 'number' },
+            maxRecoveryAttempts: { type: 'number' },
+            recoveryLimit: { type: 'number' },
             maxNodes: { type: 'number' },
             maxDepth: { type: 'number' },
           },
@@ -41141,7 +41394,7 @@ function realtimeInstructionChecks(instructions = '') {
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
-    autonomyLoop: /run_autonomy_loop|bounded route.*observe.*preview.*verify|existing routing, action policy/i.test(text),
+    autonomyLoop: /run_autonomy_loop|bounded route.*observe.*preview.*verify|recovery-scan|existing routing, action policy/i.test(text),
     approvals: /get_pending_approvals|resolve_approval|waiting for approval|approval id|confirm:true/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),

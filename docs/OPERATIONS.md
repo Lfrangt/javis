@@ -255,7 +255,7 @@ failed worker. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs
 
 Use option `14. Show next work item`, or `npm run config -- --print-work-next`, to preview the current `/api/work/next` action from the CUI.
 
-Use `POST /api/autonomy/run` when JAVIS should think through a task as a bounded local loop instead of a single route decision. The default is preview-only: it routes the task, observes local Mac context without clipboard text or default screen capture, previews one work-next action, and verifies current progress/recovery. Passing `execute:true` still uses the normal task router, action policy, approval queue, workers, and recovery gates; the loop does not run shell commands or UI actions directly.
+Use `POST /api/autonomy/run` when JAVIS should think through a task as a bounded local loop instead of a single route decision. The default is preview-only: it routes the task, observes local Mac context without clipboard text or default screen capture, previews one work-next action, verifies current progress, and scans failed-worker recovery candidates. Passing `execute:true` still uses the normal task router, action policy, approval queue, workers, and recovery gates; the loop does not run shell commands or UI actions directly. Passing `retry:true` or `autoRecover:true` with `execute:true` lets the loop run one budgeted recovery action through the existing worker recovery runner, capped by `maxRecoveryAttempts` and `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS`.
 
 Use CUI option `27. Show collaboration handoff`, `npm run config -- --print-collaboration-handoff`,
 `npm run collab -- handoff`, or `GET /api/collaboration/handoff` when Codex, Claude Code, or
