@@ -83,6 +83,35 @@ export default {
         : fail('knowledge.mcp_discovery', 'MCP server discovery', `GET /api/mcp/servers ${mcp.status}`, mcp.data),
     );
 
+    const mcpWorkflow = await ctx.api('/api/mcp/workflow', {
+      method: 'POST',
+      body: {
+        source: 'eval_knowledge_mcp_workflow',
+        task: 'Choose the MCP server for a browser or notes task, but do not execute.',
+        execute: false,
+        limit: 20,
+      },
+      timeoutMs: 15000,
+    });
+    const mcpWorkflowData = mcpWorkflow.data?.mcpWorkflow || {};
+    out.push(
+      mcpWorkflow.ok &&
+        mcpWorkflowData.ok === true &&
+        mcpWorkflowData.previewOnly === true &&
+        mcpWorkflowData.executed === false &&
+        mcpWorkflowData.safety?.readOnly === true &&
+        mcpWorkflowData.safety?.startsServers === false &&
+        mcpWorkflowData.safety?.commandsExecuted === false &&
+        mcpWorkflowData.safety?.callsMcpTools === false &&
+        mcpWorkflowData.safety?.envValuesRedacted === true &&
+        mcpWorkflowData.safety?.requiresConfirmationForExecution === true &&
+        Array.isArray(mcpWorkflowData.actionPlan) &&
+        Array.isArray(mcpWorkflowData.candidates) &&
+        typeof mcpWorkflowData.counts?.servers === 'number'
+        ? ok('knowledge.mcp_workflow_preview', 'MCP workflow preview', `${mcpWorkflowData.counts.candidates || 0} candidate(s), status=${mcpWorkflowData.status || 'unknown'}`)
+        : fail('knowledge.mcp_workflow_preview', 'MCP workflow preview', `POST /api/mcp/workflow ${mcpWorkflow.status}`, mcpWorkflow.data),
+    );
+
     try {
       const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-mcp-servers'], {
         cwd: process.cwd(),
@@ -106,9 +135,33 @@ export default {
       out.push(fail('knowledge.mcp_cui', 'MCP discovery CUI', error instanceof Error ? error.message : String(error)));
     }
 
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-mcp-workflow', '--task', 'Choose the MCP server for a browser task without executing'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        /MCP Workflow Preview/.test(stdout) &&
+          /preview-only=yes/.test(stdout) &&
+          /starts servers=no/.test(stdout) &&
+          /calls MCP tools=no/.test(stdout) &&
+          /confirmation required=yes/.test(stdout)
+          ? ok('knowledge.mcp_workflow_cui', 'MCP workflow preview CUI', 'config CUI prints preview-only MCP workflow evidence')
+          : fail('knowledge.mcp_workflow_cui', 'MCP workflow preview CUI', 'CUI output missing MCP workflow preview markers', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('knowledge.mcp_workflow_cui', 'MCP workflow preview CUI', error instanceof Error ? error.message : String(error)));
+    }
+
     const realtime = await ctx.api('/api/realtime/config', { timeoutMs: 15000 });
     const toolNames = realtime.data?.realtime?.toolNames || [];
-    const requiredTools = ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers'];
+    const requiredTools = ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow'];
     const hasTools = requiredTools.every((name) => toolNames.includes(name));
     out.push(
       realtime.ok && hasTools

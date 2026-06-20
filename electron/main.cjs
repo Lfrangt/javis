@@ -667,6 +667,7 @@ const LANE_CONTRACTS = [
       'Obsidian/Markdown vault discovery',
       'read-only note search with snippets, tags, and wikilinks',
       'preview-first Markdown note creation and append plans',
+      'preview-only MCP server selection for tool-backed workflows',
       'confirmed local daily note and knowledge capture writes',
     ],
     nonGoals: [
@@ -677,11 +678,11 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'file',
-      tools: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'run_file_action'],
-      rule: 'Search notes and discover MCP servers read-only; write Markdown only after explicit confirm:true and normal file-policy checks.',
+      tools: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow', 'run_file_action'],
+      rule: 'Search notes and discover/plan MCP usage read-only; write Markdown only after explicit confirm:true and normal file-policy checks.',
     },
-    toolPosture: 'Local Markdown plus read-only MCP config discovery; previews plans before writing and keeps Obsidian app launches separate.',
-    riskBoundary: 'Search and MCP discovery are read-only. Note writes are Level 3 file writes scoped by allowed roots, control mode, and confirmation.',
+    toolPosture: 'Local Markdown plus read-only MCP config discovery and preview-only MCP workflow planning; previews plans before writing and keeps Obsidian app launches separate.',
+    riskBoundary: 'Search, MCP discovery, and MCP workflow previews are read-only. Note writes are Level 3 file writes scoped by allowed roots, control mode, and confirmation.',
     progressStyle: 'knowledge workflow record with vault/note evidence',
   },
   {
@@ -4111,7 +4112,7 @@ function capabilityToolHintsForContract(contract = {}) {
     local: ['get_control_mode', 'get_setup_guide', 'run_cli_tool', 'run_mac_action', 'run_file_action'],
     browser: ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
     file: ['run_file_workflow', 'plan_file_organization', 'plan_file_batch', 'apply_file_plan', 'run_file_action'],
-    knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers'],
+    knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow'],
     app: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow', 'get_productivity_dogfood_archive', 'save_productivity_dogfood_archive'],
   };
   return Array.from(new Set([...base, ...(extras[contract.id] || [])])).slice(0, 12);
@@ -19420,7 +19421,7 @@ function contextPlanRecommendedTools(needs) {
   if (needs.browserActivity) tools.push('get_browser_activity');
   if (needs.browserPage) tools.push('read_browser_page', 'run_browser_workflow');
   if (needs.browserDom) tools.push('read_browser_dom');
-  if (needs.knowledge) tools.push('get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers');
+  if (needs.knowledge) tools.push('get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow');
   if (needs.files) tools.push('run_file_workflow');
   if (needs.memory) tools.push('search_memory');
   if (needs.localSkills) tools.push('search_local_skills');
@@ -21951,6 +21952,271 @@ function mcpServerDiscoverySnapshot(options = {}) {
     nextAction: servers.length
       ? 'Use get_mcp_servers before deciding whether a Codex/Claude/MCP-backed workflow is available; start or call servers only through a separately confirmed action path.'
       : 'Configure MCP servers in Claude Desktop, Cursor, or project .mcp.json if JAVIS should discover them.',
+  };
+}
+
+const MCP_WORKFLOW_KEYWORD_HINTS = [
+  { patterns: [/github|pull request|\bpr\b|issue|repo|repository|git/i, /代码仓库|拉取请求|工单/], terms: ['github', 'gh', 'git'] },
+  { patterns: [/google|drive|docs|sheets|slides|gmail/i, /谷歌|文档|表格|幻灯片|云盘/], terms: ['google', 'drive', 'docs', 'sheets', 'slides', 'gmail'] },
+  { patterns: [/browser|chrome|safari|web|page|dom|search/i, /浏览器|网页|搜索|页面/], terms: ['browser', 'chrome', 'playwright', 'web'] },
+  { patterns: [/twitter|\bx\.com\b|tweet|post/i, /推特|帖子/], terms: ['twitter', 'x'] },
+  { patterns: [/xiaohongshu|rednote/i, /小红书/], terms: ['xiaohongshu', 'rednote'] },
+  { patterns: [/obsidian|markdown|note|knowledge|vault/i, /笔记|知识库|黑曜石/], terms: ['obsidian', 'markdown', 'note', 'vault', 'filesystem'] },
+  { patterns: [/figma|design|pencil|\.pen\b|prototype/i, /设计|原型/], terms: ['figma', 'pencil', 'design'] },
+  { patterns: [/finance|stock|crypto|market|price/i, /股票|行情|币|金融/], terms: ['finance', 'financial', 'stock', 'crypto'] },
+  { patterns: [/telegram|slack|discord/i, /电报|群聊/], terms: ['telegram', 'slack', 'discord'] },
+  { patterns: [/vercel|deploy|deployment|cloudflare|railway/i, /部署|上线/], terms: ['vercel', 'deploy', 'cloudflare', 'railway'] },
+  { patterns: [/codex|claude|terminal|cli|shell|command/i, /终端|命令行/], terms: ['codex', 'claude', 'shell', 'desktop-commander', 'terminal'] },
+];
+
+function mcpWorkflowIntent(value, task = '') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (['list_servers', 'discover', 'discovery', 'servers'].includes(raw)) return 'list_servers';
+  if (['select_server', 'select', 'choose', 'route'].includes(raw)) return 'select_server';
+  if (['plan_call', 'tool_call', 'call_tool', 'call'].includes(raw)) return 'plan_call';
+  const text = String(task || '').toLowerCase();
+  if (/call|invoke|use tool|调用/.test(text)) return 'plan_call';
+  if (/which|choose|select|route|哪个|选择|分配/.test(text)) return 'select_server';
+  return 'select_server';
+}
+
+function mcpWorkflowTerms(options = {}) {
+  const stopTerms = new Set([
+    'mcp',
+    'server',
+    'servers',
+    'tool',
+    'tools',
+    'task',
+    'workflow',
+    'preview',
+    'plan',
+    'choose',
+    'select',
+    'which',
+    'without',
+    'execute',
+  ]);
+  const requested = [
+    options.serverName,
+    options.server,
+    options.toolName,
+    options.tool,
+    options.query,
+    options.task,
+    options.message,
+    options.instruction,
+  ].map((value) => String(value || '').trim()).filter(Boolean);
+  const joined = requested.join(' ');
+  const words = joined
+    .toLowerCase()
+    .split(/[^a-z0-9_.-]+/i)
+    .map((term) => term.trim())
+    .filter((term) => term.length >= 2 && term.length <= 48 && !stopTerms.has(term));
+  const hinted = [];
+  for (const hint of MCP_WORKFLOW_KEYWORD_HINTS) {
+    if (hint.patterns.some((pattern) => pattern.test(joined))) hinted.push(...hint.terms);
+  }
+  return Array.from(new Set([...words, ...hinted])).slice(0, 24);
+}
+
+function mcpServerSearchText(server = {}) {
+  return [
+    server.name,
+    server.sourceId,
+    server.sourceLabel,
+    server.transport,
+    server.command,
+    server.urlHost,
+    server.risk,
+  ].map((value) => String(value || '').toLowerCase()).join(' ');
+}
+
+function mcpServerWorkflowScore(server = {}, terms = [], options = {}) {
+  const text = mcpServerSearchText(server);
+  const name = String(server.name || '').toLowerCase();
+  let score = server.enabled ? 2 : -20;
+  const matches = [];
+  const requestedServer = String(options.serverName || options.server || '').trim().toLowerCase();
+  if (requestedServer) {
+    if (name === requestedServer) {
+      score += 100;
+      matches.push('server_exact');
+    } else if (name.includes(requestedServer) || text.includes(requestedServer)) {
+      score += 55;
+      matches.push('server_match');
+    }
+  }
+  for (const term of terms) {
+    if (!term) continue;
+    if (name === term) {
+      score += 30;
+      matches.push(term);
+    } else if (name.includes(term)) {
+      score += 18;
+      matches.push(term);
+    } else if (text.includes(term)) {
+      score += 8;
+      matches.push(term);
+    }
+  }
+  if (server.sourceId === 'project_mcp' || server.sourceId === 'project_cursor_mcp') score += 3;
+  if (server.transport === 'stdio') score += 1;
+  return {
+    score,
+    matches: Array.from(new Set(matches)).slice(0, 10),
+  };
+}
+
+function mcpWorkflowCandidate(server = {}, rank = {}) {
+  return {
+    name: compactRecordText(server.name || '', 120),
+    sourceId: compactRecordText(server.sourceId || '', 80),
+    sourceLabel: compactRecordText(server.sourceLabel || '', 120),
+    enabled: Boolean(server.enabled),
+    transport: compactRecordText(server.transport || 'unknown', 40),
+    risk: compactRecordText(server.risk || 'unknown', 60),
+    command: compactRecordText(server.command || '', 120),
+    urlHost: compactRecordText(server.urlHost || '', 120),
+    envKeys: Array.isArray(server.envKeys) ? server.envKeys.slice(0, 12) : [],
+    score: Number(rank.score || 0),
+    matchedTerms: Array.isArray(rank.matches) ? rank.matches : [],
+    redacted: true,
+  };
+}
+
+function mcpWorkflowPreview(options = {}) {
+  const limit = Math.max(1, Math.min(200, Number(options.limit || 80)));
+  const discovery = mcpServerDiscoverySnapshot({ limit, source: options.source || 'mcp_workflow' });
+  const serverKeys = new Set();
+  const servers = (Array.isArray(discovery.servers) ? discovery.servers : []).filter((server) => {
+    const key = [
+      String(server.name || '').toLowerCase(),
+      String(server.transport || '').toLowerCase(),
+      String(server.command || '').toLowerCase(),
+      String(server.urlHost || '').toLowerCase(),
+    ].join('|');
+    if (serverKeys.has(key)) return false;
+    serverKeys.add(key);
+    return true;
+  });
+  const task = compactRecordText(options.task || options.message || options.instruction || options.query || '', 500);
+  const intent = mcpWorkflowIntent(options.intent, task);
+  const requestedServerName = compactRecordText(options.serverName || options.server || '', 120);
+  const requestedToolName = compactRecordText(options.toolName || options.tool || '', 120);
+  const executeRequested = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const confirm = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  const terms = mcpWorkflowTerms(options);
+  const rankedServers = servers
+    .map((server) => ({ server, rank: mcpServerWorkflowScore(server, terms, options) }))
+    .filter(({ rank }) => !terms.length || rank.matches.length || requestedServerName)
+    .sort((a, b) => b.rank.score - a.rank.score || Number(b.server.enabled) - Number(a.server.enabled));
+  const fallbackServers = servers
+    .map((server) => ({ server, rank: mcpServerWorkflowScore(server, [], options) }))
+    .sort((a, b) => b.rank.score - a.rank.score || Number(b.server.enabled) - Number(a.server.enabled));
+  const ranked = rankedServers.length ? rankedServers : fallbackServers;
+  const candidateLimit = Math.max(1, Math.min(12, Number(options.candidateLimit || 6)));
+  const candidates = ranked.slice(0, candidateLimit).map(({ server, rank }) => mcpWorkflowCandidate(server, rank));
+  const selected = candidates[0] || null;
+  const hasServers = servers.length > 0;
+  const status = executeRequested
+    ? 'blocked'
+    : selected
+      ? 'planned'
+      : hasServers
+        ? 'needs_server_selection'
+        : 'needs_mcp_config';
+  const summary = executeRequested
+    ? 'MCP execution is not enabled from this preview path. Review the plan, then use a confirmed MCP execution path when implemented.'
+    : selected
+      ? `Use ${selected.name} as the first MCP candidate; preview only, no server started and no MCP tool called.`
+      : hasServers
+        ? 'MCP servers are configured, but the task did not match a clear candidate yet.'
+        : 'No configured MCP servers were found locally.';
+  const actionPlan = [
+    {
+      id: 'discover_configured_servers',
+      label: 'Discover configured MCP servers',
+      status: 'done',
+      output: `${servers.length} unique candidate server(s) from ${discovery.counts.servers || 0} sanitized record(s) in ${discovery.counts.filesFound}/${discovery.counts.filesChecked} config file(s).`,
+      safety: 'read-only; env values and URL queries redacted',
+    },
+    {
+      id: 'select_candidate_server',
+      label: 'Select candidate MCP server',
+      status: selected ? 'done' : hasServers ? 'needs_selection' : 'needs_config',
+      serverName: selected?.name || '',
+      output: selected
+        ? `${selected.name} matched with score ${selected.score}.`
+        : hasServers
+          ? 'Ask for a more specific task or server name.'
+          : 'Configure MCP servers in Claude Desktop, Claude Code, Cursor, or project .mcp.json.',
+    },
+    {
+      id: 'inspect_server_tools',
+      label: 'Inspect server tools',
+      status: 'future_confirmed_step',
+      output: 'A later MCP client step should connect to the selected server, list tool schemas, and keep env values redacted.',
+      requiresConfirmation: true,
+    },
+    {
+      id: 'execute_tool_call',
+      label: 'Execute an MCP tool call',
+      status: executeRequested ? 'blocked' : 'not_requested',
+      output: executeRequested
+        ? 'Blocked here because this endpoint is preview-only and never calls MCP tools.'
+        : 'Not executed. Execution will require an explicit task, selected server, reviewed tool schema, and confirmation.',
+      requiresConfirmation: true,
+    },
+  ];
+  return {
+    ok: !executeRequested,
+    status,
+    intent,
+    task,
+    summary,
+    spokenSummary: summary,
+    previewOnly: true,
+    executed: false,
+    executeRequested,
+    confirm,
+    requested: {
+      serverName: requestedServerName,
+      toolName: requestedToolName,
+      terms,
+    },
+    discovery: {
+      summary: discovery.summary,
+      counts: discovery.counts,
+      files: discovery.files,
+    },
+    counts: {
+      servers: boundedCount(discovery.counts?.servers, 1000),
+      uniqueServers: servers.length,
+      candidates: candidates.length,
+      enabled: boundedCount(discovery.counts?.enabled, 1000),
+    },
+    candidates,
+    selectedServer: selected,
+    actionPlan,
+    safety: {
+      readOnly: true,
+      previewOnly: true,
+      startsServers: false,
+      commandsExecuted: false,
+      callsMcpTools: false,
+      envValuesRedacted: true,
+      urlQueriesRedacted: true,
+      requiresConfirmationForExecution: true,
+    },
+    blockedReason: executeRequested ? 'mcp_execution_not_enabled_on_preview_path' : '',
+    nextAction: executeRequested
+      ? 'Review this preview, then use a future confirmed MCP execution endpoint instead of this preview path.'
+      : selected
+        ? `Inspect ${selected.name} tool schemas through a confirmed MCP client path, then ask before executing any tool call.`
+        : hasServers
+          ? 'Name the target MCP server or describe the task more concretely so JAVIS can select one.'
+          : 'Add an MCP server config first, then rerun this preview.',
   };
 }
 
@@ -25209,6 +25475,11 @@ const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
 const REALTIME_CAPABILITY_TOOL_NAME = 'get_local_capabilities';
 const REALTIME_MCP_TOOL_NAME = 'get_mcp_servers';
+const REALTIME_MCP_WORKFLOW_TOOL_NAME = 'plan_mcp_workflow';
+const REALTIME_MCP_TOOL_NAMES = new Set([
+  REALTIME_MCP_TOOL_NAME,
+  REALTIME_MCP_WORKFLOW_TOOL_NAME,
+]);
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
 const REALTIME_LEARNING_EVOLUTION_TOOL_NAME = 'get_learning_evolution';
 const REALTIME_LEARNING_TOOL_NAMES = new Set([
@@ -25415,11 +25686,44 @@ function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
 }
 
 function realtimeMcpToolSummary(name, args = {}, result = {}) {
-  if (name !== REALTIME_MCP_TOOL_NAME) return null;
+  if (!REALTIME_MCP_TOOL_NAMES.has(name)) return null;
   const output = realtimeToolOutputObject(result) || {};
+  if (name === REALTIME_MCP_WORKFLOW_TOOL_NAME) {
+    const candidates = Array.isArray(output.candidates) ? output.candidates : [];
+    const selected = output.selectedServer || candidates[0] || {};
+    const counts = output.counts || output.discovery?.counts || {};
+    return {
+      action: 'workflow_preview',
+      summary: compactRecordText(output.summary || output.spokenSummary || '', 420),
+      source: compactRecordText(output.source || args?.source || '', 80),
+      task: compactRecordText(output.task || args?.task || args?.message || args?.query || '', 180),
+      intent: compactRecordText(output.intent || args?.intent || '', 80),
+      status: compactRecordText(output.status || '', 80),
+      serverCount: boundedCount(counts.servers, 1000),
+      candidateCount: boundedCount(counts.candidates ?? candidates.length, 1000),
+      enabledCount: boundedCount(counts.enabled, 1000),
+      selectedServer: compactRecordText(selected?.name || '', 120),
+      selectedTransport: compactRecordText(selected?.transport || '', 40),
+      selectedRisk: compactRecordText(selected?.risk || '', 60),
+      requestedServer: compactRecordText(output.requested?.serverName || args?.serverName || args?.server || '', 120),
+      requestedTool: compactRecordText(output.requested?.toolName || args?.toolName || args?.tool || '', 120),
+      previewOnly: output.previewOnly === true || output.safety?.previewOnly === true,
+      executed: output.executed === true,
+      executeRequested: output.executeRequested === true || args?.execute === true,
+      requiresConfirmationForExecution: output.safety?.requiresConfirmationForExecution === true,
+      callsMcpTools: output.safety?.callsMcpTools === true,
+      startsServers: output.safety?.startsServers === true,
+      commandsExecuted: output.safety?.commandsExecuted === true,
+      envValuesRedacted: output.safety?.envValuesRedacted === true,
+      readOnly: output.safety?.readOnly === true,
+      urlQueriesRedacted: output.safety?.urlQueriesRedacted === true,
+      nextAction: compactRecordText(output.nextAction || '', 240),
+    };
+  }
   const servers = Array.isArray(output.servers) ? output.servers : [];
   const counts = output.counts || {};
   return {
+    action: 'discovery',
     summary: compactRecordText(output.summary || '', 420),
     source: compactRecordText(output.source || args?.source || '', 80),
     filesChecked: boundedCount(counts.filesChecked, 1000),
@@ -25991,31 +26295,46 @@ function realtimeCapabilityToolEvidence(limit = 8) {
 
 function realtimeMcpToolEvidence(limit = 8) {
   const recent = realtimeToolCallEvents
-    .filter((event) => event.name === REALTIME_MCP_TOOL_NAME)
+    .filter((event) => REALTIME_MCP_TOOL_NAMES.has(event.name))
     .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
   const hasDiscovery = recent.some((event) => (
+    event.name === REALTIME_MCP_TOOL_NAME &&
     event.ok &&
     event.mcp?.readOnly === true &&
     event.mcp?.envValuesRedacted === true &&
     event.mcp?.startsServers === false &&
     event.mcp?.commandsExecuted === false
   ));
+  const hasWorkflowPreview = recent.some((event) => (
+    event.name === REALTIME_MCP_WORKFLOW_TOOL_NAME &&
+    event.ok &&
+    event.mcp?.previewOnly === true &&
+    event.mcp?.readOnly === true &&
+    event.mcp?.callsMcpTools === false &&
+    event.mcp?.startsServers === false &&
+    event.mcp?.commandsExecuted === false &&
+    event.mcp?.requiresConfirmationForExecution === true
+  ));
   return {
-    ok: hasDiscovery,
+    ok: hasDiscovery || hasWorkflowPreview,
     count: recent.length,
     hasDiscovery,
-    hasServers: recent.some((event) => Number(event.mcp?.serverCount || 0) > 0),
+    hasWorkflowPreview,
+    hasServers: recent.some((event) => Number(event.mcp?.serverCount || 0) > 0 || Number(event.mcp?.candidateCount || 0) > 0),
     privacySafe: recent.length > 0 && recent.every((event) => (
       event.mcp?.readOnly === true &&
       event.mcp?.envValuesRedacted === true &&
       event.mcp?.startsServers === false &&
-      event.mcp?.commandsExecuted === false
+      event.mcp?.commandsExecuted === false &&
+      event.mcp?.callsMcpTools !== true
     )),
     last: recent[0] || null,
     recent,
-    nextAction: hasDiscovery
-      ? 'Ask live voice which discovered MCP servers are available before deciding whether a Codex, Claude Code, or MCP-backed workflow should be used.'
-      : 'Ask the live voice session: 本机有哪些 MCP 或外部工具服务器可以用？',
+    nextAction: hasWorkflowPreview
+      ? 'Ask live voice to explain the selected MCP candidate, then wait for a confirmed MCP execution path before calling tools.'
+      : hasDiscovery
+        ? 'Ask live voice which MCP server should handle a concrete task and confirm plan_mcp_workflow appears here.'
+        : 'Ask the live voice session: 本机有哪些 MCP 或外部工具服务器可以用？',
   };
 }
 
@@ -26467,6 +26786,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
       '本机有哪些 MCP 或外部工具服务器可以用？',
+      '这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
       '你最近学到了我什么使用习惯？',
       '最近我的使用习惯有什么变化？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
@@ -26521,8 +26841,8 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       },
       {
         id: 'mcp_tool',
-        label: 'Realtime called get_mcp_servers',
-        ok: Boolean(mcpTools.hasDiscovery),
+        label: 'Realtime called MCP discovery or workflow preview',
+        ok: Boolean(mcpTools.hasDiscovery || mcpTools.hasWorkflowPreview),
         tool: REALTIME_MCP_TOOL_NAME,
       },
       {
@@ -26686,6 +27006,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       observed: Boolean(mcpTools.ok),
       count: Number(mcpTools.count || 0),
       hasDiscovery: Boolean(mcpTools.hasDiscovery),
+      hasWorkflowPreview: Boolean(mcpTools.hasWorkflowPreview),
       hasServers: Boolean(mcpTools.hasServers),
       privacySafe: Boolean(mcpTools.privacySafe),
       nextAction: mcpTools.nextAction || 'Ask the live voice session which MCP servers are configured locally.',
@@ -26880,11 +27201,15 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
     }),
     realtimeDogfoodDrillStep({
       id: 'ask_mcp_servers',
-      label: 'Ask which MCP servers are configured locally',
-      ok: Boolean(mcpTools.hasDiscovery),
-      detail: mcpTools.hasDiscovery ? 'get_mcp_servers was observed in recent Realtime tool evidence without starting MCP servers.' : 'No get_mcp_servers call has been observed in recent Realtime tool evidence.',
-      nextAction: 'Ask: 本机有哪些 MCP 或外部工具服务器可以用？',
-      evidence: { tool: REALTIME_MCP_TOOL_NAME, count: Number(mcpTools.count || 0), privacySafe: Boolean(mcpTools.privacySafe) },
+      label: 'Ask which MCP servers or workflow preview should handle a task',
+      ok: Boolean(mcpTools.hasDiscovery || mcpTools.hasWorkflowPreview),
+      detail: mcpTools.hasWorkflowPreview
+        ? 'plan_mcp_workflow was observed in recent Realtime tool evidence without starting MCP servers or calling MCP tools.'
+        : mcpTools.hasDiscovery
+          ? 'get_mcp_servers was observed in recent Realtime tool evidence without starting MCP servers.'
+          : 'No MCP discovery or workflow preview call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
+      evidence: { tool: `${REALTIME_MCP_TOOL_NAME}/${REALTIME_MCP_WORKFLOW_TOOL_NAME}`, count: Number(mcpTools.count || 0), privacySafe: Boolean(mcpTools.privacySafe) },
     }),
     realtimeDogfoodDrillStep({
       id: 'ask_learning_profile',
@@ -27115,9 +27440,10 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
     },
     ask_mcp_servers: {
       promptType: 'spoken',
-      prompt: '本机有哪些 MCP 或外部工具服务器可以用？',
-      copyText: '本机有哪些 MCP 或外部工具服务器可以用？',
-      reason: 'This verifies the Realtime session calls get_mcp_servers and keeps MCP discovery read-only.',
+      prompt: '这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
+      copyText: '这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
+      followUpPrompts: ['本机有哪些 MCP 或外部工具服务器可以用？'],
+      reason: 'This verifies the Realtime session calls get_mcp_servers or plan_mcp_workflow and keeps MCP discovery/planning read-only.',
     },
     ask_learning_profile: {
       promptType: 'spoken',
@@ -36644,6 +36970,11 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(result) };
   }
 
+  if (name === 'plan_mcp_workflow') {
+    const result = mcpWorkflowPreview({ ...(args || {}), source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'plan_file_organization') {
     const result = await planFileOrganization(args || {});
     return { ok: result.ok, output: JSON.stringify(result) };
@@ -36877,6 +37208,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, semantic text-conversion previews, or non-destructive copy-convert previews.',
       'Use get_knowledge_vaults when the user asks what Obsidian/Markdown vaults JAVIS can see. Use search_knowledge_notes for read-only search over an allowed Markdown vault. Use run_knowledge_workflow for Obsidian-style Markdown note creation, append, daily note, or search workflows. Note writes require execute:true plus confirm:true and still go through file policy.',
       'Use get_mcp_servers when the user asks which MCP servers, Claude/Cursor tool servers, or external tool bridges are configured locally. It is read-only: it scans known JSON config files, redacts env values and URL queries, and never starts MCP server commands.',
+      'Use plan_mcp_workflow when the user asks which MCP server or external tool bridge should handle a concrete task, or when preparing an MCP-backed workflow. It is preview-only: it selects candidates and shows confirmed next steps, but never starts MCP servers or calls MCP tools.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
       'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
@@ -38538,6 +38870,28 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'plan_mcp_workflow',
+        description: 'Preview which configured MCP server should handle a task and what the confirmed execution steps would be. Preview-only: does not start MCP servers, does not call MCP tools, and redacts env values.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task: { type: 'string' },
+            query: { type: 'string' },
+            serverName: { type: 'string' },
+            server: { type: 'string' },
+            toolName: { type: 'string' },
+            tool: { type: 'string' },
+            intent: { type: 'string', enum: ['list_servers', 'select_server', 'plan_call'] },
+            limit: { type: 'number' },
+            candidateLimit: { type: 'number' },
+            execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'plan_file_organization',
         description: 'Create a policy-aware preview plan to organize a local folder by file type. Does not execute file moves.',
         parameters: {
@@ -38840,6 +39194,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'search_knowledge_notes',
   'run_knowledge_workflow',
   'get_mcp_servers',
+  'plan_mcp_workflow',
   'route_task',
   'route_parallel_tasks',
   'delegate_task',
@@ -38874,6 +39229,7 @@ function realtimeInstructionChecks(instructions = '') {
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
     knowledgeWorkflows: /get_knowledge_vaults|search_knowledge_notes|run_knowledge_workflow|Obsidian\/Markdown vaults|knowledge workflow/i.test(text),
     mcpDiscovery: /get_mcp_servers|MCP servers|Claude\/Cursor tool servers|external tool bridges/i.test(text),
+    mcpWorkflow: /plan_mcp_workflow|which MCP server|MCP-backed workflow|never starts MCP servers or calls MCP tools/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
@@ -40933,6 +41289,32 @@ function startApiServer() {
       res.json({ mcp: mcpServerDiscoverySnapshot({ limit: req.query.limit || 80, source: req.query.source || 'api' }) });
     } catch (error) {
       jsonError(res, 500, 'MCP server discovery failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/mcp/workflow', (req, res) => {
+    try {
+      const result = mcpWorkflowPreview({
+        task: req.query.task || req.query.query || '',
+        query: req.query.query || '',
+        serverName: req.query.serverName || req.query.server || '',
+        toolName: req.query.toolName || req.query.tool || '',
+        intent: req.query.intent || '',
+        limit: req.query.limit || 80,
+        source: req.query.source || 'api',
+      });
+      res.status(result.ok ? 200 : 409).json({ mcpWorkflow: result });
+    } catch (error) {
+      jsonError(res, 500, 'MCP workflow preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/mcp/workflow', (req, res) => {
+    try {
+      const result = mcpWorkflowPreview({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : 409).json({ mcpWorkflow: result });
+    } catch (error) {
+      jsonError(res, 500, 'MCP workflow preview failed', error instanceof Error ? error.message : String(error));
     }
   });
 

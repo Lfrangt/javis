@@ -37,6 +37,14 @@ function compact(value, max = 140) {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 3))}...` : text;
 }
 
+function argvValue(name, fallback = '') {
+  const index = process.argv.findIndex((item) => item === name);
+  if (index < 0) return fallback;
+  const value = process.argv[index + 1];
+  if (!value || value.startsWith('--')) return fallback;
+  return value;
+}
+
 function readApiToken() {
   const envToken = String(process.env.JAVIS_API_TOKEN || '').trim();
   if (envToken) return envToken;
@@ -315,6 +323,7 @@ async function printStatus() {
   console.log('F. Show file workflow benchmarks');
   console.log('K. Show knowledge workflow benchmarks');
   console.log('X. Show MCP server discovery');
+  console.log('W. Preview MCP workflow plan');
   console.log('C. Show creative workflow benchmarks');
   console.log('U. Show app workflow benchmarks');
   console.log('Y. Show productivity workflow benchmarks');
@@ -1205,6 +1214,58 @@ async function showMcpServers() {
   const result = await request('/api/mcp/servers?source=cui_mcp_servers');
   console.log('');
   printMcpServers(result);
+}
+
+function printMcpWorkflow(result) {
+  const workflow = result?.mcpWorkflow || result || {};
+  const counts = workflow.counts || {};
+  const safety = workflow.safety || {};
+  console.log('MCP Workflow Preview');
+  console.log('====================');
+  console.log(workflow.summary || 'No MCP workflow preview summary available.');
+  console.log(`Status: ${workflow.status || 'unknown'} · intent=${workflow.intent || '-'} · candidates=${counts.candidates || 0} · servers=${counts.servers || 0}`);
+  console.log(`Safety: preview-only=${safety.previewOnly ? 'yes' : 'no'} · starts servers=${safety.startsServers ? 'yes' : 'no'} · commands executed=${safety.commandsExecuted ? 'yes' : 'no'} · calls MCP tools=${safety.callsMcpTools ? 'yes' : 'no'} · env values redacted=${safety.envValuesRedacted ? 'yes' : 'no'} · confirmation required=${safety.requiresConfirmationForExecution ? 'yes' : 'no'}`);
+  if (workflow.task) console.log(`Task: ${compact(workflow.task, 220)}`);
+  const selected = workflow.selectedServer || null;
+  if (selected) {
+    const target = selected.command ? `cmd=${selected.command}` : selected.urlHost ? `host=${selected.urlHost}` : 'target=-';
+    console.log(`\nSelected: ${selected.name || '-'} · ${selected.transport || 'unknown'} · ${selected.risk || 'unknown'} · ${target}`);
+  }
+  const candidates = Array.isArray(workflow.candidates) ? workflow.candidates : [];
+  if (candidates.length) {
+    console.log('\nCandidates:');
+    for (const candidate of candidates) {
+      const target = candidate.command ? `cmd=${candidate.command}` : candidate.urlHost ? `host=${candidate.urlHost}` : 'target=-';
+      const terms = Array.isArray(candidate.matchedTerms) && candidate.matchedTerms.length ? ` · match=${candidate.matchedTerms.join(', ')}` : '';
+      console.log(`- ${candidate.enabled ? 'on' : 'off'} ${candidate.name || '-'} · score=${candidate.score || 0} · ${candidate.transport || 'unknown'} · ${target}${terms}`);
+    }
+  }
+  const steps = Array.isArray(workflow.actionPlan) ? workflow.actionPlan : [];
+  if (steps.length) {
+    console.log('\nPlan:');
+    for (const step of steps) {
+      console.log(`- ${step.id || '-'} · ${step.status || '-'} · ${compact(step.output || step.label || '', 180)}`);
+    }
+  }
+  if (workflow.nextAction) console.log(`\nNext: ${workflow.nextAction}`);
+}
+
+async function showMcpWorkflow(options = {}) {
+  const task = options.task || argvValue('--task', '') || argvValue('--query', '') || 'Choose an MCP server for this task without executing.';
+  const serverName = options.serverName || argvValue('--server', '') || argvValue('--server-name', '');
+  const toolName = options.toolName || argvValue('--tool', '') || argvValue('--tool-name', '');
+  const result = await request('/api/mcp/workflow', {
+    method: 'POST',
+    body: {
+      source: 'cui_mcp_workflow',
+      task,
+      serverName,
+      toolName,
+      execute: false,
+    },
+  });
+  console.log('');
+  printMcpWorkflow(result);
 }
 
 function printCreativeBenchmarks(result) {
@@ -2470,6 +2531,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-mcp-workflow') || process.argv.includes('--mcp-workflow')) {
+    await showMcpWorkflow();
+    return;
+  }
+
   if (process.argv.includes('--print-creative-benchmarks') || process.argv.includes('--creative-benchmarks')) {
     await showCreativeBenchmarks();
     return;
@@ -2600,6 +2666,9 @@ async function main() {
         await showKnowledgeBenchmarks();
       } else if (answer === 'x' || answer === 'mcp' || answer === 'mcp servers') {
         await showMcpServers();
+      } else if (answer === 'w' || answer === 'mcp workflow' || answer === 'mcp preview') {
+        const task = await rl.question('Task to preview MCP routing for: ');
+        await showMcpWorkflow({ task });
       } else if (answer === 'c' || answer === 'creative benchmark' || answer === 'creative benchmarks') {
         await showCreativeBenchmarks();
       } else if (answer === 'u' || answer === 'app benchmark' || answer === 'app benchmarks') {

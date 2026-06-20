@@ -146,6 +146,17 @@ curl http://127.0.0.1:3417/api/mcp/servers
 
 This scans known local JSON configs for Claude Desktop, Claude Code, Cursor, and project `.mcp.json`. It is read-only: it does not start MCP server commands, it shows only command basenames or URL hosts, and it redacts env values plus URL query strings. Realtime voice can call `get_mcp_servers` before deciding whether a task should use Codex, Claude Code, or an MCP-backed workflow.
 
+Use option `W. Preview MCP workflow plan`, or:
+
+```bash
+npm run config -- --print-mcp-workflow --task "这个任务应该用哪个 MCP 服务器？先不要执行"
+curl -X POST http://127.0.0.1:3417/api/mcp/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"task":"Choose the MCP server for this task, but do not execute.","execute":false}'
+```
+
+This uses the same sanitized MCP discovery data to select candidate servers and print the next confirmed steps. It is preview-only: it does not start MCP server commands, does not call MCP tools, and still redacts env values plus URL query strings. Realtime voice can call `plan_mcp_workflow` when the user asks which MCP/external tool bridge should handle a concrete task.
+
 Use option `C. Show creative workflow benchmarks`, or:
 
 ```bash

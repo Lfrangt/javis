@@ -39,6 +39,7 @@ const REQUIRED_TOOLS = [
   'get_learning_profile',
   'get_learning_evolution',
   'get_mcp_servers',
+  'plan_mcp_workflow',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -557,6 +558,56 @@ export default {
         ))
         ? ok('realtime.mcp_discovery_tool_evidence', 'Realtime MCP discovery evidence', 'get_mcp_servers is visible in privacy-safe Realtime evidence')
         : fail('realtime.mcp_discovery_tool_evidence', 'Realtime MCP discovery evidence', 'expected get_mcp_servers to appear in realtime evidence', mcpToolEvidence),
+    );
+
+    const mcpWorkflowTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'plan_mcp_workflow',
+        arguments: {
+          task: 'Choose the MCP server for a browser or notes task, but do not execute.',
+          execute: false,
+          limit: 20,
+        },
+      },
+    });
+    const mcpWorkflowToolOutput = parseToolOutput(mcpWorkflowTool);
+    out.push(
+      mcpWorkflowTool.ok &&
+        mcpWorkflowTool.data?.ok === true &&
+        mcpWorkflowToolOutput?.ok === true &&
+        mcpWorkflowToolOutput.previewOnly === true &&
+        mcpWorkflowToolOutput.executed === false &&
+        mcpWorkflowToolOutput.safety?.readOnly === true &&
+        mcpWorkflowToolOutput.safety?.startsServers === false &&
+        mcpWorkflowToolOutput.safety?.commandsExecuted === false &&
+        mcpWorkflowToolOutput.safety?.callsMcpTools === false &&
+        mcpWorkflowToolOutput.safety?.requiresConfirmationForExecution === true &&
+        Array.isArray(mcpWorkflowToolOutput.actionPlan)
+        ? ok('realtime.mcp_workflow_tool', 'Realtime MCP workflow preview voice tool', `${mcpWorkflowToolOutput.counts?.candidates || 0} candidate(s), status=${mcpWorkflowToolOutput.status || 'unknown'}`)
+        : fail('realtime.mcp_workflow_tool', 'Realtime MCP workflow preview voice tool', `tool execute ${mcpWorkflowTool.status}`, mcpWorkflowTool.data),
+    );
+
+    const mcpWorkflowEvidence = await ctx.api('/api/realtime/evidence');
+    const mcpWorkflowToolEvidence = mcpWorkflowEvidence.data?.evidence?.mcpTools;
+    const mcpWorkflowToolEvents = Array.isArray(mcpWorkflowToolEvidence?.recent) ? mcpWorkflowToolEvidence.recent : [];
+    out.push(
+      mcpWorkflowEvidence.ok &&
+        mcpWorkflowToolEvidence?.hasWorkflowPreview === true &&
+        mcpWorkflowToolEvidence?.privacySafe === true &&
+        mcpWorkflowToolEvents.some((event) => (
+          event.name === 'plan_mcp_workflow' &&
+          event.source === 'eval' &&
+          event.mcp?.previewOnly === true &&
+          event.mcp?.readOnly === true &&
+          event.mcp?.callsMcpTools === false &&
+          event.mcp?.startsServers === false &&
+          event.mcp?.commandsExecuted === false &&
+          event.mcp?.requiresConfirmationForExecution === true
+        ))
+        ? ok('realtime.mcp_workflow_tool_evidence', 'Realtime MCP workflow preview evidence', 'plan_mcp_workflow is visible in privacy-safe Realtime evidence')
+        : fail('realtime.mcp_workflow_tool_evidence', 'Realtime MCP workflow preview evidence', 'expected plan_mcp_workflow to appear in realtime evidence', mcpWorkflowToolEvidence),
     );
 
     try {
