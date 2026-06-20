@@ -67,6 +67,7 @@ export default {
           Password: 'secret-password',
         },
         execute: false,
+        source: 'eval_browser_fill_draft',
       },
     });
     out.push(
@@ -84,9 +85,38 @@ export default {
         !JSON.stringify(fillDraft.data?.results || {}).includes('secret-password') &&
         !JSON.stringify(fillDraft.data?.verification || {}).includes('haoge@example.com') &&
         !JSON.stringify(fillDraft.data?.recovery || {}).includes('haoge@example.com') &&
+        fillDraft.data?.workflow?.target?.fillDraft?.version === 1 &&
+        fillDraft.data?.workflow?.target?.fillDraft?.blocked?.find((field) => field.field === 'Password')?.requiresSensitiveValue === true &&
+        !JSON.stringify(fillDraft.data?.workflow?.target?.fillDraft || {}).includes('secret-password') &&
         fillDraft.data?.results?.every((result) => result.status === 'previewed')
         ? ok('browser.fill_draft_preview', 'Browser fill draft preview', '3 field fill draft(s), 1 sensitive field blocked')
         : fail('browser.fill_draft_preview', 'Browser fill draft preview', `POST /api/browser/fill-draft ${fillDraft.status}`, fillDraft.data),
+    );
+
+    const fillRouteId = fillDraft.data?.routing?.id || '';
+    const fillRouteRecovery = fillRouteId
+      ? await ctx.api(`/api/tasks/routing/${encodeURIComponent(fillRouteId)}/recovery?source=eval_browser_fill_recovery`)
+      : null;
+    const fillRecovery = fillRouteRecovery?.data?.recovery || {};
+    const fillRecommended = fillRecovery.recommended || {};
+    const fillHandoff = fillRecommended.browserFillRecovery || {};
+    const fillRecoveryBody = JSON.stringify(fillRouteRecovery?.data || {});
+    out.push(
+      fillDraft.ok &&
+        fillRouteRecovery?.ok &&
+        fillRecommended.type === 'browser_fill_sensitive_handoff' &&
+        fillRecommended.executable === true &&
+        fillHandoff.version === 1 &&
+        fillHandoff.status === 'needs_user_sensitive_handoff' &&
+        fillHandoff.safePreparedCount === 3 &&
+        fillHandoff.blocked?.some((field) => field.field === 'Password' && field.requiresSensitiveValue === true) &&
+        fillHandoff.previewable?.some((action) => action.readOnly === true && action.storesSensitiveValue === false) &&
+        fillHandoff.manual?.some((action) => action.type === 'manual_sensitive_field' && action.field === 'Password' && action.storesSensitiveValue === false) &&
+        fillHandoff.boundaries?.some((item) => /Do not store password/i.test(item)) &&
+        !fillRecoveryBody.includes('secret-password') &&
+        !fillRecoveryBody.includes('haoge@example.com')
+        ? ok('browser.fill_draft_route_recovery', 'Browser fill draft route recovery', 'sensitive field produces a safe handoff plan')
+        : fail('browser.fill_draft_route_recovery', 'Browser fill draft route recovery', 'expected routed fill draft recovery to recommend sensitive-field handoff without leaking values', fillRouteRecovery?.data),
     );
 
     const fixtureExecute = await ctx.api('/api/browser/fill-draft', {
@@ -97,6 +127,7 @@ export default {
         fields: { Email: 'haoge@example.com' },
         execute: true,
         confirm: true,
+        source: 'eval_browser_fill_draft_fixture',
       },
     });
     out.push(

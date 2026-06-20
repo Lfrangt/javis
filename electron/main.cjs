@@ -3503,6 +3503,51 @@ function normalizeWorkflowContinuation(value = {}) {
   return hasMeaningfulData ? normalized : null;
 }
 
+function normalizeBrowserFillDraftTarget(value = {}) {
+  if (!value || typeof value !== 'object') return null;
+  const steps = (Array.isArray(value.steps) ? value.steps : [])
+    .map((step) => ({
+      index: Math.max(0, Number(step?.index || 0)),
+      field: compactRecordText(step?.field || step?.query || '', 120),
+      action: compactRecordText(step?.action || '', 40),
+      selector: compactRecordText(step?.selector || '', 220),
+      valueBytes: Math.max(0, Number(step?.valueBytes || step?.expectedBytes || 0)),
+      reason: compactRecordText(step?.reason || '', 220),
+    }))
+    .filter((step) => step.field || step.selector)
+    .slice(0, 12);
+  const blocked = (Array.isArray(value.blocked) ? value.blocked : [])
+    .map((item) => ({
+      field: compactRecordText(item?.field || item?.name || '', 120),
+      reason: compactRecordText(item?.reason || '', 160),
+      requiresUserPresence: item?.requiresUserPresence !== false,
+      requiresSensitiveValue: item?.requiresSensitiveValue !== false,
+      storesValue: false,
+    }))
+    .filter((item) => item.field || item.reason)
+    .slice(0, 12);
+  const version = Math.max(1, Number(value.version || 1));
+  const safeStepCount = Math.max(0, Number(value.safeStepCount || value.plannedFieldCount || steps.length || 0));
+  const blockedFieldCount = Math.max(0, Number(value.blockedFieldCount || blocked.length || 0));
+  if (!steps.length && !blocked.length && !safeStepCount && !blockedFieldCount) return null;
+  return {
+    version,
+    source: compactRecordText(value.source || 'browser_fill_draft', 80),
+    status: compactRecordText(value.status || '', 80),
+    summary: compactRecordText(value.summary || '', 500),
+    safeStepCount,
+    blockedFieldCount,
+    verifiedFieldCount: Math.max(0, Number(value.verifiedFieldCount || 0)),
+    verificationStatus: compactRecordText(value.verificationStatus || '', 80),
+    recoveryStatus: compactRecordText(value.recoveryStatus || '', 80),
+    fixture: Boolean(value.fixture),
+    confirmed: Boolean(value.confirmed),
+    confirmationRequired: Boolean(value.confirmationRequired),
+    steps,
+    blocked,
+  };
+}
+
 function normalizePersistedWorkflow(workflow, fromDisk = false) {
   if (!workflow || typeof workflow !== 'object' || !workflow.id) return null;
   const status = ['queued', 'running', 'done', 'failed', 'cancelled', 'blocked'].includes(workflow.status)
@@ -3544,6 +3589,7 @@ function normalizePersistedWorkflow(workflow, fromDisk = false) {
       riskLevel: Number(target.riskLevel || 0),
       safeToAutoRun: Boolean(target.safeToAutoRun),
       confirmationRequired: Boolean(target.confirmationRequired),
+      fillDraft: normalizeBrowserFillDraftTarget(target.fillDraft),
     },
     jobId: String(workflow.jobId || ''),
     continuation: normalizeWorkflowContinuation(workflow.continuation),
@@ -17385,6 +17431,40 @@ function redactedBrowserFillDraftPlan(plan = {}) {
   };
 }
 
+function browserFillDraftTargetFromPlan({ plan = {}, verification = {}, recovery = {}, live = false, confirmed = false, confirmationRequired = false, fixtureExecutionBlocked = false } = {}) {
+  const steps = (Array.isArray(plan.steps) ? plan.steps : []).map((step) => ({
+    index: step.index,
+    field: step.field || step.query || '',
+    action: step.action || '',
+    selector: step.selector || '',
+    valueBytes: Buffer.byteLength(String(step.value || ''), 'utf8'),
+    reason: step.reason || '',
+  }));
+  const blocked = (Array.isArray(plan.blocked) ? plan.blocked : []).map((item) => ({
+    field: item.field || '',
+    reason: item.reason || '',
+    requiresUserPresence: true,
+    requiresSensitiveValue: /sensitive|password|otp|cvv|card|密码|验证码|信用卡|银行卡/i.test(`${item.reason || ''} ${item.field || ''}`),
+    storesValue: false,
+  }));
+  return normalizeBrowserFillDraftTarget({
+    version: 1,
+    source: 'browser_fill_draft',
+    status: blocked.length ? 'needs_manual_review' : verification.status || recovery.status || 'prepared',
+    summary: plan.summary || '',
+    safeStepCount: steps.length,
+    blockedFieldCount: blocked.length,
+    verifiedFieldCount: verification.verifiedCount || 0,
+    verificationStatus: verification.status || '',
+    recoveryStatus: recovery.status || '',
+    fixture: !live || fixtureExecutionBlocked,
+    confirmed,
+    confirmationRequired,
+    steps,
+    blocked,
+  });
+}
+
 function redactedBrowserFillDraftResults(results = []) {
   return (Array.isArray(results) ? results : []).map((result) => {
     const next = { ...result };
@@ -17847,6 +17927,15 @@ async function runBrowserFillDraftWorkflow(options = {}) {
       recoveryStatus: recovery.status,
       fixture: !live,
       confirmed,
+      fillDraft: browserFillDraftTargetFromPlan({
+        plan,
+        verification,
+        recovery,
+        live,
+        confirmed,
+        confirmationRequired,
+        fixtureExecutionBlocked,
+      }),
     },
   });
   appendAudit('browser_fill_draft.completed', {
@@ -34166,6 +34255,168 @@ function routeCandidateFromWorkflowRetry(workflow) {
   };
 }
 
+function parseBrowserFillDraftBlockedFieldsFromResult(result = '') {
+  const text = String(result || '');
+  const reviewLine = text.split('\n').find((line) => /^Review needed:/i.test(line.trim())) || '';
+  const raw = reviewLine.replace(/^Review needed:\s*/i, '').trim();
+  if (!raw) return [];
+  return raw
+    .split(';')
+    .map((chunk) => {
+      const match = chunk.trim().match(/^(.+?)(?:\s+\(([^)]+)\))?$/);
+      if (!match) return null;
+      return {
+        field: compactRecordText(match[1] || '', 120),
+        reason: compactRecordText(match[2] || 'manual_review_required', 160),
+        requiresUserPresence: true,
+        requiresSensitiveValue: true,
+        storesValue: false,
+      };
+    })
+    .filter((item) => item?.field)
+    .slice(0, 12);
+}
+
+function parseBrowserFillDraftCountsFromResult(result = '') {
+  const text = String(result || '');
+  const prepared = text.match(/Plan:\s*Prepared\s+(\d+)\s+browser form field draft/i);
+  const blocked = text.match(/;\s*(\d+)\s+field\(s\)\s+need review/i);
+  return {
+    safePreparedCount: Math.max(0, Number(prepared?.[1] || 0)),
+    blockedFieldCount: Math.max(0, Number(blocked?.[1] || 0)),
+  };
+}
+
+function browserFillDraftRecoveryPlanForWorkflow(workflow = {}) {
+  if (!workflow || workflow.kind !== 'browser' || workflow.intent !== 'fill_draft') return null;
+  if (!['blocked', 'failed'].includes(workflow.status)) return null;
+  const targetPlan = normalizeBrowserFillDraftTarget(workflow.target?.fillDraft) || {};
+  const parsedCounts = parseBrowserFillDraftCountsFromResult(workflow.result);
+  const parsedBlocked = parseBrowserFillDraftBlockedFieldsFromResult(workflow.result);
+  const blocked = (targetPlan.blocked?.length ? targetPlan.blocked : parsedBlocked)
+    .map((item) => ({
+      field: compactRecordText(item.field || '', 120),
+      reason: compactRecordText(item.reason || 'manual_review_required', 160),
+      requiresUserPresence: true,
+      requiresSensitiveValue: item.requiresSensitiveValue !== false,
+      storesValue: false,
+    }))
+    .filter((item) => item.field || item.reason)
+    .slice(0, 12);
+  const steps = Array.isArray(targetPlan.steps) ? targetPlan.steps : [];
+  const safePreparedCount = Math.max(
+    0,
+    Number(targetPlan.safeStepCount || workflow.target?.plannedFieldCount || steps.length || parsedCounts.safePreparedCount || 0),
+  );
+  if (!blocked.length && !safePreparedCount) return null;
+  const blockedCount = Math.max(blocked.length, Number(targetPlan.blockedFieldCount || workflow.target?.blockedFieldCount || parsedCounts.blockedFieldCount || 0));
+  const summary = blocked.length
+    ? `Prepared ${safePreparedCount} safe browser field draft${safePreparedCount === 1 ? '' : 's'}; ${blockedCount} sensitive/manual field${blockedCount === 1 ? '' : 's'} need user handoff.`
+    : `Prepared ${safePreparedCount} browser field draft${safePreparedCount === 1 ? '' : 's'}; no sensitive values are stored.`;
+  const previewable = [
+    {
+      id: `browser_fill_review:${workflow.id}:inspect_plan`,
+      label: 'Review prepared browser fill draft',
+      type: 'review_prepared_fill_draft',
+      readOnly: true,
+      startsBrowserAction: false,
+      storesSensitiveValue: false,
+      safePreparedCount,
+      fields: steps.slice(0, 8).map((step) => ({
+        field: step.field,
+        action: step.action,
+        selector: step.selector,
+        valueBytes: step.valueBytes,
+      })),
+    },
+    {
+      id: `browser_fill_review:${workflow.id}:read_dom`,
+      label: 'Refresh live browser DOM before filling',
+      type: 'read_browser_dom',
+      readOnly: true,
+      startsBrowserAction: false,
+      storesSensitiveValue: false,
+      endpoint: '/api/browser/dom?limit=80',
+    },
+  ];
+  const manual = blocked.map((field, index) => ({
+    id: `browser_fill_review:${workflow.id}:manual_${index}`,
+    label: `Handle ${field.field || 'sensitive field'} manually`,
+    type: 'manual_sensitive_field',
+    field: field.field,
+    reason: field.reason,
+    requiresUserPresence: true,
+    requiresSensitiveValue: true,
+    storesSensitiveValue: false,
+    startsBrowserAction: false,
+  }));
+  manual.push({
+    id: `browser_fill_review:${workflow.id}:confirmed_fill`,
+    label: 'Run live fill only after explicit confirmation',
+    type: 'confirmed_live_fill',
+    requiresUserPresence: true,
+    requiresConfirmation: true,
+    storesSensitiveValue: false,
+    startsBrowserAction: true,
+    endpoint: '/api/browser/fill-draft',
+  });
+  const boundaries = [
+    'Do not store password, OTP, card, security-code, or identity values.',
+    'Do not submit the form from this recovery plan.',
+    'Only read/prepare without browser mutation until the user confirms live fill.',
+    'Ask the user to type sensitive values directly or provide them only for that confirmed action.',
+  ];
+  const nextAction = blocked.length
+    ? `Ask the user for explicit handling of ${blocked.map((item) => item.field || 'sensitive field').join(', ')} before any live fill.`
+    : 'Refresh the live DOM, then run the confirmed fill draft if the user wants it.';
+  return {
+    version: 1,
+    type: 'browser_fill_sensitive_handoff',
+    status: blocked.length ? 'needs_user_sensitive_handoff' : 'ready_for_confirmed_live_fill',
+    workflowId: workflow.id,
+    title: workflow.title,
+    summary,
+    nextAction,
+    safePreparedCount,
+    blockedCount,
+    blocked,
+    previewable,
+    manual,
+    boundaries,
+    spokenSummary: compactRecordText(`${summary} ${nextAction}`, 260),
+    output: [
+      `Browser fill handoff: ${workflow.title}`,
+      summary,
+      blocked.length ? `Needs user handling: ${blocked.map((item) => `${item.field} (${item.reason})`).join('; ')}` : '',
+      `Next: ${nextAction}`,
+      `Boundary: ${boundaries[0]}`,
+    ].filter(Boolean).join('\n'),
+  };
+}
+
+function routeCandidateFromBrowserFillDraftReview(workflow) {
+  const plan = browserFillDraftRecoveryPlanForWorkflow(workflow);
+  if (!plan) return null;
+  return {
+    id: `browser-fill-review:${workflow.id}`,
+    type: 'browser_fill_sensitive_handoff',
+    label: 'Prepare browser fill handoff',
+    summary: plan.spokenSummary,
+    reason: plan.nextAction,
+    executable: true,
+    riskLevel: 1,
+    autoEligible: false,
+    trustedAutoEligible: false,
+    requiresUserPresence: plan.manual.some((item) => item.requiresUserPresence),
+    workflowId: workflow.id,
+    browserFillRecovery: plan,
+    endpoint: {
+      method: 'GET',
+      path: `/api/workflows/${encodeURIComponent(workflow.id)}`,
+    },
+  };
+}
+
 function routeInspectCandidate(record, entry = routingLedgerEntry(record)) {
   if (!record) return null;
   return {
@@ -34214,6 +34465,8 @@ function routingRecoveryEnvelope(record, options = {}) {
   if (workflow) {
     const retryCandidate = routeCandidateFromWorkflowRetry(workflow);
     if (retryCandidate) candidates.push(retryCandidate);
+    const fillDraftCandidate = routeCandidateFromBrowserFillDraftReview(workflow);
+    if (fillDraftCandidate) candidates.push(fillDraftCandidate);
     const continueCandidate = routeCandidateFromWorkflowContinuation(workflow);
     if (continueCandidate) candidates.push(continueCandidate);
     const copyCandidate = routeCandidateFromWorkflowCopy(workflow);
@@ -34311,6 +34564,26 @@ async function executeRoutingRecoveryCandidate(candidate, options = {}) {
       });
     }
     return result;
+  }
+  if (candidate.type === 'browser_fill_sensitive_handoff') {
+    const workflow = candidate.workflowId ? workflows.get(candidate.workflowId) || null : null;
+    const browserFillRecovery = candidate.browserFillRecovery || browserFillDraftRecoveryPlanForWorkflow(workflow);
+    if (!workflow || !browserFillRecovery) return null;
+    appendAudit('browser_fill_draft.recovery_handoff', {
+      workflowId: workflow.id,
+      blockedCount: browserFillRecovery.blockedCount,
+      safePreparedCount: browserFillRecovery.safePreparedCount,
+      source: String(options.source || 'work_next_route_browser_fill').slice(0, 80),
+    });
+    return {
+      ok: true,
+      executed: false,
+      preview: true,
+      manualOnly: true,
+      workflow,
+      browserFillRecovery,
+      output: browserFillRecovery.output,
+    };
   }
   if (candidate.type === 'copy_workflow_result') {
     return copyWorkflowResult({ workflowId: candidate.workflowId, format: 'markdown' });
@@ -45612,6 +45885,17 @@ function startApiServer() {
       records: routingSnapshot(limit, req.query.status || ''),
       counts: routingCounts(),
       routingFile: ROUTING_FILE,
+    });
+  });
+
+  api.get('/api/tasks/routing/:id/recovery', (req, res) => {
+    const record = routingRecords.get(String(req.params.id || ''));
+    if (!record) {
+      jsonError(res, 404, 'Routing record not found');
+      return;
+    }
+    res.json({
+      recovery: routingRecoveryEnvelope(record, { source: req.query.source || 'api_route_recovery' }),
     });
   });
 
