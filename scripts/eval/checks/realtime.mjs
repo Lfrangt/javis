@@ -222,6 +222,24 @@ export default {
         : fail('realtime.local_capabilities_tool', 'Realtime local capability voice tool', `tool execute ${capabilityTool.status}`, capabilityTool.data),
     );
 
+    const capabilityEvidence = await ctx.api('/api/realtime/evidence');
+    const capabilityToolEvidence = capabilityEvidence.data?.evidence?.capabilityTools;
+    const capabilityToolEvents = Array.isArray(capabilityToolEvidence?.recent) ? capabilityToolEvidence.recent : [];
+    out.push(
+      capabilityEvidence.ok &&
+        capabilityToolEvidence?.hasCapabilityMap === true &&
+        capabilityToolEvidence?.hasRecommendedTools === true &&
+        capabilityToolEvidence?.hasLocalExecutionState === true &&
+        capabilityToolEvents.some((event) => (
+          event.name === 'get_local_capabilities' &&
+          event.source === 'eval' &&
+          event.capability?.hasCapabilityMap === true &&
+          event.capability?.recommendedTools?.includes('run_browser_workflow')
+        ))
+        ? ok('realtime.local_capabilities_tool_evidence', 'Realtime local capability voice tool evidence', 'get_local_capabilities is visible in Realtime evidence')
+        : fail('realtime.local_capabilities_tool_evidence', 'Realtime local capability voice tool evidence', 'expected get_local_capabilities to appear in realtime evidence', capabilityToolEvidence),
+    );
+
     try {
       const capabilitiesCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-capabilities', '--query', 'browser'], {
         cwd: process.cwd(),
@@ -601,7 +619,9 @@ export default {
         realtimeEvidenceOutput.tools?.autopilot &&
         realtimeEvidenceOutput.tools?.shortcuts &&
         realtimeEvidenceOutput.tools?.dogfoodSession &&
-        realtimeEvidenceOutput.tools?.attention
+        realtimeEvidenceOutput.tools?.attention &&
+        realtimeEvidenceOutput.tools?.perception &&
+        realtimeEvidenceOutput.tools?.capabilities
         ? ok('realtime.evidence_tool', 'Realtime evidence voice tool', `${realtimeEvidenceOutput.status}/${realtimeEvidenceOutput.phase} · ${realtimeEvidenceOutput.nextAction}`)
         : fail('realtime.evidence_tool', 'Realtime evidence voice tool', `tool execute ${realtimeEvidenceTool.status}`, realtimeEvidenceTool.data),
     );
@@ -922,6 +942,7 @@ export default {
           output.includes('Autopilot tool:') &&
           output.includes('Attention explanation tool:') &&
           output.includes('Perception consent tool:') &&
+          output.includes('Local capability tool:') &&
           output.includes('UI demonstration tools:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Latency:') &&
@@ -938,9 +959,10 @@ export default {
           output.includes('get_autopilot_status') &&
           output.includes('get_attention_explanation') &&
           output.includes('get_perception_consent') &&
+          output.includes('get_local_capabilities') &&
           output.includes('draft_ui_demonstration_skill')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, UI demonstration, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, UI demonstration, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -1190,6 +1212,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'start_live_voice') &&
         e.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
+        e.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
         e.gapSummary?.manualOnly === true &&
         e.gapSummary?.startsMicrophone === false &&
@@ -1199,6 +1222,7 @@ export default {
         typeof e.gapSummary?.nextPrompt?.copyText === 'string' &&
         e.handoffTools?.hasHandoff === true &&
         e.autopilotTools?.hasStatus === true &&
+        e.capabilityTools?.hasCapabilityMap === true &&
         e.latency?.quality === 'fast' &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
@@ -1236,6 +1260,7 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
+        d.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
         d.gapSummary?.manualOnly === true &&
         d.gapSummary?.startsMicrophone === false &&
@@ -1247,6 +1272,8 @@ export default {
         d.autopilotTools?.hasStatus === true &&
         d.attentionTools?.hasExplanation === true &&
         d.perceptionTools?.hasConsent === true &&
+        d.capabilityTools?.hasCapabilityMap === true &&
+        d.capabilityTools?.hasRecommendedTools === true &&
         d.demonstrationTools?.hasSafeReplayPlan === true &&
         d.demonstrationTools?.hasDraft === true &&
         d.demonstrationTools?.hasConfirmationGate === true &&
@@ -1257,12 +1284,14 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_autopilot_status') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_local_capabilities') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
@@ -1284,6 +1313,7 @@ export default {
       'ask_autopilot_status',
       'ask_attention_explanation',
       'ask_perception_consent',
+      'ask_local_capabilities',
       'teach_ui_demonstration',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
@@ -1300,10 +1330,12 @@ export default {
         Array.isArray(drillGuide.prompts) &&
         drillGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
         Array.isArray(drillData.prompts) &&
         drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillData.prompts.some((prompt) => prompt.includes('能看到什么')) &&
+        drillData.prompts.some((prompt) => prompt.includes('能做什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
@@ -1360,15 +1392,17 @@ export default {
         dogfoodBriefData?.monitor?.endpoint === '/api/realtime/evidence' &&
         dogfoodBriefData?.monitor?.brief?.includes('--print-realtime-dogfood-brief') &&
         dogfoodBriefData?.start?.hotkey &&
-        dogfoodBriefData?.counts?.steps >= 14 &&
+        dogfoodBriefData?.counts?.steps >= 15 &&
         dogfoodBriefData?.gapSummary?.counts?.total === dogfoodBriefData.counts.steps &&
         dogfoodBriefData?.gapSummary?.counts?.pending === dogfoodBriefData.counts.pending &&
         dogfoodBriefData?.gapSummary?.startsMicrophone === false &&
         typeof dogfoodBriefData?.gapSummary?.nextPrompt?.copyText === 'string' &&
         dogfoodBriefData?.safety?.recordReplayRequiresConfirmation === true &&
         Array.isArray(dogfoodBriefData.prompts) &&
+        dogfoodBriefData.prompts.some((prompt) => prompt.includes('能做什么')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodBriefData.evidenceTools) &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'capability' && item.tool === 'get_local_capabilities') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'demonstration' && item.tool === 'draft_ui_demonstration_skill')
         ? ok('realtime.dogfood_brief', 'Realtime dogfood operator brief', `${dogfoodBriefData.counts.ready}/${dogfoodBriefData.counts.steps} ready · next=${dogfoodBriefData.nextPrompt?.copyText || dogfoodBriefData.currentStep?.label || '-'}`)
         : fail('realtime.dogfood_brief', 'Realtime dogfood operator brief', `GET /api/realtime/dogfood/brief ${dogfoodBrief.status}`, dogfoodBrief.data),
@@ -1388,6 +1422,7 @@ export default {
           output.includes('Prompt script:') &&
           output.includes('Evidence gates:') &&
           output.includes('Gap:') &&
+          output.includes('get_local_capabilities') &&
           output.includes('开始记录') &&
           output.includes('/api/realtime/evidence')
           ? ok('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', 'config CUI prints one-page live dogfood brief without starting voice')
@@ -1409,6 +1444,7 @@ export default {
       'ask_autopilot_status',
       'ask_attention_explanation',
       'ask_perception_consent',
+      'ask_local_capabilities',
       'teach_ui_demonstration',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
@@ -1421,7 +1457,7 @@ export default {
         acceptanceData?.requiresUserPresence === true &&
         acceptanceData?.accepted === false &&
         acceptanceData?.status === 'pending' &&
-        acceptanceData?.counts?.gates >= 15 &&
+        acceptanceData?.counts?.gates >= 16 &&
         acceptanceData?.counts?.gaps >= 1 &&
         requiredAcceptanceGates.every((id) => acceptanceGateIds.has(id)) &&
         ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
@@ -1493,7 +1529,7 @@ export default {
         acceptanceTool.data?.ok === true &&
         acceptanceToolOutput?.acceptance?.manualOnly === true &&
         acceptanceToolOutput?.acceptance?.startsMicrophone === false &&
-        acceptanceToolOutput?.acceptance?.counts?.gates >= 15 &&
+        acceptanceToolOutput?.acceptance?.counts?.gates >= 16 &&
         Array.isArray(acceptanceToolOutput?.acceptance?.gates)
         ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.acceptance.counts.passed}/${acceptanceToolOutput.acceptance.counts.gates} gate(s) pass`)
         : fail('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `tool execute ${acceptanceTool.status}`, acceptanceTool.data),

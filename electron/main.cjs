@@ -23850,6 +23850,7 @@ const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
 const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
+const REALTIME_CAPABILITY_TOOL_NAME = 'get_local_capabilities';
 
 function realtimeToolOutputObject(result = {}) {
   if (!result || typeof result.output !== 'string') return null;
@@ -23996,6 +23997,44 @@ function realtimePerceptionToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
+  if (name !== REALTIME_CAPABILITY_TOOL_NAME) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const capabilities = Array.isArray(output.capabilities) ? output.capabilities : [];
+  const recommendedStart = Array.isArray(output.recommendedStart) ? output.recommendedStart : [];
+  const counts = output.counts || {};
+  const capabilityIds = capabilities
+    .map((capability) => compactRecordText(capability?.id || '', 80))
+    .filter(Boolean)
+    .slice(0, 12);
+  const recommendedTools = Array.from(new Set([
+    ...capabilities.flatMap((capability) => Array.isArray(capability?.recommendedTools) ? capability.recommendedTools : []),
+    ...recommendedStart.map((item) => item?.tool),
+  ]))
+    .map((tool) => compactRecordText(tool || '', 80))
+    .filter(Boolean)
+    .slice(0, 16);
+  return {
+    spokenSummary: compactRecordText(output.spokenSummary || output.summary || '', 420),
+    source: compactRecordText(output.source || args?.source || '', 80),
+    query: compactRecordText(args?.query || args?.task || args?.message || '', 140),
+    capabilityCount: boundedCount(counts.total ?? capabilities.length, 100),
+    matchedCount: boundedCount(capabilities.length, 100),
+    readyCount: boundedCount(counts.ready ?? capabilities.filter((item) => item?.status === 'ready').length, 100),
+    limitedCount: boundedCount(counts.limited ?? capabilities.filter((item) => item?.status === 'limited').length, 100),
+    blockedCount: boundedCount(counts.blocked ?? capabilities.filter((item) => item?.status === 'blocked').length, 100),
+    capabilityIds,
+    recommendedTools,
+    controlMode: compactRecordText(output.controlMode?.mode || '', 80),
+    controlLabel: compactRecordText(output.controlMode?.label || '', 120),
+    localExecutionEnabled: Boolean(output.controlMode?.localExecutionEnabled || output.policy?.localExecutionEnabled),
+    trustedLocalMode: Boolean(output.controlMode?.trustedLocalMode || output.policy?.trustedLocalMode),
+    guardrailCount: Array.isArray(output.guardrails) ? output.guardrails.length : 0,
+    hasCapabilityMap: Boolean(capabilities.length || output.summary || output.spokenSummary),
+    nextOutput: compactRecordText(output.next?.output || '', 260),
+  };
+}
+
 function demonstrationActionForToolCall(name, output = {}) {
   if (name === 'get_ui_demonstrations') return 'list';
   if (name === 'start_ui_demonstration') return 'start';
@@ -24097,6 +24136,7 @@ function recordRealtimeToolCall(options = {}) {
   const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
+  const capability = realtimeCapabilityToolSummary(name, options.args || {}, result);
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
   const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
   const event = {
@@ -24114,6 +24154,7 @@ function recordRealtimeToolCall(options = {}) {
     autopilot,
     attention,
     perception,
+    capability,
     demonstration,
     dogfoodSession,
   };
@@ -24147,6 +24188,11 @@ function recordRealtimeToolCall(options = {}) {
     perceptionBlockedCount: perception?.blockedCount || 0,
     perceptionLocalOnly: Boolean(perception?.localOnly),
     perceptionRequiresUserIntent: Boolean(perception?.requiresUserIntentForAction),
+    capabilitySummary: capability?.spokenSummary || '',
+    capabilityMatchedCount: capability?.matchedCount || 0,
+    capabilityReadyCount: capability?.readyCount || 0,
+    capabilityLocalExecutionEnabled: Boolean(capability?.localExecutionEnabled),
+    capabilityControlMode: capability?.controlMode || '',
     demonstrationAction: demonstration?.action || '',
     demonstrationId: demonstration?.demonstrationId || '',
     demonstrationStepCount: demonstration?.stepCount || 0,
@@ -24288,6 +24334,30 @@ function realtimePerceptionToolEvidence(limit = 8) {
     nextAction: hasConsent
       ? 'Ask live voice what JAVIS can currently see/control and confirm it answers from consent registry evidence.'
       : 'Ask the live voice session: 你现在能看到什么、能操作什么、哪些权限开着？',
+  };
+}
+
+function realtimeCapabilityToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => event.name === REALTIME_CAPABILITY_TOOL_NAME)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasCapabilityMap = recent.some((event) => (
+    event.ok &&
+    event.capability?.hasCapabilityMap === true &&
+    (event.capability?.matchedCount > 0 || event.capability?.capabilityCount > 0) &&
+    event.capability?.spokenSummary
+  ));
+  return {
+    ok: hasCapabilityMap,
+    count: recent.length,
+    hasCapabilityMap,
+    hasRecommendedTools: recent.some((event) => Array.isArray(event.capability?.recommendedTools) && event.capability.recommendedTools.length > 0),
+    hasLocalExecutionState: recent.some((event) => event.capability?.controlMode || typeof event.capability?.localExecutionEnabled === 'boolean'),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasCapabilityMap
+      ? 'Ask live voice which local capability or tool should handle the current task and confirm it answers from the capability map.'
+      : 'Ask the live voice session: 你现在能做什么？这个任务应该用哪个工具？',
   };
 }
 
@@ -24606,10 +24676,11 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
+  const capabilityTools = evidence.capabilityTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
-    goal: 'Prove a real Realtime voice session can speak current progress, call work/status/privacy tools, learn one demonstrated workflow as a safe replay/skill draft, and leave evidence.',
+    goal: 'Prove a real Realtime voice session can speak current progress, call capability/work/status/privacy tools, learn one demonstrated workflow as a safe replay/skill draft, and leave evidence.',
     manualOnly: true,
     requiresUserPresence: true,
     current: {
@@ -24639,6 +24710,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
+      '你现在能做什么？这个任务应该用哪个工具？',
       '我来教你一个流程，开始记录这个 UI 流程',
     ],
     expectedEvidence: [
@@ -24682,13 +24754,19 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: REALTIME_PERCEPTION_TOOL_NAME,
       },
       {
+        id: 'capability_tool',
+        label: 'Realtime called get_local_capabilities',
+        ok: Boolean(capabilityTools.hasCapabilityMap),
+        tool: REALTIME_CAPABILITY_TOOL_NAME,
+      },
+      {
         id: 'demonstration_tool',
         label: 'Realtime recorded a UI demonstration and drafted a skill safely',
         ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
         tool: 'draft_ui_demonstration_skill',
       },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, and UI demonstration prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, capability, and UI demonstration prompts.',
   };
 }
 
@@ -24699,6 +24777,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
+  const capabilityTools = evidence.capabilityTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
@@ -24724,7 +24803,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -24801,6 +24880,14 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasConsent: Boolean(perceptionTools.hasConsent),
       nextAction: perceptionTools.nextAction || 'Ask the live voice session what JAVIS can see/control and which permissions are active.',
     },
+    capabilityTools: {
+      observed: Boolean(capabilityTools.ok),
+      count: Number(capabilityTools.count || 0),
+      hasCapabilityMap: Boolean(capabilityTools.hasCapabilityMap),
+      hasRecommendedTools: Boolean(capabilityTools.hasRecommendedTools),
+      hasLocalExecutionState: Boolean(capabilityTools.hasLocalExecutionState),
+      nextAction: capabilityTools.nextAction || 'Ask the live voice session what JAVIS can do and which local tool should handle this task.',
+    },
     demonstrationTools: {
       observed: Boolean(demonstrationTools.ok),
       count: Number(demonstrationTools.count || 0),
@@ -24843,6 +24930,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const autopilotTools = options.autopilotTools || evidence.autopilotTools || {};
   const attentionTools = options.attentionTools || evidence.attentionTools || {};
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
+  const capabilityTools = options.capabilityTools || evidence.capabilityTools || {};
   const demonstrationTools = options.demonstrationTools || evidence.demonstrationTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
@@ -24942,6 +25030,14 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_PERCEPTION_TOOL_NAME, count: Number(perceptionTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_local_capabilities',
+      label: 'Ask which local capability or tool should handle the task',
+      ok: Boolean(capabilityTools.hasCapabilityMap),
+      detail: capabilityTools.hasCapabilityMap ? 'get_local_capabilities was observed in recent Realtime tool evidence.' : 'No get_local_capabilities call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 你现在能做什么？这个任务应该用哪个工具？',
+      evidence: { tool: REALTIME_CAPABILITY_TOOL_NAME, count: Number(capabilityTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'teach_ui_demonstration',
       label: 'Teach one repeatable UI workflow',
       ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
@@ -25019,6 +25115,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
+      '你现在能做什么？这个任务应该用哪个工具？',
       '我来教你一个流程，开始记录这个 UI 流程',
       '记录这一步：观察当前窗口并记住我要确认保存状态',
       '结束记录，并生成回放计划和 skill 草稿',
@@ -25098,6 +25195,12 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       prompt: '你现在能看到什么、能操作什么？',
       copyText: '你现在能看到什么、能操作什么？',
       reason: 'This verifies the Realtime session calls get_perception_consent.',
+    },
+    ask_local_capabilities: {
+      promptType: 'spoken',
+      prompt: '你现在能做什么？这个任务应该用哪个工具？',
+      copyText: '你现在能做什么？这个任务应该用哪个工具？',
+      reason: 'This verifies the Realtime session calls get_local_capabilities before choosing how to act.',
     },
     teach_ui_demonstration: {
       promptType: 'spoken_sequence',
@@ -25183,6 +25286,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
     { id: 'autopilot', ok: Boolean(evidence.autopilotTools?.hasStatus), label: 'autopilot status', tool: REALTIME_AUTOPILOT_TOOL_NAME },
     { id: 'attention', ok: Boolean(evidence.attentionTools?.hasExplanation), label: 'attention explanation', tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
+    { id: 'capability', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), label: 'local capability map', tool: REALTIME_CAPABILITY_TOOL_NAME },
     {
       id: 'demonstration',
       ok: Boolean(
@@ -25353,6 +25457,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'autopilot', label: 'autopilot status', ok: Boolean(evidence.autopilotTools?.hasStatus), tool: REALTIME_AUTOPILOT_TOOL_NAME },
     { id: 'attention', label: 'attention explanation', ok: Boolean(evidence.attentionTools?.hasExplanation), tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
+    { id: 'capability', label: 'local capability map', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), tool: REALTIME_CAPABILITY_TOOL_NAME },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
     { id: 'shortcut', label: 'shortcut list/save/forget', ok: Boolean(evidence.shortcutTools?.hasList && evidence.shortcutTools?.hasSave && evidence.shortcutTools?.hasForget), tool: 'save_skill_shortcut' },
   ];
@@ -25574,6 +25679,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_autopilot_status', 'voice_tools', 'Ask why unattended autopilot stopped'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_attention_explanation', 'voice_tools', 'Ask why the pet stayed quiet or changed color'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_perception_consent', 'voice_tools', 'Ask what JAVIS can see or control'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_local_capabilities', 'voice_tools', 'Ask which local capability or tool should handle the task'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'teach_ui_demonstration', 'learning_loop', 'Teach one repeatable UI workflow'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'list_shortcuts', 'shortcut_loop', 'Ask voice to list saved shortcut phrases'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_shortcut_with_confirmation', 'shortcut_loop', 'Save a shortcut phrase after explicit confirmation'),
@@ -26717,6 +26823,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const autopilotTools = realtimeAutopilotToolEvidence(8);
   const attentionTools = realtimeAttentionToolEvidence(8);
   const perceptionTools = realtimePerceptionToolEvidence(8);
+  const capabilityTools = realtimeCapabilityToolEvidence(8);
   const demonstrationTools = realtimeDemonstrationToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const liveAt = Number(conversation.liveAt || 0);
@@ -26783,6 +26890,7 @@ function realtimeVoiceEvidenceSnapshot() {
     autopilotTools,
     attentionTools,
     perceptionTools,
+    capabilityTools,
     demonstrationTools,
     progressSync,
     progress: {
@@ -26927,6 +27035,13 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         observed: Boolean(evidence.perceptionTools?.hasConsent),
         count: Number(evidence.perceptionTools?.count || 0),
         nextAction: evidence.perceptionTools?.nextAction || '',
+      },
+      capabilities: {
+        observed: Boolean(evidence.capabilityTools?.hasCapabilityMap),
+        count: Number(evidence.capabilityTools?.count || 0),
+        hasRecommendedTools: Boolean(evidence.capabilityTools?.hasRecommendedTools),
+        hasLocalExecutionState: Boolean(evidence.capabilityTools?.hasLocalExecutionState),
+        nextAction: evidence.capabilityTools?.nextAction || '',
       },
       demonstrations: {
         observed: Boolean(evidence.demonstrationTools?.ok),

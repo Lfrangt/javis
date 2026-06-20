@@ -1309,6 +1309,8 @@ function printRealtimeEvidence(result) {
   const attentionEvents = Array.isArray(attentionTools.recent) ? attentionTools.recent : [];
   const perceptionTools = evidence.perceptionTools || {};
   const perceptionEvents = Array.isArray(perceptionTools.recent) ? perceptionTools.recent : [];
+  const capabilityTools = evidence.capabilityTools || {};
+  const capabilityEvents = Array.isArray(capabilityTools.recent) ? capabilityTools.recent : [];
   const demonstrationTools = evidence.demonstrationTools || {};
   const demonstrationEvents = Array.isArray(demonstrationTools.recent) ? demonstrationTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
@@ -1461,6 +1463,24 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = perception.summary ? ` · ${compact(perception.summary, 180)}` : '';
     console.log(`- ${event.name || 'get_perception_consent'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nLocal capability tool:');
+  console.log(`- observed ${Number(capabilityTools.count || 0)} recent event(s) · called=${capabilityTools.hasCapabilityMap ? 'yes' : 'no'}`);
+  console.log(`- local state=${capabilityTools.hasLocalExecutionState ? 'yes' : 'no'} · recommended tools=${capabilityTools.hasRecommendedTools ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(capabilityTools.nextAction || dogfood.capabilityTools?.nextAction || 'Ask live voice what JAVIS can do and which local tool should handle this task.', 220)}`);
+  for (const event of capabilityEvents.slice(0, 4)) {
+    const capability = event.capability || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      capability.controlMode ? `mode=${capability.controlMode}` : '',
+      capability.localExecutionEnabled ? 'local-exec' : 'local-exec-off',
+      capability.matchedCount ? `matched=${capability.matchedCount}` : '',
+      capability.readyCount ? `ready=${capability.readyCount}` : '',
+      capability.recommendedTools?.length ? `tools=${capability.recommendedTools.slice(0, 4).join(',')}` : '',
+    ].filter(Boolean);
+    const summary = capability.spokenSummary ? ` · ${compact(capability.spokenSummary, 180)}` : '';
+    console.log(`- ${event.name || 'get_local_capabilities'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nUI demonstration tools:');
   console.log(`- observed ${Number(demonstrationTools.count || 0)} recent event(s) · actions ${(demonstrationTools.observedActions || []).join(', ') || '-'}`);
