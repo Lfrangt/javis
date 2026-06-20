@@ -30,6 +30,7 @@
     "eval:json": "node scripts/eval/run.mjs --json",
     "eval:routing": "node scripts/eval-routing.mjs",
     "dogfood:realtime-renderer": "node scripts/realtime-dogfood-renderer.mjs",
+    "dogfood:realtime-prepare": "node scripts/realtime-dogfood-renderer.mjs --prepare-live",
     "dogfood:realtime-acceptance": "node scripts/config-cui.cjs --print-realtime-dogfood-acceptance",
     "dogfood:realtime-payload": "node scripts/realtime-payload-audit.mjs",
     "dogfood:browser-live-fill": "JAVIS_EVAL_BROWSER_LIVE_FILL=true node scripts/eval/run.mjs --only=browser-live-fill",

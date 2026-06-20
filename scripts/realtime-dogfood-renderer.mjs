@@ -21,7 +21,9 @@ function option(name, fallback = '') {
 }
 
 function numberOption(name, fallback, min, max) {
-  const value = Number(option(name, ''));
+  const raw = option(name, null);
+  if (raw === null || String(raw).trim() === '') return fallback;
+  const value = Number(raw);
   if (!Number.isFinite(value)) return fallback;
   return Math.max(min, Math.min(max, Math.round(value)));
 }
@@ -115,6 +117,21 @@ function summarizePreflight(preflight = {}) {
   ].filter(Boolean).join(' ');
 }
 
+function summarizeSession(sessions = {}) {
+  const active = sessions.active || {};
+  const counts = active.counts || {};
+  if (!active.id) return 'session=none';
+  return [
+    `session=${active.status || 'active'}`,
+    `id=${String(active.id || '').slice(0, 8)}`,
+    `evidence=${Number(counts.evidenceReady || 0)}/${Number(counts.total || 0)}`,
+  ].join(' ');
+}
+
+function liveCommand() {
+  return 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance';
+}
+
 async function pollRun(ctx, runId, timeoutMs, options = {}) {
   const waitForAcceptance = options.waitForAcceptance === true;
   const deadline = Date.now() + timeoutMs;
@@ -154,6 +171,62 @@ async function pollRun(ctx, runId, timeoutMs, options = {}) {
     await sleep(3000);
   }
   return { ok: false, timeout: true, ...latest };
+}
+
+async function prepareLiveRun(ctx, body, options = {}) {
+  const dryRun = options.dryRun === true;
+  const saveArchive = options.saveArchive === true && !dryRun;
+  const preview = await ctx.api('/api/realtime/dogfood/renderer/start', {
+    method: 'POST',
+    timeoutMs: 30000,
+    body: {
+      ...body,
+      execute: false,
+      confirmMic: false,
+      source: dryRun ? 'renderer_dogfood_prepare_dry_run' : 'renderer_dogfood_prepare',
+    },
+  });
+  if (!preview.ok) {
+    throw new Error(preview.data?.output || preview.data?.error || preview.error || `HTTP ${preview.status}`);
+  }
+
+  const session = dryRun
+    ? await ctx.api('/api/realtime/dogfood/session', { timeoutMs: 30000 })
+    : await ctx.api('/api/realtime/dogfood/session/start', {
+        method: 'POST',
+        timeoutMs: 30000,
+        body: {
+          source: 'renderer_dogfood_prepare',
+          allowConcurrent: false,
+        },
+      });
+  if (!session.ok && session.status !== 409) {
+    throw new Error(session.data?.output || session.data?.error || session.error || `HTTP ${session.status}`);
+  }
+
+  const acceptanceReport = await loadAcceptance(ctx, {
+    saveArchive,
+    note: dryRun ? 'renderer dogfood dry-run live preparation' : 'renderer dogfood live preparation',
+  });
+  const requestedPrompts = Array.isArray(body.prompts) ? body.prompts : [];
+  const previewPrompts = Array.isArray(preview.data?.detail?.prompts) ? preview.data.detail.prompts : [];
+  if (requestedPrompts.length > 1 && previewPrompts.length < requestedPrompts.length) {
+    throw new Error(`Renderer preview preserved only ${previewPrompts.length}/${requestedPrompts.length} prepared prompts.`);
+  }
+  const prompts = previewPrompts.length ? previewPrompts : requestedPrompts;
+  console.log('Renderer Realtime live run prepared.');
+  console.log(`Safety: starts microphone=no · execute=false · dry-run=${dryRun ? 'yes' : 'no'}`);
+  console.log(`Preflight: ${summarizePreflight(preview.data?.preflight || {})}`);
+  console.log(`Prompts: ${prompts.length} · requested=${requestedPrompts.length}${prompts.at(-1) ? ` · last=${prompts.at(-1)}` : ''}`);
+  console.log(`Session: ${summarizeSession(session.data?.sessions || {})}${dryRun ? ' · not started' : ''}`);
+  console.log(`Acceptance: ${summarizeAcceptance(acceptanceReport.acceptance)}`);
+  if (acceptanceReport.acceptance?.nextGap?.nextAction) {
+    console.log(`Acceptance next action: ${acceptanceReport.acceptance.nextGap.nextAction}`);
+  }
+  if (acceptanceReport.filePath) console.log(`${acceptanceReport.saved ? 'Archive' : 'Archive preview'}: ${acceptanceReport.filePath}`);
+  console.log(`Monitor: npm run config -- --print-realtime-evidence`);
+  console.log(`Live command: ${liveCommand()}`);
+  return { preview, session, acceptanceReport };
 }
 
 async function saveArchive(ctx, note) {
@@ -212,6 +285,8 @@ async function main() {
   const acceptanceEnabled = !hasFlag('--no-acceptance');
   const requireAcceptance = hasFlag('--require-acceptance');
   const acceptanceOnly = hasFlag('--acceptance-only');
+  const prepareLive = hasFlag('--prepare-live') || hasFlag('--prepare');
+  const dryRun = hasFlag('--dry-run');
   const ctx = makeContext();
 
   if (acceptanceOnly) {
@@ -231,9 +306,9 @@ async function main() {
     return;
   }
 
-  const promptLimit = numberOption('--prompt-limit', requireAcceptance ? 32 : 24, 1, 32);
+  const promptLimit = numberOption('--prompt-limit', requireAcceptance || prepareLive ? 32 : 24, 1, 32);
   const explicitPrompts = promptOptions();
-  const shouldUsePromptScript = hasFlag('--prompt-script') || hasFlag('--full-prompt-script') || requireAcceptance;
+  const shouldUsePromptScript = hasFlag('--prompt-script') || hasFlag('--full-prompt-script') || requireAcceptance || prepareLive;
   const prompts = explicitPrompts.length
     ? explicitPrompts
     : shouldUsePromptScript
@@ -252,6 +327,16 @@ async function main() {
     prompts,
     source: 'renderer_dogfood_script',
   };
+
+  if (prepareLive) {
+    if (execute) {
+      console.error('Refusing to combine --prepare-live with --execute. Prepare mode is no-mic only.');
+      process.exitCode = 2;
+      return;
+    }
+    await prepareLiveRun(ctx, body, { dryRun, saveArchive: save });
+    return;
+  }
 
   if (execute && !confirmMic) {
     console.error('Refusing to start microphone. Pass --confirm-mic together with --execute.');

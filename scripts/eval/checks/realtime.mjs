@@ -2989,6 +2989,7 @@ export default {
 
     const rendererScriptSource = fs.readFileSync('scripts/realtime-dogfood-renderer.mjs', 'utf8');
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    const packageSource = fs.readFileSync('package.json', 'utf8');
     out.push(
       rendererScriptSource.includes('/api/realtime/dogfood/acceptance?auditLimit=20&source=renderer_dogfood_poll') &&
         rendererScriptSource.includes('waitForAcceptance: requireAcceptance') &&
@@ -3006,10 +3007,16 @@ export default {
         : '';
     out.push(
       rendererScriptSource.includes('loadPackPromptScript') &&
+        rendererScriptSource.includes('prepareLiveRun') &&
+        rendererScriptSource.includes('const raw = option(name, null)') &&
+        rendererScriptSource.includes("String(raw).trim() === ''") &&
+        rendererScriptSource.includes("hasFlag('--prepare-live') || hasFlag('--prepare')") &&
+        rendererScriptSource.includes("console.log(`Live command: ${liveCommand()}`)") &&
         rendererScriptSource.includes('/api/realtime/dogfood/pack?promptLimit=') &&
         rendererScriptSource.includes("hasFlag('--prompt-script') || hasFlag('--full-prompt-script') || requireAcceptance") &&
-        rendererScriptSource.includes('requireAcceptance ? 32 : 24') &&
+        rendererScriptSource.includes('requireAcceptance || prepareLive ? 32 : 24') &&
         rendererScriptSource.includes('promptLimit,') &&
+        packageSource.includes('"dogfood:realtime-prepare": "node scripts/realtime-dogfood-renderer.mjs --prepare-live"') &&
         normalizePromptSource.includes("function normalizeRendererDogfoodPrompts(value, fallback = '', limit = 32)") &&
         normalizePromptSource.includes('.slice(0, maxPrompts)') &&
         !normalizePromptSource.includes('.slice(0, 8);') &&
@@ -3018,6 +3025,30 @@ export default {
         ? ok('realtime.renderer_dogfood_prompt_script', 'Renderer dogfood prompt script', 'require-acceptance loads the full dogfood prompt script without needing manual --prompt values')
         : fail('realtime.renderer_dogfood_prompt_script', 'Renderer dogfood prompt script', 'expected renderer script and pack to support full prompt scripts up to 32 prompts'),
     );
+
+    try {
+      const prepareLive = await execFileAsync('node', ['scripts/realtime-dogfood-renderer.mjs', '--prepare-live', '--dry-run', '--no-save-archive'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 45000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${prepareLive.stdout || ''}\n${prepareLive.stderr || ''}`;
+      const promptCount = Number((output.match(/Prompts: (\d+)/) || [])[1] || 0);
+      out.push(
+        output.includes('Renderer Realtime live run prepared.') &&
+          output.includes('Safety: starts microphone=no') &&
+          output.includes('dry-run=yes') &&
+          promptCount > 8 &&
+          output.includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance') &&
+          output.includes('Monitor: npm run config -- --print-realtime-evidence') &&
+          output.includes('Archive preview:')
+          ? ok('realtime.renderer_dogfood_prepare_live', 'Renderer dogfood prepare-live dry run', 'prepare-live prints a no-mic live-run cockpit with prompt script, monitor, and live command')
+          : fail('realtime.renderer_dogfood_prepare_live', 'Renderer dogfood prepare-live dry run', 'expected prepare-live dry run to print no-mic preparation details', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.renderer_dogfood_prepare_live', 'Renderer dogfood prepare-live dry run', error instanceof Error ? error.message : String(error)));
+    }
 
     const promptScriptPack = await ctx.api('/api/realtime/dogfood/pack?promptLimit=32');
     const promptScript = promptScriptPack.data?.pack?.prompts?.script || [];
