@@ -305,6 +305,7 @@ async function printStatus() {
   console.log('H. Show spoken work handoff');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
+  console.log('K. Show knowledge workflow benchmarks');
   console.log('C. Show creative workflow benchmarks');
   console.log('U. Show app workflow benchmarks');
   console.log('Y. Show productivity workflow benchmarks');
@@ -973,6 +974,35 @@ async function showFileBenchmarks() {
   const result = await request('/api/files/benchmarks?source=cui_file_benchmarks');
   console.log('');
   printFileBenchmarks(result);
+}
+
+function printKnowledgeBenchmarks(result) {
+  const benchmarks = result?.benchmarks || result || {};
+  const counts = benchmarks.counts || {};
+  console.log('Knowledge Workflow Benchmarks');
+  console.log('=============================');
+  console.log(benchmarks.summary || `${counts.pass || 0}/${counts.total || 0} benchmark case(s) passed.`);
+  console.log(`Mode: fixture-only=${benchmarks.fixtureOnly ? 'yes' : 'no'} · starts apps=${benchmarks.startsApps ? 'yes' : 'no'} · writes fixture=${benchmarks.writesFixture ? 'yes' : 'no'} · user files mutated=${benchmarks.mutatesUserFiles ? 'yes' : 'no'} · model calls=${benchmarks.modelCalls ? 'yes' : 'no'}`);
+  console.log(`Counts: pass ${counts.pass || 0}/${counts.total || 0} · fail ${counts.fail || 0} · preview ${counts.preview || 0} · executed ${counts.executed || 0}`);
+  const safety = benchmarks.safety || {};
+  console.log(`Safety: fixture-only=${safety.fixtureOnly ? 'yes' : 'no'} · cleanup=${safety.cleanupOk ? 'ok' : 'check'} · no user files=${safety.noUserFileMutation ? 'yes' : 'no'} · write gate=${safety.confirmRequiredForWrite ? 'yes' : 'no'} · fixture write=${safety.confirmedFixtureWrite ? 'yes' : 'no'}`);
+  const cases = Array.isArray(benchmarks.cases) ? benchmarks.cases : [];
+  if (!cases.length) {
+    console.log('\nCases: none');
+    return;
+  }
+  console.log('\nCases:');
+  for (const item of cases) {
+    console.log(`- ${item.ok ? 'pass' : 'fail'} ${item.label || item.id || '-'} · ${item.intent || '-'} · workflow ${item.workflowStatus || '-'} · route ${item.routingStatus || '-'}`);
+    if (item.summary) console.log(`  ${compact(item.summary, 180)}`);
+  }
+  if (benchmarks.nextAction) console.log(`\nNext: ${benchmarks.nextAction}`);
+}
+
+async function showKnowledgeBenchmarks() {
+  const result = await request('/api/knowledge/benchmarks?source=cui_knowledge_benchmarks');
+  console.log('');
+  printKnowledgeBenchmarks(result);
 }
 
 function printCreativeBenchmarks(result) {
@@ -1943,6 +1973,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-knowledge-benchmarks') || process.argv.includes('--knowledge-benchmarks')) {
+    await showKnowledgeBenchmarks();
+    return;
+  }
+
   if (process.argv.includes('--print-creative-benchmarks') || process.argv.includes('--creative-benchmarks')) {
     await showCreativeBenchmarks();
     return;
@@ -2041,6 +2076,8 @@ async function main() {
         await showBrowserBenchmarks();
       } else if (answer === 'f' || answer === 'file benchmark' || answer === 'file benchmarks') {
         await showFileBenchmarks();
+      } else if (answer === 'k' || answer === 'knowledge benchmark' || answer === 'knowledge benchmarks') {
+        await showKnowledgeBenchmarks();
       } else if (answer === 'c' || answer === 'creative benchmark' || answer === 'creative benchmarks') {
         await showCreativeBenchmarks();
       } else if (answer === 'u' || answer === 'app benchmark' || answer === 'app benchmarks') {

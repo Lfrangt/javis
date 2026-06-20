@@ -90,7 +90,7 @@ npm run eval:json
 npm run eval:routing
 ```
 
-Current eval lanes cover resident health, Realtime voice configuration and preflight context, Realtime shortcut tools, work briefing, explicit memory, Inbox, routing, local skill shortcut confirmation/recall, four-task parallel ownership dogfood, collaboration claims, control-mode gates, perception consent/status, screen privacy rules, browser snapshots, browser workflow previews, app workflow benchmarks, productivity workflow benchmarks, file read/search/plan previews, file workflow benchmarks, creative workflow benchmarks, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `workers-live`, `realtime-live-dogfood`, and `browser-live-fill` are intentionally opt-in because they queue real workers, manipulate a live browser, or create temporary live-session state. The browser live fill dogfood opens a temporary `127.0.0.1` form in a supported browser, runs confirmed `fill_draft`, verifies all fields through the live browser bridge, and confirms the form was not submitted. Worker opt-in checks request `/api/work/progress?includeInternal=true` so internal dogfood batches can be verified without leaking `eval_` or dogfood jobs into the default user-facing voice/pet progress surface. `realtime-live-dogfood` additionally keeps a temporary live conversation state, records a Realtime progress-injection receipt, and verifies the short `spokenSummary` used for voice progress answers. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
+Current eval lanes cover resident health, Realtime voice configuration and preflight context, Realtime shortcut tools, work briefing, explicit memory, Inbox, routing, local skill shortcut confirmation/recall, four-task parallel ownership dogfood, collaboration claims, control-mode gates, perception consent/status, screen privacy rules, browser snapshots, browser workflow previews, app workflow benchmarks, productivity workflow benchmarks, knowledge vault benchmarks, file read/search/plan previews, file workflow benchmarks, creative workflow benchmarks, worker/autopilot observability, Accessibility smoke checks, and local learning/skill-draft preview. `workers-live`, `realtime-live-dogfood`, and `browser-live-fill` are intentionally opt-in because they queue real workers, manipulate a live browser, or create temporary live-session state. The browser live fill dogfood opens a temporary `127.0.0.1` form in a supported browser, runs confirmed `fill_draft`, verifies all fields through the live browser bridge, and confirms the form was not submitted. Worker opt-in checks request `/api/work/progress?includeInternal=true` so internal dogfood batches can be verified without leaking `eval_` or dogfood jobs into the default user-facing voice/pet progress surface. `realtime-live-dogfood` additionally keeps a temporary live conversation state, records a Realtime progress-injection receipt, and verifies the short `spokenSummary` used for voice progress answers. `npm run eval:routing` is a separate labeled-corpus check for deterministic lane classification.
 
 Routine maintenance lives in the terminal CUI instead of the desktop pet:
 
@@ -127,6 +127,15 @@ curl http://127.0.0.1:3417/api/files/benchmarks
 ```
 
 This runs preview-only fixture checks for file list/search, organization, rename, semantic conversion redaction, copy-convert, and the `confirm:true` apply gate. It creates a temporary fixture under the project, cleans it up, calls no models, starts no apps, and keeps the evidence in CUI/API instead of the desktop pet.
+
+Use option `K. Show knowledge workflow benchmarks`, or:
+
+```bash
+npm run config -- --print-knowledge-benchmarks
+curl http://127.0.0.1:3417/api/knowledge/benchmarks
+```
+
+This runs fixture-only checks for Obsidian/Markdown knowledge work: vault discovery, Markdown note search, note-create preview, `confirm:true` write gating, and one confirmed write inside a temporary fixture. It cleans the fixture, launches no apps, calls no models, records no workflow history, and does not mutate user notes.
 
 Use option `C. Show creative workflow benchmarks`, or:
 
@@ -598,6 +607,20 @@ curl http://127.0.0.1:3417/api/productivity/benchmarks
 
 `/api/productivity/workflow` recognizes Notes, Reminders, Calendar, and Mail requests and returns a staged action pack. `/api/productivity/action` previews or executes exactly one action from that pack. Creating notes, reminders, calendar events, or email drafts requires the required fields plus `confirm:true`; sending email, sending calendar invites, deletes, and bulk edits stay blocked or require human review.
 Confirmed creation uses native macOS automation where available: Notes notes, Reminders reminders, Calendar events, and visible Mail drafts. Dates must be explicit machine-readable date/time strings such as `2026-06-20T17:00:00`; free-form relative dates should be clarified before execution. Every confirmed native action still passes local execution, control mode, `allow.productivity_app`, macOS permissions, audit logging, and post-action observation.
+
+For Obsidian/Markdown knowledge work:
+
+```bash
+curl http://127.0.0.1:3417/api/knowledge/vaults
+curl -X POST http://127.0.0.1:3417/api/knowledge/search \
+  -H 'Content-Type: application/json' \
+  -d '{"vaultPath":"/path/to/vault","query":"agent loop"}'
+curl -X POST http://127.0.0.1:3417/api/knowledge/workflow \
+  -H 'Content-Type: application/json' \
+  -d '{"vaultPath":"/path/to/vault","intent":"create_note","title":"JAVIS idea","body":"Draft note body","execute":false}'
+```
+
+Set `JAVIS_OBSIDIAN_VAULTS` or `JAVIS_KNOWLEDGE_VAULTS` to comma-separated vault paths for deterministic discovery. Search is read-only and returns Markdown paths/snippets/tags/wikilinks. Creating, appending, or daily-note writes preview first; execution requires `execute:true` and `confirm:true`, then uses the normal file write policy and allowed roots.
 
 For creative software work:
 

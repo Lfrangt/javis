@@ -577,6 +577,32 @@ const LANE_CONTRACTS = [
     progressStyle: 'file workflow record with plan/result',
   },
   {
+    id: 'knowledge',
+    aliases: ['obsidian', 'vault', 'notes', 'markdown'],
+    label: 'Knowledge vault specialist lane',
+    owner: 'knowledge',
+    owns: [
+      'Obsidian/Markdown vault discovery',
+      'read-only note search with snippets, tags, and wikilinks',
+      'preview-first Markdown note creation and append plans',
+      'confirmed local daily note and knowledge capture writes',
+    ],
+    nonGoals: [
+      'silent personal memory claims',
+      'cloud sync',
+      'unscoped vault mutation',
+      'private note export without user intent',
+    ],
+    handoff: {
+      defaultLane: 'file',
+      tools: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'run_file_action'],
+      rule: 'Search notes read-only; write Markdown only after explicit confirm:true and normal file-policy checks.',
+    },
+    toolPosture: 'Local Markdown only; previews plans before writing and keeps Obsidian app launches separate.',
+    riskBoundary: 'Search is read-only. Note writes are Level 3 file writes scoped by allowed roots, control mode, and confirmation.',
+    progressStyle: 'knowledge workflow record with vault/note evidence',
+  },
+  {
     id: 'app',
     aliases: ['current_app', 'accessibility', 'ui'],
     label: 'Mac app specialist lane',
@@ -3264,6 +3290,7 @@ function normalizeContextPlan(value) {
     clipboard: Boolean(rawNeeds.clipboard),
     clipboardText: Boolean(rawNeeds.clipboardText),
     files: Boolean(rawNeeds.files),
+    knowledge: Boolean(rawNeeds.knowledge),
     memory: Boolean(rawNeeds.memory),
     learning: Boolean(rawNeeds.learning),
     localSkills: Boolean(rawNeeds.localSkills),
@@ -3273,7 +3300,7 @@ function normalizeContextPlan(value) {
   const rawObserve = raw.observeOptions && typeof raw.observeOptions === 'object' ? raw.observeOptions : {};
   return {
     version: 1,
-    mode: ['minimal', 'resident', 'screen', 'browser', 'file', 'app', 'worker', 'full'].includes(String(raw.mode || ''))
+    mode: ['minimal', 'resident', 'screen', 'browser', 'file', 'knowledge', 'app', 'worker', 'full'].includes(String(raw.mode || ''))
       ? String(raw.mode)
       : 'minimal',
     summary: compactRecordText(raw.summary || '', 220),
@@ -17834,6 +17861,13 @@ function localCommandDecision(task) {
     return { intent: 'web_search', label: 'Web search', args: { query: searchMatch[1].trim() } };
   }
 
+  const knowledgeSearchMatch =
+    text.match(/^(?:search notes|search obsidian|search vault|knowledge search|find notes)[:：]?\s+(.+)$/i)
+    || text.match(/^(?:搜索笔记|查笔记|查知识库|搜笔记|搜索obsidian|搜索Obsidian)[:：]?\s*(.+)$/i);
+  if (knowledgeSearchMatch?.[1]?.trim()) {
+    return { intent: 'knowledge_search', label: 'Knowledge search', args: { query: knowledgeSearchMatch[1].trim() } };
+  }
+
   const creativeIntent = creativeWorkflowIntentFromInstruction(text);
   if (creativeIntent) {
     const selectedApp = CREATIVE_APP_CATALOG.find((item) => creativeAppMatchesText(item, text));
@@ -17982,6 +18016,7 @@ function contextPlanRecommendedTools(needs) {
   if (needs.browserActivity) tools.push('get_browser_activity');
   if (needs.browserPage) tools.push('read_browser_page', 'run_browser_workflow');
   if (needs.browserDom) tools.push('read_browser_dom');
+  if (needs.knowledge) tools.push('get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow');
   if (needs.files) tools.push('run_file_workflow');
   if (needs.memory) tools.push('search_memory');
   if (needs.localSkills) tools.push('search_local_skills');
@@ -17996,12 +18031,14 @@ function contextPlanMode(needs) {
     needs.accessibility,
     needs.browserPage,
     needs.browserDom,
+    needs.knowledge,
     needs.files,
   ].filter(Boolean).length;
   if (heavyCount >= 3) return 'full';
   if (needs.accessibility || needs.localExecution) return 'app';
   if (needs.screen || needs.vision) return 'screen';
   if (needs.browserActivity || needs.browserPage || needs.browserDom || needs.browserContext) return 'browser';
+  if (needs.knowledge) return 'knowledge';
   if (needs.files) return 'file';
   if (needs.delegatedWorkerContext) return 'worker';
   if (needs.residentState || needs.macContext || needs.clipboard) return 'resident';
@@ -18028,6 +18065,7 @@ function buildContextPlan(message, options = {}) {
     clipboard: false,
     clipboardText: false,
     files: false,
+    knowledge: false,
     memory: options.useMemory !== false && !localCommand,
     learning: options.useMemory !== false && !localCommand && learningRuntimeEnabled() && currentLearningControls().includeInPrompts !== false,
     localSkills: options.useMemory !== false && !localCommand,
@@ -18060,6 +18098,7 @@ function buildContextPlan(message, options = {}) {
   const browserPageSignal = /summari[sz]e|extract|read|compare|research|review|answer.*page|当前网页|总结.*网页|阅读.*网页|提取|比较|调研|研究|看.*页面/.test(text);
   const browserDomSignal = /click|fill|select|button|form|input|submit|点击|填写|填入|选择|按钮|表单|输入框/.test(text);
   const fileSignal = /file|folder|directory|path|repo|codebase|readme|\.md\b|\.json\b|\.ts\b|\.tsx\b|\.js\b|\.py\b|文件|目录|文件夹|仓库|代码库|路径/.test(text);
+  const knowledgeSignal = /obsidian|markdown vault|knowledge vault|knowledge base|notes?|vault|笔记|知识库|第二大脑|双链|日记/.test(text);
   const appControlSignal = /click|press|toggle|choose|fill|type into|hotkey|current app|window|ui|按钮|点击|按下|切换|选择|填写|输入|窗口|当前应用|控制/.test(text);
   const clipboardSignal = /clipboard|pasteboard|copy|paste|剪贴板|粘贴板|复制|粘贴/.test(text);
   const clipboardTextSignal = /read.*clipboard|clipboard.*content|what.*clipboard|剪贴板.*内容|读.*剪贴板|看看剪贴板/.test(text);
@@ -18104,6 +18143,11 @@ function buildContextPlan(message, options = {}) {
     needs.files = true;
     contextPlanPushReason(reasons, 'task refers to local files, folders, repo, or code paths');
   }
+  if (knowledgeSignal) {
+    needs.knowledge = true;
+    needs.files = true;
+    contextPlanPushReason(reasons, 'task refers to local Obsidian/Markdown notes or knowledge vaults');
+  }
   if (appControlSignal) {
     needs.macContext = true;
     needs.accessibility = true;
@@ -18146,6 +18190,9 @@ function buildContextPlan(message, options = {}) {
     } else if (['capture_clipboard'].includes(localCommand)) {
       needs.clipboard = true;
       needs.clipboardText = true;
+    } else if (['knowledge_search'].includes(localCommand)) {
+      needs.knowledge = true;
+      needs.files = true;
     } else if (['cli_command'].includes(localCommand)) {
       needs.delegatedWorkerContext = true;
       needs.localExecution = true;
@@ -18164,6 +18211,7 @@ function buildContextPlan(message, options = {}) {
     browserPage: needs.browserPage,
     browserDom: needs.browserDom,
     files: needs.files,
+    knowledge: needs.knowledge,
     clipboardText: needs.clipboardText,
   })
     .filter(([, value]) => !value)
@@ -18334,6 +18382,16 @@ async function runLocalCommand(command, options = {}) {
 
     if (command.intent === 'browser_control') {
       const result = await executeBrowserControl(command.args || {});
+      return {
+        ok: result.ok,
+        localCommand: command,
+        output: result.output,
+        data: { result },
+      };
+    }
+
+    if (command.intent === 'knowledge_search') {
+      const result = searchKnowledgeNotes(command.args || {});
       return {
         ok: result.ok,
         localCommand: command,
@@ -20309,6 +20367,760 @@ async function applyFilePlan(options = {}) {
     counts,
     output,
   };
+}
+
+function knowledgeConfiguredVaultPaths() {
+  return String(process.env.JAVIS_OBSIDIAN_VAULTS || process.env.JAVIS_KNOWLEDGE_VAULTS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function knowledgeCommonVaultRoots() {
+  return [
+    ...knowledgeConfiguredVaultPaths(),
+    path.join(os.homedir(), 'Documents'),
+    path.join(os.homedir(), 'Desktop'),
+    path.join(os.homedir(), 'Library', 'Mobile Documents', 'iCloud~md~obsidian', 'Documents'),
+    process.cwd(),
+  ];
+}
+
+function normalizeKnowledgeIntent(value, instruction = '') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (['search', 'search_notes', 'find', 'query'].includes(raw)) return 'search_notes';
+  if (['create', 'create_note', 'new_note', 'write_note'].includes(raw)) return 'create_note';
+  if (['append', 'append_note', 'add_to_note'].includes(raw)) return 'append_note';
+  if (['daily', 'daily_note', 'journal'].includes(raw)) return 'daily_note';
+  const text = String(instruction || '').toLowerCase();
+  if (/append|add to note|追加|补充/.test(text)) return 'append_note';
+  if (/daily|journal|日记|日报|每日/.test(text)) return 'daily_note';
+  if (/create|new note|write note|新建|创建|写入|记录/.test(text)) return 'create_note';
+  return 'search_notes';
+}
+
+function markdownFileNameFromTitle(title, fallback = 'JAVIS note') {
+  const base = sanitizeGeneratedFileName(String(title || fallback)
+    .replace(/\.md$/i, '')
+    .replace(/[\\/:*?"<>|#^[\]]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim() || fallback);
+  return `${base.replace(/\.(markdown|md)$/i, '')}.md`;
+}
+
+function knowledgeMarkdownFiles(rootPath, options = {}) {
+  const root = resolvePath(rootPath);
+  const limit = Math.max(1, Math.min(500, Number(options.limit || 160)));
+  const maxDepth = Math.max(0, Math.min(8, Number(options.maxDepth || 5)));
+  const results = [];
+  const ignoredDirs = new Set(['.git', 'node_modules', '.trash', '.obsidian', '.stfolder']);
+  function visit(currentPath, depth) {
+    if (results.length >= limit || depth > maxDepth) return;
+    let entries = [];
+    try {
+      entries = fs.readdirSync(currentPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (results.length >= limit) break;
+      const fullPath = path.join(currentPath, entry.name);
+      if (entry.isDirectory()) {
+        if (!ignoredDirs.has(entry.name)) visit(fullPath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!/\.(md|markdown)$/i.test(entry.name)) continue;
+      const stats = fs.statSync(fullPath);
+      results.push({
+        path: fullPath,
+        relativePath: path.relative(root, fullPath),
+        title: path.basename(entry.name, path.extname(entry.name)),
+        size: stats.size,
+        modifiedAt: stats.mtime.toISOString(),
+      });
+    }
+  }
+  visit(root, 0);
+  return results;
+}
+
+function knowledgeVaultRecord(vaultPath, options = {}) {
+  const root = resolvePath(vaultPath);
+  let stats = null;
+  try {
+    stats = fs.statSync(root);
+  } catch {}
+  const exists = Boolean(stats?.isDirectory());
+  const obsidianConfigPath = path.join(root, '.obsidian');
+  const hasObsidianConfig = exists && fs.existsSync(obsidianConfigPath) && fs.statSync(obsidianConfigPath).isDirectory();
+  const markdownSample = exists ? knowledgeMarkdownFiles(root, { limit: options.sampleLimit || 12, maxDepth: options.maxDepth || 3 }) : [];
+  let readAllowed = false;
+  let writeAllowed = false;
+  try {
+    assertAllowedFilePath(root, Array.from(new Set([
+      ...(actionPolicy.allow?.list_directory?.allowedRoots || []),
+      ...(actionPolicy.allow?.read_file?.allowedRoots || []),
+    ])));
+    readAllowed = true;
+  } catch {}
+  try {
+    assertAllowedFilePath(path.join(root, '.javis-write-check.md'), actionPolicy.allow?.write_file?.allowedRoots || [], { forWrite: true });
+    writeAllowed = true;
+  } catch {}
+  return {
+    path: root,
+    name: path.basename(root) || root,
+    exists,
+    hasObsidianConfig,
+    markdownCountSample: markdownSample.length,
+    readAllowed,
+    writeAllowed,
+    configured: knowledgeConfiguredVaultPaths().some((item) => path.resolve(expandUserPath(item)) === root),
+    sample: markdownSample.slice(0, 5),
+  };
+}
+
+function knowledgeVaultCandidates(options = {}) {
+  const roots = [];
+  const add = (value) => {
+    try {
+      const resolved = resolvePath(value);
+      if (!roots.includes(resolved)) roots.push(resolved);
+    } catch {}
+  };
+  for (const item of knowledgeCommonVaultRoots()) add(item);
+  for (const root of knowledgeCommonVaultRoots()) {
+    try {
+      const resolvedRoot = resolvePath(root);
+      if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) continue;
+      const entries = fs.readdirSync(resolvedRoot, { withFileTypes: true }).slice(0, 80);
+      for (const entry of entries) {
+        if (entry.isDirectory()) add(path.join(resolvedRoot, entry.name));
+      }
+    } catch {}
+  }
+  const limit = Math.max(1, Math.min(80, Number(options.limit || 24)));
+  const candidates = roots
+    .map((item) => knowledgeVaultRecord(item))
+    .filter((item) => item.exists && (item.hasObsidianConfig || item.markdownCountSample > 0 || item.configured))
+    .sort((a, b) => {
+      if (a.configured !== b.configured) return a.configured ? -1 : 1;
+      if (a.hasObsidianConfig !== b.hasObsidianConfig) return a.hasObsidianConfig ? -1 : 1;
+      if (a.readAllowed !== b.readAllowed) return a.readAllowed ? -1 : 1;
+      return b.markdownCountSample - a.markdownCountSample;
+    })
+    .slice(0, limit);
+  return {
+    ok: true,
+    total: candidates.length,
+    returned: candidates.length,
+    candidates,
+    output: candidates.length
+      ? `${candidates.length} knowledge vault candidate(s) found.`
+      : 'No Obsidian/Markdown vault candidates found. Set JAVIS_OBSIDIAN_VAULTS to comma-separated vault paths.',
+  };
+}
+
+function resolveKnowledgeVault(options = {}) {
+  const explicit = String(options.vaultPath || options.vault || options.path || '').trim();
+  if (explicit) {
+    const record = knowledgeVaultRecord(explicit);
+    if (!record.exists) throw new Error(`Knowledge vault does not exist: ${record.path}`);
+    return record;
+  }
+  const candidates = knowledgeVaultCandidates({ limit: 1 }).candidates;
+  if (!candidates.length) throw new Error('No knowledge vault found. Pass vaultPath or set JAVIS_OBSIDIAN_VAULTS.');
+  return candidates[0];
+}
+
+function knowledgeAssertReadableVault(vault) {
+  const allowedRoots = Array.from(new Set([
+    ...(actionPolicy.allow?.list_directory?.allowedRoots || []),
+    ...(actionPolicy.allow?.read_file?.allowedRoots || []),
+  ]));
+  assertAllowedFilePath(vault.path, allowedRoots);
+}
+
+function knowledgeSnippet(text, query, max = 220) {
+  const content = String(text || '').replace(/\s+/g, ' ').trim();
+  const needle = String(query || '').toLowerCase();
+  if (!needle) return compactRecordText(content, max);
+  const index = content.toLowerCase().indexOf(needle);
+  if (index < 0) return compactRecordText(content, max);
+  const start = Math.max(0, index - Math.floor(max / 3));
+  return compactRecordText(`${start > 0 ? '...' : ''}${content.slice(start, start + max)}`, max);
+}
+
+function markdownKnowledgeMetadata(markdown = '') {
+  const title = (String(markdown).match(/^#\s+(.+)$/m) || [])[1] || '';
+  const tags = Array.from(new Set((String(markdown).match(/#[A-Za-z0-9_/-]+/g) || [])
+    .map((item) => item.slice(1))
+    .filter(Boolean)))
+    .slice(0, 12);
+  const wikilinks = Array.from(new Set((String(markdown).match(/\[\[([^\]]+)\]\]/g) || [])
+    .map((item) => item.replace(/^\[\[|\]\]$/g, '').split('|')[0].trim())
+    .filter(Boolean)))
+    .slice(0, 20);
+  return { title, tags, wikilinks };
+}
+
+function searchKnowledgeNotes(options = {}) {
+  const vault = resolveKnowledgeVault(options);
+  knowledgeAssertReadableVault(vault);
+  const query = String(options.query || options.q || options.instruction || '').trim();
+  if (!query) throw new Error('Knowledge search requires query.');
+  const limit = Math.max(1, Math.min(80, Number(options.limit || 12)));
+  const maxBytes = Math.max(1000, Math.min(500000, Number(options.maxBytes || 80000)));
+  const queryTokens = memoryQueryTokens(query);
+  const files = knowledgeMarkdownFiles(vault.path, { limit: Math.max(limit * 12, 80), maxDepth: options.maxDepth || 6 });
+  const results = files
+    .map((file) => {
+      let markdown = '';
+      try {
+        const stats = fs.statSync(file.path);
+        if (stats.size > maxBytes) return null;
+        markdown = fs.readFileSync(file.path, 'utf8');
+      } catch {
+        return null;
+      }
+      const plain = markdownToText(markdown);
+      const haystack = `${file.title}\n${file.relativePath}\n${plain}`.toLowerCase();
+      const score = queryTokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
+      if (score <= 0) return null;
+      return {
+        ...file,
+        score,
+        snippet: knowledgeSnippet(plain, queryTokens[0] || query, 260),
+        metadata: markdownKnowledgeMetadata(markdown),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.score - a.score || String(b.modifiedAt).localeCompare(String(a.modifiedAt)))
+    .slice(0, limit);
+  appendAudit('knowledge.search', {
+    vault: vault.path,
+    query: compactRecordText(query, 120),
+    results: results.length,
+  });
+  return {
+    ok: true,
+    vault,
+    query,
+    totalFilesScanned: files.length,
+    returned: results.length,
+    results,
+    output: results.length
+      ? results.map((item, index) => `${index + 1}. ${item.relativePath}: ${item.snippet}`).join('\n')
+      : `No Markdown notes matched "${query}" in ${vault.name}.`,
+  };
+}
+
+function knowledgeNoteRelativePath(options = {}, intent = 'create_note') {
+  const explicit = String(options.relativePath || options.notePath || options.file || '').trim();
+  if (explicit) {
+    const normalized = explicit.replace(/^\/+/, '');
+    if (normalized.includes('..')) throw new Error('Knowledge note path cannot contain "..".');
+    return normalized.endsWith('.md') || normalized.endsWith('.markdown') ? normalized : `${normalized}.md`;
+  }
+  if (intent === 'daily_note') {
+    const date = String(options.date || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Daily note date must be YYYY-MM-DD.');
+    return path.join(String(options.folder || 'Daily').replace(/^\/+/, ''), `${date}.md`);
+  }
+  const folder = String(options.folder || '').trim().replace(/^\/+/, '');
+  const fileName = markdownFileNameFromTitle(options.title || options.name || 'JAVIS note');
+  return folder ? path.join(folder, fileName) : fileName;
+}
+
+function knowledgeNoteMarkdown(options = {}) {
+  const title = compactRecordText(options.title || options.name || 'JAVIS note', 180);
+  const body = String(options.body || options.text || options.content || '').trim();
+  if (!body) throw new Error('Knowledge note body is required.');
+  const tags = Array.isArray(options.tags)
+    ? options.tags.map((item) => String(item).trim()).filter(Boolean)
+    : String(options.tags || '').split(',').map((item) => item.trim()).filter(Boolean);
+  const frontmatter = [
+    '---',
+    `created: ${new Date().toISOString()}`,
+    'source: JAVIS',
+    tags.length ? `tags: [${tags.map((tag) => `"${tag.replace(/"/g, '\\"')}"`).join(', ')}]` : 'tags: []',
+    '---',
+    '',
+  ].join('\n');
+  return `${frontmatter}# ${title}\n\n${body}\n`;
+}
+
+function knowledgePlanForNote(options = {}, intent = 'create_note') {
+  const vault = resolveKnowledgeVault(options);
+  const relativePath = knowledgeNoteRelativePath(options, intent);
+  const targetPath = path.resolve(vault.path, relativePath);
+  if (!isPathInside(targetPath, vault.path)) throw new Error('Knowledge note target must stay inside the vault.');
+  const append = intent === 'append_note' || intent === 'daily_note' || options.append === true;
+  const content = append
+    ? `\n\n${String(options.body || options.text || options.content || '').trim()}\n`
+    : knowledgeNoteMarkdown(options);
+  if (!content.trim()) throw new Error('Knowledge note content is required.');
+  const args = {
+    action: 'write_file',
+    path: targetPath,
+    content,
+    append,
+    overwrite: Boolean(options.overwrite),
+  };
+  let preview = null;
+  try {
+    preview = previewPlannedFileStep(args);
+  } catch (error) {
+    preview = blockedPlannedFileStep('write_file', { path: targetPath }, error instanceof Error ? error.message : String(error));
+  }
+  return {
+    ok: Boolean(preview.ok),
+    intent,
+    vault,
+    relativePath,
+    targetPath,
+    append,
+    exists: fs.existsSync(targetPath),
+    action: 'write_file',
+    args,
+    preview,
+    contentPreview: compactRecordText(content, 500),
+    output: preview.ok
+      ? `Prepared ${append ? 'append to' : 'create'} ${relativePath}. Requires confirm:true to write.`
+      : preview.reason || 'Knowledge note plan is blocked.',
+  };
+}
+
+async function runKnowledgeWorkflow(options = {}) {
+  const instruction = String(options.instruction || options.goal || options.task || '').trim();
+  const intent = normalizeKnowledgeIntent(options.intent, instruction);
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const confirmed = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  const recordWorkflow = options.recordWorkflow !== false;
+  const recordRouting = options.recordRouting !== false;
+
+  if (intent === 'search_notes') {
+    const search = searchKnowledgeNotes(options);
+    const workflowDraft = {
+      kind: 'knowledge',
+      source: options.source || 'knowledge_workflow',
+      status: 'done',
+      title: `knowledge search · ${search.query}`.slice(0, 180),
+      intent,
+      mode: 'quick',
+      request: instruction || search.query,
+      result: search.output,
+      target: {
+        app: 'Obsidian',
+        title: search.vault.name,
+        path: search.vault.path,
+        type: 'knowledge_search',
+        resultCount: search.returned,
+        returnedLength: search.output.length,
+      },
+    };
+    const workflow = recordWorkflow
+      ? createWorkflowRecord(workflowDraft)
+      : { id: '', ...workflowDraft, createdAt: Date.now(), updatedAt: Date.now(), completedAt: Date.now() };
+    const routing = recordRouting && workflow.id
+      ? createRoutingRecordForWorkflow({
+          task: workflow.request,
+          workflow,
+          mode: 'quick',
+          source: options.source || 'knowledge_workflow',
+          owner: 'knowledge',
+          scope: options.scope || `knowledge:${search.vault.name}:search`,
+          parallelGroup: options.parallelGroup || options.group || `knowledge:${search.vault.name}`,
+          resultSummary: search.output,
+        })
+      : null;
+    return { ok: true, intent, executed: false, queued: false, workflow, routing, ...search };
+  }
+
+  const plan = knowledgePlanForNote(options, intent);
+  if (!execute || !confirmed) {
+    const status = execute && !confirmed ? 'blocked' : 'done';
+    const output = execute && !confirmed
+      ? `${plan.output}\nBlocked: confirm:true is required before writing a knowledge note.`
+      : plan.output;
+    const workflowDraft = {
+      kind: 'knowledge',
+      source: options.source || 'knowledge_workflow',
+      status,
+      title: `knowledge ${intent} · ${plan.relativePath}`.slice(0, 180),
+      intent,
+      mode: 'preview',
+      request: instruction || `Plan ${intent} in ${plan.vault.name}`,
+      result: output,
+      target: {
+        app: 'Obsidian',
+        title: plan.vault.name,
+        path: plan.vault.path,
+        type: 'knowledge_note_plan',
+        notePath: plan.targetPath,
+        relativePath: plan.relativePath,
+        append: plan.append,
+        exists: plan.exists,
+      },
+    };
+    const workflow = recordWorkflow
+      ? createWorkflowRecord(workflowDraft)
+      : { id: '', ...workflowDraft, createdAt: Date.now(), updatedAt: Date.now(), completedAt: Date.now() };
+    const routing = recordRouting && workflow.id
+      ? createRoutingRecordForWorkflow({
+          task: workflow.request,
+          workflow,
+          mode: 'quick',
+          source: options.source || 'knowledge_workflow',
+          owner: 'knowledge',
+          scope: options.scope || `knowledge:${plan.vault.name}:${intent}`,
+          parallelGroup: options.parallelGroup || options.group || `knowledge:${plan.vault.name}`,
+          resultSummary: output,
+        })
+      : null;
+    return {
+      ok: !execute,
+      intent,
+      executed: false,
+      confirmed,
+      requiresConfirmation: execute && !confirmed,
+      workflow,
+      routing,
+      plan,
+      output,
+    };
+  }
+
+  if (!plan.ok) {
+    return {
+      ok: false,
+      intent,
+      executed: false,
+      confirmed,
+      plan,
+      output: plan.output,
+    };
+  }
+
+  const verificationExpectation = buildFileActionVerificationExpectation(plan.args);
+  let executionOutput = '';
+  let verification = null;
+  try {
+    executionOutput = await executeFileAction(plan.args);
+    verification = verifyFileActionResult(verificationExpectation);
+  } catch (error) {
+    if (error instanceof ActionApprovalRequired) {
+      return {
+        ok: false,
+        intent,
+        executed: false,
+        confirmed,
+        approval: error.approval,
+        plan,
+        output: `Approval required before I can ${error.approval.summary}.`,
+      };
+    }
+    return {
+      ok: false,
+      intent,
+      executed: false,
+      confirmed,
+      plan,
+      output: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const output = `${executionOutput}${verification ? ` · ${verification.summary}` : ''}`;
+  const workflowDraft = {
+    kind: 'knowledge',
+    source: options.source || 'knowledge_workflow',
+    status: verification?.ok === false ? 'blocked' : 'done',
+    title: `knowledge ${intent} · ${plan.relativePath}`.slice(0, 180),
+    intent,
+    mode: 'local',
+    request: instruction || `Run ${intent} in ${plan.vault.name}`,
+    result: output,
+    target: {
+      app: 'Obsidian',
+      title: plan.vault.name,
+      path: plan.vault.path,
+      type: 'knowledge_note_write',
+      notePath: plan.targetPath,
+      relativePath: plan.relativePath,
+      append: plan.append,
+      verified: Boolean(verification?.ok),
+    },
+  };
+  const workflow = recordWorkflow
+    ? createWorkflowRecord(workflowDraft)
+    : { id: '', ...workflowDraft, createdAt: Date.now(), updatedAt: Date.now(), completedAt: Date.now() };
+  const routing = recordRouting && workflow.id
+    ? createRoutingRecordForWorkflow({
+        task: workflow.request,
+        workflow,
+        mode: 'local',
+        source: options.source || 'knowledge_workflow',
+        owner: 'knowledge',
+        scope: options.scope || `knowledge:${plan.vault.name}:${intent}`,
+        parallelGroup: options.parallelGroup || options.group || `knowledge:${plan.vault.name}`,
+        resultSummary: output,
+      })
+    : null;
+  appendAudit('knowledge.write_completed', {
+    intent,
+    vault: plan.vault.path,
+    relativePath: plan.relativePath,
+    append: plan.append,
+    verified: Boolean(verification?.ok),
+  });
+  return {
+    ok: verification?.ok !== false,
+    intent,
+    executed: true,
+    confirmed,
+    workflow,
+    routing,
+    plan,
+    verification,
+    output,
+  };
+}
+
+function knowledgeBenchmarkCaseResult({ id, label, intent, ok, result = null, assertions = {}, secrets = [] }) {
+  const leakedSecrets = fileBenchmarkSecretLeaked(result, secrets);
+  const finalOk = Boolean(ok && !leakedSecrets);
+  const workflow = result?.workflow || {};
+  const routing = result?.routing || {};
+  return {
+    id,
+    label,
+    intent,
+    ok: finalOk,
+    status: finalOk ? 'pass' : 'fail',
+    previewOnly: result?.executed !== true,
+    executed: Boolean(result?.executed),
+    workflowId: workflow.id || '',
+    workflowStatus: workflow.status || '',
+    routingId: routing.id || '',
+    routingStatus: routing.status || '',
+    assertions: {
+      ...assertions,
+      leakedSecrets,
+    },
+    summary: compactRecordText(result?.output || '', 260),
+  };
+}
+
+async function knowledgeWorkflowBenchmarkSnapshot(options = {}) {
+  const source = String(options.source || 'knowledge_benchmark').slice(0, 80);
+  const fixtureRoot = path.join(process.cwd(), `.javis-knowledge-benchmarks-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
+  const sourcePrefix = source.startsWith('eval_') ? source : `${source}`;
+  const secrets = ['sk-knowledge-bench-secret-do-not-return'];
+  const cases = [];
+  let cleanupOk = true;
+  try {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    fs.mkdirSync(path.join(fixtureRoot, '.obsidian'), { recursive: true });
+    fs.mkdirSync(path.join(fixtureRoot, 'Projects'), { recursive: true });
+    fs.writeFileSync(path.join(fixtureRoot, 'Projects', 'JAVIS.md'), '# JAVIS\n\nRealtime voice notes with [[Agent Loop]] and #javis.\n', 'utf8');
+    fs.writeFileSync(path.join(fixtureRoot, 'Agent Loop.md'), '# Agent Loop\n\nIntake, context assembly, lane routing, tool execution, and audit evidence.\n', 'utf8');
+    fs.writeFileSync(path.join(fixtureRoot, 'Private.md'), `# Private\n\n${secrets[0]}\n`, 'utf8');
+
+    const vaults = knowledgeVaultCandidates({ limit: 20 });
+    cases.push(knowledgeBenchmarkCaseResult({
+      id: 'vault_discovery_fixture',
+      label: 'Knowledge vault discovery',
+      intent: 'vaults',
+      result: { executed: false, output: vaults.output },
+      secrets,
+      assertions: {
+        discovered: vaults.candidates.some((item) => item.path === fixtureRoot),
+        candidateCount: vaults.returned,
+      },
+      ok: vaults.ok === true && vaults.candidates.some((item) => item.path === fixtureRoot),
+    }));
+
+    const search = searchKnowledgeNotes({
+      vaultPath: fixtureRoot,
+      query: 'JAVIS Agent Loop',
+      limit: 5,
+    });
+    const searchHasWikilink = search.results.some((item) => item.metadata?.wikilinks?.includes('Agent Loop'));
+    const searchHasTag = search.results.some((item) => item.metadata?.tags?.includes('javis'));
+    cases.push(knowledgeBenchmarkCaseResult({
+      id: 'markdown_search_fixture',
+      label: 'Markdown knowledge search',
+      intent: 'search_notes',
+      result: { executed: false, output: search.output },
+      secrets,
+      assertions: {
+        returned: search.returned,
+        scanned: search.totalFilesScanned,
+        hasWikilinks: searchHasWikilink,
+        hasTags: searchHasTag,
+      },
+      ok: search.ok === true &&
+        search.returned >= 1 &&
+        search.results.some((item) => item.relativePath === path.join('Projects', 'JAVIS.md') || item.relativePath === 'Agent Loop.md') &&
+        searchHasWikilink &&
+        searchHasTag,
+    }));
+
+    const createPreview = await runKnowledgeWorkflow({
+      vaultPath: fixtureRoot,
+      intent: 'create_note',
+      title: 'New JAVIS Note',
+      body: 'Preview-only body.',
+      folder: 'Inbox',
+      execute: false,
+      recordWorkflow: false,
+      recordRouting: false,
+      source: `${sourcePrefix}_create_preview`,
+    });
+    cases.push(knowledgeBenchmarkCaseResult({
+      id: 'create_note_preview',
+      label: 'Knowledge create-note preview',
+      intent: 'create_note',
+      result: createPreview,
+      secrets,
+      assertions: {
+        target: createPreview.plan?.relativePath || '',
+        existsAfterPreview: fs.existsSync(path.join(fixtureRoot, 'Inbox', 'New JAVIS Note.md')),
+        requiresConfirmation: createPreview.requiresConfirmation === false,
+      },
+      ok: createPreview.ok === true &&
+        createPreview.executed === false &&
+        createPreview.plan?.relativePath === path.join('Inbox', 'New JAVIS Note.md') &&
+        !fs.existsSync(path.join(fixtureRoot, 'Inbox', 'New JAVIS Note.md')),
+    }));
+
+    const createGate = await runKnowledgeWorkflow({
+      vaultPath: fixtureRoot,
+      intent: 'create_note',
+      title: 'Blocked JAVIS Note',
+      body: 'Should not be written without confirm.',
+      folder: 'Inbox',
+      execute: true,
+      confirm: false,
+      recordWorkflow: false,
+      recordRouting: false,
+      source: `${sourcePrefix}_create_gate`,
+    });
+    cases.push(knowledgeBenchmarkCaseResult({
+      id: 'create_note_confirmation_gate',
+      label: 'Knowledge write confirmation gate',
+      intent: 'create_note',
+      result: createGate,
+      secrets,
+      assertions: {
+        requiresConfirmation: createGate.requiresConfirmation === true,
+        existsAfterGate: fs.existsSync(path.join(fixtureRoot, 'Inbox', 'Blocked JAVIS Note.md')),
+      },
+      ok: createGate.ok === false &&
+        createGate.executed === false &&
+        createGate.requiresConfirmation === true &&
+        !fs.existsSync(path.join(fixtureRoot, 'Inbox', 'Blocked JAVIS Note.md')),
+    }));
+
+    const confirmedWrite = await runKnowledgeWorkflow({
+      vaultPath: fixtureRoot,
+      intent: 'create_note',
+      title: 'Confirmed JAVIS Note',
+      body: 'Confirmed fixture-only body with [[JAVIS]].',
+      folder: 'Inbox',
+      tags: ['javis', 'fixture'],
+      execute: true,
+      confirm: true,
+      recordWorkflow: false,
+      recordRouting: false,
+      source: `${sourcePrefix}_confirmed_write`,
+    });
+    const confirmedPath = path.join(fixtureRoot, 'Inbox', 'Confirmed JAVIS Note.md');
+    cases.push(knowledgeBenchmarkCaseResult({
+      id: 'confirmed_fixture_write',
+      label: 'Confirmed fixture-only knowledge write',
+      intent: 'create_note',
+      result: confirmedWrite,
+      secrets,
+      assertions: {
+        verified: confirmedWrite.verification?.ok === true,
+        exists: fs.existsSync(confirmedPath),
+        containsTitle: fs.existsSync(confirmedPath) && fs.readFileSync(confirmedPath, 'utf8').includes('# Confirmed JAVIS Note'),
+      },
+      ok: confirmedWrite.ok === true &&
+        confirmedWrite.executed === true &&
+        confirmedWrite.verification?.ok === true &&
+        fs.existsSync(confirmedPath) &&
+        fs.readFileSync(confirmedPath, 'utf8').includes('# Confirmed JAVIS Note'),
+    }));
+  } catch (error) {
+    cases.push(knowledgeBenchmarkCaseResult({
+      id: 'knowledge_benchmark_runtime',
+      label: 'Knowledge benchmark runtime',
+      intent: 'runtime',
+      result: { executed: false, output: error instanceof Error ? error.message : String(error) },
+      secrets,
+      ok: false,
+      assertions: {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    }));
+  } finally {
+    try {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+      cleanupOk = !fs.existsSync(fixtureRoot);
+    } catch {
+      cleanupOk = false;
+    }
+  }
+  const counts = {
+    total: cases.length,
+    pass: cases.filter((item) => item.ok).length,
+    fail: cases.filter((item) => !item.ok).length,
+    preview: cases.filter((item) => !item.executed).length,
+    executed: cases.filter((item) => item.executed).length,
+  };
+  const snapshot = {
+    ok: counts.fail === 0 && cleanupOk,
+    generatedAt: new Date().toISOString(),
+    source,
+    fixtureRoot,
+    manualOnly: true,
+    fixtureOnly: true,
+    startsApps: false,
+    modelCalls: false,
+    mutatesUserFiles: false,
+    writesFixture: counts.executed > 0,
+    recordsWorkflowHistory: false,
+    summary: `${counts.pass}/${counts.total} knowledge benchmark case(s) passed.`,
+    counts,
+    cases,
+    nextAction: counts.fail || !cleanupOk
+      ? 'Fix failing knowledge benchmark cases before live Obsidian dogfood.'
+      : 'Use these fixture-only knowledge benchmarks before confirmed live Obsidian vault writes.',
+    safety: {
+      fixtureOnly: true,
+      cleanupOk,
+      noUserFileMutation: true,
+      noModelCalls: true,
+      noAppLaunch: true,
+      noSecretEcho: cases.every((item) => item.assertions?.leakedSecrets === false),
+      confirmRequiredForWrite: cases.find((item) => item.id === 'create_note_confirmation_gate')?.assertions?.requiresConfirmation === true,
+      confirmedFixtureWrite: cases.find((item) => item.id === 'confirmed_fixture_write')?.assertions?.verified === true,
+      noWorkflowHistory: cases.every((item) => !item.workflowId && !item.routingId),
+    },
+  };
+  appendAudit('knowledge_benchmark.completed', {
+    source,
+    ok: snapshot.ok,
+    total: counts.total,
+    pass: counts.pass,
+    fail: counts.fail,
+    cleanupOk,
+    noUserFileMutation: true,
+    noModelCalls: true,
+  });
+  return snapshot;
 }
 
 async function collectFileWorkflowContext(options, intent) {
@@ -33219,6 +34031,29 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'get_knowledge_vaults') {
+    const result = knowledgeVaultCandidates({ ...(args || {}), source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
+  if (name === 'search_knowledge_notes') {
+    try {
+      const result = searchKnowledgeNotes({ ...(args || {}), source: 'voice' });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'run_knowledge_workflow') {
+    try {
+      const result = await runKnowledgeWorkflow({ ...(args || {}), source: 'voice' });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'plan_file_organization') {
     const result = await planFileOrganization(args || {});
     return { ok: result.ok, output: JSON.stringify(result) };
@@ -33445,6 +34280,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use control_browser_dom for guarded webpage element click/fill/select actions after the target is clear.',
       'Use run_browser_workflow for webpage summarization, action extraction, drafting, page-specific questions, safe form-fill drafts, web search, search-result review, or multi-page research. Use intent:fill_draft to prepare browser field fills from current DOM and supplied fields; it previews by default and requires execute:true plus confirm:true before filling. Use intent:research when the user asks you to look something up, inspect multiple sources, or synthesize web evidence; use background/Codex/Claude mode for longer work.',
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, semantic text-conversion previews, or non-destructive copy-convert previews.',
+      'Use get_knowledge_vaults when the user asks what Obsidian/Markdown vaults JAVIS can see. Use search_knowledge_notes for read-only search over an allowed Markdown vault. Use run_knowledge_workflow for Obsidian-style Markdown note creation, append, daily note, or search workflows. Note writes require execute:true plus confirm:true and still go through file policy.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
       'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
@@ -34884,6 +35720,76 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'get_knowledge_vaults',
+        description: 'List local Obsidian/Markdown vault candidates JAVIS can see, including read/write policy status. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'search_knowledge_notes',
+        description: 'Search Markdown notes inside an allowed Obsidian/knowledge vault. Returns matching note paths, snippets, tags, and wikilinks; does not write files or launch apps.',
+        parameters: {
+          type: 'object',
+          properties: {
+            vaultPath: { type: 'string' },
+            vault: { type: 'string' },
+            path: { type: 'string' },
+            query: { type: 'string' },
+            q: { type: 'string' },
+            limit: { type: 'number' },
+            maxDepth: { type: 'number' },
+            maxBytes: { type: 'number' },
+          },
+          required: ['query'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'run_knowledge_workflow',
+        description: 'Run an Obsidian-style knowledge workflow over Markdown notes: search, create note, append note, or daily note. Writes require execute:true and confirm:true, then use the normal local file policy.',
+        parameters: {
+          type: 'object',
+          properties: {
+            vaultPath: { type: 'string' },
+            vault: { type: 'string' },
+            path: { type: 'string' },
+            intent: { type: 'string', enum: ['search_notes', 'create_note', 'append_note', 'daily_note'] },
+            instruction: { type: 'string' },
+            query: { type: 'string' },
+            title: { type: 'string' },
+            name: { type: 'string' },
+            body: { type: 'string' },
+            text: { type: 'string' },
+            content: { type: 'string' },
+            folder: { type: 'string' },
+            relativePath: { type: 'string' },
+            notePath: { type: 'string' },
+            file: { type: 'string' },
+            date: { type: 'string' },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            append: { type: 'boolean' },
+            overwrite: { type: 'boolean' },
+            execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            scope: { type: 'string' },
+            parallelGroup: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'plan_file_organization',
         description: 'Create a policy-aware preview plan to organize a local folder by file type. Does not execute file moves.',
         parameters: {
@@ -35172,6 +36078,9 @@ const REALTIME_REQUIRED_TOOLS = [
   'save_ui_demonstration_skill',
   'read_browser_page',
   'run_browser_workflow',
+  'get_knowledge_vaults',
+  'search_knowledge_notes',
+  'run_knowledge_workflow',
   'route_task',
   'route_parallel_tasks',
   'delegate_task',
@@ -35198,6 +36107,7 @@ function realtimeInstructionChecks(instructions = '') {
     workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
     autopilotStatus: /get_autopilot_status|autopilot did|unattended work|can continue by itself|autopilot is waiting/i.test(text),
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
+    knowledgeWorkflows: /get_knowledge_vaults|search_knowledge_notes|run_knowledge_workflow|Obsidian\/Markdown vaults|knowledge workflow/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
@@ -37090,6 +38000,42 @@ function startApiServer() {
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'File plan apply failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/knowledge/vaults', (req, res) => {
+    try {
+      res.json({ vaults: knowledgeVaultCandidates({ limit: req.query.limit || 24 }) });
+    } catch (error) {
+      jsonError(res, 400, 'Knowledge vault discovery failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/knowledge/search', express.json({ limit: '1mb' }), (req, res) => {
+    try {
+      res.json(searchKnowledgeNotes({ ...(req.body || {}), source: req.body?.source || 'api' }));
+    } catch (error) {
+      jsonError(res, 400, 'Knowledge search failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/knowledge/workflow', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await runKnowledgeWorkflow({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : result.approval ? 202 : 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Knowledge workflow failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/knowledge/benchmarks', async (req, res) => {
+    try {
+      const benchmarks = await knowledgeWorkflowBenchmarkSnapshot({
+        source: req.query.source || 'api_knowledge_benchmarks',
+      });
+      res.json({ benchmarks });
+    } catch (error) {
+      jsonError(res, 500, 'Knowledge benchmarks failed', error instanceof Error ? error.message : String(error));
     }
   });
 

@@ -33,6 +33,25 @@ export default {
         : fail('context.browser', 'Browser context plan', `expected browser page plan, got ${browser.status}`, browser.data),
     );
 
+    const knowledge = await ctx.api('/api/context/plan', {
+      method: 'POST',
+      body: { message: '查笔记 JAVIS Agent Loop', useMemory: false },
+    });
+    const knowledgePlan = knowledge.data?.contextPlan;
+    const knowledgeNeeds = needs(knowledgePlan);
+    const knowledgeTools = knowledgePlan?.recommendedTools || [];
+    out.push(
+      knowledge.ok &&
+        knowledgePlan?.mode === 'knowledge' &&
+        knowledgeNeeds.knowledge === true &&
+        knowledgeNeeds.files === true &&
+        knowledgeTools.includes('get_knowledge_vaults') &&
+        knowledgeTools.includes('search_knowledge_notes') &&
+        knowledgeTools.includes('run_knowledge_workflow')
+        ? ok('context.knowledge', 'Knowledge context plan', `${knowledgePlan.mode}: ${knowledgeTools.join(', ')}`, knowledgePlan)
+        : fail('context.knowledge', 'Knowledge context plan', `expected knowledge vault plan, got ${knowledge.status}`, knowledge.data),
+    );
+
     const browserActivity = await ctx.api('/api/context/plan', {
       method: 'POST',
       body: { message: '我刚才在浏览器看了什么？', useMemory: false },
