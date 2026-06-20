@@ -19,6 +19,7 @@ const REQUIRED_TOOLS = [
   'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
+  'get_realtime_dogfood_acceptance',
   'save_realtime_dogfood_archive',
   'get_realtime_dogfood_session',
   'start_realtime_dogfood_session',
@@ -1326,6 +1327,108 @@ export default {
     } catch (error) {
       out.push(fail('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', error instanceof Error ? error.message : String(error)));
     }
+
+    const acceptance = await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=12');
+    const acceptanceData = acceptance.data?.acceptance;
+    const acceptanceGateIds = new Set((Array.isArray(acceptanceData?.gates) ? acceptanceData.gates : []).map((gate) => gate.id));
+    const acceptanceGroupIds = new Set((Array.isArray(acceptanceData?.groups) ? acceptanceData.groups : []).map((group) => group.id));
+    const requiredAcceptanceGates = [
+      'start_live_voice',
+      'inject_worker_progress',
+      'ask_progress',
+      'ask_work_handoff',
+      'ask_autopilot_status',
+      'ask_attention_explanation',
+      'ask_perception_consent',
+      'teach_ui_demonstration',
+      'save_shortcut_with_confirmation',
+      'route_recalled_shortcut',
+      'archive_saved',
+    ];
+    out.push(
+      acceptance.ok &&
+        acceptanceData?.manualOnly === true &&
+        acceptanceData?.startsMicrophone === false &&
+        acceptanceData?.requiresUserPresence === true &&
+        acceptanceData?.accepted === false &&
+        acceptanceData?.status === 'pending' &&
+        acceptanceData?.counts?.gates >= 15 &&
+        acceptanceData?.counts?.gaps >= 1 &&
+        requiredAcceptanceGates.every((id) => acceptanceGateIds.has(id)) &&
+        ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
+        acceptanceData?.nextGap?.id &&
+        acceptanceData?.archive?.saved === false &&
+        acceptanceData?.safety?.rawAudioStored === false &&
+        acceptanceData?.safety?.screenImageIncluded === false &&
+        acceptanceData?.safety?.actionPolicyBypassed === false
+        ? ok('realtime.dogfood_acceptance', 'Realtime dogfood acceptance report', `${acceptanceData.counts.passed}/${acceptanceData.counts.gates} gate(s) pass · next=${acceptanceData.nextGap?.id || '-'}`)
+        : fail('realtime.dogfood_acceptance', 'Realtime dogfood acceptance report', `GET /api/realtime/dogfood/acceptance ${acceptance.status}`, acceptance.data),
+    );
+
+    const acceptanceSave = await ctx.api('/api/realtime/dogfood/acceptance', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        auditLimit: 5,
+        saveArchive: true,
+      },
+    });
+    const acceptanceSavedData = acceptanceSave.data?.acceptance;
+    const archiveSavedGate = (acceptanceSavedData?.gates || []).find((gate) => gate.id === 'archive_saved');
+    out.push(
+      acceptanceSave.ok &&
+        acceptanceSave.data?.saved === true &&
+        acceptanceSavedData?.manualOnly === true &&
+        acceptanceSavedData?.startsMicrophone === false &&
+        acceptanceSavedData?.archive?.saved === true &&
+        archiveSavedGate?.ok === true &&
+        acceptanceSave.data?.archive?.file?.path &&
+        fs.existsSync(acceptanceSave.data.archive.file.path) &&
+        acceptanceSave.data?.archive?.safety?.rawAudioStored === false
+        ? ok('realtime.dogfood_acceptance_save', 'Realtime dogfood acceptance save path', acceptanceSave.data.archive.file.path)
+        : fail('realtime.dogfood_acceptance_save', 'Realtime dogfood acceptance save path', `POST /api/realtime/dogfood/acceptance ${acceptanceSave.status}`, acceptanceSave.data),
+    );
+
+    try {
+      const acceptanceCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-acceptance'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${acceptanceCui.stdout || ''}\n${acceptanceCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Realtime Dogfood Acceptance') &&
+          output.includes('starts microphone=no') &&
+          output.includes('Archive required: not saved') &&
+          output.includes('Missing gates:') &&
+          output.includes('policy bypass=no')
+          ? ok('realtime.cui_dogfood_acceptance', 'Realtime CUI dogfood acceptance', 'config CUI prints acceptance gates without starting voice')
+          : fail('realtime.cui_dogfood_acceptance', 'Realtime CUI dogfood acceptance', 'expected CUI acceptance to print gates, archive status, and safety markers', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_dogfood_acceptance', 'Realtime CUI dogfood acceptance', error instanceof Error ? error.message : String(error)));
+    }
+
+    const acceptanceTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_realtime_dogfood_acceptance',
+        arguments: { auditLimit: 5 },
+      },
+    });
+    const acceptanceToolOutput = parseToolOutput(acceptanceTool);
+    out.push(
+      acceptanceTool.ok &&
+        acceptanceTool.data?.ok === true &&
+        acceptanceToolOutput?.acceptance?.manualOnly === true &&
+        acceptanceToolOutput?.acceptance?.startsMicrophone === false &&
+        acceptanceToolOutput?.acceptance?.counts?.gates >= 15 &&
+        Array.isArray(acceptanceToolOutput?.acceptance?.gates)
+        ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.acceptance.counts.passed}/${acceptanceToolOutput.acceptance.counts.gates} gate(s) pass`)
+        : fail('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `tool execute ${acceptanceTool.status}`, acceptanceTool.data),
+    );
 
     const archivePreview = await ctx.api('/api/realtime/dogfood/archive?limit=3&auditLimit=12');
     const archivePreviewData = archivePreview.data?.archive;

@@ -299,6 +299,7 @@ async function printStatus() {
   console.log('D. Start Realtime dogfood drill');
   console.log('R. Run renderer Realtime dogfood (starts mic)');
   console.log('B. Show Realtime dogfood brief');
+  console.log('E. Show Realtime dogfood acceptance');
   console.log('A. Save Realtime dogfood archive');
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
@@ -1755,6 +1756,38 @@ function printRealtimeDogfoodArchive(result) {
   }
 }
 
+function printRealtimeDogfoodAcceptance(result) {
+  const acceptance = result?.acceptance || result || {};
+  const archive = result?.archive || {};
+  const counts = acceptance.counts || {};
+  console.log('JAVIS Realtime Dogfood Acceptance');
+  console.log('=================================');
+  console.log(`Status: ${acceptance.status || 'pending'} · accepted=${acceptance.accepted ? 'yes' : 'no'}`);
+  console.log(`Manual only=yes · starts microphone=${acceptance.startsMicrophone ? 'yes' : 'no'} · requires user=${acceptance.requiresUserPresence === false ? 'no' : 'yes'}`);
+  console.log(`Gates: ${Number(counts.passed || 0)}/${Number(counts.gates || 0)} pass · gaps ${Number(counts.gaps || 0)} · groups ${Number(counts.groups || 0)}`);
+  console.log(`Summary: ${compact(acceptance.summary || '-', 420)}`);
+  if (acceptance.nextGap) {
+    console.log(`Next gap: ${acceptance.nextGap.group || '-'} / ${acceptance.nextGap.id || '-'} · ${compact(acceptance.nextGap.label || '', 220)}`);
+    if (acceptance.nextGap.nextAction) console.log(`Next action: ${compact(acceptance.nextGap.nextAction, 260)}`);
+  }
+  console.log(`Archive required: ${acceptance.archive?.saved ? 'saved' : 'not saved'} · ${acceptance.archive?.file || archive.file?.path || '-'}`);
+  console.log(`Safety: raw audio stored=${acceptance.safety?.rawAudioStored ? 'yes' : 'no'} · screen image included=${acceptance.safety?.screenImageIncluded ? 'yes' : 'no'} · policy bypass=${acceptance.safety?.actionPolicyBypassed ? 'yes' : 'no'}`);
+  const groups = Array.isArray(acceptance.groups) ? acceptance.groups : [];
+  if (groups.length) {
+    console.log('\nGroups:');
+    for (const group of groups) {
+      console.log(`- ${group.ok ? 'pass' : 'gap'} ${group.id}: ${group.ready}/${group.total}${group.gaps?.length ? ` · missing ${group.gaps.join(', ')}` : ''}`);
+    }
+  }
+  const gaps = Array.isArray(acceptance.gaps) ? acceptance.gaps : [];
+  if (gaps.length) {
+    console.log('\nMissing gates:');
+    for (const gate of gaps.slice(0, 10)) {
+      console.log(`- ${gate.group}/${gate.id}: ${compact(gate.label || '', 180)}`);
+    }
+  }
+}
+
 async function showRealtimeDogfoodPrompt(options = {}) {
   if (options.copy) {
     const result = await request('/api/realtime/dogfood/prompt/copy', {
@@ -1780,6 +1813,11 @@ async function showRealtimeDogfoodArchive(options = {}) {
     body: options.save ? { source: 'cui' } : undefined,
   });
   printRealtimeDogfoodArchive(result);
+}
+
+async function showRealtimeDogfoodAcceptance() {
+  const result = await request('/api/realtime/dogfood/acceptance');
+  printRealtimeDogfoodAcceptance(result);
 }
 
 function printRealtimeDogfoodSession(result) {
@@ -1894,6 +1932,11 @@ async function main() {
 
   if (process.argv.includes('--print-realtime-dogfood-brief') || process.argv.includes('--realtime-dogfood-brief')) {
     await showRealtimeDogfoodBrief();
+    return;
+  }
+
+  if (process.argv.includes('--print-realtime-dogfood-acceptance') || process.argv.includes('--realtime-dogfood-acceptance')) {
+    await showRealtimeDogfoodAcceptance();
     return;
   }
 
@@ -2064,6 +2107,8 @@ async function main() {
         await startRendererRealtimeDogfoodFromCui(rl);
       } else if (answer === 'b' || answer === 'brief' || answer === 'dogfood brief') {
         await showRealtimeDogfoodBrief();
+      } else if (answer === 'e' || answer === 'acceptance' || answer === 'dogfood acceptance') {
+        await showRealtimeDogfoodAcceptance();
       } else if (answer === 'a' || answer === 'archive' || answer === 'dogfood archive') {
         await showRealtimeDogfoodArchive({ save: true });
       } else if (answer === 'p' || answer === 'prompt' || answer === 'dogfood prompt') {

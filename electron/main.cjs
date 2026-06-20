@@ -25303,6 +25303,156 @@ function realtimeDogfoodArchiveMetadata(archive = {}, filePath = '') {
   };
 }
 
+function realtimeDogfoodAcceptanceStepMap(evidence = {}) {
+  const drill = evidence.drill || evidence.dogfood?.drill || {};
+  const steps = Array.isArray(drill.steps) ? drill.steps : [];
+  return new Map(steps.map((step) => [step.id, step]));
+}
+
+function realtimeDogfoodAcceptanceGate({ id, group, label, ok, detail = '', nextAction = '', evidence = {} }) {
+  return {
+    id,
+    group,
+    label,
+    ok: Boolean(ok),
+    status: ok ? 'pass' : 'gap',
+    detail: compactRecordText(detail, 260),
+    nextAction: compactRecordText(nextAction, 260),
+    evidence,
+  };
+}
+
+function realtimeDogfoodAcceptanceStepGate(stepById, id, group, fallbackLabel = '') {
+  const step = stepById.get(id) || {};
+  return realtimeDogfoodAcceptanceGate({
+    id,
+    group,
+    label: step.label || fallbackLabel || id,
+    ok: Boolean(step.ok),
+    detail: step.detail || '',
+    nextAction: step.nextAction || '',
+    evidence: {
+      stepStatus: step.status || (step.ok ? 'ready' : 'pending'),
+      prompt: step.evidence?.prompt || step.evidence?.tool || '',
+    },
+  });
+}
+
+function realtimeDogfoodAcceptanceSnapshot(options = {}) {
+  const archive = options.archive || realtimeDogfoodArchiveSnapshot({
+    promptLimit: options.promptLimit || 20,
+    sessionLimit: options.sessionLimit || 6,
+    auditLimit: options.auditLimit || 20,
+    source: options.source || 'acceptance_preview',
+  });
+  const evidence = archive.evidence || realtimeVoiceEvidenceSnapshot();
+  const stepById = realtimeDogfoodAcceptanceStepMap(evidence);
+  const archivePath = archive.file?.path || '';
+  const archiveSaved = archive.saved === true && archivePath && fs.existsSync(archivePath);
+  const gates = [
+    realtimeDogfoodAcceptanceStepGate(stepById, 'open_monitor', 'operator', 'Open the Realtime evidence monitor'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'start_live_voice', 'live_voice', 'Start a real renderer/WebRTC voice session'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'inject_worker_progress', 'live_voice', 'Inject background worker progress passively'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'sync_latest_progress', 'live_voice', 'Sync latest work progress sequence into voice'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_progress', 'spoken_answer', 'Ask for spoken background progress'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_work_handoff', 'voice_tools', 'Ask voice for a work handoff'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_autopilot_status', 'voice_tools', 'Ask why unattended autopilot stopped'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_attention_explanation', 'voice_tools', 'Ask why the pet stayed quiet or changed color'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_perception_consent', 'voice_tools', 'Ask what JAVIS can see or control'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'teach_ui_demonstration', 'learning_loop', 'Teach one repeatable UI workflow'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'list_shortcuts', 'shortcut_loop', 'Ask voice to list saved shortcut phrases'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'save_shortcut_with_confirmation', 'shortcut_loop', 'Save a shortcut phrase after explicit confirmation'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'route_recalled_shortcut', 'shortcut_loop', 'Use the saved phrase and verify routed recall'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'forget_shortcut', 'shortcut_loop', 'Forget the saved shortcut phrase'),
+    realtimeDogfoodAcceptanceGate({
+      id: 'archive_saved',
+      group: 'audit_trail',
+      label: 'Save a local dogfood archive for the run',
+      ok: archiveSaved,
+      detail: archiveSaved
+        ? `Archive saved at ${archivePath}`
+        : 'No saved local archive is attached to this acceptance package yet.',
+      nextAction: 'Save a local archive after the live dogfood drill reaches ready evidence.',
+      evidence: {
+        saved: Boolean(archive.saved),
+        file: archivePath,
+        fileExists: Boolean(archivePath && fs.existsSync(archivePath)),
+      },
+    }),
+  ];
+  const requiredGates = gates;
+  const passed = requiredGates.filter((gate) => gate.ok);
+  const gaps = requiredGates.filter((gate) => !gate.ok);
+  const groups = Array.from(new Set(requiredGates.map((gate) => gate.group))).map((group) => {
+    const groupGates = requiredGates.filter((gate) => gate.group === group);
+    const ready = groupGates.filter((gate) => gate.ok).length;
+    return {
+      id: group,
+      ok: ready === groupGates.length,
+      ready,
+      total: groupGates.length,
+      gaps: groupGates.filter((gate) => !gate.ok).map((gate) => gate.id),
+    };
+  });
+  const accepted = gaps.length === 0;
+  const nextGap = gaps[0] || null;
+  const summary = accepted
+    ? `Realtime dogfood accepted: ${passed.length}/${requiredGates.length} required gate(s) passed.`
+    : `Realtime dogfood not accepted yet: ${passed.length}/${requiredGates.length} required gate(s) passed; next gap ${nextGap?.id || 'unknown'}.`;
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    source: String(options.source || 'api').slice(0, 80),
+    accepted,
+    status: accepted ? 'accepted' : 'pending',
+    manualOnly: true,
+    startsMicrophone: false,
+    requiresUserPresence: true,
+    summary,
+    counts: {
+      gates: requiredGates.length,
+      passed: passed.length,
+      gaps: gaps.length,
+      groups: groups.length,
+    },
+    groups,
+    gates,
+    gaps,
+    nextGap,
+    nextAction: nextGap?.nextAction || 'Archive and ship the accepted Realtime dogfood run.',
+    archive: {
+      id: archive.id || '',
+      saved: Boolean(archive.saved),
+      file: archivePath,
+      status: archive.status || '',
+      phase: archive.phase || '',
+      summary: archive.archiveSummary || archive.summary || '',
+    },
+    evidence: {
+      status: evidence.status || '',
+      phase: evidence.phase || '',
+      readyForVoiceProgressQuestion: Boolean(evidence.readyForVoiceProgressQuestion),
+      conversationStatus: evidence.conversation?.status || '',
+      progressSyncStatus: evidence.progressSync?.status || '',
+    },
+    safety: {
+      startsMicrophone: false,
+      rawAudioStored: false,
+      screenImageIncluded: false,
+      writesLocalJsonOnly: Boolean(archive.saved),
+      actionPolicyBypassed: false,
+      desktopPetDiagnostics: false,
+      recordReplayRequiresConfirmation: true,
+    },
+    output: [
+      summary,
+      nextGap ? `Next: ${nextGap.label} — ${nextGap.nextAction}` : '',
+      archivePath ? `Archive: ${archivePath}` : '',
+      'This acceptance package does not start microphone capture.',
+    ].filter(Boolean).join('\n'),
+  };
+}
+
 function realtimeDogfoodArchiveList(options = {}) {
   fs.mkdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR, { recursive: true });
   const limit = Math.max(1, Math.min(100, Number(options.limit || 10)));
@@ -33542,6 +33692,18 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(realtimeVoiceEvidenceToolSnapshot(args || {})) };
   }
 
+  if (name === 'get_realtime_dogfood_acceptance') {
+    const archive = realtimeDogfoodArchiveSnapshot({
+      ...(args || {}),
+      source: 'voice_acceptance_preview',
+    });
+    const acceptance = realtimeDogfoodAcceptanceSnapshot({
+      archive,
+      source: 'voice',
+    });
+    return { ok: true, output: JSON.stringify({ acceptance, archive }) };
+  }
+
   if (name === 'save_realtime_dogfood_archive') {
     const result = saveRealtimeDogfoodArchive({
       ...(args || {}),
@@ -34232,6 +34394,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
+      'Use get_realtime_dogfood_acceptance when the user asks whether the Realtime dogfood run passed, what gates are missing, whether the live voice drill can be accepted, or whether it is ready to archive. It is read-only and never starts microphone capture.',
       'Use save_realtime_dogfood_archive only when the user asks to save, export, archive, or keep the current Realtime dogfood evidence. It writes a local JSON evidence packet and never starts microphone capture.',
       'Use get_realtime_dogfood_session when the user asks about the dogfood session tracker, current drill record, next prompt, or which operator steps are recorded.',
       'Use start_realtime_dogfood_session only when the user asks to start tracking a real voice dogfood drill. It creates a local dogfood session tracker but does not start microphone capture.',
@@ -34866,6 +35029,20 @@ function createRealtimeSessionConfig(options = {}) {
             includeChecklist: { type: 'boolean' },
             includeRecentTools: { type: 'boolean' },
             promptLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_realtime_dogfood_acceptance',
+        description: 'Get a read-only acceptance report for the Realtime dogfood drill: required pass/gap gates, next missing evidence, archive status, and safety posture. Does not start microphone capture.',
+        parameters: {
+          type: 'object',
+          properties: {
+            promptLimit: { type: 'number' },
+            sessionLimit: { type: 'number' },
+            auditLimit: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -36054,6 +36231,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_attention_explanation',
   'get_work_progress',
   'get_realtime_evidence',
+  'get_realtime_dogfood_acceptance',
   'save_realtime_dogfood_archive',
   'get_realtime_dogfood_session',
   'start_realtime_dogfood_session',
@@ -36102,6 +36280,7 @@ function realtimeInstructionChecks(instructions = '') {
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
+    realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),
     realtimeArchive: /save_realtime_dogfood_archive|Realtime dogfood evidence.*local JSON|save, export, archive/i.test(text),
     realtimeDogfoodSession: /get_realtime_dogfood_session|start_realtime_dogfood_session|mark_realtime_dogfood_step|end_realtime_dogfood_session|dogfood session tracker/i.test(text),
     workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
@@ -36960,6 +37139,51 @@ function startApiServer() {
       });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood archive preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/acceptance', (req, res) => {
+    try {
+      const archive = realtimeDogfoodArchiveSnapshot({
+        promptLimit: req.query.promptLimit,
+        sessionLimit: req.query.sessionLimit,
+        auditLimit: req.query.auditLimit,
+        source: 'api_acceptance_preview',
+      });
+      res.json({
+        acceptance: realtimeDogfoodAcceptanceSnapshot({
+          archive,
+          source: req.query.source || 'api',
+        }),
+        archive,
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood acceptance failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/acceptance', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      const saveArchive = req.body?.saveArchive === true || String(req.body?.saveArchive || '').toLowerCase() === 'true';
+      const archive = saveArchive
+        ? saveRealtimeDogfoodArchive({
+            ...(req.body || {}),
+            source: req.body?.source || 'api_acceptance_save',
+          }).archive
+        : realtimeDogfoodArchiveSnapshot({
+            ...(req.body || {}),
+            source: req.body?.source || 'api_acceptance_preview',
+          });
+      res.json({
+        acceptance: realtimeDogfoodAcceptanceSnapshot({
+          archive,
+          source: req.body?.source || 'api',
+        }),
+        archive,
+        saved: Boolean(saveArchive && archive?.saved),
+      });
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood acceptance failed', error instanceof Error ? error.message : String(error));
     }
   });
 
