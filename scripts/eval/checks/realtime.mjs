@@ -503,6 +503,28 @@ export default {
         : fail('realtime.routing_speed_policy_tool', 'Realtime routing speed policy tool', `tool execute ${speedPolicyTool.status}`, speedPolicyTool.data),
     );
 
+    const browserSpeedPolicyTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_routing_speed_policy',
+        arguments: { message: '帮我看看当前网页，提取下一步操作，先不要提交表单。', includeScreen: true },
+      },
+    });
+    const browserSpeedPolicyToolOutput = parseToolOutput(browserSpeedPolicyTool);
+    out.push(
+      browserSpeedPolicyTool.ok &&
+        browserSpeedPolicyTool.data?.ok === true &&
+        browserSpeedPolicyToolOutput?.ok === true &&
+        browserSpeedPolicyToolOutput?.decision?.lane === 'background' &&
+        browserSpeedPolicyToolOutput?.decision?.speedProfile?.id === 'browser_workflow' &&
+        browserSpeedPolicyToolOutput?.decision?.toolFirst?.recommended === true &&
+        Array.isArray(browserSpeedPolicyToolOutput.decision.toolFirst.firstTools) &&
+        browserSpeedPolicyToolOutput.decision.toolFirst.firstTools.some((tool) => tool === 'read_browser_page' || tool === 'run_browser_workflow')
+        ? ok('realtime.routing_speed_policy_tool_first_browser', 'Realtime browser tool-first speed policy', `${browserSpeedPolicyToolOutput.decision.lane} · ${browserSpeedPolicyToolOutput.decision.speedProfile.id}`)
+        : fail('realtime.routing_speed_policy_tool_first_browser', 'Realtime browser tool-first speed policy', `tool execute ${browserSpeedPolicyTool.status}`, browserSpeedPolicyTool.data),
+    );
+
     const capabilityTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {

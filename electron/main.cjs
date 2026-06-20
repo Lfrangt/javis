@@ -4307,6 +4307,101 @@ function routingSpeedProfileForLane(lane) {
     profiles.find((profile) => profile.id === 'fast_text');
 }
 
+function routingSpeedProfileById(id) {
+  const key = String(id || '').trim();
+  if (!key) return null;
+  return routingSpeedProfiles().find((profile) => profile.id === key) || null;
+}
+
+function serializeRoutingSpeedProfile(profile) {
+  const item = profile || routingSpeedProfileById('fast_text') || routingSpeedProfileForLane('quick');
+  return {
+    id: item.id,
+    label: item.label,
+    modelRole: item.modelRole,
+    model: item.model,
+    latencyClass: item.latencyClass,
+    canRunInBackground: Boolean(item.canRunInBackground),
+    parallelEligible: Boolean(item.parallelEligible),
+    firstTools: Array.isArray(item.firstTools) ? item.firstTools.slice(0, 8) : [],
+    handoffRule: item.handoffRule,
+  };
+}
+
+function routingSpeedProfileForDecision(decision) {
+  return routingSpeedProfileById(decision?.speedProfile?.id) ||
+    routingSpeedProfileById(decision?.toolFirst?.profileId) ||
+    routingSpeedProfileForLane(decision?.lane);
+}
+
+function routingToolFirstCandidateForTask(message, contextPlan = {}, options = {}) {
+  const task = String(message || '').trim();
+  const text = task.replace(/\s+/g, ' ').trim().toLowerCase();
+  const needs = contextPlan?.needs && typeof contextPlan.needs === 'object' ? contextPlan.needs : {};
+  const recommendedTools = Array.isArray(contextPlan?.recommendedTools)
+    ? contextPlan.recommendedTools.map((item) => String(item || '').trim()).filter(Boolean)
+    : [];
+  const toolSet = new Set(recommendedTools);
+  const localCommand = String(options.localCommand || '').trim();
+  const browserLocalCommand = ['browser_control', 'web_search', 'open_url'].includes(localCommand);
+  const appLocalCommand = ['app_workflow', 'creative_workflow'].includes(localCommand);
+  const browserToolSignal = ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow']
+    .some((tool) => toolSet.has(tool));
+  const fileAppToolSignal = ['run_file_workflow', 'read_accessibility_tree', 'plan_ui_action', 'plan_app_workflow', 'plan_creative_workflow', 'plan_productivity_workflow']
+    .some((tool) => toolSet.has(tool));
+  const browserTextSignal = /browser|webpage|web page|current page|tab|url|link|website|site|search result|网页|页面|浏览器|标签页|链接|网站|搜索结果/.test(text);
+  const fileTextSignal = /file|folder|directory|path|desktop|downloads|documents|finder|文件|目录|文件夹|路径|桌面|下载|访达/.test(text);
+  const appTextSignal = /app|application|current app|window|ui|click|fill|type into|hotkey|software|软件|应用|窗口|按钮|点击|填写|输入|快捷键/.test(text);
+  const creativeTextSignal = /video edit|edit video|timeline|final cut|davinci|premiere|imovie|capcut|logic pro|garageband|ableton|fl studio|pro tools|daw|music compose|compose music|剪辑|剪视频|视频剪辑|编曲|作曲|混音|音轨|素材|时间线|导出视频|音乐制作/.test(text);
+  const productivityTextSignal = /notes?|reminders?|calendar|mail|messages|备忘录|提醒事项|日历|邮件|信息/.test(text);
+
+  let profileId = '';
+  let reason = '';
+  if (browserLocalCommand || browserToolSignal || needs.browserContext || needs.browserActivity || needs.browserPage || needs.browserDom || browserTextSignal) {
+    profileId = 'browser_workflow';
+    reason = browserLocalCommand
+      ? `local command ${localCommand} should use browser tools first`
+      : 'task refers to browser/page context, so read page/DOM before model synthesis';
+  } else if (
+    appLocalCommand ||
+    fileAppToolSignal ||
+    needs.files ||
+    needs.accessibility ||
+    needs.localExecution ||
+    fileTextSignal ||
+    appTextSignal ||
+    creativeTextSignal ||
+    productivityTextSignal
+  ) {
+    profileId = 'file_app_workflow';
+    reason = appLocalCommand
+      ? `local command ${localCommand} should use app workflow tools first`
+      : creativeTextSignal
+        ? 'task resembles video/music creative software work, so stage it through app workflow tools'
+        : 'task refers to local files or Mac apps, so use structured local tools before broad model work';
+  }
+
+  const profile = routingSpeedProfileById(profileId);
+  if (!profile) return null;
+  const firstTools = Array.from(new Set([
+    ...recommendedTools.filter((tool) => profile.firstTools.includes(tool)),
+    ...profile.firstTools,
+  ])).slice(0, 8);
+  return {
+    profile,
+    toolFirst: {
+      recommended: true,
+      profileId: profile.id,
+      label: profile.label,
+      modelRole: profile.modelRole,
+      firstTools,
+      reason: compactRecordText(reason, 220),
+      handoffRule: profile.handoffRule,
+      fallbackLane: normalizeRoutingLane(options.lane || options.mode || 'background'),
+    },
+  };
+}
+
 function routingSpeedPolicySnapshot(options = {}) {
   const task = String(options.message || options.task || options.query || '').trim();
   const includeSamples = options.includeSamples !== false && String(options.includeSamples || '').toLowerCase() !== 'false';
@@ -4343,7 +4438,7 @@ function routingSpeedPolicySnapshot(options = {}) {
           includeScreen: sample.includeScreen,
           useMemory: false,
         });
-        const speed = routingSpeedProfileForLane(decision.lane);
+        const speed = routingSpeedProfileForDecision(decision);
         return {
           id: sample.id,
           message: sample.message,
@@ -4356,6 +4451,7 @@ function routingSpeedPolicySnapshot(options = {}) {
           reason: decision.reason,
           contextMode: decision.contextPlan.mode,
           recommendedTools: decision.contextPlan.recommendedTools,
+          toolFirst: decision.toolFirst || { recommended: false },
         };
       })
     : [];
@@ -4367,10 +4463,11 @@ function routingSpeedPolicySnapshot(options = {}) {
         useMemory: false,
       })
     : null;
-  const selectedProfile = decision ? routingSpeedProfileForLane(decision.lane) : null;
+  const selectedProfile = decision ? routingSpeedProfileForDecision(decision) : null;
+  const selectedToolFirst = decision?.toolFirst || { recommended: false };
   return {
     ok: true,
-    version: 1,
+    version: 2,
     generatedAt: new Date().toISOString(),
     source: compactRecordText(options.source || 'api', 80),
     manualOnly: true,
@@ -4411,8 +4508,11 @@ function routingSpeedPolicySnapshot(options = {}) {
           contract: decision.contract,
           contextPlan: decision.contextPlan,
           speedProfile: selectedProfile,
+          toolFirst: selectedToolFirst,
           spokenPlan: compactRecordText(
-            selectedProfile?.canRunInBackground
+            selectedToolFirst?.recommended
+              ? `我先简短回应，然后优先用 ${selectedProfile.label} 的结构化工具（${(selectedToolFirst.firstTools || []).slice(0, 3).join('、') || '工具链'}）预览/验证；需要长分析时再交给后台。`
+              : selectedProfile?.canRunInBackground
               ? `我先简短回应，然后把这个任务交给 ${selectedProfile.label}，后台跑并通过进度/交接汇报。`
               : `这个适合 ${selectedProfile?.label || decision.label}，我会直接短答或先观察最小上下文。`,
             280,
@@ -19929,11 +20029,14 @@ function localCommandDecision(task) {
 
 function localCommandDecisionPayload(command, execute) {
   const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search']);
+  const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
     mode: 'quick',
     contract: laneContractReference('local'),
     label: command.label,
+    speedProfile,
+    toolFirst: { recommended: false },
     confidence: 0.98,
     reason: `matched local command: ${command.intent}`,
     execute: Boolean(execute),
@@ -20051,6 +20154,8 @@ function buildContextPlan(message, options = {}) {
   const fileSignal = /file|folder|directory|path|repo|codebase|readme|\.md\b|\.json\b|\.ts\b|\.tsx\b|\.js\b|\.py\b|文件|目录|文件夹|仓库|代码库|路径/.test(text);
   const knowledgeSignal = /obsidian|markdown vault|knowledge vault|knowledge base|notes?|vault|笔记|知识库|第二大脑|双链|日记/.test(text);
   const appControlSignal = /click|press|toggle|choose|fill|type into|hotkey|current app|window|ui|按钮|点击|按下|切换|选择|填写|输入|窗口|当前应用|控制/.test(text);
+  const creativeAppSignal = /video edit|edit video|timeline|final cut|davinci|premiere|imovie|capcut|logic pro|garageband|ableton|fl studio|pro tools|daw|music compose|compose music|剪辑|剪视频|视频剪辑|编曲|作曲|混音|音轨|素材|时间线|导出视频|音乐制作/.test(text);
+  const productivityAppSignal = /notes?|reminders?|calendar|mail|messages|备忘录|提醒事项|日历|邮件|信息/.test(text);
   const clipboardSignal = /clipboard|pasteboard|copy|paste|剪贴板|粘贴板|复制|粘贴/.test(text);
   const clipboardTextSignal = /read.*clipboard|clipboard.*content|what.*clipboard|剪贴板.*内容|读.*剪贴板|看看剪贴板/.test(text);
   const statusSignal = /status|briefing|progress|next action|jobs|approvals|session|inbox|状态|简报|进度|下一步|任务|审批|会话|收件箱|待办/.test(text);
@@ -20104,6 +20209,17 @@ function buildContextPlan(message, options = {}) {
     needs.accessibility = true;
     needs.localExecution = needs.localExecution || /click|press|toggle|choose|fill|type into|hotkey|点击|按下|切换|选择|填写|输入/.test(text);
     contextPlanPushReason(reasons, 'task may need current-app UI structure before action');
+  }
+  if (creativeAppSignal || productivityAppSignal) {
+    needs.macContext = true;
+    needs.accessibility = true;
+    needs.localExecution = true;
+    contextPlanPushReason(
+      reasons,
+      creativeAppSignal
+        ? 'task resembles creative software work and should be staged through app workflow tools'
+        : 'task refers to productivity apps and should use app workflow tools',
+    );
   }
   if (clipboardSignal) {
     needs.clipboard = true;
@@ -20594,7 +20710,7 @@ function routeTaskDecision(message, options = {}) {
   const codeSignal = /repo|codebase|代码|仓库|bug|test|lint|build|typescript|react|electron|api|endpoint|实现|修复|重构|commit|diff|pr\b|pull request/i.test(task);
   const codeActionSignal = /修复|实现|重构|改|调试|跑测试|测试|debug|fix|implement|refactor|patch|build|lint|test|commit/i.test(task);
   const longWorkSignal = /分析|计划|调研|比较|整理|总结|写一份|生成|设计|方案|报告|复盘|research|analy[sz]e|compare|summari[sz]e|draft|plan|report/i.test(task);
-  const computerWorkSignal = /文件|目录|folder|file|browser|网页|页面|screen|屏幕|app|窗口|剪贴板|clipboard/i.test(task);
+  const computerWorkSignal = /文件|目录|folder|file|browser|网页|页面|screen|屏幕|app|窗口|剪贴板|clipboard|software|视频剪辑|剪辑|编曲|作曲|混音|final cut|logic pro|garageband|ableton/i.test(task);
   const simpleQuestionSignal = /^(what|who|when|where|why|how|is|are|can|do|does|did)\b|[?？]$|^(什么|谁|哪里|什么时候|为什么|怎么|可以吗)/i.test(task);
 
   if (forcedLane) {
@@ -20629,22 +20745,17 @@ function routeTaskDecision(message, options = {}) {
     lane,
     mode,
   });
-  const speedProfile = routingSpeedProfileForLane(lane);
+  const toolFirstCandidate = ['codex', 'claude'].includes(lane)
+    ? null
+    : routingToolFirstCandidateForTask(task, contextPlan, { ...options, lane, mode });
+  const speedProfile = toolFirstCandidate?.profile || routingSpeedProfileForLane(lane);
   return {
     lane,
     mode,
     contract: laneContractReference(lane),
     label: lane === 'quick' ? 'Quick' : lane === 'background' ? 'Deep' : lane === 'codex' ? 'Codex' : 'Claude',
-    speedProfile: {
-      id: speedProfile.id,
-      label: speedProfile.label,
-      modelRole: speedProfile.modelRole,
-      model: speedProfile.model,
-      latencyClass: speedProfile.latencyClass,
-      canRunInBackground: Boolean(speedProfile.canRunInBackground),
-      parallelEligible: Boolean(speedProfile.parallelEligible),
-      handoffRule: speedProfile.handoffRule,
-    },
+    speedProfile: serializeRoutingSpeedProfile(speedProfile),
+    toolFirst: toolFirstCandidate?.toolFirst || { recommended: false },
     confidence,
     reason: reasons.join('; ') || 'default fast lane',
     execute: Boolean(options.execute),
@@ -20736,6 +20847,15 @@ async function routeTask(options = {}) {
       lane: decision.lane,
       mode: decision.mode,
     });
+    const localToolFirstCandidate = routingToolFirstCandidateForTask(task, decision.contextPlan, {
+      localCommand: localCommand.intent,
+      lane: decision.lane,
+      mode: decision.mode,
+    });
+    if (localToolFirstCandidate) {
+      decision.speedProfile = serializeRoutingSpeedProfile(localToolFirstCandidate.profile);
+      decision.toolFirst = localToolFirstCandidate.toolFirst;
+    }
     appendAudit('task_route.local_command', {
       intent: localCommand.intent,
       execute,

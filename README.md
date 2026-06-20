@@ -53,7 +53,7 @@ Local Mac-first realtime desktop buddy.
 - Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context and recalled local skill plans.
 - Bounded autonomy loop through `/api/autonomy/run` and Realtime `run_autonomy_loop`: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing policy gates, verify progress, scan failed-worker recovery, and run one budgeted recovery retry only when `execute:true` and `retry:true` are both explicit.
 - OpenClaw-style lane contract registry and voice capability map for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, collaboration state, and risk boundaries.
-- Routing speed policy from API/CUI/Realtime voice, explaining when to answer inline, use the fast model, queue background work, hand code to Codex/Claude, or use browser/file/app tools first.
+- Routing speed policy from API/CUI/Realtime voice, explaining when to answer inline, use the fast model, queue background work, hand code to Codex/Claude, or use browser/file/app tools first with explicit first-tool recommendations.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
 - Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, get a CUI/API/CLI handoff summary, and avoid overlapping write races.
 - No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
@@ -207,7 +207,7 @@ Local Express service on 127.0.0.1:3417
   /api/attention        -> quiet attention policy for pet color, notifications, cooldown, reasons, and operator-only history
   /api/attention/history -> recent operator-only attention notification sent/suppressed events
   /api/attention/notify -> apply the attention notification gate, with dry-run support for testing
-  /api/routing/speed-policy -> read-only model/lane speed policy for realtime vs fast/background/Codex/Claude/tool-first routing
+  /api/routing/speed-policy -> read-only model/lane speed policy for realtime vs fast/background/Codex/Claude/tool-first routing, including browser/file/app first-tool hints
   /api/conversation/state -> resident voice conversation lifecycle state
   /api/realtime/context -> silent preflight context for new voice sessions
   /api/realtime/evidence -> live voice dogfood checklist and sanitized tool-call evidence

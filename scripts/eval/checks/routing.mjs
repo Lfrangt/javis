@@ -94,13 +94,28 @@ export default {
         speedPolicyData?.decision?.lane === 'codex' &&
         speedPolicyData?.decision?.speedProfile?.id === 'codex_worker' &&
         Array.isArray(speedPolicyData.samples) &&
-        speedPolicyData.samples.some((sample) => sample.profile === 'codex_worker')
+        speedPolicyData.samples.some((sample) => sample.profile === 'codex_worker') &&
+        speedPolicyData.samples.some((sample) => sample.profile === 'browser_workflow' && sample.toolFirst?.recommended === true)
         ? ok('routing.speed_policy', 'Routing speed policy', `${speedPolicyData.decision.lane} · ${speedPolicyData.decision.speedProfile.id}`)
         : fail('routing.speed_policy', 'Routing speed policy', `GET /api/routing/speed-policy ${speedPolicy.status}`, speedPolicy.data),
     );
 
+    const browserSpeedPolicy = await ctx.api(`/api/routing/speed-policy?message=${encodeURIComponent('帮我看看当前网页，提取下一步操作，先不要提交表单。')}&includeScreen=true`);
+    const browserSpeedPolicyData = browserSpeedPolicy.data?.speedPolicy || {};
+    out.push(
+      browserSpeedPolicy.ok &&
+        browserSpeedPolicyData?.decision?.lane === 'background' &&
+        browserSpeedPolicyData?.decision?.speedProfile?.id === 'browser_workflow' &&
+        browserSpeedPolicyData?.decision?.toolFirst?.recommended === true &&
+        Array.isArray(browserSpeedPolicyData.decision.toolFirst.firstTools) &&
+        browserSpeedPolicyData.decision.toolFirst.firstTools.some((tool) => tool === 'read_browser_page' || tool === 'run_browser_workflow') &&
+        /结构化工具/.test(browserSpeedPolicyData.decision.spokenPlan || '')
+        ? ok('routing.speed_policy_tool_first_browser', 'Routing speed policy browser tool-first', `${browserSpeedPolicyData.decision.lane} · ${browserSpeedPolicyData.decision.speedProfile.id}`)
+        : fail('routing.speed_policy_tool_first_browser', 'Routing speed policy browser tool-first', `expected browser_workflow tool-first decision, got ${browserSpeedPolicy.status}`, browserSpeedPolicy.data),
+    );
+
     try {
-      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-routing-speed-policy', '--message', '帮我调研这个产品方向并整理成报告'], {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-routing-speed-policy', '--message', '帮我看看当前网页，提取下一步操作，先不要提交表单。'], {
         timeout: 10000,
         maxBuffer: 1024 * 1024,
         env: process.env,
@@ -113,9 +128,12 @@ export default {
           stdout.includes('background_model') &&
           stdout.includes('codex_worker') &&
           stdout.includes('Decision:') &&
-          stdout.includes('lane=background')
-          ? ok('routing.speed_policy_cui', 'Routing speed policy CUI', 'config CUI prints model/lane speed policy')
-          : fail('routing.speed_policy_cui', 'Routing speed policy CUI', 'expected CUI output to include policy profiles and background decision', { stdout: stdout.slice(0, 2400) }),
+          stdout.includes('lane=background') &&
+          stdout.includes('profile=browser_workflow') &&
+          stdout.includes('tool-first=browser_workflow') &&
+          stdout.includes('first-tools=')
+          ? ok('routing.speed_policy_cui', 'Routing speed policy CUI', 'config CUI prints model/lane speed policy with tool-first decision')
+          : fail('routing.speed_policy_cui', 'Routing speed policy CUI', 'expected CUI output to include policy profiles and browser tool-first decision', { stdout: stdout.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('routing.speed_policy_cui', 'Routing speed policy CUI', error instanceof Error ? error.message : String(error)));

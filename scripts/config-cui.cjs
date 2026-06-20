@@ -730,6 +730,11 @@ function printRoutingSpeedPolicy(result) {
     console.log('\nDecision:');
     console.log(`- lane=${decision.lane || '-'} · profile=${decision.speedProfile?.id || '-'} · model=${decision.speedProfile?.model || '-'}`);
     console.log(`- reason=${compact(decision.reason || '', 260)}`);
+    if (decision.toolFirst?.recommended) {
+      console.log(`- tool-first=${decision.toolFirst.profileId || '-'} · ${compact(decision.toolFirst.reason || '', 220)}`);
+      const firstTools = Array.isArray(decision.toolFirst.firstTools) ? decision.toolFirst.firstTools : [];
+      if (firstTools.length) console.log(`- first-tools=${firstTools.join(', ')}`);
+    }
     console.log(`- spoken=${compact(decision.spokenPlan || '', 260)}`);
     const tools = decision.contextPlan?.recommendedTools || [];
     if (tools.length) console.log(`- tools=${tools.join(', ')}`);
