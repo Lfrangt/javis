@@ -19,6 +19,14 @@ function parseJson(stdout) {
   }
 }
 
+function parseToolOutput(response) {
+  try {
+    return JSON.parse(response.data?.output || '{}');
+  } catch {
+    return {};
+  }
+}
+
 export default {
   lane: 'productivity',
   async run(ctx) {
@@ -138,9 +146,105 @@ export default {
       out.push(fail('productivity.live_dogfood_archive', 'Productivity live dogfood archive', error instanceof Error ? error.message : String(error)));
     }
 
+    const archivePreview = await ctx.api('/api/productivity/dogfood/archive?source=eval_productivity_archive_preview', {
+      timeoutMs: 45000,
+    });
+    const archivePreviewData = archivePreview.data?.archive || {};
+    const archivePreviewApps = new Set((archivePreviewData.cases || []).map((item) => item.app));
+    out.push(
+      archivePreview.ok &&
+        archivePreviewData.ok === true &&
+        archivePreviewData.suite === true &&
+        archivePreviewData.saved === false &&
+        archivePreviewData.execute === false &&
+        archivePreviewData.counts?.total === 4 &&
+        archivePreviewData.counts?.pass === 4 &&
+        ['Notes', 'Reminders', 'Calendar', 'Mail'].every((app) => archivePreviewApps.has(app)) &&
+        archivePreviewData.safety?.previewOnly === true &&
+        archivePreviewData.safety?.startsApps === false &&
+        archivePreviewData.safety?.executesProductivityActions === false &&
+        archivePreviewData.safety?.sendsMessages === false &&
+        archivePreviewData.safety?.mutatesUserFiles === false &&
+        archivePreviewData.safety?.recordsWorkflowHistory === false
+        ? ok('productivity.dogfood_archive_api_preview', 'Productivity dogfood archive API preview', 'four-app preview archive is safe and complete')
+        : fail('productivity.dogfood_archive_api_preview', 'Productivity dogfood archive API preview', `GET /api/productivity/dogfood/archive ${archivePreview.status}`, archivePreview.data),
+    );
+
+    const archiveSave = await ctx.api('/api/productivity/dogfood/archive', {
+      method: 'POST',
+      body: { source: 'eval_productivity_archive_save', limit: 2 },
+      timeoutMs: 45000,
+    });
+    const archiveSaveData = archiveSave.data?.archive || {};
+    const archiveSaveFile = archiveSave.data?.metadata?.file || archiveSaveData.archiveFile || archiveSaveData.file?.path || '';
+    out.push(
+      archiveSave.ok &&
+        archiveSave.data?.saved === true &&
+        archiveSaveData.ok === true &&
+        archiveSaveData.saved === true &&
+        archiveSaveData.counts?.pass === 4 &&
+        archiveSaveData.safety?.previewOnly === true &&
+        archiveSaveData.safety?.startsApps === false &&
+        archiveSaveData.safety?.sendsMessages === false &&
+        archiveSaveData.safety?.mutatesUserFiles === false &&
+        archiveSaveFile.includes('productivity-dogfood-archives') &&
+        fs.existsSync(archiveSaveFile)
+        ? ok('productivity.dogfood_archive_api_save', 'Productivity dogfood archive API save', `saved preview archive ${archiveSaveData.counts.pass}/${archiveSaveData.counts.total}`)
+        : fail('productivity.dogfood_archive_api_save', 'Productivity dogfood archive API save', `POST /api/productivity/dogfood/archive ${archiveSave.status}`, archiveSave.data),
+    );
+
+    const productivityTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'save_productivity_dogfood_archive',
+        arguments: { limit: 2 },
+      },
+      timeoutMs: 45000,
+    });
+    const productivityToolOutput = parseToolOutput(productivityTool);
+    const productivityToolArchive = productivityToolOutput.archive || {};
+    const productivityToolFile = productivityToolOutput.metadata?.file || productivityToolArchive.archiveFile || productivityToolArchive.file?.path || '';
+    out.push(
+      productivityTool.ok &&
+        productivityTool.data?.ok === true &&
+        productivityToolOutput.saved === true &&
+        productivityToolArchive.ok === true &&
+        productivityToolArchive.counts?.total === 4 &&
+        productivityToolArchive.counts?.pass === 4 &&
+        productivityToolArchive.safety?.previewOnly === true &&
+        productivityToolArchive.safety?.startsApps === false &&
+        productivityToolArchive.safety?.sendsMessages === false &&
+        productivityToolArchive.safety?.mutatesUserFiles === false &&
+        fs.existsSync(productivityToolFile)
+        ? ok('productivity.dogfood_archive_voice_tool', 'Productivity dogfood archive voice tool', 'save_productivity_dogfood_archive saved safe preview evidence')
+        : fail('productivity.dogfood_archive_voice_tool', 'Productivity dogfood archive voice tool', `tool execute ${productivityTool.status}`, productivityTool.data),
+    );
+
+    const evidence = await ctx.api('/api/realtime/evidence');
+    const productivityEvidence = evidence.data?.evidence?.productivityDogfoodTools;
+    const productivityEvents = Array.isArray(productivityEvidence?.recent) ? productivityEvidence.recent : [];
+    out.push(
+      evidence.ok &&
+        productivityEvidence?.hasSavedArchive === true &&
+        productivityEvidence?.hasSafePreview === true &&
+        productivityEvidence?.sendsMessages === false &&
+        productivityEvidence?.mutatesUserFiles === false &&
+        productivityEvents.some((event) => (
+          event.name === 'save_productivity_dogfood_archive' &&
+          event.source === 'eval' &&
+          event.productivityDogfood?.saved === true &&
+          event.productivityDogfood?.previewOnly === true &&
+          event.productivityDogfood?.pass === 4 &&
+          event.productivityDogfood?.sendsMessages === false
+        ))
+        ? ok('productivity.dogfood_archive_voice_evidence', 'Productivity dogfood archive voice evidence', 'saved productivity dogfood archive is visible in Realtime evidence')
+        : fail('productivity.dogfood_archive_voice_evidence', 'Productivity dogfood archive voice evidence', 'expected save_productivity_dogfood_archive in realtime evidence', productivityEvidence),
+    );
+
     const realtime = await ctx.api('/api/realtime/config', { timeoutMs: 15000 });
     const toolNames = realtime.data?.realtime?.toolNames || [];
-    const requiredTools = ['plan_productivity_workflow', 'run_productivity_workflow', 'run_productivity_action'];
+    const requiredTools = ['plan_productivity_workflow', 'run_productivity_workflow', 'run_productivity_action', 'get_productivity_dogfood_archive', 'save_productivity_dogfood_archive'];
     const hasTools = requiredTools.every((name) => toolNames.includes(name));
     out.push(
       realtime.ok && hasTools

@@ -15,7 +15,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime evidence separates SDP negotiation from renderer live/data-channel state, making dogfood blockers more precise.
 - Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
 - Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
-- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, autopilot-status, attention-explanation, perception-consent, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
+- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
 - Realtime voice self-diagnostics through `get_realtime_evidence`, so voice can explain whether WebRTC/live progress is connected, what is blocked, and the next dogfood step.
 - Realtime attention explanations through `get_attention_explanation`, so voice can briefly explain pet color, quiet/notify decisions, cooldown, and recent attention history without opening a desktop dashboard.
 - Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, perception-consent, UI-demonstration Record & Replay, and shortcut list/save/recall/forget flows from CUI/API.
@@ -45,6 +45,7 @@ Local Mac-first realtime desktop buddy.
 - Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
 - Current-state app workflow planning: observe frontmost app, Accessibility tree, and screen metadata to turn a natural request into previewable local workflow steps.
 - Creative app workflows: recognize video editing and music composition requests, choose a likely NLE/DAW such as Final Cut Pro, DaVinci Resolve, Premiere, iMovie, CapCut, Logic Pro, GarageBand, Ableton Live, FL Studio, or Pro Tools, return stage action packs, and execute one guarded action at a time with post-action screen/UI verification and recovery hints.
+- Productivity app dogfood archives: preview or save a four-app Notes/Reminders/Calendar/Mail draft evidence packet from API or Realtime voice tools without starting apps, sending messages, mutating user files, or recording workflow history by default.
 - Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context and recalled local skill plans.
 - OpenClaw-style lane contract registry for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, and risk boundaries.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.

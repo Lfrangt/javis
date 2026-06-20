@@ -55,6 +55,7 @@ const DEMONSTRATIONS_FILE = path.join(DATA_DIR, 'demonstrations.json');
 const SHORTCUTS_FILE = path.join(DATA_DIR, 'shortcuts.json');
 const REALTIME_DOGFOOD_SESSIONS_FILE = path.join(DATA_DIR, 'realtime-dogfood-sessions.json');
 const REALTIME_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'realtime-dogfood-archives');
+const PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'productivity-dogfood-archives');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
@@ -106,6 +107,7 @@ const MAX_PERSISTED_DEMONSTRATIONS = Math.max(20, Math.min(500, Number(process.e
 const MAX_PERSISTED_SHORTCUTS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_SHORTCUTS || 200)));
 const MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS || 120)));
 const MAX_REALTIME_DOGFOOD_ARCHIVES = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_REALTIME_DOGFOOD_ARCHIVES || 120)));
+const MAX_PRODUCTIVITY_DOGFOOD_ARCHIVES = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PRODUCTIVITY_DOGFOOD_ARCHIVES || 120)));
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
@@ -3768,7 +3770,7 @@ function capabilityToolHintsForContract(contract = {}) {
     browser: ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
     file: ['run_file_workflow', 'plan_file_organization', 'plan_file_batch', 'apply_file_plan', 'run_file_action'],
     knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow'],
-    app: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow'],
+    app: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow', 'get_productivity_dogfood_archive', 'save_productivity_dogfood_archive'],
   };
   return Array.from(new Set([...base, ...(extras[contract.id] || [])])).slice(0, 12);
 }
@@ -11993,6 +11995,378 @@ async function runProductivityWorkflowAction(options = {}) {
     workflow,
     routing,
     output,
+  };
+}
+
+function productivityDogfoodFutureIso(minutesFromNow) {
+  return new Date(Date.now() + Number(minutesFromNow || 0) * 60 * 1000).toISOString();
+}
+
+function productivityDogfoodSuitePayloads(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const confirm = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  const shouldRecord = options.record === true || options.recordWorkflow === true || (execute && confirm && options.recordWorkflow !== false);
+  const title = String(options.title || 'JAVIS productivity dogfood').trim();
+  const body = String(options.body || options.text || 'Created by JAVIS productivity dogfood preview.').trim();
+  const dueAt = String(options.dueAt || productivityDogfoodFutureIso(24 * 60));
+  const startAt = String(options.startAt || productivityDogfoodFutureIso(25 * 60));
+  const endAt = String(options.endAt || productivityDogfoodFutureIso(26 * 60));
+  const recipient = String(options.recipient || options.to || 'javis-dogfood@example.invalid').trim();
+  const source = String(options.source || 'productivity_dogfood_archive').slice(0, 80);
+  const common = {
+    execute,
+    confirm,
+    recordWorkflow: shouldRecord,
+    recordRouting: shouldRecord,
+    source,
+  };
+  return [
+    {
+      id: 'notes_note_capture',
+      instruction: 'Dogfood Notes note capture',
+      intent: 'note_capture',
+      stage: 'create',
+      app: 'Notes',
+      actionId: 'create_note',
+      title: `${title} Notes`,
+      body,
+      ...common,
+    },
+    {
+      id: 'reminders_create',
+      instruction: 'Dogfood Reminders reminder creation',
+      intent: 'reminder_create',
+      stage: 'create',
+      app: 'Reminders',
+      actionId: 'create_reminder',
+      title: `${title} Reminder`,
+      body,
+      dueAt,
+      ...common,
+    },
+    {
+      id: 'calendar_create_event',
+      instruction: 'Dogfood Calendar event creation',
+      intent: 'calendar_event',
+      stage: 'create',
+      app: 'Calendar',
+      actionId: 'create_event',
+      title: `${title} Calendar`,
+      body,
+      startAt,
+      endAt,
+      location: String(options.location || 'JAVIS local dogfood'),
+      ...common,
+    },
+    {
+      id: 'mail_draft',
+      instruction: 'Dogfood Mail visible draft creation',
+      intent: 'email_draft',
+      stage: 'draft',
+      app: 'Mail',
+      actionId: 'draft_email',
+      title: `${title} Mail`,
+      body,
+      recipient,
+      subject: String(options.subject || `${title} Mail draft`),
+      ...common,
+    },
+  ];
+}
+
+function productivityDogfoodCaseFromResult(payload = {}, result = {}, httpStatus = 200) {
+  const action = result.action || {};
+  const workflow = result.workflow || {};
+  const ok = result.ok !== false;
+  return {
+    id: payload.id || `${payload.app || 'productivity'}_${payload.actionId || 'action'}`,
+    app: payload.app || result.plan?.selectedApp?.name || '',
+    intent: payload.intent || result.plan?.intent || '',
+    actionId: payload.actionId || action.id || '',
+    stage: payload.stage || result.plan?.focusedStage?.id || '',
+    ok,
+    httpStatus,
+    status: result.status || (ok ? 'done' : 'blocked'),
+    executed: Boolean(result.executed),
+    requiresConfirmation: Boolean(result.requiresConfirmation),
+    nativeAutomation: Boolean(action.nativeAutomation),
+    nativeKind: action.nativeKind || '',
+    workflowId: workflow.id || '',
+    approvalId: result.approval?.id || '',
+    missingRequirements: Array.isArray(result.missingRequirements) ? result.missingRequirements : [],
+    recoveryHints: Array.isArray(result.recoveryHints) ? result.recoveryHints.slice(0, 8) : [],
+    selectedApp: result.plan?.selectedApp?.name || payload.app || '',
+    output: compactRecordText(result.output || '', 700),
+  };
+}
+
+function productivityDogfoodArchiveFilename(generatedAt, id) {
+  const timestamp = String(generatedAt || new Date().toISOString())
+    .replace(/[:.]/g, '-')
+    .replace(/[^0-9A-Za-zTZ_-]/g, '-');
+  const suffix = String(id || crypto.randomUUID()).replace(/[^0-9A-Za-z_-]/g, '').slice(0, 8) || 'archive';
+  return `${timestamp}-${suffix}.json`;
+}
+
+function productivityDogfoodArchiveSummary(archive = {}) {
+  const counts = archive.counts || {};
+  const safety = archive.safety || {};
+  return [
+    `Productivity dogfood archive ${counts.pass || 0}/${counts.total || 0} case(s) passed.`,
+    safety.previewOnly ? 'Preview-only: no apps started, no messages sent, no user files mutated.' : '',
+    counts.executed ? `${counts.executed} action(s) executed through policy gates.` : '',
+  ].filter(Boolean).join(' ');
+}
+
+function productivityDogfoodArchiveMetadata(archive = {}, filePath = '') {
+  const counts = archive.counts || {};
+  const safety = archive.safety || {};
+  return {
+    id: archive.id || '',
+    generatedAt: archive.generatedAt || archive.savedAt || '',
+    savedAt: archive.savedAt || '',
+    source: archive.source || '',
+    ok: Boolean(archive.ok),
+    suite: archive.suite !== false,
+    saved: Boolean(archive.saved),
+    execute: Boolean(archive.execute),
+    confirm: Boolean(archive.confirm),
+    summary: archive.archiveSummary || archive.summary || productivityDogfoodArchiveSummary(archive),
+    file: filePath || archive.file?.path || archive.archiveFile || '',
+    filename: filePath ? path.basename(filePath) : archive.file?.filename || '',
+    counts: {
+      total: Number(counts.total || 0),
+      pass: Number(counts.pass || 0),
+      fail: Number(counts.fail || 0),
+      executed: Number(counts.executed || 0),
+      preview: Number(counts.preview || 0),
+      nativeAutomation: Number(counts.nativeAutomation || 0),
+      workflows: Number(counts.workflows || 0),
+    },
+    safety: {
+      previewOnly: Boolean(safety.previewOnly),
+      startsApps: Boolean(safety.startsApps),
+      executesProductivityActions: Boolean(safety.executesProductivityActions),
+      sendsMessages: Boolean(safety.sendsMessages),
+      mutatesUserFiles: Boolean(safety.mutatesUserFiles),
+      mutatesUserRecords: Boolean(safety.mutatesUserRecords),
+      storesRawAudio: Boolean(safety.storesRawAudio),
+      storesScreenshots: Boolean(safety.storesScreenshots),
+      recordsWorkflowHistory: Boolean(safety.recordsWorkflowHistory),
+    },
+  };
+}
+
+function productivityDogfoodArchiveList(options = {}) {
+  fs.mkdirSync(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR, { recursive: true });
+  const limit = Math.max(1, Math.min(100, Number(options.limit || 10)));
+  const files = fs.readdirSync(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => {
+      const filePath = path.join(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { name, filePath, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, limit);
+  const items = files.map((file) => {
+    try {
+      const archive = JSON.parse(fs.readFileSync(file.filePath, 'utf8'));
+      return {
+        ...productivityDogfoodArchiveMetadata(archive, file.filePath),
+        bytes: file.bytes,
+      };
+    } catch (error) {
+      return {
+        id: '',
+        generatedAt: '',
+        savedAt: '',
+        source: '',
+        ok: false,
+        suite: true,
+        saved: true,
+        execute: false,
+        confirm: false,
+        status: 'unreadable',
+        summary: error instanceof Error ? error.message : String(error),
+        file: file.filePath,
+        filename: file.name,
+        counts: {},
+        safety: {},
+        bytes: file.bytes,
+      };
+    }
+  });
+  return {
+    ok: true,
+    archiveDir: PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR,
+    maxArchives: MAX_PRODUCTIVITY_DOGFOOD_ARCHIVES,
+    count: items.length,
+    items,
+  };
+}
+
+function pruneProductivityDogfoodArchives() {
+  fs.mkdirSync(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR, { recursive: true });
+  const files = fs.readdirSync(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => {
+      const filePath = path.join(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { filePath, mtimeMs: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const stale = files.slice(MAX_PRODUCTIVITY_DOGFOOD_ARCHIVES);
+  for (const file of stale) {
+    try {
+      fs.unlinkSync(file.filePath);
+    } catch {}
+  }
+  return stale.length;
+}
+
+async function productivityDogfoodArchiveSnapshot(options = {}) {
+  const generatedAt = new Date().toISOString();
+  const id = String(options.id || crypto.randomUUID());
+  const payloads = productivityDogfoodSuitePayloads({
+    ...(options || {}),
+    source: options.source || 'api_productivity_dogfood_archive',
+  });
+  const cases = [];
+  for (const payload of payloads) {
+    try {
+      const result = await runProductivityWorkflowAction({
+        ...payload,
+        recordWorkflow: payload.recordWorkflow,
+        recordRouting: payload.recordRouting,
+      });
+      cases.push(productivityDogfoodCaseFromResult(payload, result, result.ok ? 200 : result.approval ? 202 : 409));
+    } catch (error) {
+      cases.push({
+        id: payload.id,
+        app: payload.app,
+        intent: payload.intent,
+        actionId: payload.actionId,
+        stage: payload.stage,
+        ok: false,
+        httpStatus: 500,
+        status: 'blocked',
+        executed: false,
+        requiresConfirmation: false,
+        nativeAutomation: false,
+        nativeKind: '',
+        workflowId: '',
+        approvalId: '',
+        missingRequirements: [],
+        recoveryHints: [error instanceof Error ? error.message : String(error)],
+        selectedApp: payload.app,
+        output: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  const executeRequested = payloads.some((item) => item.execute === true);
+  const executed = cases.filter((item) => item.executed).length;
+  const total = cases.length;
+  const pass = cases.filter((item) => item.ok).length;
+  const filename = productivityDogfoodArchiveFilename(generatedAt, id);
+  const archive = {
+    ok: pass === total,
+    version: 1,
+    kind: 'productivity_dogfood_archive',
+    id,
+    generatedAt,
+    source: String(options.source || 'api').slice(0, 80),
+    suite: true,
+    execute: executeRequested,
+    confirm: payloads.some((item) => item.confirm === true),
+    saved: false,
+    archiveFile: '',
+    summary: `${pass}/${total} productivity dogfood cases passed`,
+    archiveSummary: '',
+    counts: {
+      total,
+      pass,
+      fail: total - pass,
+      executed,
+      preview: total - executed,
+      nativeAutomation: cases.filter((item) => item.nativeAutomation).length,
+      workflows: cases.filter((item) => item.workflowId).length,
+    },
+    safety: {
+      previewOnly: !executeRequested,
+      startsApps: executed > 0,
+      executesProductivityActions: executed > 0,
+      sendsMessages: false,
+      mutatesUserFiles: false,
+      mutatesUserRecords: executed > 0,
+      storesRawAudio: false,
+      storesScreenshots: false,
+      recordsWorkflowHistory: cases.some((item) => item.workflowId),
+      mailDraftOnly: cases.some((item) => item.actionId === 'draft_email') && !cases.some((item) => /send_email|send_mail/i.test(item.actionId || '')),
+      actionPolicyBypassed: false,
+    },
+    cases,
+    file: {
+      archiveDir: PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR,
+      filename,
+      path: path.join(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR, filename),
+    },
+  };
+  archive.archiveSummary = productivityDogfoodArchiveSummary(archive);
+  archive.output = [
+    archive.archiveSummary,
+    `File: ${archive.file.path}`,
+    archive.safety.previewOnly
+      ? 'This preview does not start apps, send messages, mutate user files, or record workflow history.'
+      : 'Executed actions still passed through local execution, control mode, action policy, and app permissions.',
+  ].join('\n');
+  return archive;
+}
+
+async function saveProductivityDogfoodArchive(options = {}) {
+  fs.mkdirSync(PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR, { recursive: true });
+  const archive = await productivityDogfoodArchiveSnapshot({
+    ...(options || {}),
+    source: options.source || 'api_productivity_dogfood_archive',
+  });
+  const savedAt = new Date().toISOString();
+  const filePath = archive.file.path;
+  const nextArchive = {
+    ...archive,
+    saved: true,
+    savedAt,
+    archiveFile: filePath,
+    file: {
+      ...archive.file,
+      path: filePath,
+    },
+  };
+  writeJsonAtomic(filePath, nextArchive);
+  const pruned = pruneProductivityDogfoodArchives();
+  appendAudit('productivity.dogfood_archive_saved', {
+    id: nextArchive.id,
+    source: nextArchive.source,
+    ok: nextArchive.ok,
+    total: nextArchive.counts.total,
+    pass: nextArchive.counts.pass,
+    fail: nextArchive.counts.fail,
+    executed: nextArchive.counts.executed,
+    previewOnly: nextArchive.safety.previewOnly,
+    file: filePath,
+    pruned,
+    sendsMessages: false,
+  });
+  return {
+    ok: nextArchive.ok,
+    saved: true,
+    archive: nextArchive,
+    metadata: productivityDogfoodArchiveMetadata(nextArchive, filePath),
+    archives: productivityDogfoodArchiveList({ limit: options.limit || 5 }),
+    output: [
+      `Saved productivity dogfood archive: ${filePath}`,
+      nextArchive.archiveSummary,
+      'It did not send messages, bypass action policy, or store raw audio/screen images.',
+    ].join('\n'),
   };
 }
 
@@ -23895,6 +24269,10 @@ const REALTIME_DOGFOOD_SESSION_TOOL_NAMES = new Set([
   'mark_realtime_dogfood_step',
   'end_realtime_dogfood_session',
 ]);
+const REALTIME_PRODUCTIVITY_DOGFOOD_TOOL_NAMES = new Set([
+  'get_productivity_dogfood_archive',
+  'save_productivity_dogfood_archive',
+]);
 const REALTIME_DEMONSTRATION_TOOL_NAMES = new Set([
   'get_ui_demonstrations',
   'start_ui_demonstration',
@@ -24303,6 +24681,35 @@ function realtimeDogfoodSessionToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeProductivityDogfoodToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_PRODUCTIVITY_DOGFOOD_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const archive = output.archive || {};
+  const metadata = output.metadata || productivityDogfoodArchiveMetadata(archive, archive.archiveFile || archive.file?.path || '');
+  const counts = metadata.counts || archive.counts || {};
+  const safety = metadata.safety || archive.safety || {};
+  return {
+    action: name === 'save_productivity_dogfood_archive' ? 'save' : 'preview',
+    archiveId: String(metadata.id || archive.id || '').slice(0, 120),
+    saved: Boolean(output.saved || metadata.saved || archive.saved),
+    file: compactRecordText(metadata.file || archive.archiveFile || archive.file?.path || '', 260),
+    ok: Boolean(metadata.ok || archive.ok),
+    total: boundedCount(counts.total, 1000),
+    pass: boundedCount(counts.pass, 1000),
+    fail: boundedCount(counts.fail, 1000),
+    executed: boundedCount(counts.executed, 1000),
+    preview: boundedCount(counts.preview, 1000),
+    previewOnly: Boolean(safety.previewOnly),
+    startsApps: Boolean(safety.startsApps),
+    sendsMessages: Boolean(safety.sendsMessages),
+    mutatesUserFiles: Boolean(safety.mutatesUserFiles),
+    recordsWorkflowHistory: Boolean(safety.recordsWorkflowHistory),
+    executeRequested: args?.execute === true || String(args?.execute || '').toLowerCase() === 'true',
+    confirm: args?.confirm === true || args?.confirmed === true || String(args?.confirm || args?.confirmed || '').toLowerCase() === 'true',
+    output: compactRecordText(output.output || archive.output || metadata.summary || '', 260),
+  };
+}
+
 function recordRealtimeToolCall(options = {}) {
   const name = compactRecordText(options.name || '', 120);
   if (!name) return null;
@@ -24318,6 +24725,7 @@ function recordRealtimeToolCall(options = {}) {
   const browser = realtimeBrowserToolSummary(name, options.args || {}, result);
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
   const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
+  const productivityDogfood = realtimeProductivityDogfoodToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
     name,
@@ -24338,6 +24746,7 @@ function recordRealtimeToolCall(options = {}) {
     browser,
     demonstration,
     dogfoodSession,
+    productivityDogfood,
   };
   realtimeToolCallEvents.unshift(event);
   realtimeToolCallEvents.splice(MAX_REALTIME_TOOL_CALL_EVENTS);
@@ -24405,6 +24814,14 @@ function recordRealtimeToolCall(options = {}) {
     dogfoodSessionStartsMicrophone: Boolean(dogfoodSession?.startsMicrophone),
     dogfoodSessionEvidenceReady: dogfoodSession?.evidenceReady || 0,
     dogfoodSessionOperatorDone: dogfoodSession?.operatorDone || 0,
+    productivityDogfoodAction: productivityDogfood?.action || '',
+    productivityDogfoodSaved: Boolean(productivityDogfood?.saved),
+    productivityDogfoodPreviewOnly: Boolean(productivityDogfood?.previewOnly),
+    productivityDogfoodPass: productivityDogfood?.pass || 0,
+    productivityDogfoodTotal: productivityDogfood?.total || 0,
+    productivityDogfoodExecuted: productivityDogfood?.executed || 0,
+    productivityDogfoodSendsMessages: Boolean(productivityDogfood?.sendsMessages),
+    productivityDogfoodFile: productivityDogfood?.file || '',
     error: event.error,
   });
   return event;
@@ -24456,6 +24873,38 @@ function realtimeDogfoodSessionToolEvidence(limit = 8) {
     nextAction: recent.length
       ? 'Use live voice to inspect or update the operator dogfood session while watching evidence.'
       : 'Ask the live voice session to start or inspect the Realtime dogfood session tracker.',
+  };
+}
+
+function realtimeProductivityDogfoodToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_PRODUCTIVITY_DOGFOOD_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.productivityDogfood?.action).filter(Boolean));
+  const hasPreview = actions.has('preview');
+  const hasSavedArchive = recent.some((event) => event.ok && event.productivityDogfood?.saved === true);
+  const hasSafePreview = recent.some((event) => (
+    event.ok &&
+    event.productivityDogfood?.previewOnly === true &&
+    event.productivityDogfood?.startsApps === false &&
+    event.productivityDogfood?.sendsMessages === false &&
+    event.productivityDogfood?.mutatesUserFiles === false
+  ));
+  return {
+    ok: recent.length > 0,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasPreview,
+    hasSavedArchive,
+    hasSafePreview,
+    startsApps: recent.some((event) => event.productivityDogfood?.startsApps === true),
+    sendsMessages: recent.some((event) => event.productivityDogfood?.sendsMessages === true),
+    mutatesUserFiles: recent.some((event) => event.productivityDogfood?.mutatesUserFiles === true),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasSavedArchive
+      ? 'Ask live voice to explain the saved productivity dogfood evidence and then run a confirmed live Mac pass only when the user asks.'
+      : 'Ask live voice to preview or save the four-app productivity dogfood archive.',
   };
 }
 
@@ -24952,6 +25401,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const capabilityTools = evidence.capabilityTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
+  const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
@@ -24988,6 +25438,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '你现在能做什么？这个任务应该用哪个工具？',
       '你最近学到了我什么使用习惯？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
+      '保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
       '我来教你一个流程，开始记录这个 UI 流程',
     ],
     expectedEvidence: [
@@ -25049,6 +25500,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: 'run_browser_workflow',
       },
       {
+        id: 'productivity_dogfood_tool',
+        label: 'Realtime saved a safe productivity dogfood archive',
+        ok: Boolean(productivityDogfoodTools.hasSavedArchive && productivityDogfoodTools.hasSafePreview),
+        tool: 'save_productivity_dogfood_archive',
+      },
+      {
         id: 'demonstration_tool',
         label: 'Realtime recorded a UI demonstration and drafted a skill safely',
         ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
@@ -25069,6 +25526,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const capabilityTools = evidence.capabilityTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
+  const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
@@ -25094,7 +25552,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, learningTools, browserTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -25200,6 +25658,18 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasSafeWorkflowPreview: Boolean(browserTools.hasSafeWorkflowPreview),
       nextAction: browserTools.nextAction || 'Ask the live voice session to inspect the current browser page safely.',
     },
+    productivityDogfoodTools: {
+      observed: Boolean(productivityDogfoodTools.ok),
+      count: Number(productivityDogfoodTools.count || 0),
+      observedActions: Array.isArray(productivityDogfoodTools.observedActions) ? productivityDogfoodTools.observedActions : [],
+      hasPreview: Boolean(productivityDogfoodTools.hasPreview),
+      hasSavedArchive: Boolean(productivityDogfoodTools.hasSavedArchive),
+      hasSafePreview: Boolean(productivityDogfoodTools.hasSafePreview),
+      startsApps: Boolean(productivityDogfoodTools.startsApps),
+      sendsMessages: Boolean(productivityDogfoodTools.sendsMessages),
+      mutatesUserFiles: Boolean(productivityDogfoodTools.mutatesUserFiles),
+      nextAction: productivityDogfoodTools.nextAction || 'Ask the live voice session to save a safe productivity dogfood archive.',
+    },
     demonstrationTools: {
       observed: Boolean(demonstrationTools.ok),
       count: Number(demonstrationTools.count || 0),
@@ -25245,6 +25715,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const capabilityTools = options.capabilityTools || evidence.capabilityTools || {};
   const learningTools = options.learningTools || evidence.learningTools || {};
   const browserTools = options.browserTools || evidence.browserTools || {};
+  const productivityDogfoodTools = options.productivityDogfoodTools || evidence.productivityDogfoodTools || {};
   const demonstrationTools = options.demonstrationTools || evidence.demonstrationTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
@@ -25379,6 +25850,25 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       },
     }),
     realtimeDogfoodDrillStep({
+      id: 'save_productivity_dogfood_archive',
+      label: 'Save safe productivity dogfood evidence',
+      ok: Boolean(productivityDogfoodTools.hasSavedArchive && productivityDogfoodTools.hasSafePreview),
+      detail: productivityDogfoodTools.hasSavedArchive
+        ? 'save_productivity_dogfood_archive saved a local preview archive for Notes, Reminders, Calendar, and Mail draft.'
+        : 'No safe productivity dogfood archive has been saved from recent Realtime tool evidence.',
+      nextAction: 'Ask: 保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
+      evidence: {
+        tool: 'save_productivity_dogfood_archive',
+        count: Number(productivityDogfoodTools.count || 0),
+        observedActions: Array.isArray(productivityDogfoodTools.observedActions) ? productivityDogfoodTools.observedActions : [],
+        hasPreview: Boolean(productivityDogfoodTools.hasPreview),
+        hasSavedArchive: Boolean(productivityDogfoodTools.hasSavedArchive),
+        hasSafePreview: Boolean(productivityDogfoodTools.hasSafePreview),
+        startsApps: Boolean(productivityDogfoodTools.startsApps),
+        sendsMessages: Boolean(productivityDogfoodTools.sendsMessages),
+      },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'teach_ui_demonstration',
       label: 'Teach one repeatable UI workflow',
       ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
@@ -25459,6 +25949,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '你现在能做什么？这个任务应该用哪个工具？',
       '你最近学到了我什么使用习惯？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
+      '保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
       '我来教你一个流程，开始记录这个 UI 流程',
       '记录这一步：观察当前窗口并记住我要确认保存状态',
       '结束记录，并生成回放计划和 skill 草稿',
@@ -26041,6 +26532,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_local_capabilities', 'voice_tools', 'Ask which local capability or tool should handle the task'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_learning_profile', 'learning_loop', 'Ask what local habits JAVIS has inferred'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_browser_workflow', 'computer_tools', 'Ask voice to inspect the current browser page safely'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'save_productivity_dogfood_archive', 'computer_tools', 'Save a safe productivity dogfood archive'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'teach_ui_demonstration', 'learning_loop', 'Teach one repeatable UI workflow'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'list_shortcuts', 'shortcut_loop', 'Ask voice to list saved shortcut phrases'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_shortcut_with_confirmation', 'shortcut_loop', 'Save a shortcut phrase after explicit confirmation'),
@@ -27180,6 +27672,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const toolCalls = realtimeToolCallSnapshot(10);
   const shortcutTools = realtimeShortcutToolEvidence(8);
   const dogfoodSessionTools = realtimeDogfoodSessionToolEvidence(8);
+  const productivityDogfoodTools = realtimeProductivityDogfoodToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
   const autopilotTools = realtimeAutopilotToolEvidence(8);
   const attentionTools = realtimeAttentionToolEvidence(8);
@@ -27249,6 +27742,7 @@ function realtimeVoiceEvidenceSnapshot() {
     toolCalls,
     shortcutTools,
     dogfoodSessionTools,
+    productivityDogfoodTools,
     handoffTools,
     autopilotTools,
     attentionTools,
@@ -34374,6 +34868,30 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'get_productivity_dogfood_archive') {
+    const archive = await productivityDogfoodArchiveSnapshot({
+      ...(args || {}),
+      execute: false,
+      confirm: false,
+      source: 'voice_preview',
+    });
+    return {
+      ok: archive.ok,
+      output: JSON.stringify({
+        archive,
+        archives: productivityDogfoodArchiveList({ limit: args?.limit || 5 }),
+      }),
+    };
+  }
+
+  if (name === 'save_productivity_dogfood_archive') {
+    const result = await saveProductivityDogfoodArchive({
+      ...(args || {}),
+      source: 'voice',
+    });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_recent_workflows') {
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 8)));
     const workflowItems = workflowSnapshot(limit);
@@ -35109,6 +35627,8 @@ function createRealtimeSessionConfig(options = {}) {
       'Use plan_productivity_workflow for Notes, Reminders, Calendar, Mail, email drafts, meetings, notes, and to-dos. It chooses a productivity app and staged action pack without creating, sending, inviting, or deleting by itself.',
       'Use run_productivity_workflow only when the user asks to start/open a productivity task. It can open/focus the selected app and return the action pack; create note/reminder/event/email-draft actions still require a specific run_productivity_action call.',
       'Use run_productivity_action to preview or execute exactly one productivity action by actionId. Notes, reminders, calendar events, and email drafts require missing fields to be filled and confirm:true before execution. Email sending, calendar invitations, deletes, and bulk changes stay blocked or require explicit human review.',
+      'Use get_productivity_dogfood_archive when the user asks whether Notes, Reminders, Calendar, or Mail draft automation is covered by safe dogfood evidence. It is preview-only and does not start apps or send messages.',
+      'Use save_productivity_dogfood_archive when the user asks to save, export, archive, or keep the productivity dogfood evidence. Do not pass execute:true and confirm:true unless the user explicitly asks for a live Mac run after reviewing the preview.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
@@ -35697,6 +36217,48 @@ function createRealtimeSessionConfig(options = {}) {
             parallelGroup: { type: 'string' },
           },
           required: ['instruction'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_productivity_dogfood_archive',
+        description: 'Preview the four-app productivity dogfood evidence packet for Notes, Reminders, Calendar, and Mail draft. Default is preview-only: no apps started, no messages sent, no user files mutated.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            body: { type: 'string' },
+            dueAt: { type: 'string' },
+            startAt: { type: 'string' },
+            endAt: { type: 'string' },
+            recipient: { type: 'string' },
+            subject: { type: 'string' },
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'save_productivity_dogfood_archive',
+        description: 'Save a local JSON archive for the four-app productivity dogfood suite. Use preview-only by default; pass execute:true and confirm:true only after explicit user confirmation for a live Mac run.',
+        parameters: {
+          type: 'object',
+          properties: {
+            title: { type: 'string' },
+            body: { type: 'string' },
+            dueAt: { type: 'string' },
+            startAt: { type: 'string' },
+            endAt: { type: 'string' },
+            recipient: { type: 'string' },
+            subject: { type: 'string' },
+            execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            recordWorkflow: { type: 'boolean' },
+            limit: { type: 'number' },
+          },
           additionalProperties: false,
         },
       },
@@ -36976,6 +37538,8 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_realtime_evidence',
   'get_realtime_dogfood_acceptance',
   'save_realtime_dogfood_archive',
+  'get_productivity_dogfood_archive',
+  'save_productivity_dogfood_archive',
   'get_realtime_dogfood_session',
   'start_realtime_dogfood_session',
   'mark_realtime_dogfood_step',
@@ -37030,6 +37594,7 @@ function realtimeInstructionChecks(instructions = '') {
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),
     realtimeArchive: /save_realtime_dogfood_archive|Realtime dogfood evidence.*local JSON|save, export, archive/i.test(text),
+    productivityDogfoodArchive: /get_productivity_dogfood_archive|save_productivity_dogfood_archive|Notes, Reminders, Calendar, or Mail draft automation|productivity dogfood evidence/i.test(text),
     realtimeDogfoodSession: /get_realtime_dogfood_session|start_realtime_dogfood_session|mark_realtime_dogfood_step|end_realtime_dogfood_session|dogfood session tracker/i.test(text),
     workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
     autopilotStatus: /get_autopilot_status|autopilot did|unattended work|can continue by itself|autopilot is waiting/i.test(text),
@@ -38617,6 +39182,48 @@ function startApiServer() {
       res.json({ benchmarks });
     } catch (error) {
       jsonError(res, 500, 'Productivity benchmarks failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/productivity/dogfood/archives', (req, res) => {
+    try {
+      res.json({ archives: productivityDogfoodArchiveList({ limit: req.query.limit }) });
+    } catch (error) {
+      jsonError(res, 500, 'Productivity dogfood archive list failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/productivity/dogfood/archive', async (req, res) => {
+    try {
+      const archive = await productivityDogfoodArchiveSnapshot({
+        title: req.query.title,
+        body: req.query.body,
+        dueAt: req.query.dueAt,
+        startAt: req.query.startAt,
+        endAt: req.query.endAt,
+        recipient: req.query.recipient,
+        subject: req.query.subject,
+        execute: false,
+        confirm: false,
+        source: req.query.source || 'api_preview',
+      });
+      res.json({
+        archive,
+        archives: productivityDogfoodArchiveList({ limit: req.query.limit || 5 }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Productivity dogfood archive preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/productivity/dogfood/archive', express.json({ limit: '128kb' }), async (req, res) => {
+    try {
+      res.json(await saveProductivityDogfoodArchive({
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+      }));
+    } catch (error) {
+      jsonError(res, 400, 'Productivity dogfood archive save failed', error instanceof Error ? error.message : String(error));
     }
   });
 

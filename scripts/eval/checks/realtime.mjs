@@ -21,6 +21,8 @@ const REQUIRED_TOOLS = [
   'get_realtime_evidence',
   'get_realtime_dogfood_acceptance',
   'save_realtime_dogfood_archive',
+  'get_productivity_dogfood_archive',
+  'save_productivity_dogfood_archive',
   'get_realtime_dogfood_session',
   'start_realtime_dogfood_session',
   'mark_realtime_dogfood_step',
@@ -216,6 +218,52 @@ export default {
         ))
         ? ok('realtime.browser_workflow_tool_evidence', 'Realtime browser workflow tool evidence', 'run_browser_workflow is visible in safe Realtime browser evidence')
         : fail('realtime.browser_workflow_tool_evidence', 'Realtime browser workflow tool evidence', 'expected run_browser_workflow to appear in realtime evidence', browserToolEvidence),
+    );
+
+    const productivityDogfoodTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'save_productivity_dogfood_archive',
+        arguments: { limit: 2 },
+      },
+      timeoutMs: 45000,
+    });
+    const productivityDogfoodOutput = parseToolOutput(productivityDogfoodTool);
+    const productivityDogfoodArchive = productivityDogfoodOutput.archive || {};
+    out.push(
+      productivityDogfoodTool.ok &&
+        productivityDogfoodTool.data?.ok === true &&
+        productivityDogfoodOutput.saved === true &&
+        productivityDogfoodArchive.ok === true &&
+        productivityDogfoodArchive.counts?.total === 4 &&
+        productivityDogfoodArchive.counts?.pass === 4 &&
+        productivityDogfoodArchive.safety?.previewOnly === true &&
+        productivityDogfoodArchive.safety?.startsApps === false &&
+        productivityDogfoodArchive.safety?.sendsMessages === false &&
+        productivityDogfoodArchive.safety?.mutatesUserFiles === false
+        ? ok('realtime.productivity_dogfood_tool', 'Realtime productivity dogfood voice tool', 'saved four-app productivity preview evidence safely')
+        : fail('realtime.productivity_dogfood_tool', 'Realtime productivity dogfood voice tool', `tool execute ${productivityDogfoodTool.status}`, productivityDogfoodTool.data),
+    );
+
+    const productivityDogfoodEvidence = await ctx.api('/api/realtime/evidence');
+    const productivityDogfoodToolEvidence = productivityDogfoodEvidence.data?.evidence?.productivityDogfoodTools;
+    const productivityDogfoodEvents = Array.isArray(productivityDogfoodToolEvidence?.recent) ? productivityDogfoodToolEvidence.recent : [];
+    out.push(
+      productivityDogfoodEvidence.ok &&
+        productivityDogfoodToolEvidence?.hasSavedArchive === true &&
+        productivityDogfoodToolEvidence?.hasSafePreview === true &&
+        productivityDogfoodToolEvidence?.sendsMessages === false &&
+        productivityDogfoodToolEvidence?.mutatesUserFiles === false &&
+        productivityDogfoodEvents.some((event) => (
+          event.name === 'save_productivity_dogfood_archive' &&
+          event.source === 'eval' &&
+          event.productivityDogfood?.saved === true &&
+          event.productivityDogfood?.previewOnly === true &&
+          event.productivityDogfood?.pass === 4
+        ))
+        ? ok('realtime.productivity_dogfood_tool_evidence', 'Realtime productivity dogfood evidence', 'save_productivity_dogfood_archive is visible in Realtime evidence')
+        : fail('realtime.productivity_dogfood_tool_evidence', 'Realtime productivity dogfood evidence', 'expected save_productivity_dogfood_archive to appear in realtime evidence', productivityDogfoodToolEvidence),
     );
 
     const perceptionTool = await ctx.api('/api/tools/execute', {
@@ -1338,6 +1386,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         e.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         e.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
+        e.drill.steps.some((step) => step.id === 'save_productivity_dogfood_archive') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
         e.gapSummary?.manualOnly === true &&
         e.gapSummary?.startsMicrophone === false &&
@@ -1351,6 +1400,8 @@ export default {
         e.learningTools?.hasLearningProfile === true &&
         e.browserTools?.hasWorkflow === true &&
         e.browserTools?.hasSafeWorkflowPreview === true &&
+        e.productivityDogfoodTools?.hasSavedArchive === true &&
+        e.productivityDogfoodTools?.hasSafePreview === true &&
         e.latency?.quality === 'fast' &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
@@ -1391,6 +1442,7 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         d.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         d.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
+        d.drill.steps.some((step) => step.id === 'save_productivity_dogfood_archive') &&
         d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
         d.gapSummary?.manualOnly === true &&
         d.gapSummary?.startsMicrophone === false &&
@@ -1408,6 +1460,8 @@ export default {
         d.learningTools?.privacySafe === true &&
         d.browserTools?.hasWorkflow === true &&
         d.browserTools?.hasSafeWorkflowPreview === true &&
+        d.productivityDogfoodTools?.hasSavedArchive === true &&
+        d.productivityDogfoodTools?.hasSafePreview === true &&
         d.demonstrationTools?.hasSafeReplayPlan === true &&
         d.demonstrationTools?.hasDraft === true &&
         d.demonstrationTools?.hasConfirmationGate === true &&
@@ -1421,6 +1475,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
@@ -1430,6 +1485,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_local_capabilities') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_profile') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'run_browser_workflow') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'save_productivity_dogfood_archive') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
@@ -1454,6 +1510,7 @@ export default {
       'ask_local_capabilities',
       'ask_learning_profile',
       'ask_browser_workflow',
+      'save_productivity_dogfood_archive',
       'teach_ui_demonstration',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
@@ -1473,6 +1530,7 @@ export default {
         drillGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
         Array.isArray(drillData.prompts) &&
         drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
@@ -1480,6 +1538,7 @@ export default {
         drillData.prompts.some((prompt) => prompt.includes('能做什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('学到了')) &&
         drillData.prompts.some((prompt) => prompt.includes('当前网页')) &&
+        drillData.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
         drillData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
@@ -1597,6 +1656,7 @@ export default {
       'ask_local_capabilities',
       'ask_learning_profile',
       'ask_browser_workflow',
+      'save_productivity_dogfood_archive',
       'teach_ui_demonstration',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
