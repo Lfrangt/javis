@@ -127,7 +127,7 @@ npm run config -- --print-perception
 curl http://127.0.0.1:3417/api/perception/consent
 ```
 
-This prints the operator-only registry for screen context, voice microphone, ambient observation, browser metadata/page reading, clipboard, Accessibility/app control, local learning, and worker/CLI tools. Each surface reports whether it is enabled, current status, consent/policy gate, raw-content storage posture, local retention, controls, and recent audit event types. Keep this in the terminal CUI/API; the desktop pet should remain a minimal status light. Realtime voice can read the same registry with `get_perception_consent` when the user asks what JAVIS can see, store, or operate.
+This prints the operator-only registry for screen context, voice microphone, ambient observation, browser metadata/page reading, clipboard, Accessibility/app control, local learning, and worker/CLI tools. Each surface reports whether it is enabled, current status, consent/policy gate, raw-content storage posture, local retention, controls, and recent audit event types. Keep this in the terminal CUI/API; the desktop pet should remain a minimal status light. Realtime voice can read the same registry with `get_perception_consent` when the user asks what JAVIS can see, store, or operate, but it receives a compact voice payload instead of the full audit/control table.
 
 Use option `F. Show file workflow benchmarks`, or:
 

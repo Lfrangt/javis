@@ -25770,6 +25770,128 @@ function perceptionConsentSnapshot(options = {}) {
   };
 }
 
+function compactPerceptionControlForVoice(control = {}) {
+  if (!control || typeof control !== 'object') return null;
+  return {
+    label: compactRecordText(control.label || control.name || '', 80),
+    endpoint: compactRecordText(control.endpoint || '', 100),
+    method: compactRecordText(control.method || '', 30),
+    cui: compactRecordText(control.cui || '', 100),
+  };
+}
+
+function compactPerceptionSurfaceForVoice(surface = {}) {
+  if (!surface || typeof surface !== 'object') return null;
+  const controls = Array.isArray(surface.controls) ? surface.controls : [];
+  return {
+    id: compactRecordText(surface.id || '', 80),
+    label: compactRecordText(surface.label || surface.id || '', 100),
+    category: compactRecordText(surface.category || 'perception', 60),
+    enabled: Boolean(surface.enabled),
+    available: Boolean(surface.available),
+    status: compactRecordText(surface.status || '', 40),
+    dataClass: compactRecordText(surface.dataClass || '', 80),
+    localOnly: surface.localOnly !== false,
+    rawContentStored: surface.rawContentStored === true,
+    rawStoredByDefault: surface.rawStoredByDefault === true,
+    retention: compactRecordText(surface.retention || '', 180),
+    consent: {
+      systemPermission: compactRecordText(surface.consent?.systemPermission || '', 80),
+      userToggle: surface.consent?.userToggle !== false,
+      explicitUserActionRequired: surface.consent?.explicitUserActionRequired === true,
+      policyGate: compactRecordText(surface.consent?.policyGate || '', 100),
+    },
+    controls: controls.map(compactPerceptionControlForVoice).filter(Boolean).slice(0, 3),
+    lastAudit: surface.lastAudit
+      ? {
+        type: compactRecordText(surface.lastAudit.type || '', 100),
+        ageMs: surface.lastAudit.ageMs ?? null,
+        summary: compactRecordText(surface.lastAudit.summary || '', 180),
+      }
+      : null,
+    summary: compactRecordText(surface.summary || '', 260),
+    nextAction: compactRecordText(surface.nextAction || '', 220),
+  };
+}
+
+function perceptionConsentVoicePayload(snapshot = {}, options = {}) {
+  const surfaces = Array.isArray(snapshot.surfaces) ? snapshot.surfaces : [];
+  const compactSurfaces = surfaces.map(compactPerceptionSurfaceForVoice).filter(Boolean).slice(0, 12);
+  const counts = snapshot.counts || {};
+  const policy = snapshot.policy || {};
+  const controlMode = policy.controlMode || {};
+  const effectivePolicy = policy.effectivePolicy || {};
+  const controls = snapshot.controls || {};
+  const payload = {
+    ok: snapshot.ok !== false,
+    generatedAt: snapshot.generatedAt || new Date().toISOString(),
+    source: compactRecordText(options.source || snapshot.source || 'voice', 80),
+    summary: compactRecordText(snapshot.summary || '', 420),
+    spokenSummary: compactRecordText(
+      `${snapshot.summary || `${compactSurfaces.length} local perception surface(s) available.`} Actions still require user intent; the desktop pet stays minimal.`,
+      500,
+    ),
+    counts: {
+      total: boundedCount(counts.total ?? surfaces.length, 100),
+      enabled: boundedCount(counts.enabled, 100),
+      active: boundedCount(counts.active, 100),
+      ready: boundedCount(counts.ready, 100),
+      waiting: boundedCount(counts.waiting, 100),
+      limited: boundedCount(counts.limited, 100),
+      blocked: boundedCount(counts.blocked, 100),
+      disabled: boundedCount(counts.disabled, 100),
+    },
+    policy: {
+      localOnly: policy.localOnly === true,
+      passiveByDefault: policy.passiveByDefault === true,
+      requiresUserIntentForAction: policy.requiresUserIntentForAction === true,
+      desktopPetStillMinimal: true,
+      localExecutionEnabled: Boolean(policy.localExecutionEnabled),
+      trustedLocalMode: Boolean(policy.trustedLocalMode),
+      controlMode: {
+        mode: compactRecordText(controlMode.mode || '', 80),
+        label: compactRecordText(controlMode.label || '', 120),
+        localExecutionEnabled: Boolean(controlMode.localExecutionEnabled),
+        trustedLocalMode: Boolean(controlMode.trustedLocalMode),
+        effectiveMaxAutoRiskLevel: boundedCount(controlMode.effectiveMaxAutoRiskLevel, 10),
+        effectiveRequireApprovalAtRiskLevel: boundedCount(controlMode.effectiveRequireApprovalAtRiskLevel, 10),
+      },
+      effectivePolicy: {
+        dryRun: Boolean(effectivePolicy.dryRun),
+        maxAutoRiskLevel: boundedCount(effectivePolicy.maxAutoRiskLevel, 10),
+        requireApprovalAtRiskLevel: boundedCount(effectivePolicy.requireApprovalAtRiskLevel, 10),
+      },
+    },
+    surfaces: compactSurfaces,
+    controls: {
+      cui: compactRecordText(controls.cui || 'npm run config -- --print-perception', 120),
+      endpoints: Array.isArray(controls.endpoints)
+        ? controls.endpoints.map((endpoint) => compactRecordText(endpoint, 120)).slice(0, 8)
+        : [],
+    },
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 20000,
+      omitted: [
+        'surfaces.auditTypes.full',
+        'surfaces.recentAudit.full',
+        'surfaces.evidence.full',
+        'surfaces.controls.full',
+        'policy.effectivePolicy.full',
+        'controls.full',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
+  };
+}
+
 function presenceAgeMs(timestamp) {
   const value = Number(timestamp || 0);
   return value ? Math.max(0, Date.now() - value) : null;
@@ -41190,12 +41312,13 @@ async function executeTool(name, args) {
   }
 
   if (name === 'get_perception_consent') {
+    const snapshot = perceptionConsentSnapshot({
+      limit: args?.limit,
+      auditLimit: args?.auditLimit,
+    });
     return {
       ok: true,
-      output: JSON.stringify(perceptionConsentSnapshot({
-        limit: args?.limit,
-        auditLimit: args?.auditLimit,
-      })),
+      output: JSON.stringify(perceptionConsentVoicePayload(snapshot, { source: 'voice' })),
     };
   }
 

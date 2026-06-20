@@ -36,7 +36,7 @@ Local Mac-first realtime desktop buddy.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context, quiet attention policy, attention-notification throttling, and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser activity: local recent browser host/title timeline from ambient metadata, exposed through API/CUI/presence/Realtime tools without storing page text.
-- Unified perception consent/status registry through `/api/perception/consent`, Realtime `get_perception_consent`, and `npm run config -- --print-perception`, covering screen, voice, ambient observation, browser, clipboard, Accessibility/app control, learning, and worker tools without adding desktop pet diagnostics.
+- Unified perception consent/status registry through `/api/perception/consent`, Realtime `get_perception_consent`, and `npm run config -- --print-perception`, covering screen, voice, ambient observation, browser, clipboard, Accessibility/app control, learning, and worker tools without adding desktop pet diagnostics; the Realtime tool returns a compact voice payload while CUI/API keep the full operator registry.
 - Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.

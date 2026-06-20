@@ -282,6 +282,7 @@ export default {
       body: { source: 'eval', name: 'get_perception_consent', arguments: { limit: 5 } },
     });
     const perceptionOutput = parseToolOutput(perceptionTool);
+    const perceptionOutputBytes = Buffer.byteLength(perceptionTool.data?.output || '', 'utf8');
     const perceptionSurfaces = Array.isArray(perceptionOutput?.surfaces) ? perceptionOutput.surfaces : [];
     const perceptionSurfaceIds = new Set(perceptionSurfaces.map((surface) => surface.id));
     const requiredPerceptionSurfaces = [
@@ -300,18 +301,25 @@ export default {
       perceptionTool.ok &&
         perceptionTool.data?.ok === true &&
         perceptionOutput?.ok === true &&
+        perceptionOutput?.responseBudget?.compact === true &&
+        perceptionOutputBytes > 0 &&
+        perceptionOutputBytes <= 20000 &&
+        typeof perceptionOutput.spokenSummary === 'string' &&
         perceptionOutput.policy?.localOnly === true &&
         perceptionOutput.policy?.passiveByDefault === true &&
         perceptionOutput.policy?.requiresUserIntentForAction === true &&
+        perceptionOutput.policy?.desktopPetStillMinimal === true &&
         requiredPerceptionSurfaces.every((id) => perceptionSurfaceIds.has(id)) &&
         perceptionSurfaces.every((surface) => (
           typeof surface.enabled === 'boolean' &&
           typeof surface.status === 'string' &&
           typeof surface.rawContentStored === 'boolean' &&
           Array.isArray(surface.controls) &&
-          Array.isArray(surface.auditTypes)
+          !Array.isArray(surface.auditTypes) &&
+          !Array.isArray(surface.recentAudit) &&
+          !surface.evidence
         ))
-        ? ok('realtime.perception_consent_tool', 'Realtime perception consent tool', `${perceptionSurfaces.length} surface(s) · ${perceptionOutput.summary || ''}`)
+        ? ok('realtime.perception_consent_tool', 'Realtime perception consent tool', `${perceptionSurfaces.length} surface(s) · ${Math.ceil(perceptionOutputBytes / 1024)}KB · ${perceptionOutput.summary || ''}`)
         : fail('realtime.perception_consent_tool', 'Realtime perception consent tool', `tool execute ${perceptionTool.status}`, perceptionTool.data),
     );
 
