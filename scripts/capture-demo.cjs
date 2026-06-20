@@ -11,7 +11,7 @@ const outputFile = outputArg
   : path.join(process.cwd(), 'artifacts', 'javis-demo-pet.png');
 
 const windowSizes = {
-  pet: { width: 196, height: 56 },
+  pet: { width: 160, height: 44 },
 };
 
 function wait(ms) {

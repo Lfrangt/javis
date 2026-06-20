@@ -2878,7 +2878,7 @@ function App() {
 
   const presence = status?.presence
   const mood = useMemo<PetMood>(() => {
-    if (!status?.api.hasOpenAiKey) return 'needs-key'
+    if (status?.api && !status.api.hasOpenAiKey) return 'needs-key'
     if (presence?.mode === 'setup_blocked' || presence?.mode === 'voice_error' || readiness?.overall === 'blocked') return 'attention'
     if (presence?.mode === 'needs_attention' || approvals.length > 0) return 'attention'
     if (voiceStatus === 'connecting' || presence?.mode === 'connecting' || presence?.mode === 'waking') return 'thinking'
@@ -2937,17 +2937,25 @@ function App() {
             event.preventDefault()
             void openConfigCui()
           }}
-          disabled={voiceStatus === 'connecting'}
+          aria-disabled={voiceStatus === 'connecting'}
           aria-label={`${petStatusLabel}. ${petActionLabel}`}
-          title={`${petStatusLabel}. ${petStatusDetail} Click to talk. Right-click for config.`}
+          title={`${petStatusLabel}. ${petStatusDetail} Drag to move. Click to talk. Right-click for config.`}
         >
-          <span className="island-glow" aria-hidden="true" />
-          <span className="island-lights" aria-hidden="true">
-            <span className="island-light light-red" />
-            <span className="island-light light-yellow" />
-            <span className="island-light light-green" />
+          <span className="island-traffic" aria-hidden="true">
+            <span className="traffic-light light-red" />
+            <span className="traffic-light light-yellow" />
+            <span className="traffic-light light-green" />
           </span>
-          <span className="island-core" aria-hidden="true" />
+          <span className="island-wave" aria-hidden="true">
+            <span className="wave-bar bar-1" />
+            <span className="wave-bar bar-2" />
+            <span className="wave-bar bar-3" />
+            <span className="wave-bar bar-4" />
+            <span className="wave-bar bar-5" />
+            <span className="wave-bar bar-6" />
+            <span className="wave-bar bar-7" />
+          </span>
+          <span className="island-peek" aria-hidden="true" />
         </button>
 
         <div className="speech no-drag">
