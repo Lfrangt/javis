@@ -398,7 +398,7 @@ export default {
 
     const realtime = await ctx.api('/api/realtime/config', { timeoutMs: 15000 });
     const toolNames = realtime.data?.realtime?.toolNames || [];
-    const requiredTools = ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow'];
+    const requiredTools = ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow', 'plan_mcp_tool_call'];
     const hasTools = requiredTools.every((name) => toolNames.includes(name));
     out.push(
       realtime.ok && hasTools

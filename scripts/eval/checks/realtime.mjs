@@ -40,6 +40,7 @@ const REQUIRED_TOOLS = [
   'get_learning_evolution',
   'get_mcp_servers',
   'plan_mcp_workflow',
+  'plan_mcp_tool_call',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -608,6 +609,116 @@ export default {
         ))
         ? ok('realtime.mcp_workflow_tool_evidence', 'Realtime MCP workflow preview evidence', 'plan_mcp_workflow is visible in privacy-safe Realtime evidence')
         : fail('realtime.mcp_workflow_tool_evidence', 'Realtime MCP workflow preview evidence', 'expected plan_mcp_workflow to appear in realtime evidence', mcpWorkflowToolEvidence),
+    );
+
+    const mcpToolCallTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'plan_mcp_tool_call',
+        arguments: {
+          task: 'Prepare one MCP tool-call preview, but do not execute.',
+          serverName: 'pencil',
+          toolName: 'get_guidelines',
+          toolArguments: {},
+          execute: false,
+          limit: 20,
+        },
+      },
+    });
+    const mcpToolCallToolOutput = parseToolOutput(mcpToolCallTool);
+    out.push(
+      mcpToolCallTool.ok &&
+        mcpToolCallTool.data?.ok === true &&
+        mcpToolCallToolOutput?.ok === true &&
+        mcpToolCallToolOutput.previewOnly === true &&
+        mcpToolCallToolOutput.executed === false &&
+        mcpToolCallToolOutput.safety?.readOnly === true &&
+        mcpToolCallToolOutput.safety?.startsServers === false &&
+        mcpToolCallToolOutput.safety?.commandsExecuted === false &&
+        mcpToolCallToolOutput.safety?.callsMcpTools === false &&
+        mcpToolCallToolOutput.safety?.approvalCallsMcpTools === true &&
+        mcpToolCallToolOutput.safety?.toolResultSanitized === true &&
+        Array.isArray(mcpToolCallToolOutput.actionPlan)
+        ? ok('realtime.mcp_tool_call_tool', 'Realtime MCP tool-call preview voice tool', `${mcpToolCallToolOutput.status || 'unknown'} · candidates=${mcpToolCallToolOutput.counts?.candidates || 0}`)
+        : fail('realtime.mcp_tool_call_tool', 'Realtime MCP tool-call preview voice tool', `tool execute ${mcpToolCallTool.status}`, mcpToolCallTool.data),
+    );
+
+    const mcpToolCallApprovalTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'plan_mcp_tool_call',
+        arguments: {
+          task: 'Create a local approval for one MCP tools/call request, but do not approve it.',
+          serverName: 'pencil',
+          toolName: 'get_guidelines',
+          toolArguments: {},
+          execute: true,
+          requestApproval: true,
+          limit: 20,
+        },
+      },
+    });
+    const mcpToolCallApprovalOutput = parseToolOutput(mcpToolCallApprovalTool);
+    const mcpToolCallApprovalId = mcpToolCallApprovalOutput?.approval?.id || '';
+    let mcpToolCallApprovalCleanupOk = false;
+    if (mcpToolCallApprovalId) {
+      await ctx.api(`/api/approvals/${mcpToolCallApprovalId}/reject`, {
+        method: 'POST',
+        body: { reason: 'eval cleanup: Realtime MCP tool-call approval path verified without execution' },
+        timeoutMs: 15000,
+      });
+      const removed = await ctx.api(`/api/approvals/${mcpToolCallApprovalId}`, {
+        method: 'DELETE',
+        timeoutMs: 15000,
+      });
+      mcpToolCallApprovalCleanupOk = removed.ok === true;
+    }
+    out.push(
+      mcpToolCallApprovalTool.ok &&
+        mcpToolCallApprovalTool.data?.ok === true &&
+        mcpToolCallApprovalOutput?.ok === true &&
+        mcpToolCallApprovalOutput.status === 'approval_required' &&
+        mcpToolCallApprovalOutput.approval?.status === 'pending' &&
+        mcpToolCallApprovalOutput.previewOnly === true &&
+        mcpToolCallApprovalOutput.executed === false &&
+        mcpToolCallApprovalOutput.safety?.startsServers === false &&
+        mcpToolCallApprovalOutput.safety?.commandsExecuted === false &&
+        mcpToolCallApprovalOutput.safety?.callsMcpTools === false &&
+        mcpToolCallApprovalOutput.safety?.approvalCallsMcpTools === true &&
+        mcpToolCallApprovalOutput.safety?.toolResultSanitized === true &&
+        mcpToolCallApprovalCleanupOk
+        ? ok('realtime.mcp_tool_call_approval_tool', 'Realtime MCP tool-call approval voice tool', `created and cleaned approval ${mcpToolCallApprovalId}`)
+        : fail('realtime.mcp_tool_call_approval_tool', 'Realtime MCP tool-call approval voice tool', `tool execute ${mcpToolCallApprovalTool.status}`, {
+          response: mcpToolCallApprovalTool.data,
+          output: mcpToolCallApprovalOutput,
+          cleanupOk: mcpToolCallApprovalCleanupOk,
+        }),
+    );
+
+    const mcpToolCallEvidence = await ctx.api('/api/realtime/evidence');
+    const mcpToolCallEvidenceData = mcpToolCallEvidence.data?.evidence?.mcpTools;
+    const mcpToolCallEvents = Array.isArray(mcpToolCallEvidenceData?.recent) ? mcpToolCallEvidenceData.recent : [];
+    out.push(
+      mcpToolCallEvidence.ok &&
+        mcpToolCallEvidenceData?.hasToolCallPreview === true &&
+        mcpToolCallEvidenceData?.hasToolCallApprovalRequest === true &&
+        mcpToolCallEvidenceData?.hasToolResultSanitization === true &&
+        mcpToolCallEvidenceData?.privacySafe === true &&
+        mcpToolCallEvents.some((event) => (
+          event.name === 'plan_mcp_tool_call' &&
+          event.source === 'eval' &&
+          event.mcp?.previewOnly === true &&
+          event.mcp?.readOnly === true &&
+          event.mcp?.startsServers === false &&
+          event.mcp?.commandsExecuted === false &&
+          event.mcp?.callsMcpTools === false &&
+          event.mcp?.approvalCallsMcpTools === true &&
+          event.mcp?.toolResultSanitized === true
+        ))
+        ? ok('realtime.mcp_tool_call_tool_evidence', 'Realtime MCP tool-call approval evidence', 'plan_mcp_tool_call is visible in privacy-safe Realtime evidence')
+        : fail('realtime.mcp_tool_call_tool_evidence', 'Realtime MCP tool-call approval evidence', 'expected plan_mcp_tool_call to appear in realtime evidence', mcpToolCallEvidenceData),
     );
 
     try {

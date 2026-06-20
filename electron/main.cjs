@@ -668,6 +668,7 @@ const LANE_CONTRACTS = [
       'read-only note search with snippets, tags, and wikilinks',
       'preview-first Markdown note creation and append plans',
       'preview-only MCP server selection for tool-backed workflows',
+      'voice-prepared MCP tool-call approval requests',
       'confirmed local daily note and knowledge capture writes',
     ],
     nonGoals: [
@@ -678,11 +679,11 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'file',
-      tools: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow', 'run_file_action'],
-      rule: 'Search notes and discover/plan MCP usage read-only; write Markdown only after explicit confirm:true and normal file-policy checks.',
+      tools: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow', 'plan_mcp_tool_call', 'run_file_action'],
+      rule: 'Search notes and discover/plan MCP usage read-only; create MCP tool-call approvals only after explicit request; write Markdown only after explicit confirm:true and normal file-policy checks.',
     },
-    toolPosture: 'Local Markdown plus read-only MCP config discovery and preview-only MCP workflow planning; previews plans before writing and keeps Obsidian app launches separate.',
-    riskBoundary: 'Search, MCP discovery, and MCP workflow previews are read-only. Note writes are Level 3 file writes scoped by allowed roots, control mode, and confirmation.',
+    toolPosture: 'Local Markdown plus read-only MCP config discovery, preview-only MCP workflow planning, and confirmed MCP tool-call approval creation; previews plans before writing and keeps Obsidian app launches separate.',
+    riskBoundary: 'Search, MCP discovery, workflow previews, and tool-call approval creation do not start MCP servers. Note writes are Level 3 file writes scoped by allowed roots, control mode, and confirmation.',
     progressStyle: 'knowledge workflow record with vault/note evidence',
   },
   {
@@ -4112,7 +4113,7 @@ function capabilityToolHintsForContract(contract = {}) {
     local: ['get_control_mode', 'get_setup_guide', 'run_cli_tool', 'run_mac_action', 'run_file_action'],
     browser: ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
     file: ['run_file_workflow', 'plan_file_organization', 'plan_file_batch', 'apply_file_plan', 'run_file_action'],
-    knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow'],
+    knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow', 'plan_mcp_tool_call'],
     app: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow', 'get_productivity_dogfood_archive', 'save_productivity_dogfood_archive'],
   };
   return Array.from(new Set([...base, ...(extras[contract.id] || [])])).slice(0, 12);
@@ -19421,7 +19422,7 @@ function contextPlanRecommendedTools(needs) {
   if (needs.browserActivity) tools.push('get_browser_activity');
   if (needs.browserPage) tools.push('read_browser_page', 'run_browser_workflow');
   if (needs.browserDom) tools.push('read_browser_dom');
-  if (needs.knowledge) tools.push('get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow');
+  if (needs.knowledge) tools.push('get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'plan_mcp_workflow', 'plan_mcp_tool_call');
   if (needs.files) tools.push('run_file_workflow');
   if (needs.memory) tools.push('search_memory');
   if (needs.localSkills) tools.push('search_local_skills');
@@ -26463,9 +26464,11 @@ const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
 const REALTIME_CAPABILITY_TOOL_NAME = 'get_local_capabilities';
 const REALTIME_MCP_TOOL_NAME = 'get_mcp_servers';
 const REALTIME_MCP_WORKFLOW_TOOL_NAME = 'plan_mcp_workflow';
+const REALTIME_MCP_TOOL_CALL_TOOL_NAME = 'plan_mcp_tool_call';
 const REALTIME_MCP_TOOL_NAMES = new Set([
   REALTIME_MCP_TOOL_NAME,
   REALTIME_MCP_WORKFLOW_TOOL_NAME,
+  REALTIME_MCP_TOOL_CALL_TOOL_NAME,
 ]);
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
 const REALTIME_LEARNING_EVOLUTION_TOOL_NAME = 'get_learning_evolution';
@@ -26675,6 +26678,51 @@ function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
 function realtimeMcpToolSummary(name, args = {}, result = {}) {
   if (!REALTIME_MCP_TOOL_NAMES.has(name)) return null;
   const output = realtimeToolOutputObject(result) || {};
+  if (name === REALTIME_MCP_TOOL_CALL_TOOL_NAME) {
+    const candidates = Array.isArray(output.candidates) ? output.candidates : [];
+    const selected = output.selectedServer || candidates[0] || {};
+    const counts = output.counts || output.discovery?.counts || {};
+    const requested = output.requested || {};
+    return {
+      action: output.approval?.id ? 'tool_call_approval_request' : 'tool_call_preview',
+      summary: compactRecordText(output.summary || output.spokenSummary || '', 420),
+      source: compactRecordText(output.source || args?.source || '', 80),
+      task: compactRecordText(output.task || args?.task || args?.message || args?.query || '', 180),
+      intent: compactRecordText(output.intent || 'tool_call', 80),
+      status: compactRecordText(output.status || '', 80),
+      serverCount: boundedCount(counts.servers, 1000),
+      candidateCount: boundedCount(counts.candidates ?? candidates.length, 1000),
+      enabledCount: boundedCount(counts.enabled, 1000),
+      selectedServer: compactRecordText(selected?.name || '', 120),
+      selectedTransport: compactRecordText(selected?.transport || '', 40),
+      selectedRisk: compactRecordText(selected?.risk || '', 60),
+      requestedServer: compactRecordText(requested.serverName || args?.serverName || args?.server || '', 120),
+      requestedTool: compactRecordText(requested.toolName || args?.toolName || args?.tool || '', 120),
+      argumentKeys: Array.isArray(requested.argumentKeys)
+        ? requested.argumentKeys.map((key) => compactRecordText(key, 80)).slice(0, 40)
+        : [],
+      argumentBytes: boundedCount(requested.argumentBytes, 50000),
+      previewOnly: output.previewOnly === true || output.safety?.previewOnly === true,
+      executed: output.executed === true,
+      executeRequested: output.executeRequested === true || args?.execute === true,
+      requestApproval: output.requestApproval === true || args?.requestApproval === true,
+      approvalRequired: output.approvalRequired === true,
+      approvalId: compactRecordText(output.approval?.id || '', 120),
+      approvalStatus: compactRecordText(output.approval?.status || '', 40),
+      requiresConfirmationForExecution: output.safety?.requiresConfirmationForExecution === true,
+      approvalCallsMcpTools: output.safety?.approvalCallsMcpTools === true,
+      approvalStartsServer: output.safety?.approvalStartsServer === true,
+      approvalVerifiesToolSchemaFirst: output.safety?.approvalVerifiesToolSchemaFirst === true,
+      toolResultSanitized: output.safety?.toolResultSanitized === true,
+      callsMcpTools: output.safety?.callsMcpTools === true,
+      startsServers: output.safety?.startsServers === true,
+      commandsExecuted: output.safety?.commandsExecuted === true,
+      envValuesRedacted: output.safety?.envValuesRedacted === true,
+      readOnly: output.safety?.readOnly === true,
+      urlQueriesRedacted: output.safety?.urlQueriesRedacted === true,
+      nextAction: compactRecordText(output.nextAction || '', 240),
+    };
+  }
   if (name === REALTIME_MCP_WORKFLOW_TOOL_NAME) {
     const candidates = Array.isArray(output.candidates) ? output.candidates : [];
     const selected = output.selectedServer || candidates[0] || {};
@@ -27051,12 +27099,16 @@ function recordRealtimeToolCall(options = {}) {
     capabilityLocalExecutionEnabled: Boolean(capability?.localExecutionEnabled),
     capabilityControlMode: capability?.controlMode || '',
     mcpSummary: mcp?.summary || '',
+    mcpAction: mcp?.action || '',
     mcpServerCount: mcp?.serverCount || 0,
     mcpFilesFound: mcp?.filesFound || 0,
     mcpEnvValuesRedacted: Boolean(mcp?.envValuesRedacted),
     mcpStartsServers: Boolean(mcp?.startsServers),
     mcpCommandsExecuted: Boolean(mcp?.commandsExecuted),
     mcpReadOnly: Boolean(mcp?.readOnly),
+    mcpApprovalId: mcp?.approvalId || '',
+    mcpApprovalCallsTools: Boolean(mcp?.approvalCallsMcpTools),
+    mcpToolResultSanitized: Boolean(mcp?.toolResultSanitized),
     learningAction: learning?.action || '',
     learningSummary: learning?.spokenSummary || '',
     learningSourceEventCount: learning?.sourceEventCount || 0,
@@ -27316,12 +27368,38 @@ function realtimeMcpToolEvidence(limit = 8) {
     event.mcp?.startsServers === false &&
     event.mcp?.callsMcpTools === false
   ));
+  const hasToolCallPreview = recent.some((event) => (
+    event.name === REALTIME_MCP_TOOL_CALL_TOOL_NAME &&
+    event.ok &&
+    event.mcp?.previewOnly === true &&
+    event.mcp?.readOnly === true &&
+    event.mcp?.requiresConfirmationForExecution === true &&
+    event.mcp?.approvalCallsMcpTools === true &&
+    event.mcp?.toolResultSanitized === true &&
+    event.mcp?.startsServers === false &&
+    event.mcp?.commandsExecuted === false &&
+    event.mcp?.callsMcpTools === false
+  ));
+  const hasToolCallApprovalRequest = recent.some((event) => (
+    event.name === REALTIME_MCP_TOOL_CALL_TOOL_NAME &&
+    event.ok &&
+    event.mcp?.requestApproval === true &&
+    event.mcp?.approvalId &&
+    event.mcp?.approvalCallsMcpTools === true &&
+    event.mcp?.toolResultSanitized === true &&
+    event.mcp?.startsServers === false &&
+    event.mcp?.commandsExecuted === false &&
+    event.mcp?.callsMcpTools === false
+  ));
   return {
-    ok: hasDiscovery || hasWorkflowPreview,
+    ok: hasDiscovery || hasWorkflowPreview || hasToolCallPreview,
     count: recent.length,
     hasDiscovery,
     hasWorkflowPreview,
     hasApprovalRequest,
+    hasToolCallPreview,
+    hasToolCallApprovalRequest,
+    hasToolResultSanitization: recent.some((event) => event.mcp?.toolResultSanitized === true),
     hasServers: recent.some((event) => Number(event.mcp?.serverCount || 0) > 0 || Number(event.mcp?.candidateCount || 0) > 0),
     privacySafe: recent.length > 0 && recent.every((event) => (
       event.mcp?.readOnly === true &&
@@ -27332,7 +27410,11 @@ function realtimeMcpToolEvidence(limit = 8) {
     )),
     last: recent[0] || null,
     recent,
-    nextAction: hasWorkflowPreview
+    nextAction: hasToolCallApprovalRequest
+      ? 'Open the local approvals queue to review the prepared MCP tools/call request; approving it is the only step that starts the server and calls the tool once.'
+      : hasToolCallPreview
+        ? 'Ask live voice to create an approval request for one reviewed MCP tool call, or keep it as a preview.'
+        : hasWorkflowPreview
       ? 'Ask live voice to explain the selected MCP candidate, then wait for a confirmed MCP execution path before calling tools.'
       : hasDiscovery
         ? 'Ask live voice which MCP server should handle a concrete task and confirm plan_mcp_workflow appears here.'
@@ -28214,6 +28296,25 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: `${REALTIME_MCP_TOOL_NAME}/${REALTIME_MCP_WORKFLOW_TOOL_NAME}`, count: Number(mcpTools.count || 0), privacySafe: Boolean(mcpTools.privacySafe) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'plan_mcp_tool_call',
+      label: 'Prepare one MCP tools/call approval from voice',
+      ok: Boolean(mcpTools.hasToolCallPreview || mcpTools.hasToolCallApprovalRequest),
+      detail: mcpTools.hasToolCallApprovalRequest
+        ? 'plan_mcp_tool_call created a local approval request without starting an MCP server or calling the tool.'
+        : mcpTools.hasToolCallPreview
+          ? 'plan_mcp_tool_call previewed one concrete MCP tools/call request without starting an MCP server.'
+          : 'No concrete MCP tools/call preview or approval request has been observed in recent Realtime evidence.',
+      nextAction: 'Ask: 准备调用 Pencil 的 get_guidelines，创建审批但不要批准执行。',
+      evidence: {
+        tool: REALTIME_MCP_TOOL_CALL_TOOL_NAME,
+        count: Number(mcpTools.count || 0),
+        hasToolCallPreview: Boolean(mcpTools.hasToolCallPreview),
+        hasToolCallApprovalRequest: Boolean(mcpTools.hasToolCallApprovalRequest),
+        toolResultSanitized: Boolean(mcpTools.hasToolResultSanitization),
+        privacySafe: Boolean(mcpTools.privacySafe),
+      },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'ask_learning_profile',
       label: 'Ask what local habits JAVIS has inferred',
       ok: Boolean(learningTools.hasLearningProfile),
@@ -28719,6 +28820,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', label: 'local capability map', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), tool: REALTIME_CAPABILITY_TOOL_NAME },
     { id: 'mcp', label: 'MCP server discovery', ok: Boolean(evidence.mcpTools?.hasDiscovery), tool: REALTIME_MCP_TOOL_NAME },
+    { id: 'mcp_tool_call', label: 'MCP tool-call approval preview', ok: Boolean(evidence.mcpTools?.hasToolCallPreview), tool: REALTIME_MCP_TOOL_CALL_TOOL_NAME },
     { id: 'learning', label: 'local learning profile', ok: Boolean(evidence.learningTools?.hasLearningProfile), tool: REALTIME_LEARNING_TOOL_NAME },
     { id: 'browser', label: 'browser read/workflow', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), tool: 'run_browser_workflow' },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
@@ -28943,6 +29045,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_attention_explanation', 'voice_tools', 'Ask why the pet stayed quiet or changed color'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_perception_consent', 'voice_tools', 'Ask what JAVIS can see or control'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_local_capabilities', 'voice_tools', 'Ask which local capability or tool should handle the task'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'plan_mcp_tool_call', 'voice_tools', 'Prepare one MCP tools/call approval from voice'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_learning_profile', 'learning_loop', 'Ask what local habits JAVIS has inferred'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_browser_workflow', 'computer_tools', 'Ask voice to inspect the current browser page safely'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_productivity_dogfood_archive', 'computer_tools', 'Save a safe productivity dogfood archive'),
@@ -37998,6 +38101,11 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'plan_mcp_tool_call') {
+    const result = mcpToolCallPreview({ ...(args || {}), source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'plan_file_organization') {
     const result = await planFileOrganization(args || {});
     return { ok: result.ok, output: JSON.stringify(result) };
@@ -38232,6 +38340,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_knowledge_vaults when the user asks what Obsidian/Markdown vaults JAVIS can see. Use search_knowledge_notes for read-only search over an allowed Markdown vault. Use run_knowledge_workflow for Obsidian-style Markdown note creation, append, daily note, or search workflows. Note writes require execute:true plus confirm:true and still go through file policy.',
       'Use get_mcp_servers when the user asks which MCP servers, Claude/Cursor tool servers, or external tool bridges are configured locally. It is read-only: it scans known JSON config files, redacts env values and URL queries, and never starts MCP server commands.',
       'Use plan_mcp_workflow when the user asks which MCP server or external tool bridge should handle a concrete task, or when preparing an MCP-backed workflow. It is preview-only by default: it selects candidates and shows confirmed next steps, but never starts MCP servers or calls MCP tools. Only pass requestApproval:true when the user explicitly asks to prepare a confirmed MCP execution request.',
+      'Use plan_mcp_tool_call when the user asks to prepare one concrete MCP tools/call request with a selected server, tool name, and JSON arguments. It is preview-only unless execute:true and requestApproval:true are passed; even then it only creates a local approval record and still does not start the MCP server or call the tool until the approval is reviewed and approved separately.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
       'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
@@ -39916,6 +40025,38 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'plan_mcp_tool_call',
+        description: 'Preview or create a local approval request for one concrete stdio MCP tools/call invocation. Preview-only by default: it does not start servers or call tools. With execute:true and requestApproval:true, it creates an approval record; the server starts and the tool is called only after that approval is reviewed and approved separately.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task: { type: 'string' },
+            query: { type: 'string' },
+            serverName: { type: 'string' },
+            server: { type: 'string' },
+            sourceId: { type: 'string' },
+            mcpSourceId: { type: 'string' },
+            toolName: { type: 'string' },
+            tool: { type: 'string' },
+            toolArguments: {
+              type: 'object',
+              additionalProperties: true,
+            },
+            arguments: {
+              type: 'object',
+              additionalProperties: true,
+            },
+            limit: { type: 'number' },
+            candidateLimit: { type: 'number' },
+            execute: { type: 'boolean' },
+            requestApproval: { type: 'boolean' },
+          },
+          required: ['toolName'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'plan_file_organization',
         description: 'Create a policy-aware preview plan to organize a local folder by file type. Does not execute file moves.',
         parameters: {
@@ -40219,6 +40360,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'run_knowledge_workflow',
   'get_mcp_servers',
   'plan_mcp_workflow',
+  'plan_mcp_tool_call',
   'route_task',
   'route_parallel_tasks',
   'delegate_task',
@@ -40254,6 +40396,7 @@ function realtimeInstructionChecks(instructions = '') {
     knowledgeWorkflows: /get_knowledge_vaults|search_knowledge_notes|run_knowledge_workflow|Obsidian\/Markdown vaults|knowledge workflow/i.test(text),
     mcpDiscovery: /get_mcp_servers|MCP servers|Claude\/Cursor tool servers|external tool bridges/i.test(text),
     mcpWorkflow: /plan_mcp_workflow|which MCP server|MCP-backed workflow|never starts MCP servers or calls MCP tools/i.test(text),
+    mcpToolCall: /plan_mcp_tool_call|MCP tools\/call|local approval record|reviewed and approved separately/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),

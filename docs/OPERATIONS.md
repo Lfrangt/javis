@@ -169,6 +169,7 @@ curl -X POST http://127.0.0.1:3417/api/mcp/tool-call \
 ```
 
 `/api/mcp/tool-call` previews are safe and do not start servers. Approving a stdio tool-call request starts the server, verifies the tool exists with `tools/list`, sends exactly one `tools/call`, sanitizes text/media/resource/structured results before storing them in the approval record, audits the attempt, and stops the process. If the external MCP server or backing app is unavailable, the approval result records that failure with stderr capped and env values redacted.
+Realtime voice can call `plan_mcp_tool_call` for the same preview/approval path. In voice, a plain preview stays non-executing; `execute:true` plus `requestApproval:true` only creates a local approval record. The actual server start and one-shot `tools/call` still happen later through the approval queue.
 
 Use option `C. Show creative workflow benchmarks`, or:
 
