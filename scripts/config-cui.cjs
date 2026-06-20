@@ -1763,6 +1763,8 @@ function printRealtimeEvidence(result) {
   const dogfoodSessionEvents = Array.isArray(dogfoodSessionTools.recent) ? dogfoodSessionTools.recent : [];
   const handoffTools = evidence.handoffTools || {};
   const handoffEvents = Array.isArray(handoffTools.recent) ? handoffTools.recent : [];
+  const workNextTools = evidence.workNextTools || {};
+  const workNextEvents = Array.isArray(workNextTools.recent) ? workNextTools.recent : [];
   const approvalTools = evidence.approvalTools || {};
   const approvalEvents = Array.isArray(approvalTools.recent) ? approvalTools.recent : [];
   const autopilotTools = evidence.autopilotTools || {};
@@ -1880,6 +1882,25 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = handoff.spokenSummary ? ` · ${compact(handoff.spokenSummary, 140)}` : '';
     console.log(`- ${event.name || 'get_work_handoff'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nWork next tool:');
+  console.log(`- observed ${Number(workNextTools.count || 0)} recent event(s) · preview=${workNextTools.hasPreview ? 'yes' : 'no'} · run=${workNextTools.hasRun ? 'yes' : 'no'} · safe-preview=${workNextTools.safePreview ? 'yes' : 'no'}`);
+  console.log(`- route recovery=${workNextTools.hasRouteRecovery ? 'yes' : 'no'} · browser fill handoff=${workNextTools.hasBrowserFillHandoff ? 'yes' : 'no'} · prepared=${Number(workNextTools.browserFillSafePreparedCount || 0)} · blocked=${Number(workNextTools.browserFillBlockedCount || 0)}`);
+  console.log(`- next ${compact(workNextTools.nextAction || dogfood.workNextTools?.nextAction || 'Ask live voice to preview the single next work step.', 220)}`);
+  for (const event of workNextEvents.slice(0, 4)) {
+    const workNext = event.workNext || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      workNext.action || event.name || '-',
+      workNext.readOnlyPreview ? 'read-only' : '',
+      workNext.executed ? 'executed' : 'not-executed',
+      workNext.actionSource ? `source=${workNext.actionSource}` : '',
+      workNext.routeRecoveryType ? `recovery=${workNext.routeRecoveryType}` : '',
+      workNext.browserFillHandoff ? `fill=${Number(workNext.browserFillSafePreparedCount || 0)}/${Number(workNext.browserFillBlockedCount || 0)}` : '',
+    ].filter(Boolean);
+    const summary = workNext.output ? ` · ${compact(workNext.output, 140)}` : '';
+    console.log(`- ${event.name || 'get_work_next'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nApproval tools:');
   console.log(`- observed ${Number(approvalTools.count || 0)} recent event(s) · list=${approvalTools.hasList ? 'yes' : 'no'} · confirm gate=${approvalTools.hasConfirmationGate ? 'yes' : 'no'} · reject=${approvalTools.hasReject ? 'yes' : 'no'} · approve=${approvalTools.hasApprove ? 'yes' : 'no'}`);
@@ -2056,7 +2077,8 @@ function printRealtimeEvidence(result) {
       const resultShape = event.result || {};
       const shortcut = event.shortcut?.action ? ` · shortcut=${event.shortcut.action}` : '';
       const browser = event.browser?.action ? ` · browser=${event.browser.action}` : '';
-      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}${browser}`);
+      const workNext = event.workNext?.action ? ` · workNext=${event.workNext.action}` : '';
+      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}${browser}${workNext}`);
     }
   } else {
     console.log('- none yet');

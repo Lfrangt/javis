@@ -34,6 +34,8 @@ const REQUIRED_TOOLS = [
   'run_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
+  'get_work_next',
+  'run_work_next',
   'get_pending_approvals',
   'resolve_approval',
   'get_collaboration_state',
@@ -1248,6 +1250,7 @@ export default {
         realtimeEvidenceOutput.voiceLatency &&
         typeof realtimeEvidenceOutput.voiceLatency.nextAction === 'string' &&
         realtimeEvidenceOutput.tools?.handoff &&
+        realtimeEvidenceOutput.tools?.workNext &&
         realtimeEvidenceOutput.tools?.autopilot &&
         realtimeEvidenceOutput.tools?.shortcuts &&
         realtimeEvidenceOutput.tools?.dogfoodSession &&
@@ -1440,6 +1443,60 @@ export default {
         : fail('realtime.handoff_tool_evidence', 'Realtime handoff tool evidence', 'expected get_work_handoff calls to be visible in realtime evidence', handoffToolEvidence),
     );
 
+    const workNextTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_work_next',
+        arguments: { workflowLimit: 6, jobLimit: 6 },
+      },
+    });
+    const workNextOutput = parseToolOutput(workNextTool);
+    const workNextAction = workNextOutput?.action || null;
+    const workNextRecommended = workNextOutput?.result?.routeRecovery?.recommended || workNextAction?.routeRecovery?.recommended || null;
+    const workNextBrowserFill = workNextRecommended?.browserFillRecovery || workNextOutput?.result?.routeExecution?.browserFillRecovery || null;
+    out.push(
+      workNextTool.ok &&
+        workNextTool.data?.ok === true &&
+        workNextOutput?.ok === true &&
+        workNextOutput.executed === false &&
+        typeof workNextOutput.output === 'string' &&
+        (!workNextAction || (
+          typeof workNextAction.id === 'string' &&
+          typeof workNextAction.source === 'string' &&
+          typeof workNextAction.label === 'string'
+        )) &&
+        (!workNextBrowserFill || (
+          workNextRecommended?.type === 'browser_fill_sensitive_handoff' &&
+          typeof workNextBrowserFill.safePreparedCount === 'number' &&
+          typeof workNextBrowserFill.blockedCount === 'number' &&
+          Array.isArray(workNextBrowserFill.manual) &&
+          workNextBrowserFill.manual.every((item) => item.storesSensitiveValue === false)
+        ))
+        ? ok('realtime.work_next_tool', 'Realtime work-next preview tool', `${workNextAction?.source || 'standby'} · executed=false · ${workNextOutput.output.slice(0, 160)}`)
+        : fail('realtime.work_next_tool', 'Realtime work-next preview tool', `tool execute ${workNextTool.status}`, workNextTool.data),
+    );
+
+    const workNextEvidence = await ctx.api('/api/realtime/evidence');
+    const workNextToolEvidence = workNextEvidence.data?.evidence?.workNextTools;
+    const workNextToolEvents = Array.isArray(workNextToolEvidence?.recent) ? workNextToolEvidence.recent : [];
+    const workNextEvalEvent = workNextToolEvents.find((event) => event.name === 'get_work_next' && event.source === 'eval');
+    out.push(
+      workNextEvidence.ok &&
+        workNextToolEvidence?.hasPreview === true &&
+        workNextToolEvidence?.safePreview === true &&
+        workNextEvalEvent?.workNext?.readOnlyPreview === true &&
+        workNextEvalEvent?.workNext?.executed === false &&
+        typeof workNextEvalEvent?.workNext?.actionSource === 'string' &&
+        (!workNextBrowserFill || (
+          workNextToolEvidence.hasBrowserFillHandoff === true &&
+          workNextEvalEvent.workNext.browserFillHandoff === true &&
+          workNextEvalEvent.workNext.browserFillStoresSensitiveValue === false
+        ))
+        ? ok('realtime.work_next_tool_evidence', 'Realtime work-next tool evidence', `${workNextToolEvidence.count || 0} work-next call(s) visible`)
+        : fail('realtime.work_next_tool_evidence', 'Realtime work-next tool evidence', 'expected get_work_next preview calls to be visible in realtime evidence', workNextToolEvidence),
+    );
+
     const dogfoodSessionTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {
@@ -1573,6 +1630,7 @@ export default {
           output.includes('Shortcut tools:') &&
           output.includes('Dogfood session tools:') &&
           output.includes('Handoff tool:') &&
+          output.includes('Work next tool:') &&
           output.includes('Autopilot tool:') &&
           output.includes('Attention explanation tool:') &&
           output.includes('Perception consent tool:') &&
@@ -1592,6 +1650,7 @@ export default {
           output.includes('start_realtime_dogfood_session') &&
           output.includes('no-mic') &&
           output.includes('get_work_handoff') &&
+          output.includes('get_work_next') &&
           output.includes('Approval tools:') &&
           output.includes('get_pending_approvals') &&
           output.includes('resolve_approval') &&
@@ -1603,8 +1662,8 @@ export default {
           output.includes('get_learning_evolution') &&
           output.includes('run_browser_workflow') &&
           output.includes('draft_ui_demonstration_skill')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, work-next, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, work-next, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));

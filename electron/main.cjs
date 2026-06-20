@@ -27469,6 +27469,12 @@ const REALTIME_DEMONSTRATION_TOOL_NAMES = new Set([
   'save_ui_demonstration_skill',
 ]);
 const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
+const REALTIME_WORK_NEXT_TOOL_NAME = 'get_work_next';
+const REALTIME_RUN_WORK_NEXT_TOOL_NAME = 'run_work_next';
+const REALTIME_WORK_NEXT_TOOL_NAMES = new Set([
+  REALTIME_WORK_NEXT_TOOL_NAME,
+  REALTIME_RUN_WORK_NEXT_TOOL_NAME,
+]);
 const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
@@ -27564,6 +27570,46 @@ function realtimeHandoffToolSummary(name, args = {}, result = {}) {
     nextActionCount: nextActions.length,
     followUpCount: followUps.length,
     firstNextAction: compactRecordText(nextActions[0] ? formatHandoffAction(nextActions[0], 140) : '', 180),
+  };
+}
+
+function realtimeWorkNextToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_WORK_NEXT_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const action = output.action || {};
+  const resultBody = output.result || {};
+  const routeRecovery = resultBody.routeRecovery || output.routeRecovery || action.routeRecovery || {};
+  const recommended = routeRecovery.recommended || action.routeRecovery?.recommended || {};
+  const browserFillRecovery = recommended.browserFillRecovery || resultBody.routeExecution?.browserFillRecovery || resultBody.browserFillRecovery || {};
+  const browserFillHandoff = recommended.type === 'browser_fill_sensitive_handoff' || browserFillRecovery.type === 'browser_fill_sensitive_handoff';
+  const executeRequested = name === REALTIME_RUN_WORK_NEXT_TOOL_NAME || args?.execute === true || String(args?.execute || '').toLowerCase() === 'true';
+  const executed = Boolean(output.executed);
+  return {
+    action: name === REALTIME_RUN_WORK_NEXT_TOOL_NAME ? 'run' : 'preview',
+    ok: output.ok !== false && result.ok !== false,
+    actionId: compactRecordText(action.id || args?.actionId || args?.id || '', 160),
+    actionLabel: compactRecordText(action.label || '', 160),
+    actionSource: compactRecordText(action.source || '', 80),
+    executed,
+    executeRequested,
+    readOnlyPreview: name === REALTIME_WORK_NEXT_TOOL_NAME && !executed && !executeRequested,
+    executable: Boolean(action.executable),
+    autoEligible: Boolean(action.autoEligible),
+    autopilotEligible: action.autopilotEligible !== false,
+    manualOnly: Boolean(action.manualOnly || recommended.manualOnly || recommended.requiresUserPresence),
+    requiresUserPresence: Boolean(action.requiresUserPresence || recommended.requiresUserPresence),
+    riskLevel: boundedCount(action.riskLevel, 4),
+    routeId: compactRecordText(action.routeId || routeRecovery.route?.id || '', 160),
+    routeRecoveryType: compactRecordText(recommended.type || routeRecovery.type || '', 80),
+    routeRecoveryLabel: compactRecordText(recommended.label || '', 140),
+    routeRecoveryExecutable: Boolean(recommended.executable),
+    browserFillHandoff,
+    browserFillStatus: compactRecordText(browserFillRecovery.status || '', 120),
+    browserFillSafePreparedCount: boundedCount(browserFillRecovery.safePreparedCount, 1000),
+    browserFillBlockedCount: boundedCount(browserFillRecovery.blockedCount, 1000),
+    browserFillManualCount: Array.isArray(browserFillRecovery.manual) ? browserFillRecovery.manual.length : 0,
+    browserFillStoresSensitiveValue: false,
+    output: compactRecordText(output.output || resultBody.output || '', 360),
   };
 }
 
@@ -28091,6 +28137,7 @@ function recordRealtimeToolCall(options = {}) {
   const errorText = options.error instanceof Error ? options.error.message : options.error || '';
   const shortcut = realtimeShortcutToolSummary(name, options.args || {}, result);
   const handoff = realtimeHandoffToolSummary(name, options.args || {}, result);
+  const workNext = realtimeWorkNextToolSummary(name, options.args || {}, result);
   const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
@@ -28114,6 +28161,7 @@ function recordRealtimeToolCall(options = {}) {
     result: realtimeToolOutputShape(result),
     shortcut,
     handoff,
+    workNext,
     autopilot,
     attention,
     perception,
@@ -28139,6 +28187,15 @@ function recordRealtimeToolCall(options = {}) {
     requiresConfirmation: Boolean(shortcut?.requiresConfirmation),
     handoffSummary: handoff?.spokenSummary || '',
     handoffNextActions: handoff?.nextActionCount || 0,
+    workNextAction: workNext?.action || '',
+    workNextActionId: workNext?.actionId || '',
+    workNextActionSource: workNext?.actionSource || '',
+    workNextExecuted: Boolean(workNext?.executed),
+    workNextReadOnlyPreview: Boolean(workNext?.readOnlyPreview),
+    workNextRouteRecoveryType: workNext?.routeRecoveryType || '',
+    workNextBrowserFillHandoff: Boolean(workNext?.browserFillHandoff),
+    workNextBrowserFillSafePreparedCount: workNext?.browserFillSafePreparedCount || 0,
+    workNextBrowserFillBlockedCount: workNext?.browserFillBlockedCount || 0,
     autopilotSummary: autopilot?.spokenSummary || '',
     autopilotSkipSummary: autopilot?.skipSummary || '',
     autopilotReason: autopilot?.reason || '',
@@ -28321,6 +28378,40 @@ function realtimeHandoffToolEvidence(limit = 8) {
     nextAction: hasHandoff
       ? 'Ask live voice to summarize the handoff naturally and continue the next step.'
       : 'Ask the live voice session: 现在做到哪了 / what next, and confirm get_work_handoff appears here.',
+  };
+}
+
+function realtimeWorkNextToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_WORK_NEXT_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.workNext?.action).filter(Boolean));
+  const hasPreview = recent.some((event) => event.ok && event.name === REALTIME_WORK_NEXT_TOOL_NAME && event.workNext?.readOnlyPreview === true);
+  const hasRun = recent.some((event) => event.ok && event.name === REALTIME_RUN_WORK_NEXT_TOOL_NAME);
+  const hasRouteRecovery = recent.some((event) => event.workNext?.routeRecoveryType);
+  const hasBrowserFillHandoff = recent.some((event) => event.workNext?.browserFillHandoff === true);
+  const safePreview = recent.some((event) => (
+    event.ok &&
+    event.name === REALTIME_WORK_NEXT_TOOL_NAME &&
+    event.workNext?.readOnlyPreview === true &&
+    event.workNext?.executed === false
+  ));
+  return {
+    ok: hasPreview || hasRun,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasPreview,
+    hasRun,
+    hasRouteRecovery,
+    hasBrowserFillHandoff,
+    safePreview,
+    browserFillSafePreparedCount: Math.max(0, ...recent.map((event) => Number(event.workNext?.browserFillSafePreparedCount || 0))),
+    browserFillBlockedCount: Math.max(0, ...recent.map((event) => Number(event.workNext?.browserFillBlockedCount || 0))),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasPreview
+      ? 'Ask live voice to explain the single next work step, then use run_work_next only if the user explicitly says to execute it.'
+      : 'Ask the live voice session: 下一步能做什么？先预览，不要执行。',
   };
 }
 
@@ -28996,6 +29087,7 @@ function realtimeDogfoodWorkbenchActionPlan(evidence = {}) {
 function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const blocker = evidence.blocker || null;
   const handoffTools = evidence.handoffTools || {};
+  const workNextTools = evidence.workNextTools || {};
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
@@ -29035,6 +29127,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
     prompts: [
       '后台现在怎么样',
       '现在做到哪了？接下来做什么？',
+      '下一步能做什么？先预览，不要执行。',
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
@@ -29068,6 +29161,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         label: 'Realtime called get_work_handoff',
         ok: Boolean(handoffTools.hasHandoff),
         tool: REALTIME_HANDOFF_TOOL_NAME,
+      },
+      {
+        id: 'work_next_tool',
+        label: 'Realtime called get_work_next',
+        ok: Boolean(workNextTools.hasPreview),
+        tool: REALTIME_WORK_NEXT_TOOL_NAME,
       },
       {
         id: 'autopilot_tool',
@@ -29130,7 +29229,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: 'draft_ui_demonstration_skill',
       },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, capability, learning, browser, and UI demonstration prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, work-next, autopilot, attention, perception, capability, learning, browser, and UI demonstration prompts.',
   };
 }
 
@@ -29138,6 +29237,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
   const shortcutTools = evidence.shortcutTools || {};
   const handoffTools = evidence.handoffTools || {};
+  const workNextTools = evidence.workNextTools || {};
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
@@ -29172,7 +29272,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, workNextTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -29230,6 +29330,19 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       count: Number(handoffTools.count || 0),
       hasHandoff: Boolean(handoffTools.hasHandoff),
       nextAction: handoffTools.nextAction || 'Ask the live voice session for the current work handoff.',
+    },
+    workNextTools: {
+      observed: Boolean(workNextTools.ok),
+      count: Number(workNextTools.count || 0),
+      observedActions: Array.isArray(workNextTools.observedActions) ? workNextTools.observedActions : [],
+      hasPreview: Boolean(workNextTools.hasPreview),
+      hasRun: Boolean(workNextTools.hasRun),
+      hasRouteRecovery: Boolean(workNextTools.hasRouteRecovery),
+      hasBrowserFillHandoff: Boolean(workNextTools.hasBrowserFillHandoff),
+      safePreview: Boolean(workNextTools.safePreview),
+      browserFillSafePreparedCount: Number(workNextTools.browserFillSafePreparedCount || 0),
+      browserFillBlockedCount: Number(workNextTools.browserFillBlockedCount || 0),
+      nextAction: workNextTools.nextAction || 'Ask the live voice session to preview the single next work step.',
     },
     autopilotTools: {
       observed: Boolean(autopilotTools.ok),
@@ -29353,6 +29466,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const progressSync = evidence.progressSync || progress.sync || {};
   const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
   const handoffTools = options.handoffTools || evidence.handoffTools || {};
+  const workNextTools = options.workNextTools || evidence.workNextTools || {};
   const autopilotTools = options.autopilotTools || evidence.autopilotTools || {};
   const attentionTools = options.attentionTools || evidence.attentionTools || {};
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
@@ -29435,6 +29549,20 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       detail: handoffTools.hasHandoff ? 'get_work_handoff was observed in recent Realtime tool evidence.' : 'No get_work_handoff call has been observed in recent Realtime tool evidence.',
       nextAction: 'Ask: 现在做到哪了？接下来做什么？',
       evidence: { tool: REALTIME_HANDOFF_TOOL_NAME, count: Number(handoffTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'ask_work_next',
+      label: 'Ask voice for the single next work step',
+      ok: Boolean(workNextTools.hasPreview),
+      detail: workNextTools.hasPreview ? 'get_work_next was observed in recent Realtime tool evidence.' : 'No get_work_next preview call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 下一步能做什么？先预览，不要执行。',
+      evidence: {
+        tool: REALTIME_WORK_NEXT_TOOL_NAME,
+        count: Number(workNextTools.count || 0),
+        safePreview: Boolean(workNextTools.safePreview),
+        hasRouteRecovery: Boolean(workNextTools.hasRouteRecovery),
+        hasBrowserFillHandoff: Boolean(workNextTools.hasBrowserFillHandoff),
+      },
     }),
     realtimeDogfoodDrillStep({
       id: 'ask_autopilot_status',
@@ -29655,6 +29783,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
     prompts: [
       '后台现在怎么样',
       '现在做到哪了？接下来做什么？',
+      '下一步能做什么？先预览，不要执行。',
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
@@ -29724,6 +29853,12 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       prompt: '现在做到哪了？接下来做什么？',
       copyText: '现在做到哪了？接下来做什么？',
       reason: 'This verifies the Realtime session calls get_work_handoff.',
+    },
+    ask_work_next: {
+      promptType: 'spoken',
+      prompt: '下一步能做什么？先预览，不要执行。',
+      copyText: '下一步能做什么？先预览，不要执行。',
+      reason: 'This verifies the Realtime session calls get_work_next and keeps the next work step read-only until the user explicitly asks to run it.',
     },
     ask_autopilot_status: {
       promptType: 'spoken',
@@ -29849,6 +29984,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
   });
   const toolGates = [
     { id: 'handoff', ok: Boolean(evidence.handoffTools?.hasHandoff), label: 'work handoff', tool: REALTIME_HANDOFF_TOOL_NAME },
+    { id: 'work_next', ok: Boolean(evidence.workNextTools?.hasPreview), label: 'work-next preview', tool: REALTIME_WORK_NEXT_TOOL_NAME },
     { id: 'autopilot', ok: Boolean(evidence.autopilotTools?.hasStatus), label: 'autopilot status', tool: REALTIME_AUTOPILOT_TOOL_NAME },
     { id: 'attention', ok: Boolean(evidence.attentionTools?.hasExplanation), label: 'attention explanation', tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
@@ -30023,6 +30159,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   const pendingStep = pending[0] || prompt.step || null;
   const evidenceTools = [
     { id: 'handoff', label: 'work handoff', ok: Boolean(evidence.handoffTools?.hasHandoff), tool: REALTIME_HANDOFF_TOOL_NAME },
+    { id: 'work_next', label: 'work-next preview', ok: Boolean(evidence.workNextTools?.hasPreview), tool: REALTIME_WORK_NEXT_TOOL_NAME },
     { id: 'autopilot', label: 'autopilot status', ok: Boolean(evidence.autopilotTools?.hasStatus), tool: REALTIME_AUTOPILOT_TOOL_NAME },
     { id: 'attention', label: 'attention explanation', ok: Boolean(evidence.attentionTools?.hasExplanation), tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
@@ -30280,6 +30417,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     'sync_latest_progress',
     'ask_progress',
     'ask_work_handoff',
+    'ask_work_next',
     'ask_autopilot_status',
     'ask_attention_explanation',
     'ask_perception_consent',
@@ -30302,6 +30440,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     sync_latest_progress: 'Keep the renderer voice data channel live while work progress changes.',
     ask_progress: 'Use the live voice prompt from /api/realtime/dogfood/prompt.',
     ask_work_handoff: 'Ask live voice to call get_work_handoff.',
+    ask_work_next: 'Ask live voice to call get_work_next as a read-only preview.',
     ask_autopilot_status: 'Ask live voice to call get_autopilot_status.',
     ask_attention_explanation: 'Ask live voice to call get_attention_explanation.',
     ask_perception_consent: 'Ask live voice to call get_perception_consent.',
@@ -31950,6 +32089,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const dogfoodSessionTools = realtimeDogfoodSessionToolEvidence(8);
   const productivityDogfoodTools = realtimeProductivityDogfoodToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
+  const workNextTools = realtimeWorkNextToolEvidence(8);
   const autopilotTools = realtimeAutopilotToolEvidence(8);
   const attentionTools = realtimeAttentionToolEvidence(8);
   const perceptionTools = realtimePerceptionToolEvidence(8);
@@ -32022,6 +32162,7 @@ function realtimeVoiceEvidenceSnapshot() {
     dogfoodSessionTools,
     productivityDogfoodTools,
     handoffTools,
+    workNextTools,
     autopilotTools,
     attentionTools,
     perceptionTools,
@@ -32146,6 +32287,17 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         observed: Boolean(evidence.handoffTools?.hasHandoff),
         count: Number(evidence.handoffTools?.count || 0),
         nextAction: evidence.handoffTools?.nextAction || '',
+      },
+      workNext: {
+        observed: Boolean(evidence.workNextTools?.hasPreview || evidence.workNextTools?.hasRun),
+        count: Number(evidence.workNextTools?.count || 0),
+        observedActions: Array.isArray(evidence.workNextTools?.observedActions) ? evidence.workNextTools.observedActions : [],
+        hasPreview: Boolean(evidence.workNextTools?.hasPreview),
+        hasRun: Boolean(evidence.workNextTools?.hasRun),
+        hasRouteRecovery: Boolean(evidence.workNextTools?.hasRouteRecovery),
+        hasBrowserFillHandoff: Boolean(evidence.workNextTools?.hasBrowserFillHandoff),
+        safePreview: Boolean(evidence.workNextTools?.safePreview),
+        nextAction: evidence.workNextTools?.nextAction || '',
       },
       shortcuts: {
         observed: Boolean(evidence.shortcutTools?.ok),
@@ -43245,6 +43397,8 @@ const REALTIME_REQUIRED_TOOLS = [
   'run_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
+  'get_work_next',
+  'run_work_next',
   'get_pending_approvals',
   'resolve_approval',
   'get_collaboration_state',
@@ -43307,6 +43461,7 @@ function realtimeInstructionChecks(instructions = '') {
     realtimeDogfoodSession: /get_realtime_dogfood_session|start_realtime_dogfood_session|mark_realtime_dogfood_step|end_realtime_dogfood_session|dogfood session tracker/i.test(text),
     workerRecovery: /get_worker_recovery|worker failed|recover automatically|failed background jobs/i.test(text),
     autopilotStatus: /get_autopilot_status|autopilot did|unattended work|can continue by itself|autopilot is waiting/i.test(text),
+    workNext: /get_work_next|run_work_next|single step should happen next|next work step/i.test(text),
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
     knowledgeWorkflows: /get_knowledge_vaults|search_knowledge_notes|run_knowledge_workflow|Obsidian\/Markdown vaults|knowledge workflow/i.test(text),
     mcpDiscovery: /get_mcp_servers|MCP servers|Claude\/Cursor tool servers|external tool bridges/i.test(text),

@@ -165,7 +165,7 @@ Local Express service on 127.0.0.1:3417
   /api/briefing         -> local status, blockers, recent work, and next actions
   /api/work/progress    -> spoken-style job/workflow progress check-in
   /api/work/handoff     -> voice-ready handoff over readiness, progress, sessions, collaboration, and continuations
-  /api/work/next        -> preview or execute one safe next workbench action, including explicit maintenance fallback previews
+  /api/work/next        -> preview or execute one safe next workbench action; Realtime voice uses get_work_next for read-only next-step previews and run_work_next only after an explicit execute request
 /api/autonomy/run     -> bounded route/learning/observe/preview/verify/recovery-scan loop for one task, with machine-readable agencyPlan
   /api/jobs             -> persisted background job history
   /api/jobs/recovery    -> recoverable failed-job summaries with attempts, diagnostics, child recovery jobs, and recommended next actions
@@ -212,7 +212,7 @@ Local Express service on 127.0.0.1:3417
   /api/routing/speed-policy -> read-only model/lane speed policy for realtime vs fast/background/Codex/Claude/tool-first routing, including browser/file/app first-tool hints
   /api/conversation/state -> resident voice conversation lifecycle state
   /api/realtime/context -> silent preflight context for new voice sessions
-  /api/realtime/evidence -> live voice dogfood checklist and sanitized tool-call evidence
+  /api/realtime/evidence -> live voice dogfood checklist and sanitized tool-call evidence, including work-next preview/execute evidence
   /api/realtime/dogfood/drill -> manual live-voice dogfood drill steps and prompts
   /api/realtime/dogfood/prompt -> next manual live-voice dogfood prompt
   /api/realtime/dogfood/prompt/copy -> copy the next dogfood prompt, with dry-run support
