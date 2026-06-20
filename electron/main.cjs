@@ -6624,10 +6624,23 @@ function deleteDemonstration(id, options = {}) {
 function learningContextForPrompt() {
   const profile = learningStateSnapshot().profile;
   if (!learningPromptEnabled() || !profile.sourceEventCount) return '';
+  const evolution = learningEvolutionSnapshot({ source: 'prompt_context', recentLimit: 12, baselineLimit: 48 });
+  const evolutionLines = evolution.sourceEventCount
+    ? [
+        evolution.spokenSummary ? `Evolution summary: ${evolution.spokenSummary}` : '',
+        evolution.changes?.length
+          ? `Recent changes: ${evolution.changes.slice(0, 3).map((change) => {
+            const shift = [change.from, change.to].filter(Boolean).join(' -> ') || change.to || change.id;
+            return `${change.label || change.id}: ${shift}`;
+          }).join('; ')}`
+          : '',
+      ].filter(Boolean)
+    : [];
   return [
     'Local inferred user profile from passive ambient metadata. Treat as lightweight context, not explicit user-approved memory:',
     profile.summary,
     profile.signals.length ? `Signals: ${profile.signals.join('; ')}` : '',
+    ...evolutionLines,
   ]
     .filter(Boolean)
     .join('\n');
@@ -6715,6 +6728,7 @@ function resetLearningProfile(options = {}) {
 
 function normalizeLearningEvidence(value = {}) {
   const raw = value && typeof value === 'object' ? value : {};
+  const evolution = raw.evolution && typeof raw.evolution === 'object' ? raw.evolution : {};
   return {
     enabled: Boolean(raw.enabled),
     paused: Boolean(raw.paused),
@@ -6725,6 +6739,28 @@ function normalizeLearningEvidence(value = {}) {
     disabledReason: compactRecordText(raw.disabledReason || '', 180),
     signals: normalizeLearningStringList(raw.signals, 6),
     matchedSignals: normalizeLearningStringList(raw.matchedSignals, 6),
+    evolution: {
+      attached: Boolean(evolution.attached),
+      enoughBaseline: Boolean(evolution.enoughBaseline),
+      sourceEventCount: Math.max(0, Number(evolution.sourceEventCount || 0)),
+      recentEventCount: Math.max(0, Number(evolution.recentEventCount || 0)),
+      baselineEventCount: Math.max(0, Number(evolution.baselineEventCount || 0)),
+      changeCount: Math.max(0, Number(evolution.changeCount || 0)),
+      summary: compactRecordText(evolution.summary || '', 420),
+      spokenSummary: compactRecordText(evolution.spokenSummary || '', 420),
+      changes: Array.isArray(evolution.changes)
+        ? evolution.changes.map((change) => ({
+          id: compactRecordText(change?.id || '', 80),
+          label: compactRecordText(change?.label || '', 120),
+          direction: compactRecordText(change?.direction || '', 40),
+          from: compactRecordText(change?.from || '', 120),
+          to: compactRecordText(change?.to || '', 120),
+          delta: Number(change?.delta || 0),
+          confidence: Number(change?.confidence || 0),
+          evidence: compactRecordText(change?.evidence || '', 220),
+        })).filter((change) => change.id || change.label || change.to).slice(0, 5)
+        : [],
+    },
     exclusions: {
       apps: Math.max(0, Number(raw.exclusions?.apps || 0)),
       hosts: Math.max(0, Number(raw.exclusions?.hosts || 0)),
@@ -6738,6 +6774,7 @@ function learningEvidenceForTask(task, options = {}) {
   const profile = state.profile || {};
   const controls = state.controls || {};
   const signals = normalizeLearningStringList(profile.signals, 6);
+  const evolutionSnapshot = learningEvolutionSnapshot({ source: 'task_context', recentLimit: 12, baselineLimit: 48 });
   const tokens = memoryQueryTokens(task);
   const matchedSignals = signals.filter((signal) => {
     const lower = signal.toLowerCase();
@@ -6751,7 +6788,9 @@ function learningEvidenceForTask(task, options = {}) {
   else if (options.useMemory === false) disabledReason = 'memory_context_disabled_for_task';
   const usedInPrompt = Boolean(options.usedInPrompt && !disabledReason);
   const decisionEffect = usedInPrompt
-    ? 'included_in_model_context_and_routing_evidence'
+    ? evolutionSnapshot.sourceEventCount
+      ? 'included_profile_and_evolution_in_model_context_and_routing_evidence'
+      : 'included_in_model_context_and_routing_evidence'
     : disabledReason || 'available_but_not_attached';
   return normalizeLearningEvidence({
     enabled: state.enabled,
@@ -6763,6 +6802,17 @@ function learningEvidenceForTask(task, options = {}) {
     disabledReason,
     signals,
     matchedSignals,
+    evolution: {
+      attached: usedInPrompt && Boolean(evolutionSnapshot.sourceEventCount),
+      enoughBaseline: Boolean(evolutionSnapshot.enoughBaseline),
+      sourceEventCount: evolutionSnapshot.sourceEventCount,
+      recentEventCount: evolutionSnapshot.windows?.recent?.count || 0,
+      baselineEventCount: evolutionSnapshot.windows?.baseline?.count || 0,
+      changeCount: Array.isArray(evolutionSnapshot.changes) ? evolutionSnapshot.changes.length : 0,
+      summary: evolutionSnapshot.summary,
+      spokenSummary: evolutionSnapshot.spokenSummary,
+      changes: evolutionSnapshot.changes,
+    },
     exclusions: {
       apps: controls.excludedApps?.length || 0,
       hosts: controls.excludedHosts?.length || 0,
@@ -31866,6 +31916,12 @@ function workflowContinuationContext(parent, instruction = '', options = {}) {
     ? []
     : workflowContinuationRelatedHistory(parent, instruction, options.workflowLimit || 3);
   const prompt = continuationWorkflowPrompt(parent, instruction, { memoryContext, relatedWorkflows });
+  const learningEvidence = memoryContext.learningEvidence || {};
+  const learningSummary = learningEvidence.usedInPrompt
+    ? learningEvidence.evolution?.attached
+      ? 'learning profile+evolution attached'
+      : 'learning profile attached'
+    : learningEvidence.decisionEffect || '';
   return {
     prompt,
     memoryContext,
@@ -31874,7 +31930,7 @@ function workflowContinuationContext(parent, instruction = '', options = {}) {
       `${memoryContext.matches.length} memory match(es)`,
       `${memoryContext.skills.length} skill match(es)`,
       `${relatedWorkflows.length} related workflow(s)`,
-      memoryContext.learningEvidence?.usedInPrompt ? 'learning attached' : memoryContext.learningEvidence?.decisionEffect || '',
+      learningSummary,
     ].filter(Boolean).join(' · '),
   };
 }

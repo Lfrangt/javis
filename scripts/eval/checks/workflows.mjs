@@ -47,10 +47,13 @@ export default {
           preview.data?.queued === false &&
           prompt.includes('Previous workflow:') &&
           prompt.includes('Memory and learned user context for this continuation:') &&
+          prompt.includes('Evolution summary:') &&
           Array.isArray(continuation.relatedWorkflows) &&
           typeof memory.count === 'number' &&
-          memory.learningEvidence?.usedInPrompt === true
-          ? ok('workflows.continuation_preview', 'Memory-aware continuation preview', `${memory.count} memory match(es), ${continuation.relatedWorkflows.length} related workflow(s)`)
+          memory.learningEvidence?.usedInPrompt === true &&
+          memory.learningEvidence?.evolution?.attached === true &&
+          typeof memory.learningEvidence?.evolution?.changeCount === 'number'
+          ? ok('workflows.continuation_preview', 'Memory-aware continuation preview', `${memory.count} memory match(es), ${continuation.relatedWorkflows.length} related workflow(s), evolution ${memory.learningEvidence.evolution.changeCount} change(s)`)
           : fail('workflows.continuation_preview', 'Memory-aware continuation preview', 'continuation preview did not expose memory-aware prompt context without queueing work', preview.data),
       );
     }
@@ -97,7 +100,9 @@ export default {
         followUp.continuation &&
         typeof followUp.continuation.memoryMatches === 'number' &&
         typeof followUp.continuation.skillMatches === 'number' &&
-        typeof followUp.continuation.relatedWorkflows === 'number'
+        typeof followUp.continuation.relatedWorkflows === 'number' &&
+        followUp.continuation.learningEvidence?.evolution &&
+        typeof followUp.continuation.learningEvidence.evolution.changeCount === 'number'
       );
       out.push(
         shapeOk

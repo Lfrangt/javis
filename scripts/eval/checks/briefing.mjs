@@ -36,7 +36,9 @@ export default {
       action.instruction &&
       action.continuation &&
       typeof action.continuation.memoryMatches === 'number' &&
-      typeof action.continuation.relatedWorkflows === 'number'
+      typeof action.continuation.relatedWorkflows === 'number' &&
+      action.continuation.learningEvidence?.evolution &&
+      typeof action.continuation.learningEvidence.evolution.changeCount === 'number'
     ));
     out.push(
       Array.isArray(b.followUps) && coherentFollowUps
