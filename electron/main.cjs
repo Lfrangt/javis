@@ -148,6 +148,40 @@ const DEFAULT_SCREEN_PRIVACY = {
   mode: process.env.JAVIS_SCREEN_PRIVACY_MODE === 'clear' ? 'clear' : 'private',
   updatedAt: Date.now(),
 };
+const SCREEN_PRIVACY_PRESETS = [
+  {
+    id: 'sensitive_defaults',
+    label: 'Sensitive Defaults',
+    description: 'Block common password, payment, banking, account, and security surfaces from model screen context while keeping ambient screen watching usable.',
+    recommended: true,
+    rules: [
+      { id: 'app_passwords', kind: 'app', value: 'Passwords', match: 'exact', effect: 'exclude', label: 'Passwords app' },
+      { id: 'app_keychain_access', kind: 'app', value: 'Keychain Access', match: 'exact', effect: 'exclude', label: 'Keychain Access' },
+      { id: 'app_1password', kind: 'app', value: '1Password', match: 'contains', effect: 'exclude', label: '1Password' },
+      { id: 'app_bitwarden', kind: 'app', value: 'Bitwarden', match: 'contains', effect: 'exclude', label: 'Bitwarden' },
+      { id: 'window_password', kind: 'window', value: 'password', match: 'contains', effect: 'exclude', label: 'Password windows' },
+      { id: 'window_passcode', kind: 'window', value: 'passcode', match: 'contains', effect: 'exclude', label: 'Passcode windows' },
+      { id: 'window_two_factor', kind: 'window', value: 'two-factor', match: 'contains', effect: 'exclude', label: 'Two-factor windows' },
+      { id: 'window_recovery_code', kind: 'window', value: 'recovery code', match: 'contains', effect: 'exclude', label: 'Recovery code windows' },
+      { id: 'window_payment', kind: 'window', value: 'payment', match: 'contains', effect: 'exclude', label: 'Payment windows' },
+      { id: 'window_checkout', kind: 'window', value: 'checkout', match: 'contains', effect: 'exclude', label: 'Checkout windows' },
+      { id: 'window_security_privacy', kind: 'window', value: 'Security & Privacy', match: 'contains', effect: 'exclude', label: 'Security & Privacy settings' },
+      { id: 'window_touch_id', kind: 'window', value: 'Touch ID', match: 'contains', effect: 'exclude', label: 'Touch ID settings' },
+      { id: 'host_google_accounts', kind: 'browser_host', value: 'accounts.google.com', match: 'exact', effect: 'exclude', label: 'Google account login' },
+      { id: 'host_apple_id', kind: 'browser_host', value: 'appleid.apple.com', match: 'exact', effect: 'exclude', label: 'Apple ID' },
+      { id: 'host_idmsa_apple', kind: 'browser_host', value: 'idmsa.apple.com', match: 'exact', effect: 'exclude', label: 'Apple auth' },
+      { id: 'host_paypal', kind: 'browser_host', value: 'paypal.com', match: 'suffix', effect: 'exclude', label: 'PayPal' },
+      { id: 'host_stripe', kind: 'browser_host', value: 'stripe.com', match: 'suffix', effect: 'exclude', label: 'Stripe' },
+      { id: 'host_wise', kind: 'browser_host', value: 'wise.com', match: 'suffix', effect: 'exclude', label: 'Wise' },
+      { id: 'host_chase', kind: 'browser_host', value: 'chase.com', match: 'suffix', effect: 'exclude', label: 'Chase' },
+      { id: 'host_bankofamerica', kind: 'browser_host', value: 'bankofamerica.com', match: 'suffix', effect: 'exclude', label: 'Bank of America' },
+      { id: 'host_wellsfargo', kind: 'browser_host', value: 'wellsfargo.com', match: 'suffix', effect: 'exclude', label: 'Wells Fargo' },
+      { id: 'host_rbc', kind: 'browser_host', value: 'rbcroyalbank.com', match: 'suffix', effect: 'exclude', label: 'RBC banking' },
+      { id: 'host_td', kind: 'browser_host', value: 'td.com', match: 'suffix', effect: 'exclude', label: 'TD banking' },
+      { id: 'region_notification_strip', kind: 'region', effect: 'blur', label: 'Top-right notification strip', region: { unit: 'percent', x: 70, y: 0, width: 30, height: 18 } },
+    ],
+  },
+];
 
 const CREATIVE_APP_CATALOG = [
   {
@@ -2380,6 +2414,8 @@ function normalizeScreenPrivacyRules(value = []) {
       seen.add(id);
       return {
         id,
+        presetId: compactRecordText(item.presetId || '', 80),
+        presetLabel: compactRecordText(item.presetLabel || '', 120),
         enabled: item.enabled !== false,
         kind,
         effect: normalizeScreenPrivacyEffect(item.effect || item.action),
@@ -2654,8 +2690,10 @@ function screenPrivacyMatchingRules(context = {}, rules = screenPrivacy?.rules |
   });
 }
 
-function screenPrivacyContextPolicy(context = {}) {
-  const privacy = screenPrivacySnapshot();
+function screenPrivacyContextPolicy(context = {}, rulesOverride = null) {
+  const privacy = Array.isArray(rulesOverride)
+    ? normalizeScreenPrivacy({ ...screenPrivacy, rules: rulesOverride })
+    : screenPrivacySnapshot();
   const matchingRules = screenPrivacyMatchingRules(context, privacy.rules);
   const excluded = matchingRules.filter((rule) => rule.effect === 'exclude');
   const blurred = matchingRules.filter((rule) => rule.effect === 'blur');
@@ -2771,6 +2809,141 @@ function removeScreenPrivacyRule(id, options = {}) {
     source: String(options.source || 'api').slice(0, 80),
   });
   return screenPrivacySnapshot();
+}
+
+function screenPrivacyPresetById(id) {
+  const presetId = String(id || '').trim();
+  return SCREEN_PRIVACY_PRESETS.find((preset) => preset.id === presetId) || null;
+}
+
+function screenPrivacyPresetRuleInput(preset, options = {}) {
+  const enabled = options.enabled !== false;
+  return (preset.rules || []).map((rule) => ({
+    ...rule,
+    id: `preset_${preset.id}_${rule.id}`,
+    presetId: preset.id,
+    presetLabel: preset.label,
+    enabled,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }));
+}
+
+function screenPrivacyPresetRules(preset, options = {}) {
+  return normalizeScreenPrivacyRules(screenPrivacyPresetRuleInput(preset, options));
+}
+
+function screenPrivacyPresetList(options = {}) {
+  const currentIds = new Set((Array.isArray(screenPrivacy?.rules) ? screenPrivacy.rules : []).map((rule) => rule.id));
+  const includeRules = options.includeRules === true || String(options.includeRules || '').toLowerCase() === 'true';
+  const presets = SCREEN_PRIVACY_PRESETS.map((preset) => {
+    const rules = screenPrivacyPresetRules(preset);
+    const appliedCount = rules.filter((rule) => currentIds.has(rule.id)).length;
+    const counts = screenPrivacyRuleCounts(rules);
+    return {
+      id: preset.id,
+      label: preset.label,
+      description: preset.description,
+      recommended: Boolean(preset.recommended),
+      applied: appliedCount === rules.length && rules.length > 0,
+      appliedCount,
+      ruleCount: rules.length,
+      counts,
+      rulesSummary: screenPrivacyRulesSummary(rules),
+      rules: includeRules ? rules : undefined,
+    };
+  });
+  return {
+    ok: true,
+    count: presets.length,
+    recommended: presets.find((preset) => preset.recommended)?.id || '',
+    presets,
+  };
+}
+
+function screenPrivacyPresetPreview(id, options = {}) {
+  const preset = screenPrivacyPresetById(id);
+  if (!preset) throw new Error(`Unknown screen privacy preset: ${id || 'missing'}.`);
+  const presetRules = screenPrivacyPresetRules(preset, options);
+  const existing = Array.isArray(screenPrivacy.rules) ? screenPrivacy.rules : [];
+  const presetRuleIds = new Set(presetRules.map((rule) => rule.id));
+  const replacePreset = options.replacePreset !== false;
+  const baseRules = replacePreset
+    ? existing.filter((rule) => rule.presetId !== preset.id && !presetRuleIds.has(rule.id))
+    : existing.filter((rule) => !presetRuleIds.has(rule.id));
+  const existingIds = new Set(existing.map((rule) => rule.id));
+  const wouldAdd = presetRules.filter((rule) => !existingIds.has(rule.id)).length;
+  const wouldUpdate = presetRules.length - wouldAdd;
+  const privacy = normalizeScreenPrivacy({
+    ...screenPrivacy,
+    mode: options.mode || screenPrivacy.mode,
+    rules: [...baseRules, ...presetRules],
+    updatedAt: Date.now(),
+  });
+  const samples = {
+    appPasswordManager: screenPrivacyContextPolicy({
+      frontmost: { app: 'Passwords', windowTitle: 'Passwords' },
+    }, privacy.rules),
+    windowPayment: screenPrivacyContextPolicy({
+      frontmost: { app: 'Safari', windowTitle: 'Payment checkout' },
+    }, privacy.rules),
+    browserLogin: screenPrivacyContextPolicy({
+      browser: { host: 'accounts.google.com', title: 'Sign in' },
+    }, privacy.rules),
+    safeFinder: screenPrivacyContextPolicy({
+      frontmost: { app: 'Finder', windowTitle: 'Documents' },
+    }, privacy.rules),
+  };
+  return {
+    ok: true,
+    dryRun: options.dryRun !== false,
+    preset: {
+      id: preset.id,
+      label: preset.label,
+      description: preset.description,
+      recommended: Boolean(preset.recommended),
+      ruleCount: presetRules.length,
+      rulesSummary: screenPrivacyRulesSummary(presetRules),
+    },
+    counts: {
+      existing: existing.length,
+      presetRules: presetRules.length,
+      wouldAdd,
+      wouldUpdate,
+      nextTotal: privacy.ruleCounts.total,
+      nextEnabled: privacy.ruleCounts.enabled,
+    },
+    rules: presetRules,
+    privacy,
+    samples,
+    output: [
+      `${preset.label}: ${presetRules.length} rule(s).`,
+      `Would add ${wouldAdd}, update ${wouldUpdate}.`,
+      privacy.rulesSummary,
+    ].join(' '),
+  };
+}
+
+function applyScreenPrivacyPreset(id, options = {}) {
+  const dryRun = options.dryRun === true || String(options.dryRun || '').toLowerCase() === 'true';
+  const preview = screenPrivacyPresetPreview(id, { ...(options || {}), dryRun });
+  if (dryRun) return preview;
+  screenPrivacy = normalizeScreenPrivacy(preview.privacy);
+  persistScreenPrivacy();
+  appendAudit('screen_privacy.preset_applied', {
+    id: preview.preset.id,
+    label: preview.preset.label,
+    rules: preview.preset.ruleCount,
+    enabled: screenPrivacy.ruleCounts.enabled,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return {
+    ...preview,
+    dryRun: false,
+    applied: true,
+    privacy: screenPrivacySnapshot(),
+    output: `Applied ${preview.preset.label}: ${preview.preset.ruleCount} rule(s). ${screenPrivacy.rulesSummary}`,
+  };
 }
 
 function clearLatestScreen(source = 'api') {
@@ -39730,7 +39903,7 @@ function startApiServer() {
   });
 
   api.get('/api/screen/privacy', (_req, res) => {
-    res.json({ privacy: screenPrivacySnapshot(), privacyFile: SCREEN_PRIVACY_FILE });
+    res.json({ privacy: screenPrivacySnapshot(), presets: screenPrivacyPresetList(), privacyFile: SCREEN_PRIVACY_FILE });
   });
 
   api.put('/api/screen/privacy', (req, res) => {
@@ -39748,6 +39921,34 @@ function startApiServer() {
       res.json({ ok: true, rule, privacy: screenPrivacySnapshot(), privacyFile: SCREEN_PRIVACY_FILE });
     } catch (error) {
       jsonError(res, 400, 'Screen privacy rule add failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/screen/privacy/presets', (req, res) => {
+    try {
+      res.json({ presets: screenPrivacyPresetList({ includeRules: req.query.includeRules }) });
+    } catch (error) {
+      jsonError(res, 500, 'Screen privacy preset list failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/screen/privacy/presets/:id', (req, res) => {
+    try {
+      res.json({ preview: screenPrivacyPresetPreview(req.params.id, { dryRun: true }) });
+    } catch (error) {
+      jsonError(res, 404, 'Screen privacy preset preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/screen/privacy/presets/:id/apply', (req, res) => {
+    try {
+      const result = applyScreenPrivacyPreset(req.params.id, {
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Screen privacy preset apply failed', error instanceof Error ? error.message : String(error));
     }
   });
 

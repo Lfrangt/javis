@@ -26,6 +26,96 @@ export default {
     );
 
     const originalRules = Array.isArray(privacy.rules) ? privacy.rules : [];
+    const presets = await ctx.api('/api/screen/privacy/presets?includeRules=true');
+    const presetItems = Array.isArray(presets.data?.presets?.presets) ? presets.data.presets.presets : [];
+    const sensitivePreset = presetItems.find((preset) => preset.id === 'sensitive_defaults');
+    const presetPreview = await ctx.api('/api/screen/privacy/presets/sensitive_defaults', {
+      method: 'GET',
+    });
+    const presetDryRun = await ctx.api('/api/screen/privacy/presets/sensitive_defaults/apply', {
+      method: 'POST',
+      body: { dryRun: true, source: 'eval_screen_privacy_preset_dry_run' },
+    });
+    const presetApply = await ctx.api('/api/screen/privacy/presets/sensitive_defaults/apply', {
+      method: 'POST',
+      body: { source: 'eval_screen_privacy_preset_apply' },
+    });
+    const passwordCheck = await ctx.api('/api/screen/privacy/check', {
+      method: 'POST',
+      body: {
+        context: {
+          frontmost: { app: 'Passwords', windowTitle: 'Passwords' },
+        },
+      },
+    });
+    const accountHostCheck = await ctx.api('/api/screen/privacy/check', {
+      method: 'POST',
+      body: {
+        context: {
+          browser: { host: 'accounts.google.com', title: 'Sign in' },
+        },
+      },
+    });
+    const paymentWindowCheck = await ctx.api('/api/screen/privacy/check', {
+      method: 'POST',
+      body: {
+        context: {
+          frontmost: { app: 'Safari', windowTitle: 'Payment checkout' },
+        },
+      },
+    });
+    const presetSafeCheck = await ctx.api('/api/screen/privacy/check', {
+      method: 'POST',
+      body: {
+        context: {
+          frontmost: { app: 'Finder', windowTitle: 'Documents' },
+        },
+      },
+    });
+    out.push(
+      presets.ok &&
+        sensitivePreset?.recommended === true &&
+        sensitivePreset.ruleCount >= 20 &&
+        sensitivePreset.counts?.app >= 4 &&
+        sensitivePreset.counts?.browser_host >= 8 &&
+        sensitivePreset.counts?.window >= 6 &&
+        sensitivePreset.counts?.region >= 1 &&
+        presetPreview.ok &&
+        presetPreview.data?.preview?.preset?.id === 'sensitive_defaults' &&
+        presetPreview.data?.preview?.samples?.appPasswordManager?.blocked === true &&
+        presetPreview.data?.preview?.samples?.browserLogin?.blocked === true &&
+        presetPreview.data?.preview?.samples?.safeFinder?.allowed === true &&
+        presetDryRun.ok &&
+        presetDryRun.data?.dryRun === true &&
+        presetDryRun.data?.counts?.presetRules >= 20 &&
+        presetApply.ok &&
+        presetApply.data?.applied === true &&
+        presetApply.data?.privacy?.enforcement?.regionRendererMask === true &&
+        passwordCheck.ok &&
+        passwordCheck.data?.policy?.blocked === true &&
+        passwordCheck.data?.policy?.reason?.includes('preset_sensitive_defaults_app_passwords') &&
+        accountHostCheck.ok &&
+        accountHostCheck.data?.policy?.blocked === true &&
+        accountHostCheck.data?.policy?.reason?.includes('preset_sensitive_defaults_host_google_accounts') &&
+        paymentWindowCheck.ok &&
+        paymentWindowCheck.data?.policy?.blocked === true &&
+        paymentWindowCheck.data?.policy?.reason?.includes('preset_sensitive_defaults_window_payment') &&
+        presetSafeCheck.ok &&
+        presetSafeCheck.data?.policy?.allowed === true &&
+        presetSafeCheck.data?.policy?.regionRuleCount >= 1
+        ? ok('screen.privacy_presets', 'Screen privacy presets', 'sensitive defaults preset blocks password/payment/account contexts and adds a region mask')
+        : fail('screen.privacy_presets', 'Screen privacy presets', 'screen privacy preset preview/apply did not protect expected sensitive contexts', {
+          presets: presets.data,
+          presetPreview: presetPreview.data,
+          presetDryRun: presetDryRun.data,
+          presetApply: presetApply.data,
+          passwordCheck: passwordCheck.data,
+          accountHostCheck: accountHostCheck.data,
+          paymentWindowCheck: paymentWindowCheck.data,
+          presetSafeCheck: presetSafeCheck.data,
+        }),
+    );
+
     const privacyWithRules = await ctx.api('/api/screen/privacy', {
       method: 'PUT',
       body: {
@@ -156,8 +246,10 @@ export default {
       out.push(
         output.includes('Screen Privacy') &&
           output.includes('Mode:') &&
-          output.includes('Enforcement:')
-          ? ok('screen.privacy_cui', 'Screen privacy CUI', 'config CUI prints screen privacy mode, rules, and enforcement')
+          output.includes('Enforcement:') &&
+          output.includes('Presets:') &&
+          output.includes('sensitive_defaults')
+          ? ok('screen.privacy_cui', 'Screen privacy CUI', 'config CUI prints screen privacy mode, rules, enforcement, and presets')
           : fail('screen.privacy_cui', 'Screen privacy CUI', 'expected --print-screen-privacy to print mode/rules/enforcement', { output: output.slice(0, 2000) }),
       );
     } catch (error) {

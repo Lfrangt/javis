@@ -27,6 +27,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime dogfood archive export from CUI/API/voice tools, saving the current brief, evidence, session tracker, and related audit trail as a local JSON packet without starting microphone capture or storing raw audio.
 - Renderer Realtime dogfood trigger for opt-in live WebRTC verification: `npm run dogfood:realtime-renderer -- --execute --confirm-mic` starts the renderer voice path only after explicit mic confirmation, sends dogfood prompts through the live data channel, and saves local evidence.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
+- Screen privacy presets for password managers, account/login pages, banking/payment hosts, sensitive system windows, and a notification-strip region mask, with preview/apply APIs and CUI visibility.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.

@@ -1195,6 +1195,15 @@ function printScreenPrivacy(result) {
   console.log(`Rules: ${counts.enabled || 0}/${counts.total || 0} enabled · ${privacy.rulesSummary || '-'}`);
   const enforcement = privacy.enforcement || {};
   console.log(`Enforcement: global=${enforcement.globalTransform || '-'} · app/window filter=${enforcement.appWindowContextFilter ? 'yes' : 'no'} · browser host filter=${enforcement.browserHostContextFilter ? 'yes' : 'no'} · region mask=${enforcement.regionRendererMask ? 'yes' : enforcement.regionRendererMaskStatus || 'no'}`);
+  const presets = result?.presets || {};
+  const presetItems = Array.isArray(presets.presets) ? presets.presets : [];
+  if (presetItems.length) {
+    console.log('\nPresets:');
+    for (const preset of presetItems.slice(0, 8)) {
+      console.log(`- ${preset.id} · ${preset.applied ? 'applied' : 'available'} · rules ${preset.appliedCount || 0}/${preset.ruleCount || 0}${preset.recommended ? ' · recommended' : ''}`);
+      if (preset.description) console.log(`  ${compact(preset.description, 180)}`);
+    }
+  }
   const rules = Array.isArray(privacy.rules) ? privacy.rules : [];
   if (!rules.length) {
     console.log('\nRules: none');
