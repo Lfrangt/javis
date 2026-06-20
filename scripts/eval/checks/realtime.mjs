@@ -1422,13 +1422,19 @@ export default {
       },
     });
     const handoffOutput = parseToolOutput(handoffTool);
+    const handoffOutputBytes = Buffer.byteLength(handoffTool.data?.output || '', 'utf8');
     out.push(
       handoffTool.ok &&
         handoffTool.data?.ok === true &&
         typeof handoffOutput?.spokenSummary === 'string' &&
         handoffOutput.spokenSummary.trim().length > 0 &&
-        handoffOutput.spokenSummary.length <= 500
-        ? ok('realtime.handoff_tool', 'Realtime work handoff tool', handoffOutput.spokenSummary)
+        handoffOutput.spokenSummary.length <= 760 &&
+        handoffOutput?.responseBudget?.compact === true &&
+        handoffOutputBytes > 0 &&
+        handoffOutputBytes <= 20000 &&
+        Array.isArray(handoffOutput.nextActions) &&
+        !handoffOutput.nextActions.some((action) => action?.dogfoodGuide || Array.isArray(action?.preparableActions) || Array.isArray(action?.manualActions))
+        ? ok('realtime.handoff_tool', 'Realtime work handoff tool', `${handoffOutput.spokenSummary} · ${Math.ceil(handoffOutputBytes / 1024)}KB`)
         : fail('realtime.handoff_tool', 'Realtime work handoff tool', `tool execute ${handoffTool.status}`, handoffTool.data),
     );
 

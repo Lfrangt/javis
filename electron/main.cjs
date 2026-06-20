@@ -36240,6 +36240,154 @@ function workHandoff(options = {}) {
   };
 }
 
+function compactWorkHandoffActionForVoice(action = null) {
+  if (!action || typeof action !== 'object') return null;
+  return {
+    id: compactRecordText(action.id || '', 140),
+    label: compactRecordText(action.label || action.title || action.id || '', 160),
+    source: compactRecordText(action.source || '', 80),
+    phase: compactRecordText(action.phase || '', 80),
+    status: compactRecordText(action.status || '', 80),
+    summary: compactRecordText(action.summary || action.instruction || '', 360),
+    priority: boundedCount(action.priority, 1000),
+    executable: Boolean(action.executable),
+    autoEligible: Boolean(action.autoEligible),
+    autopilotEligible: action.autopilotEligible !== false,
+    manualOnly: Boolean(action.manualOnly),
+    manualOnlyReason: compactRecordText(action.manualOnlyReason || '', 220),
+    requiresUserPresence: Boolean(action.requiresUserPresence),
+    workflowId: compactRecordText(action.workflowId || '', 120),
+    jobId: compactRecordText(action.jobId || '', 120),
+    routeId: compactRecordText(action.routeId || '', 120),
+    blocker: action.blocker
+      ? {
+        id: compactRecordText(action.blocker.id || '', 100),
+        label: compactRecordText(action.blocker.label || '', 140),
+        status: compactRecordText(action.blocker.status || '', 60),
+        summary: compactRecordText(action.blocker.summary || '', 220),
+        nextAction: compactRecordText(action.blocker.nextAction || '', 220),
+      }
+      : null,
+    dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
+    preparableActionCount: Array.isArray(action.preparableActions) ? action.preparableActions.length : 0,
+    manualActionCount: Array.isArray(action.manualActions) ? action.manualActions.length : 0,
+  };
+}
+
+function compactWorkHandoffCollaborationForVoice(collaboration = null) {
+  if (!collaboration || typeof collaboration !== 'object') return null;
+  const active = Array.isArray(collaboration.active) ? collaboration.active : [];
+  const conflictPairs = Array.isArray(collaboration.conflictPairs) ? collaboration.conflictPairs : [];
+  const recent = Array.isArray(collaboration.recent) ? collaboration.recent : [];
+  return {
+    counts: collaboration.counts || null,
+    ttlMs: boundedCount(collaboration.ttlMs, 24 * 60 * 60 * 1000),
+    active: active.slice(0, 4).map((claim) => ({
+      id: compactRecordText(claim.id || '', 120),
+      owner: compactRecordText(claim.owner || claim.agent || '', 120),
+      task: compactRecordText(claim.task || '', 180),
+      scope: compactRecordText(Array.isArray(claim.scope) ? claim.scope.join(' ') : claim.scope || '', 220),
+      expiresAt: compactRecordText(claim.expiresAt || '', 80),
+    })),
+    conflictPairs: conflictPairs.slice(0, 3).map((pair) => ({
+      a: compactRecordText(pair.a || pair.left || '', 120),
+      b: compactRecordText(pair.b || pair.right || '', 120),
+      scope: compactRecordText(Array.isArray(pair.scope) ? pair.scope.join(' ') : pair.scope || '', 180),
+    })),
+    recent: recent.slice(0, 3).map((claim) => ({
+      id: compactRecordText(claim.id || '', 120),
+      owner: compactRecordText(claim.owner || claim.agent || '', 120),
+      task: compactRecordText(claim.task || '', 160),
+      status: compactRecordText(claim.status || '', 60),
+    })),
+  };
+}
+
+function workHandoffVoicePayload(handoff = {}, options = {}) {
+  const nextActions = Array.isArray(handoff.nextActions) ? handoff.nextActions : [];
+  const followUps = Array.isArray(handoff.followUps) ? handoff.followUps : [];
+  const readiness = handoff.briefing?.readiness || {};
+  const realtimeVoice = handoff.briefing?.realtimeVoice || {};
+  const payload = {
+    ok: handoff.ok !== false,
+    generatedAt: handoff.generatedAt || new Date().toISOString(),
+    source: compactRecordText(options.source || handoff.source || 'voice', 80),
+    spokenSummary: compactRecordText(handoff.spokenSummary || handoff.output || '', 760),
+    output: compactRecordText(handoff.output || handoff.spokenSummary || '', 760),
+    session: handoff.session
+      ? {
+        id: compactRecordText(handoff.session.id || '', 120),
+        title: compactRecordText(handoff.session.title || '', 160),
+        goal: compactRecordText(handoff.session.goal || '', 260),
+        events: boundedCount(handoff.session.events, 1000),
+        updatedAt: compactRecordText(handoff.session.updatedAt || '', 80),
+      }
+      : null,
+    progress: {
+      spokenSummary: compactRecordText(handoff.progress?.spokenSummary || '', 420),
+      workerSummary: compactRecordText(handoff.progress?.workerSummary || '', 260),
+      counts: handoff.progress?.counts || null,
+      version: handoff.progress?.version
+        ? {
+          sequence: boundedCount(handoff.progress.version.sequence, 1000000000),
+          updatedAt: boundedCount(handoff.progress.version.updatedAt, 4102444800000),
+          source: compactRecordText(handoff.progress.version.source || '', 80),
+        }
+        : null,
+    },
+    briefing: {
+      summary: compactRecordText(handoff.briefing?.summary || '', 420),
+      readiness: {
+        overall: compactRecordText(readiness.overall || '', 60),
+        label: compactRecordText(readiness.label || '', 180),
+        primaryIssue: readiness.primaryIssue
+          ? {
+            id: compactRecordText(readiness.primaryIssue.id || '', 100),
+            summary: compactRecordText(readiness.primaryIssue.summary || '', 220),
+            nextAction: compactRecordText(readiness.primaryIssue.nextAction || '', 220),
+          }
+          : null,
+      },
+      counts: handoff.briefing?.counts || null,
+      realtimeVoice: {
+        status: compactRecordText(realtimeVoice.status || '', 60),
+        phase: compactRecordText(realtimeVoice.phase || '', 80),
+        nextAction: compactRecordText(realtimeVoice.nextAction || '', 240),
+        readyForVoiceProgressQuestion: Boolean(realtimeVoice.readyForVoiceProgressQuestion),
+      },
+    },
+    collaboration: compactWorkHandoffCollaborationForVoice(handoff.collaboration),
+    nextActions: nextActions.slice(0, 3).map(compactWorkHandoffActionForVoice).filter(Boolean),
+    followUps: followUps.slice(0, 3).map(compactWorkHandoffActionForVoice).filter(Boolean),
+    counts: {
+      nextActions: nextActions.length,
+      followUps: followUps.length,
+      activeCollaborationClaims: boundedCount(handoff.collaboration?.counts?.active, 1000),
+      collaborationConflicts: boundedCount(handoff.collaboration?.counts?.conflicts, 1000),
+    },
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 20000,
+      omitted: [
+        'briefing.readiness.full',
+        'collaboration.full_ledger',
+        'nextActions.dogfoodGuide.full',
+        'nextActions.preparableActions.full',
+        'nextActions.manualActions.full',
+        'followUps.full',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
+  };
+}
+
 async function runMaintenanceSnapshot(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const source = String(options.source || 'maintenance').slice(0, 80);
@@ -40983,7 +41131,7 @@ async function executeTool(name, args) {
 
   if (name === 'get_work_handoff') {
     const handoff = workHandoff({ ...(args || {}), source: 'voice' });
-    return { ok: handoff.ok, output: JSON.stringify(handoff) };
+    return { ok: handoff.ok, output: JSON.stringify(workHandoffVoicePayload(handoff, { source: 'voice' })) };
   }
 
   if (name === 'get_pending_approvals') {
