@@ -4191,7 +4191,11 @@ async function localCapabilitySnapshot(options = {}) {
   const limit = Math.max(1, Math.min(20, Number(options.limit || 12)));
   const control = controlModeSnapshot();
   const collaboration = collaborationSnapshot(8);
+  const collaborationHandoff = collaborationHandoffSnapshot({ limit: 8 });
   const collaborationCounts = collaboration.counts || {};
+  const collaborationConflictPairCount = Array.isArray(collaboration.conflictPairs)
+    ? collaboration.conflictPairs.length
+    : Number(collaboration.conflictPairs || 0);
   const activeCollaborationClaims = Array.isArray(collaboration.active)
     ? collaboration.active
     : Array.isArray(collaboration.activeClaims)
@@ -4255,6 +4259,7 @@ async function localCapabilitySnapshot(options = {}) {
     { when: 'User asks what you have learned about their habits or preferences', tool: 'get_learning_profile', reason: 'Report local inferred learning without exposing raw screen, clipboard, or page contents.' },
     { when: 'User asks what changed recently in their habits', tool: 'get_learning_evolution', reason: 'Compare recent local metadata against an older local baseline without exposing raw content.' },
     { when: 'User asks where work stands or what is next', tool: 'get_work_handoff', reason: 'Speak a short work handoff from current evidence.' },
+    { when: 'User asks who owns current agent work or whether Codex/Claude can work in parallel', tool: 'get_collaboration_state', reason: 'Read scoped claims, conflicts, and the collaboration handoff before starting another worker.' },
     { when: 'Task may be quick, background, Codex, Claude, browser, file, or app work', tool: 'route_task', reason: 'Keep voice responsive while preserving ownership and recovery evidence.' },
     { when: 'User asks to split work across agents', tool: 'route_parallel_tasks', reason: 'Create scoped parallel work with collaboration ownership records.' },
     { when: 'User asks what JAVIS can see or control', tool: 'get_perception_consent', reason: 'Report local perception surfaces and consent gates.' },
@@ -4298,8 +4303,19 @@ async function localCapabilitySnapshot(options = {}) {
     },
     collaboration: {
       active: Math.max(0, Number(collaborationCounts.active || activeCollaborationClaims.length || 0)),
-      conflictPairs: Math.max(0, Number(collaborationCounts.conflicts || collaboration.conflictPairs || 0)),
+      conflictPairs: Math.max(0, Number(collaborationCounts.conflicts || collaborationConflictPairCount || 0)),
       activeClaims: activeCollaborationClaims.slice(0, 5),
+      handoff: {
+        mode: compactRecordText(collaborationHandoff.mode || '', 40),
+        summary: compactRecordText(collaborationHandoff.summary || '', 420),
+        spokenSummary: compactRecordText(collaborationHandoff.spokenSummary || '', 420),
+        counts: collaborationHandoff.counts || {},
+        ownerGroups: Array.isArray(collaborationHandoff.ownerGroups) ? collaborationHandoff.ownerGroups.slice(0, 5) : [],
+        activeScopes: Array.isArray(collaborationHandoff.activeScopes) ? collaborationHandoff.activeScopes.slice(0, 5) : [],
+        conflictPairs: Array.isArray(collaborationHandoff.conflictPairs) ? collaborationHandoff.conflictPairs.slice(0, 5) : [],
+        nextActions: Array.isArray(collaborationHandoff.nextActions) ? collaborationHandoff.nextActions.slice(0, 3) : [],
+        commands: collaborationHandoff.commands || {},
+      },
     },
     next: workNext ? {
       ok: Boolean(workNext.ok),
@@ -25187,6 +25203,7 @@ function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
   const capabilities = Array.isArray(output.capabilities) ? output.capabilities : [];
   const recommendedStart = Array.isArray(output.recommendedStart) ? output.recommendedStart : [];
   const counts = output.counts || {};
+  const collaborationHandoff = output.collaboration?.handoff || {};
   const capabilityIds = capabilities
     .map((capability) => compactRecordText(capability?.id || '', 80))
     .filter(Boolean)
@@ -25213,6 +25230,11 @@ function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
     controlLabel: compactRecordText(output.controlMode?.label || '', 120),
     localExecutionEnabled: Boolean(output.controlMode?.localExecutionEnabled || output.policy?.localExecutionEnabled),
     trustedLocalMode: Boolean(output.controlMode?.trustedLocalMode || output.policy?.trustedLocalMode),
+    collaborationMode: compactRecordText(collaborationHandoff.mode || '', 40),
+    activeCollaborationClaims: boundedCount(output.collaboration?.active, 1000),
+    collaborationConflictPairs: boundedCount(output.collaboration?.conflictPairs, 1000),
+    hasCollaborationHandoff: Boolean(collaborationHandoff.mode && collaborationHandoff.summary),
+    collaborationNextAction: compactRecordText(collaborationHandoff.nextActions?.[0]?.label || '', 120),
     guardrailCount: Array.isArray(output.guardrails) ? output.guardrails.length : 0,
     hasCapabilityMap: Boolean(capabilities.length || output.summary || output.spokenSummary),
     nextOutput: compactRecordText(output.next?.output || '', 260),
@@ -25750,6 +25772,7 @@ function realtimeCapabilityToolEvidence(limit = 8) {
     hasCapabilityMap,
     hasRecommendedTools: recent.some((event) => Array.isArray(event.capability?.recommendedTools) && event.capability.recommendedTools.length > 0),
     hasLocalExecutionState: recent.some((event) => event.capability?.controlMode || typeof event.capability?.localExecutionEnabled === 'boolean'),
+    hasCollaborationHandoff: recent.some((event) => event.capability?.hasCollaborationHandoff === true),
     last: recent[0] || null,
     recent,
     nextAction: hasCapabilityMap

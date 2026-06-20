@@ -459,9 +459,12 @@ export default {
         capabilityApiOutput?.controlMode?.mode &&
         Array.isArray(capabilityApiOutput.capabilities) &&
         capabilityApiOutput.capabilities.some((item) => item.id === 'browser' && item.recommendedTools?.includes('run_browser_workflow')) &&
+        capabilityApiOutput.collaboration?.handoff?.mode &&
+        Array.isArray(capabilityApiOutput.collaboration?.handoff?.nextActions) &&
+        capabilityApiOutput.recommendedStart.some((item) => item.tool === 'get_collaboration_state') &&
         Array.isArray(capabilityApiOutput.guardrails) &&
         capabilityApiOutput.guardrails.some((item) => /confirmation/i.test(item))
-        ? ok('realtime.local_capabilities_api', 'Realtime local capability API', `${capabilityApiOutput.capabilities.length} matched capability row(s)`)
+        ? ok('realtime.local_capabilities_api', 'Realtime local capability API', `${capabilityApiOutput.capabilities.length} matched capability row(s), collab ${capabilityApiOutput.collaboration.handoff.mode}`)
         : fail('realtime.local_capabilities_api', 'Realtime local capability API', `GET /api/capabilities ${capabilityApi.status}`, capabilityApi.data),
     );
 
@@ -481,9 +484,12 @@ export default {
         capabilityToolOutput?.next === null &&
         capabilityToolOutput?.policy &&
         capabilityToolOutput?.controlMode?.mode &&
+        capabilityToolOutput.collaboration?.handoff?.mode &&
+        Array.isArray(capabilityToolOutput.collaboration?.handoff?.nextActions) &&
         typeof capabilityToolOutput.spokenSummary === 'string' &&
         Array.isArray(capabilityToolOutput.recommendedStart) &&
         capabilityToolOutput.recommendedStart.some((item) => item.tool === 'route_task') &&
+        capabilityToolOutput.recommendedStart.some((item) => item.tool === 'get_collaboration_state') &&
         Array.isArray(capabilityToolOutput.capabilities) &&
         capabilityToolOutput.capabilities.some((item) => item.id === 'browser' && item.recommendedTools?.includes('read_browser_page'))
         ? ok('realtime.local_capabilities_tool', 'Realtime local capability voice tool', `${capabilityToolOutput.spokenSummary}`)
@@ -498,10 +504,12 @@ export default {
         capabilityToolEvidence?.hasCapabilityMap === true &&
         capabilityToolEvidence?.hasRecommendedTools === true &&
         capabilityToolEvidence?.hasLocalExecutionState === true &&
+        capabilityToolEvidence?.hasCollaborationHandoff === true &&
         capabilityToolEvents.some((event) => (
           event.name === 'get_local_capabilities' &&
           event.source === 'eval' &&
           event.capability?.hasCapabilityMap === true &&
+          event.capability?.hasCollaborationHandoff === true &&
           event.capability?.recommendedTools?.includes('run_browser_workflow')
         ))
         ? ok('realtime.local_capabilities_tool_evidence', 'Realtime local capability voice tool evidence', 'get_local_capabilities is visible in Realtime evidence')
@@ -519,6 +527,8 @@ export default {
       out.push(
         output.includes('JAVIS Local Capabilities') &&
           output.includes('Control:') &&
+          output.includes('Collab:') &&
+          output.includes('Collab handoff:') &&
           output.includes('Guardrails:') &&
           output.includes('Recommended start tools:') &&
           output.includes('browser') &&

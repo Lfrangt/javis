@@ -635,7 +635,10 @@ function printLocalCapabilities(result) {
   console.log(`Control: ${control.mode || '-'} · local execution=${control.localExecutionEnabled ? 'on' : 'off'} · trusted=${control.trustedLocalMode ? 'yes' : 'no'} · auto L${control.effectiveMaxAutoRiskLevel ?? '-'} · approval L${control.effectiveRequireApprovalAtRiskLevel ?? '-'}`);
   console.log(`Policy: dryRun=${policy.dryRun ? 'yes' : 'no'} · cli=${Array.isArray(policy.cliAllowedCommands) ? policy.cliAllowedCommands.join(', ') || '-' : '-'} · write roots=${policy.writeRootCount ?? '-'}`);
   const collaboration = capabilities.collaboration || {};
-  console.log(`Collab: ${collaboration.active || 0} active · ${collaboration.conflictPairs || 0} conflict pair(s)`);
+  const collaborationHandoff = collaboration.handoff || {};
+  const collaborationNext = collaborationHandoff.nextActions?.[0]?.label ? ` · next ${collaborationHandoff.nextActions[0].label}` : '';
+  console.log(`Collab: ${collaborationHandoff.mode || 'unknown'} · ${collaboration.active || 0} active · ${collaboration.conflictPairs || 0} conflict pair(s)${collaborationNext}`);
+  if (collaborationHandoff.summary) console.log(`Collab handoff: ${compact(collaborationHandoff.summary, 260)}`);
   if (capabilities.readiness?.summary) console.log(`Readiness: ${capabilities.readiness.overall || '-'} · ${compact(capabilities.readiness.summary, 220)}`);
   if (capabilities.next?.output) console.log(`Next: ${compact(capabilities.next.output, 260)}`);
   const guardrails = Array.isArray(capabilities.guardrails) ? capabilities.guardrails : [];

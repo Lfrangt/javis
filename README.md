@@ -48,7 +48,7 @@ Local Mac-first realtime desktop buddy.
 - Creative app workflows: recognize video editing and music composition requests, choose a likely NLE/DAW such as Final Cut Pro, DaVinci Resolve, Premiere, iMovie, CapCut, Logic Pro, GarageBand, Ableton Live, FL Studio, or Pro Tools, return stage action packs, and execute one guarded action at a time with post-action screen/UI verification and recovery hints.
 - Productivity app dogfood archives: preview or save a four-app Notes/Reminders/Calendar/Mail draft evidence packet from API or Realtime voice tools without starting apps, sending messages, mutating user files, or recording workflow history by default.
 - Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context and recalled local skill plans.
-- OpenClaw-style lane contract registry for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, and risk boundaries.
+- OpenClaw-style lane contract registry and voice capability map for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, collaboration state, and risk boundaries.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
 - Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, get a CUI/API/CLI handoff summary, and avoid overlapping write races.
 - No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
