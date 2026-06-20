@@ -69,6 +69,18 @@ function evidenceBlockerLine(evidence = {}) {
   ].filter(Boolean).join(' · ');
 }
 
+function summarizeAcceptance(acceptance = {}) {
+  const counts = acceptance.counts || {};
+  const nextGap = acceptance.nextGap || {};
+  const parts = [
+    `accepted=${acceptance.accepted ? 'yes' : 'no'}`,
+    `status=${acceptance.status || '-'}`,
+    `gates=${Number(counts.passed || 0)}/${Number(counts.gates || 0)}`,
+  ];
+  if (nextGap.id) parts.push(`next=${nextGap.group || '-'}/${nextGap.id}`);
+  return parts.join(' ');
+}
+
 async function pollRun(ctx, runId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let latest = null;
@@ -117,10 +129,45 @@ async function saveArchive(ctx, note) {
   return filePath;
 }
 
+async function loadAcceptance(ctx, { saveArchive: shouldSaveArchive, note }) {
+  const result = shouldSaveArchive
+    ? await ctx.api('/api/realtime/dogfood/acceptance', {
+        method: 'POST',
+        timeoutMs: 30000,
+        body: {
+          source: 'renderer_dogfood_script',
+          note,
+          auditLimit: 50,
+          saveArchive: true,
+        },
+      })
+    : await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=50&source=renderer_dogfood_script', {
+        timeoutMs: 30000,
+      });
+  const acceptance = result.data?.acceptance || {};
+  const archive = result.data?.archive || {};
+  const filePath = archive.file?.path || acceptance.archive?.file || '';
+  if (!result.ok) {
+    throw new Error(`Acceptance report failed: ${result.status} ${result.error || JSON.stringify(result.data)?.slice(0, 500)}`);
+  }
+  if (shouldSaveArchive && (!filePath || !fs.existsSync(filePath))) {
+    throw new Error(`Acceptance archive save failed: ${filePath || 'missing archive path'}`);
+  }
+  return {
+    acceptance,
+    archive,
+    filePath,
+    saved: Boolean(result.data?.saved || archive.saved),
+  };
+}
+
 async function main() {
   const execute = hasFlag('--execute');
   const confirmMic = hasFlag('--confirm-mic');
   const save = !hasFlag('--no-save-archive');
+  const acceptanceEnabled = !hasFlag('--no-acceptance');
+  const requireAcceptance = hasFlag('--require-acceptance');
+  const acceptanceOnly = hasFlag('--acceptance-only');
   const ctx = makeContext();
   const prompts = promptOptions();
   const body = {
@@ -135,6 +182,23 @@ async function main() {
     prompts,
     source: 'renderer_dogfood_script',
   };
+
+  if (acceptanceOnly) {
+    const acceptanceReport = await loadAcceptance(ctx, {
+      saveArchive: save,
+      note: 'renderer dogfood acceptance-only snapshot',
+    });
+    console.log(`Acceptance: ${summarizeAcceptance(acceptanceReport.acceptance)}`);
+    if (acceptanceReport.acceptance?.nextGap?.nextAction) {
+      console.log(`Acceptance next action: ${acceptanceReport.acceptance.nextGap.nextAction}`);
+    }
+    if (acceptanceReport.filePath) console.log(`${acceptanceReport.saved ? 'Archive' : 'Archive preview'}: ${acceptanceReport.filePath}`);
+    if (requireAcceptance && acceptanceReport.acceptance?.accepted !== true) {
+      console.error('Realtime dogfood evidence did not pass all acceptance gates.');
+      process.exitCode = 1;
+    }
+    return;
+  }
 
   if (execute && !confirmMic) {
     console.error('Refusing to start microphone. Pass --confirm-mic together with --execute.');
@@ -162,7 +226,19 @@ async function main() {
   const timeoutMs = numberOption('--timeout-ms', 150000, 30000, 600000);
   const result = await pollRun(ctx, runId, timeoutMs);
   let archivePath = '';
-  if (save) {
+  let acceptanceReport = null;
+  if (acceptanceEnabled) {
+    acceptanceReport = await loadAcceptance(ctx, {
+      saveArchive: save,
+      note: result.ok ? 'renderer dogfood script reached live evidence' : 'renderer dogfood script incomplete',
+    });
+    archivePath = acceptanceReport.filePath;
+    console.log(`Acceptance: ${summarizeAcceptance(acceptanceReport.acceptance)}`);
+    if (acceptanceReport.acceptance?.nextGap?.nextAction) {
+      console.log(`Acceptance next action: ${acceptanceReport.acceptance.nextGap.nextAction}`);
+    }
+    if (archivePath) console.log(`${acceptanceReport.saved ? 'Archive' : 'Archive preview'}: ${archivePath}`);
+  } else if (save) {
     archivePath = await saveArchive(ctx, result.ok ? 'renderer dogfood script passed' : 'renderer dogfood script incomplete');
     console.log(`Archive: ${archivePath}`);
   }
@@ -176,6 +252,10 @@ async function main() {
     return;
   }
   console.log('Renderer Realtime dogfood evidence reached live + prompt + progress injection.');
+  if (requireAcceptance && acceptanceReport?.acceptance?.accepted !== true) {
+    console.error('Realtime dogfood evidence did not pass all acceptance gates.');
+    process.exitCode = 1;
+  }
 }
 
 await main().catch((error) => {

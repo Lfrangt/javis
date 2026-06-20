@@ -1430,6 +1430,27 @@ export default {
         : fail('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `tool execute ${acceptanceTool.status}`, acceptanceTool.data),
     );
 
+    try {
+      const acceptanceScript = await execFileAsync('node', ['scripts/realtime-dogfood-renderer.mjs', '--acceptance-only', '--no-save-archive'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${acceptanceScript.stdout || ''}\n${acceptanceScript.stderr || ''}`;
+      out.push(
+        output.includes('Acceptance:') &&
+          output.includes('accepted=no') &&
+          output.includes('gates=') &&
+          output.includes('next=') &&
+          !output.includes('Refusing to start microphone')
+          ? ok('realtime.renderer_dogfood_acceptance_script', 'Renderer dogfood acceptance script', 'acceptance-only script prints current pass/gap result without starting mic')
+          : fail('realtime.renderer_dogfood_acceptance_script', 'Renderer dogfood acceptance script', 'expected acceptance-only renderer script to print current acceptance summary', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.renderer_dogfood_acceptance_script', 'Renderer dogfood acceptance script', error instanceof Error ? error.message : String(error)));
+    }
+
     const archivePreview = await ctx.api('/api/realtime/dogfood/archive?limit=3&auditLimit=12');
     const archivePreviewData = archivePreview.data?.archive;
     out.push(
