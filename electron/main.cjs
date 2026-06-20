@@ -30721,6 +30721,157 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
   };
 }
 
+function compactRealtimeDogfoodGateForVoice(gate = null) {
+  if (!gate || typeof gate !== 'object') return null;
+  return {
+    id: compactRecordText(gate.id || '', 120),
+    group: compactRecordText(gate.group || '', 80),
+    label: compactRecordText(gate.label || gate.id || '', 160),
+    ok: Boolean(gate.ok),
+    status: compactRecordText(gate.status || (gate.ok ? 'pass' : 'gap'), 60),
+    detail: compactRecordText(gate.detail || '', 260),
+    nextAction: compactRecordText(gate.nextAction || '', 260),
+    prompt: compactRecordText(gate.evidence?.prompt || gate.evidence?.tool || '', 240),
+  };
+}
+
+function compactRealtimeDogfoodActionForVoice(action = null) {
+  if (!action || typeof action !== 'object') return null;
+  return {
+    id: compactRecordText(action.id || '', 120),
+    label: compactRecordText(action.label || action.id || '', 160),
+    group: compactRecordText(action.group || '', 80),
+    summary: compactRecordText(action.summary || '', 280),
+    nextAction: compactRecordText(action.nextAction || '', 280),
+    command: compactRecordText(action.command || '', 220),
+    endpoint: compactRecordText(action.endpoint || '', 160),
+    prompt: compactRecordText(action.prompt || '', 240),
+    startsMicrophone: Boolean(action.startsMicrophone),
+    requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+    requiresUserPresence: Boolean(action.requiresUserPresence),
+    requiresLiveVoice: Boolean(action.requiresLiveVoice),
+    readOnly: Boolean(action.readOnly),
+    canPreview: Boolean(action.canPreview),
+    writesLocalJson: Boolean(action.writesLocalJson),
+  };
+}
+
+function compactRealtimeDogfoodActionPlanForVoice(plan = null) {
+  if (!plan || typeof plan !== 'object') return null;
+  const nextActions = Array.isArray(plan.nextActions) ? plan.nextActions : [];
+  const previewable = Array.isArray(plan.previewable) ? plan.previewable : [];
+  const manual = Array.isArray(plan.manual) ? plan.manual : [];
+  const blockers = Array.isArray(plan.blockers) ? plan.blockers : [];
+  return {
+    version: boundedCount(plan.version || 1, 10),
+    scope: compactRecordText(plan.scope || '', 80),
+    status: compactRecordText(plan.status || '', 60),
+    accepted: Boolean(plan.accepted),
+    primary: compactRealtimeDogfoodActionForVoice(plan.primary),
+    nextActions: nextActions.slice(0, 4).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
+    previewable: previewable.slice(0, 4).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
+    manual: manual.slice(0, 4).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
+    blockers: blockers.slice(0, 6).map((blocker) => ({
+      id: compactRecordText(blocker.id || '', 120),
+      group: compactRecordText(blocker.group || '', 80),
+      label: compactRecordText(blocker.label || blocker.id || '', 160),
+      nextAction: compactRecordText(blocker.nextAction || '', 240),
+    })),
+    counts: plan.counts || null,
+    askUserOnlyFor: Array.isArray(plan.askUserOnlyFor)
+      ? plan.askUserOnlyFor.slice(0, 5).map((item) => compactRecordText(item, 180))
+      : [],
+    boundaries: Array.isArray(plan.boundaries)
+      ? plan.boundaries.slice(0, 5).map((item) => compactRecordText(item, 220))
+      : [],
+    spokenSummary: compactRecordText(plan.spokenSummary || '', 320),
+  };
+}
+
+function realtimeDogfoodAcceptanceVoicePayload(acceptance = {}, options = {}) {
+  const gates = Array.isArray(acceptance.gates) ? acceptance.gates : [];
+  const gaps = Array.isArray(acceptance.gaps) ? acceptance.gaps : gates.filter((gate) => !gate.ok);
+  const groups = Array.isArray(acceptance.groups) ? acceptance.groups : [];
+  const passedGateCount = gates.filter((gate) => gate.ok).length;
+  const payload = {
+    ok: acceptance.ok !== false,
+    generatedAt: acceptance.generatedAt || new Date().toISOString(),
+    source: compactRecordText(options.source || acceptance.source || 'voice', 80),
+    accepted: Boolean(acceptance.accepted),
+    status: compactRecordText(acceptance.status || '', 60),
+    manualOnly: acceptance.manualOnly !== false,
+    startsMicrophone: Boolean(acceptance.startsMicrophone),
+    requiresUserPresence: acceptance.requiresUserPresence !== false,
+    summary: compactRecordText(acceptance.summary || '', 420),
+    counts: acceptance.counts || {
+      gates: gates.length,
+      passed: passedGateCount,
+      gaps: gaps.length,
+      groups: groups.length,
+    },
+    groups: groups.map((group) => ({
+      id: compactRecordText(group.id || '', 80),
+      ok: Boolean(group.ok),
+      ready: boundedCount(group.ready, 1000),
+      total: boundedCount(group.total, 1000),
+      gaps: Array.isArray(group.gaps) ? group.gaps.slice(0, 8).map((item) => compactRecordText(item, 120)) : [],
+    })),
+    passedGateCount,
+    gaps: gaps.slice(0, 8).map(compactRealtimeDogfoodGateForVoice).filter(Boolean),
+    nextGap: compactRealtimeDogfoodGateForVoice(acceptance.nextGap || gaps[0]),
+    actionPlan: compactRealtimeDogfoodActionPlanForVoice(acceptance.actionPlan),
+    nextAction: compactRecordText(acceptance.nextAction || '', 320),
+    archive: acceptance.archive
+      ? {
+        id: compactRecordText(acceptance.archive.id || '', 120),
+        saved: Boolean(acceptance.archive.saved),
+        file: compactRecordText(acceptance.archive.file || '', 240),
+        status: compactRecordText(acceptance.archive.status || '', 60),
+        phase: compactRecordText(acceptance.archive.phase || '', 80),
+        summary: compactRecordText(acceptance.archive.summary || '', 280),
+      }
+      : null,
+    evidence: acceptance.evidence
+      ? {
+        status: compactRecordText(acceptance.evidence.status || '', 60),
+        phase: compactRecordText(acceptance.evidence.phase || '', 80),
+        readyForVoiceProgressQuestion: Boolean(acceptance.evidence.readyForVoiceProgressQuestion),
+        conversationStatus: compactRecordText(acceptance.evidence.conversationStatus || '', 60),
+        progressSyncStatus: compactRecordText(acceptance.evidence.progressSyncStatus || '', 60),
+      }
+      : null,
+    safety: {
+      startsMicrophone: false,
+      rawAudioStored: false,
+      screenImageIncluded: false,
+      writesLocalJsonOnly: Boolean(acceptance.safety?.writesLocalJsonOnly),
+      actionPolicyBypassed: false,
+      desktopPetDiagnostics: false,
+      recordReplayRequiresConfirmation: true,
+    },
+    output: compactRecordText(acceptance.output || '', 1000),
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 20000,
+      omitted: [
+        'archive.full',
+        'archive.evidence',
+        'archive.recentAudit',
+        'gates.full',
+        'actionPlan.full',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
+  };
+}
+
 function realtimeDogfoodArchiveList(options = {}) {
   fs.mkdirSync(REALTIME_DOGFOOD_ARCHIVES_DIR, { recursive: true });
   const limit = Math.max(1, Math.min(100, Number(options.limit || 10)));
@@ -40756,7 +40907,10 @@ async function executeTool(name, args) {
       archive,
       source: 'voice',
     });
-    return { ok: true, output: JSON.stringify({ acceptance, archive }) };
+    return {
+      ok: true,
+      output: JSON.stringify(realtimeDogfoodAcceptanceVoicePayload(acceptance, { source: 'voice' })),
+    };
   }
 
   if (name === 'save_realtime_dogfood_archive') {

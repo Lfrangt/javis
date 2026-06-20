@@ -2398,16 +2398,23 @@ export default {
       },
     });
     const acceptanceToolOutput = parseToolOutput(acceptanceTool);
+    const acceptanceToolOutputBytes = Buffer.byteLength(acceptanceTool.data?.output || '', 'utf8');
     out.push(
       acceptanceTool.ok &&
         acceptanceTool.data?.ok === true &&
-        acceptanceToolOutput?.acceptance?.manualOnly === true &&
-        acceptanceToolOutput?.acceptance?.startsMicrophone === false &&
-        acceptanceToolOutput?.acceptance?.counts?.gates >= 18 &&
-        Array.isArray(acceptanceToolOutput?.acceptance?.gates) &&
-        acceptanceToolOutput?.acceptance?.actionPlan?.version === 1 &&
-        acceptanceToolOutput.acceptance.actionPlan.boundaries?.some((item) => /microphone|confirmMic/i.test(item))
-        ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.acceptance.counts.passed}/${acceptanceToolOutput.acceptance.counts.gates} gate(s) pass · plan=${acceptanceToolOutput.acceptance.actionPlan.status}`)
+        acceptanceToolOutput?.ok === true &&
+        acceptanceToolOutput?.manualOnly === true &&
+        acceptanceToolOutput?.startsMicrophone === false &&
+        acceptanceToolOutput?.responseBudget?.compact === true &&
+        acceptanceToolOutputBytes > 0 &&
+        acceptanceToolOutputBytes <= 20000 &&
+        acceptanceToolOutput?.counts?.gates >= 18 &&
+        Array.isArray(acceptanceToolOutput?.gaps) &&
+        !acceptanceToolOutput?.archive?.evidence &&
+        !acceptanceToolOutput?.archive?.recentAudit &&
+        acceptanceToolOutput?.actionPlan?.version === 1 &&
+        acceptanceToolOutput.actionPlan.boundaries?.some((item) => /microphone|confirmMic/i.test(item))
+        ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.counts.passed}/${acceptanceToolOutput.counts.gates} gate(s) pass · plan=${acceptanceToolOutput.actionPlan.status} · ${Math.ceil(acceptanceToolOutputBytes / 1024)}KB`)
         : fail('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `tool execute ${acceptanceTool.status}`, acceptanceTool.data),
     );
 
