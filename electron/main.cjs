@@ -275,6 +275,10 @@ const DEFAULT_ACTION_POLICY = {
       editableEvidenceRequiredRoles: ['AXGroup', 'AXStaticText', 'AXWebArea'],
       maxBytes: 20000,
     },
+    productivity_app: {
+      enabled: true,
+      allowedApps: ['Notes', 'Reminders', 'Calendar', 'Mail'],
+    },
     browser_control: {
       enabled: true,
       allowedActions: ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search', 'dom_click', 'dom_fill', 'dom_select'],
@@ -1997,6 +2001,10 @@ function normalizeActionPolicy(value) {
           DEFAULT_ACTION_POLICY.allow.ax_set_value.editableEvidenceRequiredRoles,
         ),
         maxBytes: Math.max(1, Number(raw.allow?.ax_set_value?.maxBytes || DEFAULT_ACTION_POLICY.allow.ax_set_value.maxBytes)),
+      },
+      productivity_app: {
+        enabled: raw.allow?.productivity_app?.enabled !== false,
+        allowedApps: uniqueStringList(raw.allow?.productivity_app?.allowedApps, DEFAULT_ACTION_POLICY.allow.productivity_app.allowedApps),
       },
       browser_control: {
         enabled: raw.allow?.browser_control?.enabled !== false,
@@ -10735,6 +10743,8 @@ function productivityAction(id, type, label, options = {}) {
     args: options.args || {},
     steps: options.steps || undefined,
     forbidden: Boolean(options.forbidden),
+    nativeAutomation: Boolean(options.nativeAutomation),
+    nativeKind: options.nativeKind || '',
   };
 }
 
@@ -10768,13 +10778,15 @@ function productivityStageActionPack({ intent, stageId, selectedApp, instruction
         summary: '确认提醒标题、截止时间、列表、优先级和重复规则。',
         requires: ['title', 'dueAt'],
       }),
-      productivityAction('create_reminder', 'current_app_control', '创建一条提醒', {
-        tool: 'control_current_app',
+      productivityAction('create_reminder', 'native_productivity', '创建一条提醒', {
+        tool: 'run_productivity_action',
         riskLevel: 3,
         confirmationRequired: true,
         requires: ['title', 'dueAt'],
         summary: '只创建一条明确提醒；不会批量改动列表。',
         instruction: `在 ${appName} 中创建一条提醒，先复查标题和时间，不删除、不完成任何现有提醒。`,
+        nativeAutomation: true,
+        nativeKind: 'reminder',
       }),
     );
   } else if (intent === 'calendar_event') {
@@ -10784,13 +10796,15 @@ function productivityStageActionPack({ intent, stageId, selectedApp, instruction
         summary: '确认标题、日期、开始/结束时间、地点、日历和参与人。',
         requires: ['title', 'startAt', 'endAt'],
       }),
-      productivityAction('create_event', 'current_app_control', '创建日历事件草稿', {
-        tool: 'control_current_app',
+      productivityAction('create_event', 'native_productivity', '创建日历事件草稿', {
+        tool: 'run_productivity_action',
         riskLevel: 3,
         confirmationRequired: true,
         requires: ['title', 'startAt', 'endAt'],
         summary: '创建或填写一个可复查事件；邀请/通知另行确认。',
         instruction: `在 ${appName} 中创建一个日历事件草稿，先复查标题、时间和日历，不发送邀请或更新通知。`,
+        nativeAutomation: true,
+        nativeKind: 'calendar_event',
       }),
       productivityAction('send_invite_gate', 'blocked', '邀请或发送更新需要人工确认', {
         riskLevel: 4,
@@ -10806,13 +10820,15 @@ function productivityStageActionPack({ intent, stageId, selectedApp, instruction
         summary: '确认收件人、主题、正文要点、语气和附件。',
         requires: ['recipient', 'subject', 'body'],
       }),
-      productivityAction('draft_email', 'current_app_control', '创建邮件草稿', {
-        tool: 'control_current_app',
+      productivityAction('draft_email', 'native_productivity', '创建邮件草稿', {
+        tool: 'run_productivity_action',
         riskLevel: 3,
         confirmationRequired: true,
         requires: ['recipient', 'subject', 'body'],
         summary: '只创建草稿，不发送邮件。',
         instruction: `在 ${appName} 中创建一封邮件草稿，填写收件人、主题和正文后停在复查状态，不发送。`,
+        nativeAutomation: true,
+        nativeKind: 'email_draft',
       }),
       productivityAction('send_email_blocked', 'blocked', '发送邮件保持阻断', {
         riskLevel: 4,
@@ -10828,13 +10844,15 @@ function productivityStageActionPack({ intent, stageId, selectedApp, instruction
         summary: '确认标题、正文、文件夹/标签和是否需要后续任务。',
         requires: ['title', 'body'],
       }),
-      productivityAction('create_note', 'current_app_control', '创建笔记', {
-        tool: 'control_current_app',
+      productivityAction('create_note', 'native_productivity', '创建笔记', {
+        tool: 'run_productivity_action',
         riskLevel: 3,
         confirmationRequired: true,
         requires: ['title', 'body'],
         summary: '创建一条可复查笔记；不移动或删除现有笔记。',
         instruction: `在 ${appName} 中创建一条新笔记，填写标题和正文后停下复查，不移动或删除现有笔记。`,
+        nativeAutomation: true,
+        nativeKind: 'note',
       }),
       productivityAction('capture_note_inbox', 'inbox', '先保存到本地 Inbox', {
         tool: 'capture_inbox_item',
@@ -11078,11 +11096,349 @@ function productivityActionRecoveryHints(action, execution, plan) {
     if (text && !hints.includes(text)) hints.push(text);
   };
   if (execution?.requiresConfirmation) add(`确认目标和内容无误后，重新运行 actionId:${action?.id || ''} 并传入 confirm:true。`);
+  if (execution?.approval) add('本机动作策略仍要求审批；在 approvals 队列确认后继续执行。');
   for (const requirement of execution?.missingRequirements || []) add(`补充缺少的信息: ${requirement}。`);
   if (action?.type === 'blocked' || action?.forbidden) add('发送、邀请、删除或批量修改必须由用户在应用里明确复查确认。');
-  if (['current_app_control', 'app_workflow'].includes(action?.type) && !execution?.ok) add(`确认 ${plan?.selectedApp?.name || '目标应用'} 已打开并处在正确窗口。`);
+  if (['current_app_control', 'app_workflow', 'native_productivity'].includes(action?.type) && !execution?.ok) add(`确认 ${plan?.selectedApp?.name || '目标应用'} 可用并已授予 Automation/Accessibility 权限。`);
   if (!hints.length && execution?.status === 'preview') add('预览通过后，补齐信息并确认具体动作再执行。');
   return hints.slice(0, 6);
+}
+
+function productivityNativeText(value, maxLength = 20000) {
+  const text = String(value ?? '').trim();
+  if (text.length > maxLength) throw new Error(`Text exceeds max length ${maxLength}.`);
+  return text;
+}
+
+function productivityNativeDateParts(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  const date = new Date(text);
+  if (!Number.isFinite(date.getTime())) return null;
+  return [
+    String(date.getFullYear()),
+    String(date.getMonth() + 1),
+    String(date.getDate()),
+    String(date.getHours()),
+    String(date.getMinutes()),
+    String(date.getSeconds()),
+  ];
+}
+
+function productivityNativeDateHandlerScript() {
+  return [
+    'on javisDateFromParts(y, m, d, h, n, s)',
+    '  set dt to current date',
+    '  set year of dt to (y as integer)',
+    '  set month of dt to (m as integer)',
+    '  set day of dt to (d as integer)',
+    '  set hours of dt to (h as integer)',
+    '  set minutes of dt to (n as integer)',
+    '  set seconds of dt to (s as integer)',
+    '  return dt',
+    'end javisDateFromParts',
+  ].join('\n');
+}
+
+function productivityNativeBlocked(output, missingRequirements = []) {
+  return {
+    blocked: true,
+    ok: false,
+    executed: false,
+    status: 'blocked',
+    missingRequirements,
+    output,
+  };
+}
+
+function productivityNativeActionSpec(action, options = {}, plan = {}) {
+  const actionId = String(action?.id || '');
+  if (!['create_note', 'create_reminder', 'create_event', 'draft_email'].includes(actionId)) return null;
+  try {
+    if (actionId === 'create_note') {
+      const title = productivityNativeText(productivityRequirementValue('title', options), 240);
+      const body = productivityNativeText(productivityRequirementValue('body', options), 50000);
+      return {
+        id: actionId,
+        app: 'Notes',
+        kind: 'note',
+        summary: `Create note "${compactRecordText(title, 80)}" in Notes`,
+        args: [title, body],
+        script: [
+          'on run argv',
+          '  set titleText to item 1 of argv',
+          '  set bodyText to item 2 of argv',
+          '  tell application "Notes"',
+          '    activate',
+          '    try',
+          '      set targetFolder to folder "Notes" of default account',
+          '      make new note at targetFolder with properties {name:titleText, body:bodyText}',
+          '    on error',
+          '      make new note with properties {name:titleText, body:bodyText}',
+          '    end try',
+          '  end tell',
+          '  return "Created Notes note: " & titleText',
+          'end run',
+        ].join('\n'),
+      };
+    }
+
+    if (actionId === 'create_reminder') {
+      const title = productivityNativeText(productivityRequirementValue('title', options), 240);
+      const body = productivityNativeText(productivityRequirementValue('body', options), 8000);
+      const dueParts = productivityNativeDateParts(productivityRequirementValue('dueAt', options));
+      if (!dueParts) return productivityNativeBlocked('dueAt must be an explicit machine-readable date/time, for example 2026-06-20T17:00:00.', ['dueAt']);
+      return {
+        id: actionId,
+        app: 'Reminders',
+        kind: 'reminder',
+        summary: `Create reminder "${compactRecordText(title, 80)}" in Reminders`,
+        args: [title, body, ...dueParts],
+        script: [
+          productivityNativeDateHandlerScript(),
+          'on run argv',
+          '  set titleText to item 1 of argv',
+          '  set bodyText to item 2 of argv',
+          '  set dueDate to javisDateFromParts(item 3 of argv, item 4 of argv, item 5 of argv, item 6 of argv, item 7 of argv, item 8 of argv)',
+          '  tell application "Reminders"',
+          '    activate',
+          '    set targetList to default list',
+          '    set newReminder to make new reminder at end of reminders of targetList with properties {name:titleText, due date:dueDate}',
+          '    if bodyText is not "" then',
+          '      try',
+          '        set body of newReminder to bodyText',
+          '      end try',
+          '    end if',
+          '  end tell',
+          '  return "Created Reminders item: " & titleText',
+          'end run',
+        ].join('\n'),
+      };
+    }
+
+    if (actionId === 'create_event') {
+      const title = productivityNativeText(productivityRequirementValue('title', options), 240);
+      const locationText = productivityNativeText(options.location || options.place || '', 8000);
+      const notesText = productivityNativeText(options.body || options.notes || options.description || '', 20000);
+      const startParts = productivityNativeDateParts(productivityRequirementValue('startAt', options));
+      const endParts = productivityNativeDateParts(productivityRequirementValue('endAt', options));
+      if (!startParts) return productivityNativeBlocked('startAt must be an explicit machine-readable date/time, for example 2026-06-20T17:00:00.', ['startAt']);
+      if (!endParts) return productivityNativeBlocked('endAt must be an explicit machine-readable date/time, for example 2026-06-20T17:30:00.', ['endAt']);
+      const startDate = new Date(productivityRequirementValue('startAt', options));
+      const endDate = new Date(productivityRequirementValue('endAt', options));
+      if (Number.isFinite(startDate.getTime()) && Number.isFinite(endDate.getTime()) && endDate <= startDate) {
+        return productivityNativeBlocked('endAt must be later than startAt.', ['endAt']);
+      }
+      return {
+        id: actionId,
+        app: 'Calendar',
+        kind: 'calendar_event',
+        summary: `Create calendar event "${compactRecordText(title, 80)}" in Calendar`,
+        args: [title, locationText, notesText, ...startParts, ...endParts],
+        script: [
+          productivityNativeDateHandlerScript(),
+          'on run argv',
+          '  set titleText to item 1 of argv',
+          '  set locationText to item 2 of argv',
+          '  set notesText to item 3 of argv',
+          '  set startDate to javisDateFromParts(item 4 of argv, item 5 of argv, item 6 of argv, item 7 of argv, item 8 of argv, item 9 of argv)',
+          '  set endDate to javisDateFromParts(item 10 of argv, item 11 of argv, item 12 of argv, item 13 of argv, item 14 of argv, item 15 of argv)',
+          '  tell application "Calendar"',
+          '    activate',
+          '    set targetCalendar to first calendar',
+          '    set newEvent to make new event at end of events of targetCalendar with properties {summary:titleText, start date:startDate, end date:endDate}',
+          '    if locationText is not "" then set location of newEvent to locationText',
+          '    if notesText is not "" then set description of newEvent to notesText',
+          '  end tell',
+          '  return "Created Calendar event: " & titleText',
+          'end run',
+        ].join('\n'),
+      };
+    }
+
+    if (actionId === 'draft_email') {
+      const recipientText = productivityNativeText(productivityRequirementValue('recipient', options), 2000);
+      const subject = productivityNativeText(productivityRequirementValue('subject', options), 240);
+      const body = productivityNativeText(productivityRequirementValue('body', options), 50000);
+      const recipients = recipientText
+        .split(/[;,]/)
+        .map((item) => item.trim())
+        .filter(Boolean);
+      if (!recipients.length || recipients.some((item) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(item))) {
+        return productivityNativeBlocked('recipient must contain one or more email addresses separated by comma or semicolon.', ['recipient']);
+      }
+      return {
+        id: actionId,
+        app: 'Mail',
+        kind: 'email_draft',
+        summary: `Create Mail draft "${compactRecordText(subject, 80)}"`,
+        args: [subject, body, ...recipients],
+        script: [
+          'on run argv',
+          '  set subjectText to item 1 of argv',
+          '  set bodyText to item 2 of argv',
+          '  tell application "Mail"',
+          '    activate',
+          '    set newMessage to make new outgoing message with properties {subject:subjectText, content:bodyText & return, visible:true}',
+          '    tell newMessage',
+          '      repeat with i from 3 to count of argv',
+          '        make new to recipient at end of to recipients with properties {address:(item i of argv)}',
+          '      end repeat',
+          '    end tell',
+          '  end tell',
+          '  return "Created Mail draft: " & subjectText',
+          'end run',
+        ].join('\n'),
+      };
+    }
+  } catch (error) {
+    return productivityNativeBlocked(error instanceof Error ? error.message : String(error));
+  }
+  return null;
+}
+
+function productivityNativePolicyPlan(spec, action) {
+  return {
+    action: 'productivity_app',
+    riskLevel: Math.max(3, Number(action?.riskLevel || 3)),
+    summary: spec.summary,
+    target: spec.app,
+    args: {
+      action: 'productivity_app',
+      nativeAction: spec.id,
+      app: spec.app,
+    },
+    metadata: {
+      nativeAction: spec.id,
+      nativeKind: spec.kind,
+      app: spec.app,
+    },
+  };
+}
+
+async function executeNativeProductivityAction(action, options = {}, plan = {}) {
+  const spec = productivityNativeActionSpec(action, options, plan);
+  if (!spec) return null;
+  if (spec.blocked) return spec;
+
+  const policyPlan = productivityNativePolicyPlan(spec, action);
+  let evaluation;
+  try {
+    evaluation = evaluateMacActionPlan(policyPlan, {
+      approved: options.approved === true || options.policyApproved === true || productivityActionConfirmationSatisfied(options),
+      approvalContext: {
+        workflowId: options.workflowId || '',
+        title: `productivity native action · ${action.label}`,
+        instruction: options.instruction || action.instruction || action.label,
+        source: 'productivity_native_action',
+      },
+    });
+  } catch (error) {
+    if (error instanceof ActionApprovalRequired) {
+      return {
+        ok: false,
+        executed: false,
+        status: 'approval_required',
+        approval: error.approval,
+        output: `Approval required before I can ${spec.summary}.`,
+      };
+    }
+    return {
+      ok: false,
+      executed: false,
+      status: 'blocked',
+      output: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (evaluation.dryRun) {
+    appendAudit('productivity_native_action.dry_run', {
+      app: spec.app,
+      actionId: spec.id,
+      riskLevel: policyPlan.riskLevel,
+      summary: spec.summary,
+    });
+    return {
+      ok: true,
+      executed: true,
+      status: 'done',
+      result: {
+        native: true,
+        dryRun: true,
+        app: spec.app,
+        actionId: spec.id,
+        policy: evaluation,
+        output: `[dry-run] ${spec.summary}`,
+      },
+      output: `[dry-run] ${spec.summary}`,
+    };
+  }
+
+  try {
+    const startedAt = Date.now();
+    const { stdout, stderr } = await execFileAsync('osascript', ['-e', spec.script, ...spec.args], {
+      timeout: Math.max(5000, Math.min(60000, Number(options.timeoutMs || 20000))),
+      maxBuffer: 1024 * 1024,
+    });
+    const nativeOutput = compactRecordText(String(stdout || stderr || spec.summary).trim(), 1200);
+    let observation = null;
+    if (options.observeAfterAction !== false) {
+      await waitMs(Math.max(250, Math.min(3000, Number(options.waitMs || 900))));
+      const observed = await observeNow({
+        source: 'productivity_native_action',
+        captureScreen: 'auto',
+        includeAccessibility: true,
+        screenMaxAgeMs: 8000,
+        accessibilityMaxAgeMs: 4000,
+        maxNodes: options.maxNodes || 160,
+        maxDepth: options.maxDepth || 8,
+      });
+      observation = {
+        ok: observed.ok,
+        output: formatObservationForLocalCommand(observed),
+        mac: observed.mac,
+        screen: observed.screen,
+        accessibility: observed.accessibility,
+        errors: observed.errors,
+      };
+    }
+    appendAudit('productivity_native_action.completed', {
+      app: spec.app,
+      actionId: spec.id,
+      durationMs: Date.now() - startedAt,
+      observed: Boolean(observation),
+    });
+    return {
+      ok: true,
+      executed: true,
+      status: 'done',
+      result: {
+        native: true,
+        dryRun: false,
+        app: spec.app,
+        actionId: spec.id,
+        policy: evaluation,
+        output: nativeOutput,
+        observation,
+      },
+      output: observation?.output
+        ? `${nativeOutput}\nPost-action observation:\n${compactRecordText(observation.output, 1200)}`
+        : nativeOutput,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appendAudit('productivity_native_action.failed', {
+      app: spec.app,
+      actionId: spec.id,
+      message,
+    });
+    return {
+      ok: false,
+      executed: false,
+      status: 'blocked',
+      output: message,
+    };
+  }
 }
 
 async function executeProductivityAction(action, options = {}, plan = {}) {
@@ -11115,6 +11471,11 @@ async function executeProductivityAction(action, options = {}, plan = {}) {
       requiresConfirmation: true,
       output: action.summary || `${action.label} 被安全策略阻断。`,
     };
+  }
+
+  if (action.type === 'native_productivity' || action.nativeAutomation) {
+    const nativeResult = await executeNativeProductivityAction(action, options, plan);
+    if (nativeResult) return nativeResult;
   }
 
   if (action.type === 'app_workflow') {
@@ -11391,6 +11752,7 @@ async function productivityWorkflowBenchmarkSnapshot(options = {}) {
       stage: notePlan.focusedStage?.id || '',
       notKeynoteMatch: !/Keynote\.app/i.test(notePlan.selectedApp?.appPath || ''),
       createNoteGate: Boolean(notePlan.actionPack?.actions?.some((action) => action.id === 'create_note' && action.confirmationRequired)),
+      createNoteNative: Boolean(notePlan.actionPack?.actions?.some((action) => action.id === 'create_note' && action.nativeAutomation)),
       inboxFallback: Boolean(notePlan.actionPack?.actions?.some((action) => action.id === 'capture_note_inbox' && action.safeToAutoRun)),
     },
     ok: notePlan.ok === true &&
@@ -11398,7 +11760,40 @@ async function productivityWorkflowBenchmarkSnapshot(options = {}) {
       !/Keynote\.app/i.test(notePlan.selectedApp?.appPath || '') &&
       notePlan.focusedStage?.id === 'create' &&
       notePlan.actionPack?.actions?.some((action) => action.id === 'create_note' && action.confirmationRequired) &&
+      notePlan.actionPack?.actions?.some((action) => action.id === 'create_note' && action.nativeAutomation) &&
       notePlan.actionPack?.actions?.some((action) => action.id === 'capture_note_inbox' && action.safeToAutoRun),
+  }));
+
+  const noteNativePreview = await runProductivityWorkflowAction({
+    instruction: '把一个 JAVIS dogfood 样例写成 Notes 新笔记，但这里只预览。',
+    intent: 'note_capture',
+    stage: 'create',
+    app: 'Notes',
+    actionId: 'create_note',
+    execute: false,
+    title: 'JAVIS dogfood preview',
+    body: 'Preview-only note body.',
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_note_native_preview`,
+  });
+  cases.push(productivityBenchmarkCaseResult({
+    id: 'note_native_action_preview',
+    label: 'Notes native create action preview',
+    intent: 'note_capture',
+    result: noteNativePreview,
+    assertions: {
+      status: noteNativePreview.status || '',
+      actionId: noteNativePreview.action?.id || '',
+      actionType: noteNativePreview.action?.type || '',
+      nativeAutomation: noteNativePreview.action?.nativeAutomation === true,
+    },
+    ok: noteNativePreview.ok === true &&
+      noteNativePreview.executed === false &&
+      noteNativePreview.status === 'preview' &&
+      noteNativePreview.action?.id === 'create_note' &&
+      noteNativePreview.action?.type === 'native_productivity' &&
+      noteNativePreview.action?.nativeAutomation === true,
   }));
 
   const reminderPlan = await planProductivityWorkflow({
@@ -11420,12 +11815,13 @@ async function productivityWorkflowBenchmarkSnapshot(options = {}) {
       selectedApp: reminderPlan.selectedApp?.id || '',
       stage: reminderPlan.focusedStage?.id || '',
       createReminderGate: Boolean(reminderPlan.actionPack?.actions?.some((action) => action.id === 'create_reminder' && action.confirmationRequired)),
+      createReminderNative: Boolean(reminderPlan.actionPack?.actions?.some((action) => action.id === 'create_reminder' && action.nativeAutomation)),
       requirements: reminderPlan.actionPack?.actions?.find((action) => action.id === 'create_reminder')?.requires || [],
     },
     ok: reminderPlan.ok === true &&
       reminderPlan.selectedApp?.id === 'reminders' &&
       reminderPlan.focusedStage?.id === 'create' &&
-      reminderPlan.actionPack?.actions?.some((action) => action.id === 'create_reminder' && action.confirmationRequired),
+      reminderPlan.actionPack?.actions?.some((action) => action.id === 'create_reminder' && action.confirmationRequired && action.nativeAutomation),
   }));
 
   const calendarGate = await runProductivityWorkflowAction({
@@ -11451,6 +11847,7 @@ async function productivityWorkflowBenchmarkSnapshot(options = {}) {
     assertions: {
       status: calendarGate.status || '',
       requiresConfirmation: calendarGate.requiresConfirmation === true,
+      nativeAutomation: calendarGate.action?.nativeAutomation === true,
       missingRequirements: calendarGate.missingRequirements || [],
       recoveryHints: Number(calendarGate.recoveryHints?.length || 0),
     },
@@ -11458,6 +11855,7 @@ async function productivityWorkflowBenchmarkSnapshot(options = {}) {
       calendarGate.executed === false &&
       calendarGate.status === 'blocked' &&
       calendarGate.requiresConfirmation === true &&
+      calendarGate.action?.nativeAutomation === true &&
       Number(calendarGate.recoveryHints?.length || 0) >= 1,
   }));
 
@@ -11480,12 +11878,13 @@ async function productivityWorkflowBenchmarkSnapshot(options = {}) {
       selectedApp: emailPlan.selectedApp?.id || '',
       stage: emailPlan.focusedStage?.id || '',
       draftGate: Boolean(emailPlan.actionPack?.actions?.some((action) => action.id === 'draft_email' && action.confirmationRequired)),
+      draftNative: Boolean(emailPlan.actionPack?.actions?.some((action) => action.id === 'draft_email' && action.nativeAutomation)),
       sendBlocked: Boolean(emailPlan.actionPack?.actions?.some((action) => action.id === 'send_email_blocked' && action.forbidden)),
     },
     ok: emailPlan.ok === true &&
       emailPlan.selectedApp?.id === 'mail' &&
       emailPlan.focusedStage?.id === 'draft' &&
-      emailPlan.actionPack?.actions?.some((action) => action.id === 'draft_email' && action.confirmationRequired) &&
+      emailPlan.actionPack?.actions?.some((action) => action.id === 'draft_email' && action.confirmationRequired && action.nativeAutomation) &&
       emailPlan.actionPack?.actions?.some((action) => action.id === 'send_email_blocked' && action.forbidden),
   }));
 
@@ -11589,6 +11988,7 @@ async function productivityWorkflowBenchmarkSnapshot(options = {}) {
       calendarConfirmationGate: cases.find((item) => item.id === 'calendar_confirmation_gate')?.assertions?.requiresConfirmation === true,
       emailRecipientGate: cases.find((item) => item.id === 'email_missing_recipient_gate')?.assertions?.missingRecipient === true,
       emailSendBlocked: cases.find((item) => item.id === 'email_send_blocked')?.ok === true,
+      nativeCreatePreview: cases.find((item) => item.id === 'note_native_action_preview')?.assertions?.nativeAutomation === true,
       coversNotes: cases.some((item) => item.intent === 'note_capture' && item.ok),
       coversReminders: cases.some((item) => item.intent === 'reminder_create' && item.ok),
       coversCalendar: cases.some((item) => item.intent === 'calendar_event' && item.ok),
@@ -31783,6 +32183,12 @@ function evaluateMacActionPlan(plan, options = {}) {
   if (plan.action === 'open_app') {
     if (!valueMatchesAllowlist(plan.target, actionConfig.allowedApps || [])) {
       throw new Error(`App ${plan.target} is not allowed by policy.`);
+    }
+  }
+
+  if (plan.action === 'productivity_app') {
+    if (!valueMatchesAllowlist(plan.target, actionConfig.allowedApps || [])) {
+      throw new Error(`Productivity app ${plan.target} is not allowed by policy.`);
     }
   }
 

@@ -17,6 +17,7 @@ export default {
     const cases = Array.isArray(benchmarkData.cases) ? benchmarkData.cases : [];
     const requiredCases = [
       'note_capture_plan',
+      'note_native_action_preview',
       'reminder_create_plan',
       'calendar_confirmation_gate',
       'email_draft_plan',
@@ -42,9 +43,10 @@ export default {
         benchmarkData.safety?.calendarConfirmationGate === true &&
         benchmarkData.safety?.emailRecipientGate === true &&
         benchmarkData.safety?.emailSendBlocked === true &&
+        benchmarkData.safety?.nativeCreatePreview === true &&
         benchmarkData.safety?.noWorkflowHistory === true &&
         hasRequiredCases
-        ? ok('productivity.benchmarks', 'Productivity workflow benchmarks', `${benchmarkData.summary || 'benchmarks passed'} · Notes/Reminders/Calendar/Mail gates covered`)
+        ? ok('productivity.benchmarks', 'Productivity workflow benchmarks', `${benchmarkData.summary || 'benchmarks passed'} · Notes/Reminders/Calendar/Mail native gates covered`)
         : fail('productivity.benchmarks', 'Productivity workflow benchmarks', `GET /api/productivity/benchmarks ${benchmarks.status}`, benchmarkData || benchmarks.data),
     );
 
@@ -60,8 +62,9 @@ export default {
         maxBuffer: 1024 * 1024,
       });
       out.push(
-        /Productivity Workflow Benchmarks/.test(stdout) &&
+          /Productivity Workflow Benchmarks/.test(stdout) &&
           /preview-only=yes/.test(stdout) &&
+          /native preview=yes/.test(stdout) &&
           /calendar gate=yes/.test(stdout) &&
           /email recipient gate=yes/.test(stdout) &&
           /email send blocked=yes/.test(stdout)

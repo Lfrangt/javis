@@ -1044,7 +1044,7 @@ function printProductivityBenchmarks(result) {
   console.log(`Mode: preview-only=${benchmarks.previewOnly ? 'yes' : 'no'} · starts apps=${benchmarks.startsApps ? 'yes' : 'no'} · productivity actions=${benchmarks.executesProductivityActions ? 'yes' : 'no'} · sends messages=${benchmarks.sendsMessages ? 'yes' : 'no'} · model calls=${benchmarks.modelCalls ? 'yes' : 'no'}`);
   console.log(`Counts: pass ${counts.pass || 0}/${counts.total || 0} · fail ${counts.fail || 0} · notes ${counts.notes || 0} · reminders ${counts.reminders || 0} · calendar ${counts.calendar || 0} · mail ${counts.mail || 0}`);
   const safety = benchmarks.safety || {};
-  console.log(`Safety: plan-only=${safety.planOnly ? 'yes' : 'no'} · no app launch=${safety.noAppLaunch ? 'yes' : 'no'} · calendar gate=${safety.calendarConfirmationGate ? 'yes' : 'no'} · email recipient gate=${safety.emailRecipientGate ? 'yes' : 'no'} · email send blocked=${safety.emailSendBlocked ? 'yes' : 'no'}`);
+  console.log(`Safety: plan-only=${safety.planOnly ? 'yes' : 'no'} · no app launch=${safety.noAppLaunch ? 'yes' : 'no'} · native preview=${safety.nativeCreatePreview ? 'yes' : 'no'} · calendar gate=${safety.calendarConfirmationGate ? 'yes' : 'no'} · email recipient gate=${safety.emailRecipientGate ? 'yes' : 'no'} · email send blocked=${safety.emailSendBlocked ? 'yes' : 'no'}`);
   const cases = Array.isArray(benchmarks.cases) ? benchmarks.cases : [];
   if (!cases.length) {
     console.log('\nCases: none');
