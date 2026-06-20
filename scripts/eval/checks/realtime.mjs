@@ -547,6 +547,8 @@ export default {
         capabilityApiOutput.capabilities.some((item) => item.id === 'browser' && item.recommendedTools?.includes('run_browser_workflow')) &&
         capabilityApiOutput.collaboration?.handoff?.mode &&
         Array.isArray(capabilityApiOutput.collaboration?.handoff?.nextActions) &&
+        Array.isArray(capabilityApiOutput.collaboration?.handoff?.suggestedScopes) &&
+        capabilityApiOutput.collaboration.handoff.suggestedScopes.some((item) => item.safeToClaim === true && item.claimCommand?.includes('npm run collab -- claim')) &&
         capabilityApiOutput.recommendedStart.some((item) => item.tool === 'get_routing_speed_policy') &&
         capabilityApiOutput.recommendedStart.some((item) => item.tool === 'get_collaboration_state') &&
         Array.isArray(capabilityApiOutput.guardrails) &&
@@ -630,9 +632,11 @@ export default {
       collaborationReleaseOutput = parseToolOutput(collaborationReleaseTool);
     }
     out.push(
-      collaborationStateTool.ok &&
+        collaborationStateTool.ok &&
         collaborationStateTool.data?.ok === true &&
         collaborationStateOutput?.handoff?.mode &&
+        Array.isArray(collaborationStateOutput?.handoff?.suggestedScopes) &&
+        collaborationStateOutput.handoff.suggestedScopes.some((item) => item.safeToClaim === true && item.claimCommand?.includes('npm run collab -- claim')) &&
         collaborationPreviewTool.ok &&
         collaborationPreviewTool.data?.ok === true &&
         collaborationPreviewOutput?.previewOnly === true &&
@@ -872,6 +876,8 @@ export default {
         capabilityToolOutput?.controlMode?.mode &&
         capabilityToolOutput.collaboration?.handoff?.mode &&
         Array.isArray(capabilityToolOutput.collaboration?.handoff?.nextActions) &&
+        Array.isArray(capabilityToolOutput.collaboration?.handoff?.suggestedScopes) &&
+        capabilityToolOutput.collaboration.handoff.suggestedScopes.some((item) => item.safeToClaim === true && item.claimCommand?.includes('npm run collab -- claim')) &&
         !Array.isArray(capabilityToolOutput.collaboration?.handoff?.activeScopes) &&
         typeof capabilityToolOutput.spokenSummary === 'string' &&
         Array.isArray(capabilityToolOutput.recommendedStart) &&

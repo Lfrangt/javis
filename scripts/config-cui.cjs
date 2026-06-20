@@ -345,6 +345,7 @@ async function printStatus() {
   console.log('25. Preview learning skill draft');
   console.log('26. Export learning skill');
   console.log('27. Show collaboration handoff');
+  console.log('CS. Show collaboration scope suggestions');
   console.log('28. Show UI demonstrations');
   console.log('29. Show skill shortcuts');
   console.log('30. Promote shortcut candidate');
@@ -653,6 +654,11 @@ function printLocalCapabilities(result) {
   const collaborationNext = collaborationHandoff.nextActions?.[0]?.label ? ` · next ${collaborationHandoff.nextActions[0].label}` : '';
   console.log(`Collab: ${collaborationHandoff.mode || 'unknown'} · ${collaboration.active || 0} active · ${collaboration.conflictPairs || 0} conflict pair(s)${collaborationNext}`);
   if (collaborationHandoff.summary) console.log(`Collab handoff: ${compact(collaborationHandoff.summary, 260)}`);
+  const suggestedScopes = Array.isArray(collaborationHandoff.suggestedScopes) ? collaborationHandoff.suggestedScopes : [];
+  if (suggestedScopes.length) {
+    const safeSuggestions = suggestedScopes.filter((item) => item.safeToClaim).length;
+    console.log(`Collab suggestions: ${safeSuggestions}/${suggestedScopes.length} safe · first ${suggestedScopes[0].label || suggestedScopes[0].id || '-'}`);
+  }
   if (capabilities.speedPolicy?.spokenSummary) console.log(`Speed: ${compact(capabilities.speedPolicy.spokenSummary, 320)}`);
   if (capabilities.readiness?.summary) console.log(`Readiness: ${capabilities.readiness.overall || '-'} · ${compact(capabilities.readiness.summary, 220)}`);
   if (capabilities.next?.output) console.log(`Next: ${compact(capabilities.next.output, 260)}`);
@@ -1066,10 +1072,14 @@ function printCollaborationHandoff(result) {
   const conflictPairs = Array.isArray(handoff.conflictPairs) ? handoff.conflictPairs : [];
   const nextActions = Array.isArray(handoff.nextActions) ? handoff.nextActions : [];
   const activeScopes = Array.isArray(handoff.activeScopes) ? handoff.activeScopes : [];
-  console.log('Collaboration Handoff');
-  console.log('=====================');
-  console.log(handoff.spokenSummary || handoff.summary || 'No collaboration handoff available.');
-  console.log(`Mode: ${handoff.mode || '-'} · active ${counts.active || 0} · conflicts ${counts.conflicts || 0} · total ${counts.total || 0}`);
+  const suggestedScopes = Array.isArray(handoff.suggestedScopes) ? handoff.suggestedScopes : [];
+  const suggestionsOnly = suggestedScopes.length && !handoff.spokenSummary && !handoff.summary && !ownerGroups.length && !activeScopes.length && !nextActions.length;
+  console.log(suggestionsOnly ? 'Collaboration Scope Suggestions' : 'Collaboration Handoff');
+  console.log(suggestionsOnly ? '===============================' : '=====================');
+  if (!suggestionsOnly) {
+    console.log(handoff.spokenSummary || handoff.summary || 'No collaboration handoff available.');
+    console.log(`Mode: ${handoff.mode || '-'} · active ${counts.active || 0} · conflicts ${counts.conflicts || 0} · total ${counts.total || 0}`);
+  }
   if (ownerGroups.length) {
     console.log('\nOwner groups:');
     for (const group of ownerGroups.slice(0, 8)) {
@@ -1092,7 +1102,9 @@ function printCollaborationHandoff(result) {
       console.log(`- ${action.label || action.id || '-'}: ${compact(action.summary || '', 220)}`);
     }
   }
-  if (!activeScopes.length) {
+  if (suggestionsOnly) {
+    // Suggestions-only output does not need a synthetic empty active-scope line.
+  } else if (!activeScopes.length) {
     console.log('\nActive scopes: none');
   } else {
     console.log('\nActive scopes:');
@@ -1102,6 +1114,20 @@ function printCollaborationHandoff(result) {
       if (claim.task) console.log(`  task=${compact(claim.task, 180)}`);
       if (claim.nextHeartbeatCommand) console.log(`  heartbeat=${claim.nextHeartbeatCommand}`);
       if (claim.releaseCommand) console.log(`  release=${claim.releaseCommand}`);
+    }
+  }
+  if (suggestedScopes.length) {
+    console.log('\nSuggested scopes for external agents:');
+    for (const suggestion of suggestedScopes.slice(0, 8)) {
+      const status = suggestion.safeToClaim ? 'safe' : `blocked:${suggestion.conflictCount || 0}`;
+      console.log(`- ${status} · ${suggestion.label || suggestion.id || '-'} · ${suggestion.owner || suggestion.agent || '-'} / ${suggestion.lane || '-'}`);
+      console.log(`  scope=${compact(suggestion.scope || suggestion.key || '-', 220)}`);
+      if (suggestion.task) console.log(`  task=${compact(suggestion.task, 220)}`);
+      if (suggestion.reason) console.log(`  why=${compact(suggestion.reason, 220)}`);
+      if (suggestion.claimCommand) console.log(`  claim=${suggestion.claimCommand}`);
+      if (Array.isArray(suggestion.validation) && suggestion.validation.length) {
+        console.log(`  verify=${suggestion.validation.slice(0, 3).join(' && ')}`);
+      }
     }
   }
 }
@@ -1116,6 +1142,16 @@ async function showCollaborationHandoff() {
   const result = await request('/api/collaboration/handoff?limit=20');
   console.log('');
   printCollaborationHandoff(result);
+}
+
+async function showCollaborationSuggestions(options = {}) {
+  const params = new URLSearchParams();
+  params.set('limit', options.limit || '8');
+  if (options.query) params.set('query', options.query);
+  if (options.agent) params.set('agent', options.agent);
+  const result = await request(`/api/collaboration/suggestions?${params.toString()}`);
+  console.log('');
+  printCollaborationHandoff({ handoff: { suggestedScopes: result.suggestions || [] } });
 }
 
 function printDemonstrations(demonstrations) {
@@ -2875,6 +2911,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-collaboration-suggestions') || process.argv.includes('--collaboration-suggestions')) {
+    const queryIndex = process.argv.findIndex((item) => item === '--query');
+    const agentIndex = process.argv.findIndex((item) => item === '--agent');
+    await showCollaborationSuggestions({
+      query: queryIndex >= 0 ? process.argv[queryIndex + 1] : '',
+      agent: agentIndex >= 0 ? process.argv[agentIndex + 1] : '',
+    });
+    return;
+  }
+
   if (process.argv.includes('--print-collaboration-claims') || process.argv.includes('--collaboration-claims')) {
     await showCollaborationClaims();
     return;
@@ -3143,6 +3189,8 @@ async function main() {
         await exportLearningSkillDraft(rl);
       } else if (answer === '27') {
         await showCollaborationHandoff();
+      } else if (answer === 'cs' || answer === 'collaboration suggestions' || answer === 'scope suggestions') {
+        await showCollaborationSuggestions();
       } else if (answer === 'claims' || answer === 'collaboration claims') {
         await showCollaborationClaims();
       } else if (answer === '28') {

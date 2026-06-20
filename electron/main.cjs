@@ -4949,6 +4949,7 @@ async function localCapabilitySnapshot(options = {}) {
         ownerGroups: Array.isArray(collaborationHandoff.ownerGroups) ? collaborationHandoff.ownerGroups.slice(0, 5) : [],
         activeScopes: Array.isArray(collaborationHandoff.activeScopes) ? collaborationHandoff.activeScopes.slice(0, 5) : [],
         conflictPairs: Array.isArray(collaborationHandoff.conflictPairs) ? collaborationHandoff.conflictPairs.slice(0, 5) : [],
+        suggestedScopes: Array.isArray(collaborationHandoff.suggestedScopes) ? collaborationHandoff.suggestedScopes.slice(0, 5) : [],
         nextActions: Array.isArray(collaborationHandoff.nextActions) ? collaborationHandoff.nextActions.slice(0, 3) : [],
         commands: collaborationHandoff.commands || {},
       },
@@ -5018,6 +5019,19 @@ function compactCapabilityCollaborationForVoice(collaboration = null) {
       ownerGroupCount: Array.isArray(handoff.ownerGroups) ? handoff.ownerGroups.length : 0,
       activeScopeCount: Array.isArray(handoff.activeScopes) ? handoff.activeScopes.length : 0,
       conflictPairCount: Array.isArray(handoff.conflictPairs) ? handoff.conflictPairs.length : 0,
+      suggestedScopes: Array.isArray(handoff.suggestedScopes)
+        ? handoff.suggestedScopes.slice(0, 4).map((item) => ({
+          id: compactRecordText(item.id || '', 100),
+          label: compactRecordText(item.label || '', 140),
+          owner: compactRecordText(item.owner || item.agent || '', 100),
+          lane: compactRecordText(item.lane || '', 40),
+          scope: compactRecordText(item.scope || item.key || '', 180),
+          task: compactRecordText(item.task || '', 180),
+          safeToClaim: item.safeToClaim === true,
+          conflictCount: boundedCount(item.conflictCount, 100),
+          claimCommand: compactRecordText(item.claimCommand || '', 260),
+        }))
+        : [],
       nextActions: Array.isArray(handoff.nextActions)
         ? handoff.nextActions.slice(0, 3).map((action) => ({
           id: compactRecordText(action.id || '', 100),
@@ -5885,10 +5899,162 @@ function collaborationOwnerGroups(active = []) {
     .sort((a, b) => b.active - a.active || String(a.owner).localeCompare(String(b.owner)));
 }
 
+function collaborationSuggestionCommand({ agent = 'claude-code', owner = 'Claude Code', lane = 'claude', access = 'write', scope = '', task = '' } = {}) {
+  const quote = (value) => `"${String(value || '').replace(/(["\\$`])/g, '\\$1')}"`;
+  return [
+    'npm run collab -- claim',
+    '--agent', compactRecordText(agent || 'claude-code', 80),
+    '--owner', quote(owner || agent || 'Claude Code'),
+    '--lane', compactRecordText(lane || 'claude', 40),
+    '--access', compactRecordText(access || 'write', 20),
+    '--scope', quote(scope),
+    '--task', quote(task),
+  ].join(' ');
+}
+
+function collaborationScopeSuggestionTemplates() {
+  return [
+    {
+      id: 'pet_dynamic_island',
+      label: 'Polish the quiet Dynamic Island pet',
+      agent: 'claude-code',
+      owner: 'Claude Code',
+      lane: 'claude',
+      access: 'write',
+      scope: 'src/App.tsx src/App.css src/index.css public/icons.svg',
+      task: 'Make the desktop pet smaller, quieter, movable, and traffic-light/state driven without adding diagnostics to the pet UI.',
+      reason: 'Independent frontend work that improves the always-present Jarvis feeling without touching Realtime backend or worker routing.',
+      validation: ['npm run build', 'Inspect desktop pet visually after resident restart.'],
+    },
+    {
+      id: 'permissions_cui',
+      label: 'Improve local permission setup CUI',
+      agent: 'claude-code',
+      owner: 'Claude Code',
+      lane: 'claude',
+      access: 'write',
+      scope: 'scripts/config-cui.cjs docs/OPERATIONS.md .env.example',
+      task: 'Make the terminal setup path clearer for local execution, Accessibility, Full Disk Access, Claude Code, Codex, and browser automation readiness.',
+      reason: 'Keeps permission and setup detail in the CUI instead of the desktop pet.',
+      validation: ['node --check scripts/config-cui.cjs', 'npm run config -- --print-capabilities'],
+    },
+    {
+      id: 'browser_control_dogfood',
+      label: 'Broaden browser-control dogfood',
+      agent: 'claude-code',
+      owner: 'Claude Code',
+      lane: 'claude',
+      access: 'write',
+      scope: 'electron/main.cjs scripts/eval/checks/browser.mjs docs/ROADMAP.md docs/OPERATIONS.md',
+      task: 'Add one more preview-first browser automation dogfood path with DOM re-observe and no form submission by default.',
+      reason: 'Moves JAVIS toward reliable browser operation while preserving guarded execution.',
+      validation: ['node --check electron/main.cjs', 'npm run eval -- --only=browser'],
+    },
+    {
+      id: 'claude_cli_delegation',
+      label: 'Dogfood Claude Code CLI delegation',
+      agent: 'claude-code',
+      owner: 'Claude Code',
+      lane: 'claude',
+      access: 'write',
+      scope: 'electron/main.cjs scripts/eval/checks/parallel.mjs scripts/eval/checks/collaboration.mjs docs/OPERATIONS.md',
+      task: 'Verify Claude Code CLI readiness, policy gating, scoped claim lifecycle, and worker recovery evidence without overlapping active write scopes.',
+      reason: 'Makes multi-agent development more concrete and recoverable.',
+      validation: ['node --check electron/main.cjs', 'npm run eval -- --only=parallel,collaboration'],
+    },
+    {
+      id: 'docs_openclaw_alignment',
+      label: 'Tighten OpenClaw-style architecture docs',
+      agent: 'claude-code',
+      owner: 'Claude Code',
+      lane: 'claude',
+      access: 'write',
+      scope: 'docs/GOAL.md docs/ARCHITECTURE.md docs/ROADMAP.md README.md',
+      task: 'Turn the current OpenClaw-style architecture into concrete milestones for voice, screen perception, delegation, local learning, permissions, and artifact-first workflows.',
+      reason: 'Good parallel documentation work when implementation scopes are occupied.',
+      validation: ['npm run eval -- --only=briefing,realtime-preflight'],
+    },
+  ];
+}
+
+function collaborationScopeSuggestions(options = {}) {
+  const limit = Math.max(1, Math.min(12, Number(options.limit || options.suggestionLimit || 6)));
+  const query = String(options.query || options.task || options.message || '').trim().toLowerCase();
+  const preferredAgent = String(options.agent || options.owner || '').trim().toLowerCase();
+  const queryTokens = query
+    ? query.split(/[^a-z0-9_.:/-]+/i).map((item) => item.trim()).filter(Boolean).slice(0, 10)
+    : [];
+  return collaborationScopeSuggestionTemplates()
+    .filter((template) => {
+      if (preferredAgent && !`${template.agent} ${template.owner} ${template.lane}`.toLowerCase().includes(preferredAgent)) return false;
+      if (!queryTokens.length) return true;
+      const haystack = [
+        template.id,
+        template.label,
+        template.agent,
+        template.owner,
+        template.lane,
+        template.scope,
+        template.task,
+        template.reason,
+      ].join(' ').toLowerCase();
+      return queryTokens.some((token) => haystack.includes(token));
+    })
+    .map((template) => {
+      const candidate = normalizeCollaborationClaim({
+        ...template,
+        source: options.source || 'collaboration_suggestion',
+      });
+      const conflicts = candidate ? collaborationConflictsForClaim(candidate) : [];
+      const scope = candidate?.scope || template.scope;
+      const task = candidate?.task || template.task;
+      return {
+        id: template.id,
+        label: compactRecordText(template.label, 120),
+        agent: candidate?.agent || template.agent,
+        owner: candidate?.owner || template.owner,
+        lane: candidate?.lane || template.lane,
+        access: candidate?.access || template.access,
+        scope,
+        key: candidate?.key || normalizeOwnershipKey(scope),
+        task,
+        reason: compactRecordText(template.reason, 260),
+        validation: Array.isArray(template.validation) ? template.validation.slice(0, 4) : [],
+        safeToClaim: conflicts.length === 0,
+        conflictCount: conflicts.length,
+        conflicts: conflicts.slice(0, 4),
+        claimCommand: collaborationSuggestionCommand({
+          agent: candidate?.agent || template.agent,
+          owner: candidate?.owner || template.owner,
+          lane: candidate?.lane || template.lane,
+          access: candidate?.access || template.access,
+          scope,
+          task,
+        }),
+        claimBody: {
+          agent: candidate?.agent || template.agent,
+          owner: candidate?.owner || template.owner,
+          lane: candidate?.lane || template.lane,
+          access: candidate?.access || template.access,
+          scope,
+          task,
+        },
+      };
+    })
+    .sort((a, b) => Number(b.safeToClaim) - Number(a.safeToClaim) || a.conflictCount - b.conflictCount || a.id.localeCompare(b.id))
+    .slice(0, limit);
+}
+
 function collaborationHandoffSnapshot(options = {}) {
   const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
   const collaboration = collaborationSnapshot(limit);
   const ownerGroups = collaborationOwnerGroups(collaboration.active || []);
+  const suggestedScopes = collaborationScopeSuggestions({
+    limit: options.suggestionLimit || 6,
+    query: options.query || options.task || '',
+    agent: options.agent || options.owner || '',
+    source: options.source || 'handoff',
+  });
   const activeScopes = (collaboration.active || []).map((claim) => ({
     id: claim.id,
     owner: claim.owner,
@@ -5969,10 +6135,12 @@ function collaborationHandoffSnapshot(options = {}) {
     ownerGroups,
     activeScopes,
     conflictPairs: collaboration.conflictPairs || [],
+    suggestedScopes,
     nextActions,
     commands: {
       status: 'npm run collab -- status',
       handoff: 'npm run collab -- handoff',
+      suggestions: 'npm run config -- --print-collaboration-suggestions',
       claim: 'npm run collab -- claim --scope <scope> --task <task>',
     },
     collaboration,
@@ -6179,6 +6347,16 @@ function collaborationVoicePayload(result = {}, options = {}) {
           id: compactRecordText(item.id || '', 80),
           label: compactRecordText(item.label || '', 120),
           summary: compactRecordText(item.summary || '', 220),
+        }))
+        : [],
+      suggestedScopes: Array.isArray(handoff.suggestedScopes)
+        ? handoff.suggestedScopes.slice(0, 3).map((item) => ({
+          id: compactRecordText(item.id || '', 80),
+          label: compactRecordText(item.label || '', 120),
+          scope: compactRecordText(item.scope || item.key || '', 160),
+          safeToClaim: item.safeToClaim === true,
+          conflictCount: boundedCount(item.conflictCount, 100),
+          claimCommand: compactRecordText(item.claimCommand || '', 220),
         }))
         : [],
     },
@@ -22092,6 +22270,25 @@ function normalizeOwnershipKey(value) {
   return compactRecordText(key, 220);
 }
 
+function ownershipKeySegments(value) {
+  const key = normalizeOwnershipKey(value);
+  if (!key) return [];
+  const segments = new Set([key]);
+  const pathMatches = key.match(/(?:~\/|\/|\.{1,2}\/|[a-z0-9_.-]+\/)[^\s,;:'")]+|[a-z0-9_.-]+\.(?:md|txt|json|jsonl|cjs|mjs|js|jsx|ts|tsx|css|html|py|sh|yml|yaml|toml|lock|svg|png)/gi) || [];
+  for (const match of pathMatches) {
+    const segment = normalizeOwnershipKey(match);
+    if (segment) segments.add(segment);
+  }
+  return Array.from(segments);
+}
+
+function ownershipSingleKeysOverlap(a, b) {
+  const left = normalizeOwnershipKey(a);
+  const right = normalizeOwnershipKey(b);
+  if (!left || !right) return false;
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
 function ownershipKeyForParallelTask(item) {
   const explicit = normalizeOwnershipKey(item.ownershipKey);
   if (explicit) return explicit;
@@ -22101,10 +22298,10 @@ function ownershipKeyForParallelTask(item) {
 }
 
 function ownershipKeysOverlap(a, b) {
-  const left = normalizeOwnershipKey(a);
-  const right = normalizeOwnershipKey(b);
-  if (!left || !right) return false;
-  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+  const leftSegments = ownershipKeySegments(a);
+  const rightSegments = ownershipKeySegments(b);
+  if (!leftSegments.length || !rightSegments.length) return false;
+  return leftSegments.some((left) => rightSegments.some((right) => ownershipSingleKeysOverlap(left, right)));
 }
 
 function applyParallelOwnership(tasks = []) {
@@ -48964,7 +49161,32 @@ function startApiServer() {
 
   api.get('/api/collaboration/handoff', (req, res) => {
     res.json({
-      handoff: collaborationHandoffSnapshot({ limit: req.query.limit || 50 }),
+      handoff: collaborationHandoffSnapshot({
+        limit: req.query.limit || 50,
+        suggestionLimit: req.query.suggestionLimit || req.query.suggestions || 6,
+        query: req.query.query || req.query.task || '',
+        agent: req.query.agent || req.query.owner || '',
+        source: 'api_handoff',
+      }),
+      collaborationFile: COLLABORATION_FILE,
+    });
+  });
+
+  api.get('/api/collaboration/suggestions', (req, res) => {
+    const suggestions = collaborationScopeSuggestions({
+      limit: req.query.limit || 8,
+      query: req.query.query || req.query.task || '',
+      agent: req.query.agent || req.query.owner || '',
+      source: 'api_suggestions',
+    });
+    res.json({
+      ok: true,
+      suggestions,
+      counts: {
+        total: suggestions.length,
+        safe: suggestions.filter((item) => item.safeToClaim).length,
+        blocked: suggestions.filter((item) => !item.safeToClaim).length,
+      },
       collaborationFile: COLLABORATION_FILE,
     });
   });

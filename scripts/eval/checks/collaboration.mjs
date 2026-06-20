@@ -63,13 +63,26 @@ export default {
 
     const handoff = await ctx.api('/api/collaboration/handoff?limit=20');
     const handoffActive = handoff.data?.handoff?.activeScopes || [];
+    const handoffSuggestions = handoff.data?.handoff?.suggestedScopes || [];
     out.push(
       handoff.ok &&
         handoff.data?.handoff?.summary &&
         Array.isArray(handoff.data?.handoff?.nextActions) &&
-        handoffActive.some((item) => item.key === scope || item.scope === scope)
-        ? ok('collaboration.handoff_api', 'Collaboration handoff API', handoff.data.handoff.summary)
-        : fail('collaboration.handoff_api', 'Collaboration handoff API', 'handoff did not expose active scope and next actions', handoff.data),
+        handoffActive.some((item) => item.key === scope || item.scope === scope) &&
+        handoffSuggestions.some((item) => item.safeToClaim === true && item.claimCommand?.includes('npm run collab -- claim'))
+        ? ok('collaboration.handoff_api', 'Collaboration handoff API', `${handoff.data.handoff.summary}; ${handoffSuggestions.length} suggested scope(s)`)
+        : fail('collaboration.handoff_api', 'Collaboration handoff API', 'handoff did not expose active scope, next actions, and suggested scopes', handoff.data),
+    );
+
+    const suggestions = await ctx.api('/api/collaboration/suggestions?limit=8&agent=claude-code');
+    const suggestionItems = suggestions.data?.suggestions || [];
+    out.push(
+      suggestions.ok &&
+        suggestions.data?.ok === true &&
+        suggestions.data?.counts?.total >= 1 &&
+        suggestionItems.some((item) => item.owner === 'Claude Code' && item.safeToClaim === true && item.claimBody?.scope && item.claimCommand?.includes('--agent claude-code'))
+        ? ok('collaboration.suggestions_api', 'Collaboration scope suggestions API', `${suggestions.data.counts.safe}/${suggestions.data.counts.total} safe suggestion(s)`)
+        : fail('collaboration.suggestions_api', 'Collaboration scope suggestions API', 'suggestions endpoint did not expose safe Claude Code claim commands', suggestions.data),
     );
 
     try {
@@ -99,12 +112,32 @@ export default {
         stdout.includes('Collaboration Handoff') &&
           stdout.includes(scope) &&
           stdout.includes('heartbeat=') &&
-          stdout.includes('release=')
-          ? ok('collaboration.cui_handoff', 'Collaboration CUI handoff', 'config CUI prints handoff, active scope, heartbeat, and release commands')
+          stdout.includes('release=') &&
+          stdout.includes('Suggested scopes for external agents') &&
+          stdout.includes('claim=npm run collab -- claim')
+          ? ok('collaboration.cui_handoff', 'Collaboration CUI handoff', 'config CUI prints handoff, active scope, heartbeat, release, and suggested claim commands')
           : fail('collaboration.cui_handoff', 'Collaboration CUI handoff', 'CUI handoff output missing expected content', { stdout }),
       );
     } catch (error) {
       out.push(fail('collaboration.cui_handoff', 'Collaboration CUI handoff', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [configCui, '--print-collaboration-suggestions', '--agent', 'claude-code'], {
+        timeout: 8000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      out.push(
+        stdout.includes('Suggested scopes for external agents') &&
+          stdout.includes('Claude Code') &&
+          stdout.includes('claim=npm run collab -- claim') &&
+          stdout.includes('verify=')
+          ? ok('collaboration.cui_suggestions', 'Collaboration CUI suggestions', 'config CUI prints Claude Code claim suggestions and verification commands')
+          : fail('collaboration.cui_suggestions', 'Collaboration CUI suggestions', 'CUI suggestions output missing expected content', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('collaboration.cui_suggestions', 'Collaboration CUI suggestions', error instanceof Error ? error.message : String(error)));
     }
 
     const conflict = await ctx.api('/api/collaboration/claims', {

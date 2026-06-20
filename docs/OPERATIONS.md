@@ -263,10 +263,12 @@ Use option `14. Show next work item`, or `npm run config -- --print-work-next`, 
 Use `POST /api/autonomy/run` when JAVIS should think through a task as a bounded local loop instead of a single route decision. The default is preview-only: it routes the task, exposes whether local inferred learning was attached as soft context, observes local Mac context without clipboard text or default screen capture, previews one work-next action, verifies current progress, and scans failed-worker recovery candidates. The response includes `agencyPlan` with a primary next action, fallback attempts, blockers, `askUserOnlyFor` boundaries, and a short spoken summary; Realtime should read that before asking the user to solve a recoverable problem. Passing `execute:true` still uses the normal task router, action policy, approval queue, workers, and recovery gates; the loop does not run shell commands or UI actions directly. Passing `retry:true` or `autoRecover:true` with `execute:true` lets the loop run one budgeted recovery action through the existing worker recovery runner, capped by `maxRecoveryAttempts` and `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS`. Learning evidence is local metadata only and never grants permission or changes policy thresholds.
 
 Use CUI option `27. Show collaboration handoff`, `npm run config -- --print-collaboration-handoff`,
-`npm run collab -- handoff`, or `GET /api/collaboration/handoff` when Codex, Claude Code, or
+`npm run config -- --print-collaboration-suggestions`, `npm run collab -- handoff`,
+`GET /api/collaboration/handoff`, or `GET /api/collaboration/suggestions` when Codex, Claude Code, or
 a local CLI worker is sharing the repo. The handoff summarizes active owners, write scopes,
-heartbeat/release commands, conflict pairs, and the next safe coordination action; Realtime
-`get_collaboration_state` returns the same handoff alongside the raw claim ledger.
+heartbeat/release commands, conflict pairs, suggested non-overlapping scopes with ready-to-run claim
+commands, and the next safe coordination action; Realtime `get_collaboration_state` returns the same
+handoff alongside the raw claim ledger.
 
 Use option `15. Run next work item` to preview and then execute the current workbench action after
 typing `RUN`. This is the manual path for recovering blocked jobs or routed work, processing the top Inbox item,

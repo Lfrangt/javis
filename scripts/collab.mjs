@@ -184,6 +184,16 @@ async function handoffCommand(opts) {
       console.log(`  release: ${claim.releaseCommand}`);
     }
   }
+  const suggestions = handoff.suggestedScopes || [];
+  if (suggestions.length) {
+    console.log('Suggested scopes:');
+    for (const suggestion of suggestions.slice(0, 5)) {
+      const status = suggestion.safeToClaim ? 'safe' : `blocked:${suggestion.conflictCount || 0}`;
+      console.log(`- ${status} ${suggestion.label || suggestion.id}: ${suggestion.scope || suggestion.key}`);
+      if (suggestion.task) console.log(`  task: ${suggestion.task}`);
+      if (suggestion.claimCommand) console.log(`  claim: ${suggestion.claimCommand}`);
+    }
+  }
 }
 
 async function claimCommand(opts) {
