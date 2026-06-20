@@ -2604,6 +2604,31 @@ function printRealtimeDogfoodAcceptance(result) {
   }
 }
 
+function printRealtimeShortcutRecallDogfood(result) {
+  const recall = result?.shortcutRecall || result || {};
+  const safety = recall.safety || {};
+  console.log('JAVIS Realtime Shortcut Recall Dogfood');
+  console.log('======================================');
+  console.log(`Status: ${recall.status || 'preview'} · ok=${recall.ok ? 'yes' : 'no'} · confirmed=${recall.confirmed ? 'yes' : 'no'}`);
+  console.log(`Phrase: ${recall.phrase || '-'}`);
+  console.log(`Task: ${compact(recall.task || '-', 260)}`);
+  console.log(`Requires confirmation: ${recall.requiresConfirmation ? 'yes' : 'no'}`);
+  console.log(`Safety: starts mic=${safety.startsMicrophone ? 'yes' : 'no'} · starts workers=${safety.startsWorkers ? 'yes' : 'no'} · executes task=${safety.executesTask ? 'yes' : 'no'} · route preview=${safety.routePreviewOnly ? 'yes' : 'no'}`);
+  if (recall.shortcut) {
+    console.log(`Shortcut: ${recall.shortcut.id || '-'} · ${recall.shortcut.primarySkill || '-'} · used ${Number(recall.shortcut.usedCount || 0)}`);
+  }
+  if (recall.route) {
+    console.log(`Route: ${recall.route.id || '-'} · ${recall.route.lane || '-'} · ${recall.route.status || '-'} · ${recall.route.source || '-'}`);
+  }
+  if (recall.routeSkillRecall) {
+    console.log(`Recall: ${recall.recalled ? 'yes' : 'no'} · ${recall.routeSkillRecall.decisionEffect || '-'} · ${recall.routeSkillRecall.primarySkill || '-'}`);
+  }
+  if (recall.output) console.log(`Summary: ${compact(recall.output, 420)}`);
+  if (recall.requiresConfirmation) {
+    console.log('Next: npm run config -- --prepare-realtime-shortcut-recall --confirm');
+  }
+}
+
 async function showRealtimeDogfoodPrompt(options = {}) {
   if (options.copy) {
     const result = await request('/api/realtime/dogfood/prompt/copy', {
@@ -2636,9 +2661,27 @@ async function showRealtimeDogfoodArchive(options = {}) {
   printRealtimeDogfoodArchive(result);
 }
 
-async function showRealtimeDogfoodAcceptance() {
-  const result = await request('/api/realtime/dogfood/acceptance');
+async function showRealtimeDogfoodAcceptance(options = {}) {
+  const result = await request('/api/realtime/dogfood/acceptance', {
+    method: options.saveArchive ? 'POST' : 'GET',
+    body: options.saveArchive ? { saveArchive: true, source: 'cui_acceptance_save' } : undefined,
+  });
   printRealtimeDogfoodAcceptance(result);
+}
+
+async function showRealtimeShortcutRecallDogfood(options = {}) {
+  const phrase = argvValue('--phrase', '');
+  const task = argvValue('--task', '');
+  const result = await request('/api/realtime/dogfood/shortcut-recall', {
+    method: options.confirm ? 'POST' : 'GET',
+    body: options.confirm ? {
+      confirm: true,
+      source: 'cui_realtime_dogfood_shortcut_recall',
+      ...(phrase ? { phrase } : {}),
+      ...(task ? { task } : {}),
+    } : undefined,
+  });
+  printRealtimeShortcutRecallDogfood(result);
 }
 
 function printRealtimeDogfoodSession(result) {
@@ -2762,7 +2805,7 @@ async function main() {
   }
 
   if (process.argv.includes('--print-realtime-dogfood-acceptance') || process.argv.includes('--realtime-dogfood-acceptance')) {
-    await showRealtimeDogfoodAcceptance();
+    await showRealtimeDogfoodAcceptance({ saveArchive: process.argv.includes('--save-archive') });
     return;
   }
 
@@ -2773,6 +2816,11 @@ async function main() {
 
   if (process.argv.includes('--save-realtime-dogfood-archive')) {
     await showRealtimeDogfoodArchive({ save: true });
+    return;
+  }
+
+  if (process.argv.includes('--prepare-realtime-shortcut-recall') || process.argv.includes('--realtime-shortcut-recall')) {
+    await showRealtimeShortcutRecallDogfood({ confirm: process.argv.includes('--confirm') });
     return;
   }
 

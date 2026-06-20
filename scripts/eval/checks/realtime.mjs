@@ -1746,6 +1746,50 @@ export default {
         : fail('realtime.shortcut_tool_evidence', 'Realtime shortcut tool evidence', 'expected shortcut tool calls to be visible in realtime evidence', shortcutToolEvidence),
     );
 
+    const shortcutRecallPreview = await ctx.api('/api/realtime/dogfood/shortcut-recall');
+    const shortcutRecallPreviewOutput = shortcutRecallPreview.data?.shortcutRecall;
+    out.push(
+      shortcutRecallPreview.ok &&
+        shortcutRecallPreviewOutput?.requiresConfirmation === true &&
+        shortcutRecallPreviewOutput?.safety?.startsMicrophone === false &&
+        shortcutRecallPreviewOutput?.safety?.startsWorkers === false &&
+        shortcutRecallPreviewOutput?.safety?.routePreviewOnly === true
+        ? ok('realtime.shortcut_recall_dogfood_preview', 'Realtime shortcut recall dogfood preview', 'requires confirm before writing local dogfood shortcut evidence')
+        : fail('realtime.shortcut_recall_dogfood_preview', 'Realtime shortcut recall dogfood preview', 'expected preview confirmation gate', shortcutRecallPreview.data),
+    );
+
+    const shortcutRecallRun = await ctx.api('/api/realtime/dogfood/shortcut-recall', {
+      method: 'POST',
+      body: {
+        confirm: true,
+        phrase: 'javis realtime shortcut recall dogfood',
+        source: 'realtime_dogfood_shortcut_recall',
+      },
+      retries: 0,
+    });
+    const shortcutRecallRunOutput = shortcutRecallRun.data?.shortcutRecall;
+    out.push(
+      shortcutRecallRun.ok &&
+        shortcutRecallRunOutput?.ok === true &&
+        shortcutRecallRunOutput?.recalled === true &&
+        shortcutRecallRunOutput?.routeSkillRecall?.decisionEffect === 'shortcut_phrase_matched' &&
+        shortcutRecallRunOutput?.safety?.startsMicrophone === false &&
+        shortcutRecallRunOutput?.safety?.startsWorkers === false &&
+        shortcutRecallRunOutput?.safety?.executesTask === false
+        ? ok('realtime.shortcut_recall_dogfood_prepare', 'Realtime shortcut recall dogfood prepare', `${shortcutRecallRunOutput.route?.id || 'route'} recalled ${shortcutRecallRunOutput.routeSkillRecall?.primarySkill || 'skill'}`)
+        : fail('realtime.shortcut_recall_dogfood_prepare', 'Realtime shortcut recall dogfood prepare', 'expected confirmed shortcut recall route preview evidence', shortcutRecallRun.data),
+    );
+
+    const shortcutRecallDrill = await ctx.api('/api/realtime/dogfood/drill');
+    const shortcutRecallStep = shortcutRecallDrill.data?.drill?.steps?.find((step) => step.id === 'route_recalled_shortcut');
+    out.push(
+      shortcutRecallDrill.ok &&
+        shortcutRecallStep?.ok === true &&
+        Number(shortcutRecallStep?.evidence?.count || 0) > 0
+        ? ok('realtime.shortcut_recall_dogfood_evidence', 'Realtime shortcut recall dogfood evidence', shortcutRecallStep.detail || 'route recall step ready')
+        : fail('realtime.shortcut_recall_dogfood_evidence', 'Realtime shortcut recall dogfood evidence', 'expected dogfood drill route recall gate to be ready', shortcutRecallStep),
+    );
+
     const handoffTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {

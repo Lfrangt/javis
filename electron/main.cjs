@@ -30518,6 +30518,143 @@ function realtimeShortcutRecallEvidence(limit = 5) {
   };
 }
 
+function realtimeDogfoodShortcutRecallPlan(options = {}) {
+  const phrase = compactRecordText(options.phrase || 'javis realtime shortcut recall dogfood', 120);
+  const skillName = compactRecordText(options.skillName || 'javis-realtime-shortcut-recall-dogfood', 120);
+  return normalizeSkillRecallPlan(options.skillRecallPlan || {
+    applied: true,
+    matched: 1,
+    decisionEffect: 'realtime_dogfood_shortcut_recall',
+    summary: 'Realtime dogfood shortcut recall plan. It verifies saved phrases can change routing without executing a skill.',
+    primarySkill: {
+      name: skillName,
+      kind: 'learning',
+      summary: 'Dogfood-only shortcut recall proof for local learning and routing.',
+    },
+    skills: [{
+      name: skillName,
+      kind: 'learning',
+      summary: 'Dogfood-only shortcut recall proof for local learning and routing.',
+    }],
+    recommendedTools: ['route_task', 'search_local_skills'],
+    planSteps: [
+      'Match the saved shortcut phrase.',
+      'Attach the recalled skill plan to the route preview.',
+      'Stop before execution or any local action.',
+    ],
+    confirmationRequired: true,
+    confirmationGates: ['action_policy', 'control_mode', 'explicit_confirmation_for_replay_or_mutation'],
+    shortcutCandidate: {
+      eligible: true,
+      reason: 'Dogfood verifies a saved local shortcut can be routed back into a skillRecallPlan.',
+      nextAction: `Use the phrase "${phrase}" in a route preview.`,
+    },
+  });
+}
+
+async function prepareRealtimeDogfoodShortcutRecall(options = {}) {
+  const phrase = compactRecordText(options.phrase || 'javis realtime shortcut recall dogfood', 120);
+  const task = compactRecordText(options.task || `${phrase} preview the recalled local workflow without executing it`, 420);
+  const source = compactRecordText(options.source || 'realtime_dogfood_shortcut_recall', 80);
+  const confirm = options.confirm === true || String(options.confirm || '').toLowerCase() === 'true';
+  const skillRecallPlan = realtimeDogfoodShortcutRecallPlan({ ...options, phrase });
+  const preview = {
+    ok: false,
+    status: 409,
+    requiresConfirmation: true,
+    confirmed: false,
+    phrase,
+    task,
+    skillRecallPlan,
+    output: `Confirm before saving dogfood shortcut phrase "${phrase}" and routing it as a preview.`,
+    safety: {
+      localOnly: true,
+      startsMicrophone: false,
+      startsWorkers: false,
+      executesTask: false,
+      routePreviewOnly: true,
+      writesLocalJson: true,
+      confirmationRequired: true,
+    },
+  };
+  if (!confirm) return preview;
+
+  const saved = upsertShortcutFromPromotion({
+    phrase,
+    title: options.title || 'Realtime dogfood shortcut recall',
+    source,
+    confirm: true,
+    skillRecallPlan,
+  });
+  const routed = await routeTask({
+    message: task,
+    execute: false,
+    includeScreen: false,
+    useMemory: false,
+    useShortcuts: true,
+    source,
+    owner: 'Realtime dogfood',
+    scope: 'realtime shortcut recall dogfood',
+  });
+  const routePlan = normalizeSkillRecallPlan(routed.skillRecallPlan || routed.routing?.skillRecallPlan);
+  const recalled = Boolean(routePlan.applied && routePlan.decisionEffect === 'shortcut_phrase_matched');
+  const recallEvidence = realtimeShortcutRecallEvidence(5);
+  const payload = {
+    ok: recalled,
+    status: recalled ? 'ready' : 'not_recalled',
+    requiresConfirmation: false,
+    confirmed: true,
+    phrase,
+    task,
+    shortcut: saved.shortcut
+      ? {
+        id: saved.shortcut.id,
+        phrase: saved.shortcut.phrase,
+        primarySkill: saved.shortcut.skillRecallPlan?.primarySkill?.name || '',
+        usedCount: Number(saved.shortcut.usedCount || 0),
+      }
+      : null,
+    route: routed.routing
+      ? {
+        id: routed.routing.id,
+        lane: routed.routing.lane,
+        owner: routed.routing.owner,
+        status: routed.routing.status,
+        source: routed.routing.source,
+        resultSummary: compactRecordText(routed.routing.resultSummary || routed.output || '', 260),
+      }
+      : null,
+    recalled,
+    routeSkillRecall: {
+      applied: routePlan.applied,
+      decisionEffect: routePlan.decisionEffect,
+      primarySkill: routePlan.primarySkill.name,
+      summary: routePlan.summary,
+    },
+    recallEvidence,
+    output: recalled
+      ? `Shortcut recall ready: "${phrase}" routed to ${routePlan.primarySkill.name} as a preview.`
+      : `Shortcut was saved, but route preview did not recall "${phrase}".`,
+    safety: {
+      localOnly: true,
+      startsMicrophone: false,
+      startsWorkers: false,
+      executesTask: false,
+      routePreviewOnly: true,
+      writesLocalJson: true,
+      confirmationRequired: true,
+    },
+  };
+  appendAudit('realtime_dogfood.shortcut_recall_prepared', {
+    source,
+    phrase,
+    routeId: payload.route?.id || '',
+    shortcutId: payload.shortcut?.id || '',
+    recalled,
+  });
+  return payload;
+}
+
 function realtimeEvidenceStep({ id, label, ok, blocked = false, detail = '', nextAction = '', evidence = {} }) {
   const status = ok ? 'ready' : blocked ? 'blocked' : 'pending';
   return {
@@ -31586,7 +31723,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       label: 'Use the saved phrase and verify routed recall',
       ok: recall.ok,
       detail: recall.ok ? recall.recent[0]?.summary || 'A route recalled a shortcut-backed skill plan.' : 'No non-internal routing record has recalled a shortcut-backed skill plan yet.',
-      nextAction: recall.nextAction,
+      nextAction: recall.ok ? recall.nextAction : 'Run npm run config -- --prepare-realtime-shortcut-recall --confirm to save a dogfood shortcut and route it as a preview without starting microphone capture.',
       evidence: { count: recall.count, recent: recall.recent.slice(0, 3) },
     }),
     realtimeDogfoodDrillStep({
@@ -32309,7 +32446,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     teach_ui_demonstration: 'Ask live voice to run the UI demonstration Record & Replay flow.',
     list_shortcuts: 'Ask live voice to call get_skill_shortcuts.',
     save_shortcut_with_confirmation: 'Ask live voice to call save_skill_shortcut after explicit confirmation.',
-    route_recalled_shortcut: 'Use the saved shortcut phrase and verify route_task recalled it.',
+    route_recalled_shortcut: 'npm run config -- --prepare-realtime-shortcut-recall --confirm',
     forget_shortcut: 'Ask live voice to call forget_skill_shortcut after explicit confirmation.',
     archive_saved: 'npm run config -- --save-realtime-dogfood-archive',
   };
@@ -32319,11 +32456,12 @@ function realtimeDogfoodActionForGate(gate = {}) {
     start_live_voice: '/api/realtime/dogfood/renderer/start',
     inject_worker_progress: '/api/realtime/dogfood/start',
     save_productivity_dogfood_archive: '/api/tools/execute save_productivity_dogfood_archive',
+    route_recalled_shortcut: '/api/realtime/dogfood/shortcut-recall',
     archive_saved: '/api/realtime/dogfood/archive',
   };
   const startsMicrophone = id === 'start_live_voice';
-  const requiresLiveVoice = liveVoiceGates.has(id);
-  const writesLocalJson = id === 'archive_saved' || id === 'save_productivity_dogfood_archive';
+  const requiresLiveVoice = liveVoiceGates.has(id) && id !== 'route_recalled_shortcut';
+  const writesLocalJson = id === 'archive_saved' || id === 'save_productivity_dogfood_archive' || id === 'route_recalled_shortcut';
   const readOnly = id === 'open_monitor' || id === 'provider_ready';
   const requiresUserPresence = startsMicrophone || requiresLiveVoice || id === 'archive_saved' || id === 'provider_ready';
   return realtimeDogfoodPlanAction({
@@ -32341,7 +32479,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     requiresLiveVoice,
     writesLocalJson,
     readOnly,
-    canPreview: readOnly || id === 'archive_saved' || id === 'save_productivity_dogfood_archive',
+    canPreview: readOnly || id === 'archive_saved' || id === 'save_productivity_dogfood_archive' || id === 'route_recalled_shortcut',
   });
 }
 
@@ -46888,6 +47026,26 @@ function startApiServer() {
       res.json({ prompt: realtimeDogfoodNextPromptSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood prompt failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/shortcut-recall', async (req, res) => {
+    try {
+      res.json({ shortcutRecall: await prepareRealtimeDogfoodShortcutRecall(req.query || {}) });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood shortcut recall preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/shortcut-recall', express.json({ limit: '128kb' }), async (req, res) => {
+    try {
+      const result = await prepareRealtimeDogfoodShortcutRecall({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_dogfood_shortcut_recall',
+      });
+      res.status(result.ok === false && result.status !== 409 ? 400 : 200).json({ shortcutRecall: result });
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood shortcut recall prep failed', error instanceof Error ? error.message : String(error));
     }
   });
 
