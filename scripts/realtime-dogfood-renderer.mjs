@@ -81,6 +81,15 @@ function summarizeAcceptance(acceptance = {}) {
   return parts.join(' ');
 }
 
+function summarizeAcceptanceLiveGates(acceptance = {}) {
+  const wanted = new Set(['start_live_voice', 'inject_worker_progress', 'sync_latest_progress', 'ask_progress']);
+  const gates = Array.isArray(acceptance.gates) ? acceptance.gates : [];
+  const rows = gates
+    .filter((gate) => wanted.has(gate.id))
+    .map((gate) => `${gate.id}=${gate.ok ? 'yes' : 'no'}`);
+  return rows.length ? rows.join(' ') : '';
+}
+
 function summarizePreflight(preflight = {}) {
   const blockers = Array.isArray(preflight.blockers) ? preflight.blockers : [];
   return [
@@ -92,32 +101,42 @@ function summarizePreflight(preflight = {}) {
   ].filter(Boolean).join(' ');
 }
 
-async function pollRun(ctx, runId, timeoutMs) {
+async function pollRun(ctx, runId, timeoutMs, options = {}) {
+  const waitForAcceptance = options.waitForAcceptance === true;
   const deadline = Date.now() + timeoutMs;
   let latest = null;
   while (Date.now() < deadline) {
-    const [rendererRes, evidenceRes] = await Promise.all([
+    const [rendererRes, evidenceRes, acceptanceRes] = await Promise.all([
       ctx.api('/api/realtime/dogfood/renderer', { timeoutMs: 15000 }),
       ctx.api('/api/realtime/evidence', { timeoutMs: 15000 }),
+      ctx.api('/api/realtime/dogfood/acceptance?auditLimit=20&source=renderer_dogfood_poll', { timeoutMs: 15000 }),
     ]);
     const rendererDogfood = rendererRes.data?.rendererDogfood || {};
     const evidence = evidenceRes.data?.evidence || {};
-    latest = { rendererDogfood, evidence };
+    const acceptance = acceptanceRes.data?.acceptance || {};
+    latest = { rendererDogfood, evidence, acceptance };
     const live = lastEvent(rendererDogfood, 'live');
     const promptSent = lastEvent(rendererDogfood, 'prompt_sent');
     const terminal = ['stopped', 'done', 'error', 'timeout'].includes(rendererDogfood.status);
     const blockerLine = evidence.phase === 'provider_attention' ? evidenceBlockerLine(evidence) : '';
+    const acceptanceLine = acceptance.counts
+      ? `${summarizeAcceptance(acceptance)} ${summarizeAcceptanceLiveGates(acceptance)}`.trim()
+      : '';
     console.log([
       `${new Date().toLocaleTimeString()} run=${runId.slice(0, 8)} renderer=${rendererDogfood.status || '-'} prompt=${promptSent ? 'sent' : 'pending'} ${summarizeEvidence(evidence)}`,
+      acceptanceLine,
       blockerLine,
     ].filter(Boolean).join(' · '));
+    if (acceptance.accepted === true) {
+      return { ok: true, timeout: false, acceptanceReady: true, ...latest };
+    }
     if (rendererDogfood.status === 'error' || rendererDogfood.status === 'timeout') {
       return { ok: false, timeout: false, providerBlocked: evidence.phase === 'provider_attention', ...latest };
     }
-    if (live && promptSent && evidence.checks?.sessionNegotiated && evidence.checks?.voiceSessionLive && evidence.checks?.progressInjectedFromRenderer) {
+    if (!waitForAcceptance && live && promptSent && evidence.checks?.sessionNegotiated && evidence.checks?.voiceSessionLive && evidence.checks?.progressInjectedFromRenderer) {
       return { ok: true, timeout: false, ...latest };
     }
-    if (terminal && live && promptSent) return { ok: true, timeout: false, ...latest };
+    if (!waitForAcceptance && terminal && live && promptSent) return { ok: true, timeout: false, ...latest };
     await sleep(3000);
   }
   return { ok: false, timeout: true, ...latest };
@@ -189,7 +208,7 @@ async function main() {
     durationMs: numberOption('--duration-ms', 45000, 5000, 120000),
     promptDelayMs: numberOption('--prompt-delay-ms', 35000, 0, 180000),
     betweenPromptsMs: numberOption('--between-prompts-ms', 9000, 1000, 60000),
-    stopAfterMs: numberOption('--stop-after-ms', execute ? 20000 : 0, 0, 300000),
+    stopAfterMs: numberOption('--stop-after-ms', execute ? (requireAcceptance ? 0 : 20000) : 0, 0, 300000),
     prompts,
     source: 'renderer_dogfood_script',
   };
@@ -239,7 +258,7 @@ async function main() {
 
   const runId = start.data?.runId || start.data?.rendererDogfood?.runId || '';
   const timeoutMs = numberOption('--timeout-ms', 150000, 30000, 600000);
-  const result = await pollRun(ctx, runId, timeoutMs);
+  const result = await pollRun(ctx, runId, timeoutMs, { waitForAcceptance: requireAcceptance });
   let archivePath = '';
   let acceptanceReport = null;
   if (acceptanceEnabled) {
@@ -266,7 +285,9 @@ async function main() {
     process.exitCode = 1;
     return;
   }
-  console.log('Renderer Realtime dogfood evidence reached live + prompt + progress injection.');
+  console.log(result.acceptanceReady
+    ? 'Renderer Realtime dogfood acceptance passed.'
+    : 'Renderer Realtime dogfood evidence reached live + prompt + progress injection.');
   if (requireAcceptance && acceptanceReport?.acceptance?.accepted !== true) {
     console.error('Realtime dogfood evidence did not pass all acceptance gates.');
     process.exitCode = 1;

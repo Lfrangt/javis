@@ -2987,6 +2987,16 @@ export default {
         : fail('realtime.renderer_dogfood_mic_gate', 'Realtime renderer dogfood mic gate', `expected 409 confirmation gate, got ${rendererDogfoodGuard.status}`, rendererDogfoodGuard.data),
     );
 
+    const rendererScriptSource = fs.readFileSync('scripts/realtime-dogfood-renderer.mjs', 'utf8');
+    out.push(
+      rendererScriptSource.includes('/api/realtime/dogfood/acceptance?auditLimit=20&source=renderer_dogfood_poll') &&
+        rendererScriptSource.includes('waitForAcceptance: requireAcceptance') &&
+        rendererScriptSource.includes('requireAcceptance ? 0 : 20000') &&
+        rendererScriptSource.includes('Renderer Realtime dogfood acceptance passed.')
+        ? ok('realtime.renderer_dogfood_acceptance_poll', 'Renderer dogfood acceptance-aware poll', 'require-acceptance keeps polling acceptance and does not auto-stop at 20s')
+        : fail('realtime.renderer_dogfood_acceptance_poll', 'Renderer dogfood acceptance-aware poll', 'expected renderer script to poll acceptance and keep mic live when require-acceptance is set'),
+    );
+
     try {
       const archiveCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-archive'], {
         cwd: process.cwd(),
