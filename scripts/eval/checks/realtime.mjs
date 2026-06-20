@@ -536,22 +536,27 @@ export default {
       },
     });
     const capabilityToolOutput = parseToolOutput(capabilityTool);
+    const capabilityToolOutputBytes = Buffer.byteLength(capabilityTool.data?.output || '', 'utf8');
     out.push(
       capabilityTool.ok &&
         capabilityTool.data?.ok === true &&
         capabilityToolOutput?.ok === true &&
+        capabilityToolOutput?.responseBudget?.compact === true &&
+        capabilityToolOutputBytes > 0 &&
+        capabilityToolOutputBytes <= 20000 &&
         capabilityToolOutput?.next === null &&
         capabilityToolOutput?.policy &&
         capabilityToolOutput?.controlMode?.mode &&
         capabilityToolOutput.collaboration?.handoff?.mode &&
         Array.isArray(capabilityToolOutput.collaboration?.handoff?.nextActions) &&
+        !Array.isArray(capabilityToolOutput.collaboration?.handoff?.activeScopes) &&
         typeof capabilityToolOutput.spokenSummary === 'string' &&
         Array.isArray(capabilityToolOutput.recommendedStart) &&
         capabilityToolOutput.recommendedStart.some((item) => item.tool === 'route_task') &&
         capabilityToolOutput.recommendedStart.some((item) => item.tool === 'get_collaboration_state') &&
         Array.isArray(capabilityToolOutput.capabilities) &&
         capabilityToolOutput.capabilities.some((item) => item.id === 'browser' && item.recommendedTools?.includes('read_browser_page'))
-        ? ok('realtime.local_capabilities_tool', 'Realtime local capability voice tool', `${capabilityToolOutput.spokenSummary}`)
+        ? ok('realtime.local_capabilities_tool', 'Realtime local capability voice tool', `${capabilityToolOutput.spokenSummary} · ${Math.ceil(capabilityToolOutputBytes / 1024)}KB`)
         : fail('realtime.local_capabilities_tool', 'Realtime local capability voice tool', `tool execute ${capabilityTool.status}`, capabilityTool.data),
     );
 

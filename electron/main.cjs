@@ -4821,6 +4821,168 @@ async function localCapabilitySnapshot(options = {}) {
   };
 }
 
+function compactLocalCapabilityForVoice(capability = null) {
+  if (!capability || typeof capability !== 'object') return null;
+  return {
+    id: compactRecordText(capability.id || '', 80),
+    label: compactRecordText(capability.label || capability.id || '', 140),
+    owner: compactRecordText(capability.owner || '', 80),
+    status: compactRecordText(capability.status || '', 60),
+    summary: compactRecordText(capability.summary || '', 260),
+    nextAction: compactRecordText(capability.nextAction || '', 220),
+    owns: Array.isArray(capability.owns)
+      ? capability.owns.slice(0, 3).map((item) => compactRecordText(item, 120))
+      : [],
+    recommendedTools: Array.isArray(capability.recommendedTools)
+      ? capability.recommendedTools.slice(0, 8).map((tool) => compactRecordText(tool, 80))
+      : [],
+    handoff: {
+      defaultLane: compactRecordText(capability.handoff?.defaultLane || '', 60),
+      rule: compactRecordText(capability.handoff?.rule || '', 160),
+    },
+    riskBoundary: compactRecordText(capability.riskBoundary || '', 180),
+  };
+}
+
+function compactRecommendedStartForVoice(item = null) {
+  if (!item || typeof item !== 'object') return null;
+  return {
+    when: compactRecordText(item.when || '', 160),
+    tool: compactRecordText(item.tool || '', 80),
+    reason: compactRecordText(item.reason || '', 180),
+  };
+}
+
+function compactCapabilityCollaborationForVoice(collaboration = null) {
+  if (!collaboration || typeof collaboration !== 'object') return null;
+  const handoff = collaboration.handoff || {};
+  const activeClaims = Array.isArray(collaboration.activeClaims) ? collaboration.activeClaims : [];
+  return {
+    active: boundedCount(collaboration.active, 1000),
+    conflictPairs: boundedCount(collaboration.conflictPairs, 1000),
+    activeClaims: activeClaims.slice(0, 3).map((claim) => ({
+      id: compactRecordText(claim.id || '', 120),
+      owner: compactRecordText(claim.owner || claim.agent || '', 120),
+      lane: compactRecordText(claim.lane || '', 60),
+      access: compactRecordText(claim.access || '', 40),
+      scope: compactRecordText(claim.scope || claim.key || '', 180),
+      task: compactRecordText(claim.task || '', 160),
+      expiresAt: boundedCount(claim.expiresAt, 4102444800000),
+    })),
+    handoff: {
+      mode: compactRecordText(handoff.mode || '', 40),
+      summary: compactRecordText(handoff.summary || '', 260),
+      spokenSummary: compactRecordText(handoff.spokenSummary || '', 260),
+      counts: handoff.counts || {},
+      ownerGroupCount: Array.isArray(handoff.ownerGroups) ? handoff.ownerGroups.length : 0,
+      activeScopeCount: Array.isArray(handoff.activeScopes) ? handoff.activeScopes.length : 0,
+      conflictPairCount: Array.isArray(handoff.conflictPairs) ? handoff.conflictPairs.length : 0,
+      nextActions: Array.isArray(handoff.nextActions)
+        ? handoff.nextActions.slice(0, 3).map((action) => ({
+          id: compactRecordText(action.id || '', 100),
+          label: compactRecordText(action.label || '', 140),
+          summary: compactRecordText(action.summary || '', 220),
+          priority: boundedCount(action.priority, 1000),
+        }))
+        : [],
+      commands: {
+        status: compactRecordText(handoff.commands?.status || '', 140),
+        claim: compactRecordText(handoff.commands?.claim || '', 180),
+      },
+    },
+  };
+}
+
+function localCapabilityVoicePayload(snapshot = {}, options = {}) {
+  const capabilities = Array.isArray(snapshot.capabilities) ? snapshot.capabilities : [];
+  const recommendedStart = Array.isArray(snapshot.recommendedStart) ? snapshot.recommendedStart : [];
+  const next = snapshot.next || null;
+  const payload = {
+    ok: snapshot.ok !== false,
+    version: boundedCount(snapshot.version || 1, 10),
+    generatedAt: snapshot.generatedAt || new Date().toISOString(),
+    source: compactRecordText(options.source || snapshot.source || 'voice', 80),
+    summary: compactRecordText(snapshot.summary || '', 360),
+    spokenSummary: compactRecordText(snapshot.spokenSummary || snapshot.summary || '', 500),
+    counts: snapshot.counts || {
+      total: capabilities.length,
+      ready: capabilities.filter((item) => item?.status === 'ready').length,
+      limited: capabilities.filter((item) => item?.status === 'limited').length,
+      blocked: capabilities.filter((item) => item?.status === 'blocked').length,
+    },
+    capabilities: capabilities.slice(0, 8).map(compactLocalCapabilityForVoice).filter(Boolean),
+    speedPolicy: {
+      summary: compactRecordText(snapshot.speedPolicy?.summary || '', 260),
+      spokenSummary: compactRecordText(snapshot.speedPolicy?.spokenSummary || '', 260),
+      endpoint: compactRecordText(snapshot.speedPolicy?.endpoint || '/api/routing/speed-policy', 120),
+      command: compactRecordText(snapshot.speedPolicy?.command || '', 140),
+    },
+    recommendedStart: recommendedStart.slice(0, 7).map(compactRecommendedStartForVoice).filter(Boolean),
+    guardrails: Array.isArray(snapshot.guardrails)
+      ? snapshot.guardrails.slice(0, 5).map((item) => compactRecordText(item, 180))
+      : [],
+    readiness: {
+      overall: compactRecordText(snapshot.readiness?.overall || '', 60),
+      summary: compactRecordText(snapshot.readiness?.summary || '', 260),
+      primaryIssue: snapshot.readiness?.primaryIssue
+        ? {
+          id: compactRecordText(snapshot.readiness.primaryIssue.id || '', 100),
+          summary: compactRecordText(snapshot.readiness.primaryIssue.summary || '', 220),
+          nextAction: compactRecordText(snapshot.readiness.primaryIssue.nextAction || '', 220),
+        }
+        : null,
+    },
+    controlMode: {
+      mode: compactRecordText(snapshot.controlMode?.mode || '', 60),
+      label: compactRecordText(snapshot.controlMode?.label || '', 120),
+      localExecutionEnabled: Boolean(snapshot.controlMode?.localExecutionEnabled),
+      trustedLocalMode: Boolean(snapshot.controlMode?.trustedLocalMode),
+      effectiveMaxAutoRiskLevel: boundedCount(snapshot.controlMode?.effectiveMaxAutoRiskLevel, 10),
+      effectiveRequireApprovalAtRiskLevel: boundedCount(snapshot.controlMode?.effectiveRequireApprovalAtRiskLevel, 10),
+    },
+    policy: {
+      dryRun: Boolean(snapshot.policy?.dryRun),
+      localExecutionEnabled: Boolean(snapshot.policy?.localExecutionEnabled),
+      trustedLocalMode: Boolean(snapshot.policy?.trustedLocalMode),
+      maxAutoRiskLevel: boundedCount(snapshot.policy?.maxAutoRiskLevel, 10),
+      requireApprovalAtRiskLevel: boundedCount(snapshot.policy?.requireApprovalAtRiskLevel, 10),
+      writeRootCount: boundedCount(snapshot.policy?.writeRootCount, 1000),
+      cliAllowedCommands: Array.isArray(snapshot.policy?.cliAllowedCommands)
+        ? snapshot.policy.cliAllowedCommands.slice(0, 8).map((command) => compactRecordText(command, 80))
+        : [],
+    },
+    collaboration: compactCapabilityCollaborationForVoice(snapshot.collaboration),
+    next: next
+      ? {
+        ok: next.ok !== false,
+        executed: Boolean(next.executed),
+        action: compactWorkNextActionForVoice(next.action),
+        output: compactRecordText(next.output || '', 360),
+      }
+      : null,
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 20000,
+      omitted: [
+        'capabilities.nonGoals.full',
+        'collaboration.handoff.ownerGroups.full',
+        'collaboration.handoff.activeScopes.full',
+        'collaboration.handoff.commands.full',
+        'next.full_workbench',
+        'policy.full',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
+  };
+}
+
 function normalizeApprovalContinuation(value) {
   if (!value || typeof value !== 'object') return null;
   if (value.type !== 'app_workflow') return null;
@@ -41020,7 +41182,7 @@ async function executeTool(name, args) {
 
   if (name === 'get_local_capabilities') {
     const capabilities = await localCapabilitySnapshot({ ...(args || {}), source: 'voice' });
-    return { ok: true, output: JSON.stringify(capabilities) };
+    return { ok: true, output: JSON.stringify(localCapabilityVoicePayload(capabilities, { source: 'voice' })) };
   }
 
   if (name === 'get_routing_speed_policy') {
