@@ -1121,6 +1121,12 @@ export default {
         e.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
+        e.gapSummary?.manualOnly === true &&
+        e.gapSummary?.startsMicrophone === false &&
+        e.gapSummary?.counts?.total === e.drill.steps.length &&
+        e.gapSummary?.counts?.pending === e.drill.pending.length &&
+        e.gapSummary?.nextStep?.id === (e.drill.pending[0]?.id || 'complete') &&
+        typeof e.gapSummary?.nextPrompt?.copyText === 'string' &&
         e.handoffTools?.hasHandoff === true &&
         e.autopilotTools?.hasStatus === true &&
         e.latency?.quality === 'fast' &&
@@ -1161,6 +1167,12 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
         d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
+        d.gapSummary?.manualOnly === true &&
+        d.gapSummary?.startsMicrophone === false &&
+        d.gapSummary?.counts?.total === d.drill.steps.length &&
+        d.gapSummary?.counts?.pending === d.drill.pending.length &&
+        d.gapSummary?.nextStep?.id === (d.drill.pending[0]?.id || 'complete') &&
+        typeof d.gapSummary?.summary === 'string' &&
         d.handoffTools?.hasHandoff === true &&
         d.autopilotTools?.hasStatus === true &&
         d.attentionTools?.hasExplanation === true &&
@@ -1279,6 +1291,10 @@ export default {
         dogfoodBriefData?.monitor?.brief?.includes('--print-realtime-dogfood-brief') &&
         dogfoodBriefData?.start?.hotkey &&
         dogfoodBriefData?.counts?.steps >= 14 &&
+        dogfoodBriefData?.gapSummary?.counts?.total === dogfoodBriefData.counts.steps &&
+        dogfoodBriefData?.gapSummary?.counts?.pending === dogfoodBriefData.counts.pending &&
+        dogfoodBriefData?.gapSummary?.startsMicrophone === false &&
+        typeof dogfoodBriefData?.gapSummary?.nextPrompt?.copyText === 'string' &&
         dogfoodBriefData?.safety?.recordReplayRequiresConfirmation === true &&
         Array.isArray(dogfoodBriefData.prompts) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
@@ -1301,6 +1317,7 @@ export default {
           output.includes('starts microphone=no') &&
           output.includes('Prompt script:') &&
           output.includes('Evidence gates:') &&
+          output.includes('Gap:') &&
           output.includes('开始记录') &&
           output.includes('/api/realtime/evidence')
           ? ok('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', 'config CUI prints one-page live dogfood brief without starting voice')
@@ -1322,6 +1339,10 @@ export default {
         archivePreviewData?.safety?.screenImageIncluded === false &&
         archivePreviewData?.file?.path?.includes('realtime-dogfood-archives') &&
         archivePreviewData?.brief?.startsMicrophone === false &&
+        archivePreviewData?.gapSummary?.startsMicrophone === false &&
+        archivePreviewData?.gapSummary?.counts?.total === archivePreviewData?.counts?.steps &&
+        typeof archivePreviewData?.gapSummary?.summary === 'string' &&
+        archivePreviewData.gapSummary.summary.length > 0 &&
         archivePreviewData?.evidence?.checks &&
         Array.isArray(archivePreviewData?.recentAudit) &&
         Array.isArray(archivePreview.data?.archives?.items)
@@ -1352,10 +1373,13 @@ export default {
         savedArchive?.manualOnly === true &&
         savedArchive?.startsMicrophone === false &&
         savedArchive?.safety?.writesLocalJsonOnly === true &&
+        savedArchive?.gapSummary?.startsMicrophone === false &&
         savedArchive?.file?.path?.includes('realtime-dogfood-archives') &&
         fs.existsSync(savedArchive.file.path) &&
         savedArchiveDisk?.id === savedArchive.id &&
+        savedArchiveDisk?.gapSummary?.summary === savedArchive.gapSummary.summary &&
         savedArchiveDisk?.safety?.rawAudioStored === false &&
+        archiveSave.data?.metadata?.gapSummary &&
         archiveSave.data?.metadata?.startsMicrophone === false &&
         Array.isArray(archiveSave.data?.archives?.items)
         ? ok('realtime.dogfood_archive_save', 'Realtime dogfood archive save', savedArchive.file.path)
@@ -1436,6 +1460,7 @@ export default {
           output.includes('starts microphone=no') &&
           output.includes('raw audio stored=no') &&
           output.includes('File:') &&
+          output.includes('Gap:') &&
           output.includes('realtime-dogfood-archives')
           ? ok('realtime.cui_dogfood_archive', 'Realtime CUI dogfood archive', 'config CUI previews the local dogfood evidence archive without starting voice')
           : fail('realtime.cui_dogfood_archive', 'Realtime CUI dogfood archive', 'expected CUI archive output to print file path and no-mic safety', { output: output.slice(0, 2400) }),

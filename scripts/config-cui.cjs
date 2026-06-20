@@ -1504,12 +1504,15 @@ function printRealtimeDogfoodPrompt(result) {
 function printRealtimeDogfoodBrief(result) {
   const brief = result?.brief || result || {};
   const counts = brief.counts || {};
+  const gap = brief.gapSummary || {};
   const step = brief.currentStep || {};
   const prompt = brief.nextPrompt || {};
   console.log('JAVIS Realtime Dogfood Brief');
   console.log('============================');
   console.log(`Status: ${brief.status || 'pending'} · phase ${brief.phase || '-'} · ready ${Number(counts.ready || 0)}/${Number(counts.steps || 0)}`);
   console.log(`Manual only=yes · starts microphone=${brief.startsMicrophone ? 'yes' : 'no'}`);
+  if (gap.summary) console.log(`Gap: ${compact(gap.summary, 320)}`);
+  if (gap.nextPrompt?.prompt || gap.nextPrompt?.copyText) console.log(`Gap next prompt: ${gap.nextPrompt.prompt || gap.nextPrompt.copyText}`);
   if (brief.brief) console.log(`\n${brief.brief}`);
   console.log(`\nCurrent step: ${step.status || 'pending'} ${step.label || step.id || '-'}`);
   console.log(`Next prompt: ${prompt.copyText || prompt.prompt || '-'}`);
@@ -1543,6 +1546,7 @@ function printRealtimeDogfoodArchive(result) {
   const archive = result?.archive || result || {};
   const metadata = result?.metadata || {};
   const counts = archive.counts || metadata.counts || {};
+  const gap = archive.gapSummary || archive.brief?.gapSummary || {};
   const prompt = archive.nextPrompt || {};
   const step = archive.currentStep || {};
   const file = archive.file || {};
@@ -1551,6 +1555,7 @@ function printRealtimeDogfoodArchive(result) {
   console.log(`Mode: ${archive.saved ? 'saved' : 'preview'} · status ${archive.status || metadata.status || 'pending'} · phase ${archive.phase || metadata.phase || '-'}`);
   console.log(`Manual only=yes · starts microphone=${archive.startsMicrophone ? 'yes' : 'no'} · raw audio stored=${archive.safety?.rawAudioStored ? 'yes' : 'no'}`);
   console.log(`Ready: ${Number(counts.ready || 0)}/${Number(counts.steps || 0)} step(s) · tools ${Number(counts.evidenceToolsReady || 0)}/${Number(counts.evidenceToolsTotal || 0)} · audit ${Number(counts.auditEvents || 0)}`);
+  if (gap.summary || metadata.gapSummary) console.log(`Gap: ${compact(gap.summary || metadata.gapSummary || '', 320)}`);
   console.log(`Summary: ${compact(archive.archiveSummary || metadata.summary || archive.summary || '-', 420)}`);
   console.log(`File: ${file.path || metadata.file || '-'}`);
   console.log(`Current step: ${step.status || 'pending'} ${step.label || step.id || metadata.currentStep || '-'}`);

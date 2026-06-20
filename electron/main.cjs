@@ -21062,6 +21062,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
   const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, demonstrationTools });
+  const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
     status: ready ? 'ready' : evidence.status || 'pending',
@@ -21148,6 +21149,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       nextAction: demonstrationTools.nextAction || 'Ask the live voice session to record one short UI demonstration and draft a local skill safely.',
     },
     drill,
+    gapSummary,
     promptWhenReady: '后台现在怎么样',
     currentStep,
     steps,
@@ -21483,10 +21485,130 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
   };
 }
 
+function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
+  const drill = options.drill || evidence.drill || evidence.dogfood?.drill || {};
+  const steps = Array.isArray(options.steps)
+    ? options.steps
+    : Array.isArray(drill.steps)
+      ? drill.steps
+      : [];
+  const pending = Array.isArray(drill.pending) ? drill.pending : steps.filter((step) => !step.ok);
+  const ready = steps.filter((step) => step.ok);
+  const blocked = steps.filter((step) => step.status === 'blocked');
+  const nextStep = pending[0] || null;
+  const instruction = nextStep
+    ? realtimeDogfoodPromptInstructionForStep(nextStep, drill)
+    : {
+      promptType: 'spoken',
+      prompt: '后台现在怎么样',
+      copyText: '后台现在怎么样',
+      reason: 'Realtime voice dogfood drill has no pending evidence step.',
+    };
+  const missingSteps = pending.slice(0, 8).map((step) => {
+    const stepInstruction = realtimeDogfoodPromptInstructionForStep(step, drill);
+    return {
+      id: step.id || '',
+      label: step.label || step.id || '',
+      status: step.status || (step.ok ? 'ready' : 'pending'),
+      promptType: stepInstruction.promptType || 'manual_action',
+      prompt: compactRecordText(stepInstruction.prompt || stepInstruction.copyText || '', 240),
+      nextAction: compactRecordText(step.nextAction || stepInstruction.reason || '', 240),
+    };
+  });
+  const toolGates = [
+    { id: 'handoff', ok: Boolean(evidence.handoffTools?.hasHandoff), label: 'work handoff', tool: REALTIME_HANDOFF_TOOL_NAME },
+    { id: 'autopilot', ok: Boolean(evidence.autopilotTools?.hasStatus), label: 'autopilot status', tool: REALTIME_AUTOPILOT_TOOL_NAME },
+    { id: 'attention', ok: Boolean(evidence.attentionTools?.hasExplanation), label: 'attention explanation', tool: REALTIME_ATTENTION_TOOL_NAME },
+    { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
+    {
+      id: 'demonstration',
+      ok: Boolean(
+        evidence.demonstrationTools?.hasSafeReplayPlan &&
+        evidence.demonstrationTools?.hasDraft &&
+        evidence.demonstrationTools?.hasConfirmationGate &&
+        evidence.demonstrationTools?.noRawStored
+      ),
+      label: 'UI demonstration replay/skill',
+      tool: 'draft_ui_demonstration_skill',
+    },
+    {
+      id: 'shortcut',
+      ok: Boolean(
+        evidence.shortcutTools?.hasList &&
+        evidence.shortcutTools?.hasSave &&
+        evidence.shortcutTools?.hasForget
+      ),
+      label: 'shortcut list/save/forget',
+      tool: 'save_skill_shortcut',
+    },
+  ];
+  const status = pending.length ? evidence.status || drill.status || 'pending' : 'ready';
+  const nextPrompt = compactRecordText(instruction.prompt || instruction.copyText || '', 400);
+  const copyText = compactRecordText(instruction.copyText || instruction.prompt || '', 400);
+  const summary = pending.length
+    ? `${ready.length}/${steps.length} Realtime dogfood step(s) ready; next ${nextStep?.id || 'step'}: ${nextPrompt || nextStep?.label || 'continue drill'}.`
+    : `${steps.length}/${steps.length} Realtime dogfood step(s) ready; archive this run.`;
+  return {
+    ok: pending.length === 0,
+    status,
+    phase: evidence.phase || '',
+    manualOnly: true,
+    requiresUserPresence: true,
+    startsMicrophone: false,
+    currentActionStartsMicrophone: ['start_live_voice'].includes(nextStep?.id || ''),
+    summary: compactRecordText(summary, 420),
+    counts: {
+      total: steps.length,
+      ready: ready.length,
+      pending: pending.length,
+      blocked: blocked.length,
+      evidenceToolsReady: toolGates.filter((gate) => gate.ok).length,
+      evidenceToolsTotal: toolGates.length,
+    },
+    nextStep: nextStep
+      ? {
+        id: nextStep.id || '',
+        label: nextStep.label || nextStep.id || '',
+        status: nextStep.status || 'pending',
+        ok: Boolean(nextStep.ok),
+        nextAction: compactRecordText(nextStep.nextAction || '', 240),
+      }
+      : {
+        id: 'complete',
+        label: 'Realtime voice dogfood drill complete',
+        status: 'ready',
+        ok: true,
+        nextAction: 'Save a local dogfood archive for this run.',
+      },
+    nextPrompt: {
+      promptType: instruction.promptType || 'spoken',
+      prompt: compactRecordText(instruction.prompt || nextPrompt, 400),
+      copyText,
+      followUpPrompts: Array.isArray(instruction.followUpPrompts) ? instruction.followUpPrompts : [],
+      reason: compactRecordText(instruction.reason || '', 260),
+    },
+    missingSteps,
+    toolGates,
+    monitor: {
+      cui: 'npm run config -> V. Watch Realtime voice evidence',
+      brief: 'npm run config -- --print-realtime-dogfood-brief',
+      prompt: 'npm run config -- --print-realtime-dogfood-prompt',
+      endpoint: '/api/realtime/evidence',
+    },
+    archive: {
+      endpoint: '/api/realtime/dogfood/archive',
+      localOnly: true,
+      rawAudioStored: false,
+      screenImageIncluded: false,
+    },
+  };
+}
+
 function realtimeDogfoodNextPromptSnapshot(options = {}) {
   const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
   const dogfood = evidence.dogfood || {};
   const drill = evidence.drill || dogfood.drill || {};
+  const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   const pending = Array.isArray(drill.pending) ? drill.pending : [];
   const allPrompts = Array.isArray(drill.prompts)
     ? drill.prompts
@@ -21518,6 +21640,7 @@ function realtimeDogfoodNextPromptSnapshot(options = {}) {
     copyable: Boolean(copyText),
     followUpPrompts: Array.isArray(instruction.followUpPrompts) ? instruction.followUpPrompts : [],
     reason: compactRecordText(instruction.reason || '', 260),
+    gapSummary,
     step: step
       ? {
         id: step.id || '',
@@ -21551,6 +21674,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
   const dogfood = evidence.dogfood || realtimeDogfoodRunbookFromEvidence(evidence);
   const drill = evidence.drill || dogfood.drill || {};
+  const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   const prompt = realtimeDogfoodNextPromptSnapshot({ evidence });
   const sessions = realtimeDogfoodOperatorSessionSnapshot({
     evidence,
@@ -21579,6 +21703,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(20, Number(options.promptLimit || 12))));
   const briefLines = [
     `Realtime dogfood: ${drill.summary || `${evidence.status || 'pending'}/${evidence.phase || '-'}`}`,
+    `缺口: ${gapSummary.summary}`,
     `下一步: ${prompt.copyText || prompt.prompt || pendingStep?.nextAction || evidence.nextAction || '-'}`,
     prompt.followUpPrompts?.length ? `跟进: ${prompt.followUpPrompts.join(' | ')}` : '',
     `启动: ${SUMMON_HOTKEY || 'Option+Space'} 或点击桌面宠物；监控: npm run config -> V。`,
@@ -21620,6 +21745,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
         nextAction: compactRecordText(pendingStep.nextAction || '', 240),
       }
       : null,
+    gapSummary,
     nextPrompt: prompt,
     prompts: uniqueScript,
     counts: {
@@ -21680,15 +21806,17 @@ function realtimeDogfoodArchiveAuditEvents(limit = 50) {
 
 function realtimeDogfoodArchiveSummary(archive = {}) {
   const counts = archive.counts || {};
+  const gapSummary = archive.gapSummary || archive.brief?.gapSummary || {};
   const ready = Number(counts.ready || counts.stepsReady || 0);
   const total = Number(counts.steps || counts.stepsTotal || 0);
   const toolsReady = Number(counts.evidenceToolsReady || 0);
   const toolsTotal = Number(counts.evidenceToolsTotal || 0);
-  const next = archive.nextPrompt?.copyText || archive.nextPrompt?.prompt || archive.currentStep?.label || archive.evidence?.nextAction || '';
+  const next = gapSummary.nextPrompt?.prompt || gapSummary.nextPrompt?.copyText || archive.nextPrompt?.copyText || archive.nextPrompt?.prompt || archive.currentStep?.label || archive.evidence?.nextAction || '';
   return [
     `Realtime dogfood archive ${archive.status || 'pending'}/${archive.phase || '-'}.`,
     total ? `${ready}/${total} drill step(s) ready.` : '',
     toolsTotal ? `${toolsReady}/${toolsTotal} evidence tool gate(s) ready.` : '',
+    gapSummary.summary ? `Gap: ${compactRecordText(gapSummary.summary, 180)}` : '',
     next ? `Next: ${compactRecordText(next, 180)}` : '',
   ].filter(Boolean).join(' ');
 }
@@ -21711,6 +21839,7 @@ function realtimeDogfoodArchiveMetadata(archive = {}, filePath = '') {
     summary: archive.archiveSummary || archive.summary || realtimeDogfoodArchiveSummary(archive),
     file: filePath || archive.file?.path || '',
     filename: filePath ? path.basename(filePath) : archive.file?.filename || '',
+    gapSummary: compactRecordText(archive.gapSummary?.summary || archive.brief?.gapSummary?.summary || '', 420),
     nextPrompt: prompt.copyText || prompt.prompt || '',
     currentStep: currentStep.label || currentStep.id || '',
     counts: {
@@ -21829,6 +21958,7 @@ function realtimeDogfoodArchiveSnapshot(options = {}) {
     ready: Boolean(evidence.readyForVoiceProgressQuestion || brief.ready),
     summary: brief.summary || evidence.drill?.summary || '',
     currentStep: brief.currentStep,
+    gapSummary: brief.gapSummary,
     nextPrompt: brief.nextPrompt,
     prompts: brief.prompts,
     counts: {
@@ -22855,6 +22985,7 @@ function realtimeVoiceEvidenceSnapshot() {
   };
   snapshot.dogfood = realtimeDogfoodRunbookFromEvidence(snapshot);
   snapshot.drill = snapshot.dogfood.drill;
+  snapshot.gapSummary = snapshot.dogfood.gapSummary;
   return snapshot;
 }
 
@@ -22937,6 +23068,7 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
       requiresUserPresence: true,
       status: drill.status || evidence.status,
       summary: drill.summary || '',
+      gapSummary: evidence.gapSummary || realtimeDogfoodGapSummaryFromEvidence(evidence, { drill }),
       prompts,
       pending: pending.map((step) => ({
         id: step.id,
