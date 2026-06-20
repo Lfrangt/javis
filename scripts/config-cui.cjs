@@ -1701,6 +1701,8 @@ function printRealtimeEvidence(result) {
   const dogfoodSessionEvents = Array.isArray(dogfoodSessionTools.recent) ? dogfoodSessionTools.recent : [];
   const handoffTools = evidence.handoffTools || {};
   const handoffEvents = Array.isArray(handoffTools.recent) ? handoffTools.recent : [];
+  const approvalTools = evidence.approvalTools || {};
+  const approvalEvents = Array.isArray(approvalTools.recent) ? approvalTools.recent : [];
   const autopilotTools = evidence.autopilotTools || {};
   const autopilotEvents = Array.isArray(autopilotTools.recent) ? autopilotTools.recent : [];
   const attentionTools = evidence.attentionTools || {};
@@ -1816,6 +1818,22 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = handoff.spokenSummary ? ` · ${compact(handoff.spokenSummary, 140)}` : '';
     console.log(`- ${event.name || 'get_work_handoff'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nApproval tools:');
+  console.log(`- observed ${Number(approvalTools.count || 0)} recent event(s) · list=${approvalTools.hasList ? 'yes' : 'no'} · confirm gate=${approvalTools.hasConfirmationGate ? 'yes' : 'no'} · reject=${approvalTools.hasReject ? 'yes' : 'no'} · approve=${approvalTools.hasApprove ? 'yes' : 'no'}`);
+  console.log(`- pending=${Number(approvalTools.pendingCount || 0)} · privacy=${approvalTools.privacySafe ? 'safe' : 'pending'} · next ${compact(approvalTools.nextAction || dogfood.approvalTools?.nextAction || 'Ask live voice which approvals are pending, then resolve one exact id only after confirmation.', 220)}`);
+  for (const event of approvalEvents.slice(0, 4)) {
+    const approval = event.approval || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      approval.action || event.name || '-',
+      approval.approvalId || approval.selectedId ? `id=${approval.approvalId || approval.selectedId}` : '',
+      approval.approvalStatus ? `status=${approval.approvalStatus}` : approval.status ? `status=${approval.status}` : '',
+      approval.requiresConfirmation ? 'confirmation' : '',
+      approval.rawContentRedacted === false ? 'raw-visible' : 'redacted',
+    ].filter(Boolean);
+    const summary = approval.approvalSummary || approval.firstPendingSummary ? ` · ${compact(approval.approvalSummary || approval.firstPendingSummary, 140)}` : '';
+    console.log(`- ${event.name || 'approval_tool'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nAutopilot tool:');
   console.log(`- observed ${Number(autopilotTools.count || 0)} recent event(s) · called=${autopilotTools.hasStatus ? 'yes' : 'no'}`);

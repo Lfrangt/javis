@@ -34,6 +34,8 @@ const REQUIRED_TOOLS = [
   'run_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
+  'get_pending_approvals',
+  'resolve_approval',
   'get_collaboration_state',
   'get_local_capabilities',
   'get_learning_profile',
@@ -662,18 +664,58 @@ export default {
     });
     const mcpToolCallApprovalOutput = parseToolOutput(mcpToolCallApprovalTool);
     const mcpToolCallApprovalId = mcpToolCallApprovalOutput?.approval?.id || '';
+    let approvalListTool = null;
+    let approvalListOutput = null;
+    let approvalConfirmGateTool = null;
+    let approvalConfirmGateOutput = null;
+    let approvalRejectTool = null;
+    let approvalRejectOutput = null;
     let mcpToolCallApprovalCleanupOk = false;
     if (mcpToolCallApprovalId) {
-      await ctx.api(`/api/approvals/${mcpToolCallApprovalId}/reject`, {
+      approvalListTool = await ctx.api('/api/tools/execute', {
         method: 'POST',
-        body: { reason: 'eval cleanup: Realtime MCP tool-call approval path verified without execution' },
+        body: {
+          source: 'eval',
+          name: 'get_pending_approvals',
+          arguments: { id: mcpToolCallApprovalId, limit: 10 },
+        },
         timeoutMs: 15000,
       });
+      approvalListOutput = parseToolOutput(approvalListTool);
+      approvalConfirmGateTool = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          name: 'resolve_approval',
+          arguments: {
+            id: mcpToolCallApprovalId,
+            action: 'approve',
+            confirm: false,
+            reason: 'eval: verify approval confirmation gate',
+          },
+        },
+        timeoutMs: 15000,
+      });
+      approvalConfirmGateOutput = parseToolOutput(approvalConfirmGateTool);
+      approvalRejectTool = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          name: 'resolve_approval',
+          arguments: {
+            id: mcpToolCallApprovalId,
+            action: 'reject',
+            reason: 'eval cleanup: Realtime approval tool rejected MCP tool-call request without execution',
+          },
+        },
+        timeoutMs: 15000,
+      });
+      approvalRejectOutput = parseToolOutput(approvalRejectTool);
       const removed = await ctx.api(`/api/approvals/${mcpToolCallApprovalId}`, {
         method: 'DELETE',
         timeoutMs: 15000,
       });
-      mcpToolCallApprovalCleanupOk = removed.ok === true;
+      mcpToolCallApprovalCleanupOk = approvalRejectTool?.ok === true && approvalRejectOutput?.status === 'rejected' && removed.ok === true;
     }
     out.push(
       mcpToolCallApprovalTool.ok &&
@@ -688,13 +730,58 @@ export default {
         mcpToolCallApprovalOutput.safety?.callsMcpTools === false &&
         mcpToolCallApprovalOutput.safety?.approvalCallsMcpTools === true &&
         mcpToolCallApprovalOutput.safety?.toolResultSanitized === true &&
+        approvalListTool?.ok === true &&
+        approvalListOutput?.safety?.readOnly === true &&
+        approvalListOutput?.safety?.argsSummarized === true &&
+        approvalListOutput?.pending?.some((approval) => approval.id === mcpToolCallApprovalId) &&
+        approvalConfirmGateTool?.ok === true &&
+        approvalConfirmGateOutput?.status === 'confirmation_required' &&
+        approvalConfirmGateOutput?.requiresConfirmation === true &&
         mcpToolCallApprovalCleanupOk
-        ? ok('realtime.mcp_tool_call_approval_tool', 'Realtime MCP tool-call approval voice tool', `created and cleaned approval ${mcpToolCallApprovalId}`)
+        ? ok('realtime.mcp_tool_call_approval_tool', 'Realtime MCP tool-call approval voice tool', `created, reviewed, confirmation-gated, rejected, and cleaned approval ${mcpToolCallApprovalId}`)
         : fail('realtime.mcp_tool_call_approval_tool', 'Realtime MCP tool-call approval voice tool', `tool execute ${mcpToolCallApprovalTool.status}`, {
           response: mcpToolCallApprovalTool.data,
           output: mcpToolCallApprovalOutput,
+          approvalList: approvalListTool?.data,
+          approvalListOutput,
+          confirmationGate: approvalConfirmGateTool?.data,
+          confirmationGateOutput: approvalConfirmGateOutput,
+          reject: approvalRejectTool?.data,
+          rejectOutput: approvalRejectOutput,
           cleanupOk: mcpToolCallApprovalCleanupOk,
         }),
+    );
+
+    const approvalEvidence = await ctx.api('/api/realtime/evidence');
+    const approvalEvidenceData = approvalEvidence.data?.evidence?.approvalTools;
+    const approvalEvents = Array.isArray(approvalEvidenceData?.recent) ? approvalEvidenceData.recent : [];
+    out.push(
+      approvalEvidence.ok &&
+        approvalEvidenceData?.hasList === true &&
+        approvalEvidenceData?.hasConfirmationGate === true &&
+        approvalEvidenceData?.hasReject === true &&
+        approvalEvidenceData?.privacySafe === true &&
+        approvalEvents.some((event) => (
+          event.name === 'get_pending_approvals' &&
+          event.source === 'eval' &&
+          event.approval?.readOnly === true &&
+          event.approval?.argsSummarized === true &&
+          event.approval?.rawContentRedacted === true
+        )) &&
+        approvalEvents.some((event) => (
+          event.name === 'resolve_approval' &&
+          event.source === 'eval' &&
+          event.approval?.requiresConfirmation === true &&
+          event.approval?.status === 'confirmation_required'
+        )) &&
+        approvalEvents.some((event) => (
+          event.name === 'resolve_approval' &&
+          event.source === 'eval' &&
+          event.approval?.action === 'reject' &&
+          event.approval?.approvalStatus === 'rejected'
+        ))
+        ? ok('realtime.approval_tools_evidence', 'Realtime approval review evidence', 'approval list, confirmation gate, and reject path are visible in Realtime evidence')
+        : fail('realtime.approval_tools_evidence', 'Realtime approval review evidence', 'expected get_pending_approvals and resolve_approval evidence', approvalEvidenceData),
     );
 
     const mcpToolCallEvidence = await ctx.api('/api/realtime/evidence');
@@ -1443,6 +1530,9 @@ export default {
           output.includes('start_realtime_dogfood_session') &&
           output.includes('no-mic') &&
           output.includes('get_work_handoff') &&
+          output.includes('Approval tools:') &&
+          output.includes('get_pending_approvals') &&
+          output.includes('resolve_approval') &&
           output.includes('get_autopilot_status') &&
           output.includes('get_attention_explanation') &&
           output.includes('get_perception_consent') &&
@@ -1451,8 +1541,8 @@ export default {
           output.includes('get_learning_evolution') &&
           output.includes('run_browser_workflow') &&
           output.includes('draft_ui_demonstration_skill')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));

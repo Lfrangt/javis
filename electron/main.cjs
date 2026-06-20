@@ -4106,7 +4106,7 @@ function laneContractValidationSnapshot() {
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
-    realtime: ['get_local_capabilities', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_realtime_evidence', 'get_attention_explanation'],
+    realtime: ['get_local_capabilities', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
     background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
     codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
     claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
@@ -7010,6 +7010,212 @@ function approvalSnapshot(limit = 20) {
 
 function pendingApprovalSnapshot(limit = 20) {
   return approvalSnapshot(limit).filter((approval) => approval.status === 'pending');
+}
+
+function approvalCountsSnapshot() {
+  return Array.from(approvals.values()).reduce(
+    (counts, approval) => {
+      counts[approval.status] = (counts[approval.status] || 0) + 1;
+      counts.total += 1;
+      return counts;
+    },
+    { total: 0, pending: 0, approved: 0, rejected: 0, executed: 0, failed: 0 },
+  );
+}
+
+function summarizeApprovalArgsForVoice(approval = {}) {
+  const args = approval.args && typeof approval.args === 'object' ? approval.args : {};
+  const action = String(approval.action || args.action || '').slice(0, 120);
+  const summary = {
+    action,
+    target: compactRecordText(args.target || args.path || args.destinationPath || args.url || '', 220),
+    argKeys: Object.keys(args).sort().slice(0, 40),
+  };
+  if (args.url) summary.url = redactUrlForStorage(args.url).slice(0, 400);
+  if (args.path) summary.path = compactRecordText(args.path, 260);
+  if (args.sourcePath) summary.sourcePath = compactRecordText(args.sourcePath, 260);
+  if (args.destinationPath) summary.destinationPath = compactRecordText(args.destinationPath, 260);
+  if (args.command) summary.command = redactCommandForLog(String(args.command || '')).slice(0, 260);
+  if (args.keys) summary.keys = compactRecordText(args.keys, 120);
+  if (args.nodeId) summary.nodeId = compactRecordText(args.nodeId, 120);
+  if (args.expectedLabel) summary.expectedLabel = compactRecordText(args.expectedLabel, 160);
+  for (const key of ['value', 'text', 'body', 'content', 'toolArguments']) {
+    if (Object.prototype.hasOwnProperty.call(args, key)) {
+      summary[`${key}Bytes`] = jsonSizeBytes(args[key]);
+      summary[`${key}Redacted`] = true;
+    }
+  }
+  if (approval.action === 'mcp_execution_request' || approval.action === 'mcp_tool_call_request') {
+    const toolArguments = args.toolArguments && typeof args.toolArguments === 'object' && !Array.isArray(args.toolArguments)
+      ? args.toolArguments
+      : {};
+    summary.serverName = compactRecordText(args.serverName || '', 120);
+    summary.toolName = compactRecordText(args.toolName || '', 120);
+    summary.sourceId = compactRecordText(args.sourceId || '', 120);
+    summary.transport = compactRecordText(args.transport || '', 40);
+    summary.toolArgumentKeys = Object.keys(toolArguments).sort().slice(0, 40);
+    summary.toolArgumentBytes = jsonSizeBytes(toolArguments);
+  }
+  return summary;
+}
+
+function approvalResultForVoice(result = '') {
+  const text = String(result || '');
+  if (!text) return { text: '', parsed: null, status: '' };
+  let parsed = null;
+  try {
+    parsed = JSON.parse(text);
+  } catch {}
+  const status = compactRecordText(parsed?.status || parsed?.approval?.status || '', 80);
+  return {
+    text: '',
+    parsed: null,
+    status,
+    bytes: Buffer.byteLength(text, 'utf8'),
+    redacted: true,
+    summary: status ? `result status: ${status}` : 'result payload redacted',
+  };
+}
+
+function sanitizeApprovalForVoice(approval = {}) {
+  const result = approvalResultForVoice(approval.result);
+  return {
+    id: String(approval.id || '').slice(0, 120),
+    action: compactRecordText(approval.action || '', 120),
+    riskLevel: Math.max(0, Math.min(4, Number(approval.riskLevel || 0))),
+    reason: compactRecordText(approval.reason || '', 180),
+    summary: compactRecordText(approval.summary || '', 240),
+    status: compactRecordText(approval.status || '', 40),
+    createdAt: Number(approval.createdAt || 0),
+    createdAtIso: approval.createdAt ? new Date(approval.createdAt).toISOString() : '',
+    updatedAt: Number(approval.updatedAt || 0),
+    updatedAtIso: approval.updatedAt ? new Date(approval.updatedAt).toISOString() : '',
+    argSummary: summarizeApprovalArgsForVoice(approval),
+    continuation: approval.continuation
+      ? {
+          type: approval.continuation.type || '',
+          workflowId: approval.continuation.workflowId || '',
+          title: compactRecordText(approval.continuation.title || '', 180),
+          remainingSteps: Array.isArray(approval.continuation.remainingSteps) ? approval.continuation.remainingSteps.length : 0,
+        }
+      : null,
+    result,
+  };
+}
+
+function approvalVoiceSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
+  const status = String(options.status || '').trim();
+  const id = String(options.id || options.approvalId || '').trim();
+  const all = approvalSnapshot(Math.max(limit, 20));
+  const selected = id ? approvals.get(id) || null : null;
+  const items = (id ? (selected ? [selected] : []) : all)
+    .filter((approval) => !status || approval.status === status)
+    .slice(0, limit)
+    .map(sanitizeApprovalForVoice);
+  const pending = pendingApprovalSnapshot(limit).map(sanitizeApprovalForVoice);
+  const counts = approvalCountsSnapshot();
+  const firstPending = pending[0] || null;
+  const summary = counts.pending
+    ? `${counts.pending} pending approval(s). First: ${firstPending?.summary || firstPending?.id || 'approval'}.`
+    : 'No pending approvals.';
+  return {
+    ok: !id || Boolean(selected),
+    status: id && !selected ? 'not_found' : 'ready',
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'voice', 80),
+    requestedId: id,
+    counts,
+    pending,
+    approvals: items,
+    selected: selected ? sanitizeApprovalForVoice(selected) : null,
+    safety: {
+      readOnly: true,
+      approvalRequiredForApprove: true,
+      approvalIdRequiredForResolve: true,
+      argsSummarized: true,
+      rawContentRedacted: true,
+    },
+    spokenSummary: summary,
+    output: summary,
+    nextAction: counts.pending
+      ? 'Review the approval id and summary. Approve only after the user explicitly confirms that exact approval id.'
+      : 'Continue working; there are no pending local approvals.',
+  };
+}
+
+async function resolveApprovalFromVoice(options = {}) {
+  const id = String(options.id || options.approvalId || '').trim();
+  const action = String(options.action || options.decision || '').trim().toLowerCase();
+  const confirm = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  const reason = compactRecordText(options.reason || options.note || 'Resolved by Realtime voice tool.', 500);
+  if (!id) {
+    return {
+      ok: false,
+      status: 'missing_id',
+      requiresConfirmation: false,
+      output: 'Approval id is required before JAVIS can approve or reject anything.',
+    };
+  }
+  if (!['approve', 'approved', 'reject', 'rejected'].includes(action)) {
+    return {
+      ok: false,
+      status: 'invalid_action',
+      approval: approvals.get(id) ? sanitizeApprovalForVoice(approvals.get(id)) : null,
+      output: 'Set action to approve or reject for a specific approval id.',
+    };
+  }
+  const approval = approvals.get(id);
+  if (!approval) {
+    return {
+      ok: false,
+      status: 'not_found',
+      output: `Approval ${id} was not found.`,
+    };
+  }
+  if (approval.status !== 'pending') {
+    return {
+      ok: false,
+      status: 'not_pending',
+      approval: sanitizeApprovalForVoice(approval),
+      output: `Approval ${id} is already ${approval.status}.`,
+    };
+  }
+  if (['approve', 'approved'].includes(action) && !confirm) {
+    return {
+      ok: false,
+      status: 'confirmation_required',
+      requiresConfirmation: true,
+      approval: sanitizeApprovalForVoice(approval),
+      output: `Confirm approval ${id} before execution. This may run: ${approval.summary}.`,
+    };
+  }
+  if (['reject', 'rejected'].includes(action)) {
+    const next = setApproval(id, { status: 'rejected', result: reason || 'Rejected by Realtime voice tool.' });
+    return {
+      ok: true,
+      status: 'rejected',
+      action: 'reject',
+      approval: sanitizeApprovalForVoice(next),
+      counts: approvalCountsSnapshot(),
+      output: `Rejected approval ${id}: ${next.summary}`,
+    };
+  }
+  const execution = await executeApproval(approval);
+  const next = approvals.get(id) || approval;
+  return {
+    ok: Boolean(execution.ok),
+    status: execution.ok ? 'approved' : 'approval_execution_completed_with_error',
+    action: 'approve',
+    approval: sanitizeApprovalForVoice(next),
+    counts: approvalCountsSnapshot(),
+    execution: {
+      ok: Boolean(execution.ok),
+      approvalStatus: next.status,
+      output: approvalResultForVoice(execution.output),
+    },
+    output: `Approval ${id} ${next.status}: ${compactRecordText(next.summary, 220)}`,
+  };
 }
 
 function memorySnapshot(limit = 50) {
@@ -26470,6 +26676,10 @@ const REALTIME_MCP_TOOL_NAMES = new Set([
   REALTIME_MCP_WORKFLOW_TOOL_NAME,
   REALTIME_MCP_TOOL_CALL_TOOL_NAME,
 ]);
+const REALTIME_APPROVAL_TOOL_NAMES = new Set([
+  'get_pending_approvals',
+  'resolve_approval',
+]);
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
 const REALTIME_LEARNING_EVOLUTION_TOOL_NAME = 'get_learning_evolution';
 const REALTIME_LEARNING_TOOL_NAMES = new Set([
@@ -26784,6 +26994,52 @@ function realtimeMcpToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeApprovalToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_APPROVAL_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const selected = output.selected || output.approval || null;
+  const pending = Array.isArray(output.pending) ? output.pending : [];
+  const approvalsList = Array.isArray(output.approvals) ? output.approvals : [];
+  const counts = output.counts || {};
+  if (name === 'get_pending_approvals') {
+    return {
+      action: 'list',
+      ok: output.ok === true,
+      status: compactRecordText(output.status || '', 80),
+      spokenSummary: compactRecordText(output.spokenSummary || output.output || '', 420),
+      pendingCount: boundedCount(counts.pending ?? pending.length, 1000),
+      totalCount: boundedCount(counts.total ?? approvalsList.length, 1000),
+      returnedCount: boundedCount(approvalsList.length, 1000),
+      selectedId: String(selected?.id || output.requestedId || '').slice(0, 120),
+      firstPendingId: String(pending[0]?.id || '').slice(0, 120),
+      firstPendingSummary: compactRecordText(pending[0]?.summary || '', 180),
+      readOnly: output.safety?.readOnly === true,
+      argsSummarized: output.safety?.argsSummarized === true,
+      rawContentRedacted: output.safety?.rawContentRedacted === true,
+      approvalIdRequiredForResolve: output.safety?.approvalIdRequiredForResolve === true,
+      approvalRequiredForApprove: output.safety?.approvalRequiredForApprove === true,
+    };
+  }
+  const execution = output.execution || {};
+  return {
+    action: compactRecordText(output.action || args?.action || args?.decision || '', 40),
+    ok: output.ok === true,
+    status: compactRecordText(output.status || '', 80),
+    approvalId: String(selected?.id || args?.id || args?.approvalId || '').slice(0, 120),
+    approvalStatus: compactRecordText(selected?.status || execution.approvalStatus || '', 40),
+    approvalAction: compactRecordText(selected?.action || '', 120),
+    approvalSummary: compactRecordText(selected?.summary || '', 180),
+    riskLevel: boundedCount(selected?.riskLevel, 4),
+    requiresConfirmation: output.requiresConfirmation === true,
+    confirm: args?.confirm === true || args?.confirmed === true || String(args?.confirm || args?.confirmed || '').toLowerCase() === 'true',
+    executionOk: execution.ok === true,
+    executionStatus: compactRecordText(execution.output?.status || '', 80),
+    pendingCount: boundedCount(counts.pending, 1000),
+    totalCount: boundedCount(counts.total, 1000),
+    rawContentRedacted: true,
+  };
+}
+
 function realtimeLearningToolSummary(name, args = {}, result = {}) {
   if (!REALTIME_LEARNING_TOOL_NAMES.has(name)) return null;
   const output = realtimeToolOutputObject(result) || {};
@@ -27035,6 +27291,7 @@ function recordRealtimeToolCall(options = {}) {
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
   const capability = realtimeCapabilityToolSummary(name, options.args || {}, result);
   const mcp = realtimeMcpToolSummary(name, options.args || {}, result);
+  const approval = realtimeApprovalToolSummary(name, options.args || {}, result);
   const learning = realtimeLearningToolSummary(name, options.args || {}, result);
   const browser = realtimeBrowserToolSummary(name, options.args || {}, result);
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
@@ -27057,6 +27314,7 @@ function recordRealtimeToolCall(options = {}) {
     perception,
     capability,
     mcp,
+    approval,
     learning,
     browser,
     demonstration,
@@ -27109,6 +27367,13 @@ function recordRealtimeToolCall(options = {}) {
     mcpApprovalId: mcp?.approvalId || '',
     mcpApprovalCallsTools: Boolean(mcp?.approvalCallsMcpTools),
     mcpToolResultSanitized: Boolean(mcp?.toolResultSanitized),
+    approvalAction: approval?.action || '',
+    approvalId: approval?.approvalId || approval?.selectedId || '',
+    approvalStatus: approval?.approvalStatus || approval?.status || '',
+    approvalPendingCount: approval?.pendingCount || 0,
+    approvalRequiresConfirmation: Boolean(approval?.requiresConfirmation),
+    approvalReadOnly: Boolean(approval?.readOnly),
+    approvalArgsSummarized: Boolean(approval?.argsSummarized),
     learningAction: learning?.action || '',
     learningSummary: learning?.spokenSummary || '',
     learningSourceEventCount: learning?.sourceEventCount || 0,
@@ -27419,6 +27684,53 @@ function realtimeMcpToolEvidence(limit = 8) {
       : hasDiscovery
         ? 'Ask live voice which MCP server should handle a concrete task and confirm plan_mcp_workflow appears here.'
         : 'Ask the live voice session: 本机有哪些 MCP 或外部工具服务器可以用？',
+  };
+}
+
+function realtimeApprovalToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_APPROVAL_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasList = recent.some((event) => (
+    event.name === 'get_pending_approvals' &&
+    event.ok &&
+    event.approval?.readOnly === true &&
+    event.approval?.argsSummarized === true &&
+    event.approval?.rawContentRedacted === true
+  ));
+  const hasConfirmationGate = recent.some((event) => (
+    event.name === 'resolve_approval' &&
+    event.approval?.requiresConfirmation === true &&
+    event.approval?.status === 'confirmation_required'
+  ));
+  const hasReject = recent.some((event) => (
+    event.name === 'resolve_approval' &&
+    event.ok &&
+    event.approval?.action === 'reject' &&
+    event.approval?.approvalStatus === 'rejected'
+  ));
+  const hasApprove = recent.some((event) => (
+    event.name === 'resolve_approval' &&
+    event.approval?.action === 'approve' &&
+    ['executed', 'approved', 'failed'].includes(event.approval?.approvalStatus || '')
+  ));
+  return {
+    ok: hasList || hasConfirmationGate || hasReject || hasApprove,
+    count: recent.length,
+    hasList,
+    hasConfirmationGate,
+    hasReject,
+    hasApprove,
+    handledCount: recent.filter((event) => event.name === 'resolve_approval' && event.ok).length,
+    pendingCount: Math.max(0, ...recent.map((event) => Number(event.approval?.pendingCount || 0))),
+    privacySafe: recent.length > 0 && recent.every((event) => event.approval?.rawContentRedacted !== false),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasConfirmationGate
+      ? 'Confirm a specific pending approval id before resolving it, or reject it if the user does not want it.'
+      : hasList
+        ? 'Ask live voice to approve or reject one exact approval id only after reading the summary.'
+        : 'Ask live voice: 现在有哪些待审批? / what approvals are pending?',
   };
 }
 
@@ -27832,6 +28144,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
   const mcpTools = evidence.mcpTools || {};
+  const approvalTools = evidence.approvalTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
@@ -27973,6 +28286,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
   const mcpTools = evidence.mcpTools || {};
+  const approvalTools = evidence.approvalTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
@@ -28001,7 +28315,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -28091,9 +28405,22 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       count: Number(mcpTools.count || 0),
       hasDiscovery: Boolean(mcpTools.hasDiscovery),
       hasWorkflowPreview: Boolean(mcpTools.hasWorkflowPreview),
+      hasToolCallPreview: Boolean(mcpTools.hasToolCallPreview),
+      hasToolCallApprovalRequest: Boolean(mcpTools.hasToolCallApprovalRequest),
       hasServers: Boolean(mcpTools.hasServers),
       privacySafe: Boolean(mcpTools.privacySafe),
       nextAction: mcpTools.nextAction || 'Ask the live voice session which MCP servers are configured locally.',
+    },
+    approvalTools: {
+      observed: Boolean(approvalTools.ok),
+      count: Number(approvalTools.count || 0),
+      hasList: Boolean(approvalTools.hasList),
+      hasConfirmationGate: Boolean(approvalTools.hasConfirmationGate),
+      hasReject: Boolean(approvalTools.hasReject),
+      hasApprove: Boolean(approvalTools.hasApprove),
+      pendingCount: Number(approvalTools.pendingCount || 0),
+      privacySafe: Boolean(approvalTools.privacySafe),
+      nextAction: approvalTools.nextAction || 'Ask the live voice session which approvals are pending, then resolve one exact id only after confirmation.',
     },
     learningTools: {
       observed: Boolean(learningTools.ok),
@@ -28174,6 +28501,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
   const capabilityTools = options.capabilityTools || evidence.capabilityTools || {};
   const mcpTools = options.mcpTools || evidence.mcpTools || {};
+  const approvalTools = options.approvalTools || evidence.approvalTools || {};
   const learningTools = options.learningTools || evidence.learningTools || {};
   const browserTools = options.browserTools || evidence.browserTools || {};
   const productivityDogfoodTools = options.productivityDogfoodTools || evidence.productivityDogfoodTools || {};
@@ -28312,6 +28640,29 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
         hasToolCallApprovalRequest: Boolean(mcpTools.hasToolCallApprovalRequest),
         toolResultSanitized: Boolean(mcpTools.hasToolResultSanitization),
         privacySafe: Boolean(mcpTools.privacySafe),
+      },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'review_and_resolve_approval',
+      label: 'Review and resolve one local approval from voice',
+      ok: Boolean(approvalTools.hasList && approvalTools.hasConfirmationGate && (approvalTools.hasReject || approvalTools.hasApprove)),
+      detail: approvalTools.hasReject || approvalTools.hasApprove
+        ? 'Realtime approval tools listed the queue, hit the explicit approve confirmation gate, and resolved one approval id.'
+        : approvalTools.hasConfirmationGate
+          ? 'Realtime approval tools listed the queue and refused approval without confirm:true.'
+          : approvalTools.hasList
+            ? 'Realtime approval tools listed pending approvals with summarized arguments.'
+            : 'No Realtime approval queue review has been observed yet.',
+      nextAction: 'Ask: 现在有哪些待审批？然后拒绝那个测试审批，或者在确认后批准指定 ID。',
+      evidence: {
+        tools: Array.from(REALTIME_APPROVAL_TOOL_NAMES),
+        count: Number(approvalTools.count || 0),
+        hasList: Boolean(approvalTools.hasList),
+        hasConfirmationGate: Boolean(approvalTools.hasConfirmationGate),
+        hasReject: Boolean(approvalTools.hasReject),
+        hasApprove: Boolean(approvalTools.hasApprove),
+        pendingCount: Number(approvalTools.pendingCount || 0),
+        privacySafe: Boolean(approvalTools.privacySafe),
       },
     }),
     realtimeDogfoodDrillStep({
@@ -28821,6 +29172,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'capability', label: 'local capability map', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), tool: REALTIME_CAPABILITY_TOOL_NAME },
     { id: 'mcp', label: 'MCP server discovery', ok: Boolean(evidence.mcpTools?.hasDiscovery), tool: REALTIME_MCP_TOOL_NAME },
     { id: 'mcp_tool_call', label: 'MCP tool-call approval preview', ok: Boolean(evidence.mcpTools?.hasToolCallPreview), tool: REALTIME_MCP_TOOL_CALL_TOOL_NAME },
+    { id: 'approval', label: 'approval queue review', ok: Boolean(evidence.approvalTools?.hasList && evidence.approvalTools?.hasConfirmationGate), tool: 'get_pending_approvals' },
     { id: 'learning', label: 'local learning profile', ok: Boolean(evidence.learningTools?.hasLearningProfile), tool: REALTIME_LEARNING_TOOL_NAME },
     { id: 'browser', label: 'browser read/workflow', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), tool: 'run_browser_workflow' },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
@@ -29046,6 +29398,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_perception_consent', 'voice_tools', 'Ask what JAVIS can see or control'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_local_capabilities', 'voice_tools', 'Ask which local capability or tool should handle the task'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'plan_mcp_tool_call', 'voice_tools', 'Prepare one MCP tools/call approval from voice'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'review_and_resolve_approval', 'voice_tools', 'Review and resolve one local approval from voice'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_learning_profile', 'learning_loop', 'Ask what local habits JAVIS has inferred'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_browser_workflow', 'computer_tools', 'Ask voice to inspect the current browser page safely'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_productivity_dogfood_archive', 'computer_tools', 'Save a safe productivity dogfood archive'),
@@ -30195,6 +30548,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const perceptionTools = realtimePerceptionToolEvidence(8);
   const capabilityTools = realtimeCapabilityToolEvidence(8);
   const mcpTools = realtimeMcpToolEvidence(8);
+  const approvalTools = realtimeApprovalToolEvidence(8);
   const learningTools = realtimeLearningToolEvidence(8);
   const browserTools = realtimeBrowserToolEvidence(8);
   const demonstrationTools = realtimeDemonstrationToolEvidence(8);
@@ -30266,6 +30620,7 @@ function realtimeVoiceEvidenceSnapshot() {
     perceptionTools,
     capabilityTools,
     mcpTools,
+    approvalTools,
     learningTools,
     browserTools,
     demonstrationTools,
@@ -37642,6 +37997,20 @@ async function executeTool(name, args) {
     return { ok: handoff.ok, output: JSON.stringify(handoff) };
   }
 
+  if (name === 'get_pending_approvals') {
+    const result = approvalVoiceSnapshot({ ...(args || {}), source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
+  if (name === 'resolve_approval') {
+    try {
+      const result = await resolveApprovalFromVoice({ ...(args || {}), source: 'voice' });
+      return { ok: result.ok, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_collaboration_state') {
     return {
       ok: true,
@@ -38286,6 +38655,8 @@ function createRealtimeSessionConfig(options = {}) {
       'Use save_productivity_dogfood_archive when the user asks to save, export, archive, or keep the productivity dogfood evidence. Do not pass execute:true and confirm:true unless the user explicitly asks for a live Mac run after reviewing the preview.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
+      'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
+      'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
       'Use get_realtime_dogfood_acceptance when the user asks whether the Realtime dogfood run passed, what gates are missing, whether the live voice drill can be accepted, or whether it is ready to archive. It is read-only and never starts microphone capture.',
       'Use save_realtime_dogfood_archive only when the user asks to save, export, archive, or keep the current Realtime dogfood evidence. It writes a local JSON evidence packet and never starts microphone capture.',
@@ -39167,6 +39538,41 @@ function createRealtimeSessionConfig(options = {}) {
             followUpLimit: { type: 'number' },
             maxChars: { type: 'number' },
           },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_pending_approvals',
+        description: 'List local pending approvals and recent approval records with summarized arguments and redacted raw content. Read-only; use before resolving an approval or explaining why JAVIS is blocked.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            approvalId: { type: 'string' },
+            status: { type: 'string', enum: ['pending', 'approved', 'rejected', 'executed', 'failed'] },
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'resolve_approval',
+        description: 'Approve or reject one specific local approval id. Use action:reject to reject. Use action:approve only after the user explicitly confirms that exact approval id; then pass confirm:true. Approval may execute local actions or one approved MCP tools/call.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            approvalId: { type: 'string' },
+            action: { type: 'string', enum: ['approve', 'reject'] },
+            decision: { type: 'string', enum: ['approve', 'reject'] },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            reason: { type: 'string' },
+            note: { type: 'string' },
+          },
+          required: ['action'],
           additionalProperties: false,
         },
       },
@@ -40336,6 +40742,8 @@ const REALTIME_REQUIRED_TOOLS = [
   'run_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
+  'get_pending_approvals',
+  'resolve_approval',
   'get_collaboration_state',
   'get_local_capabilities',
   'get_learning_profile',
@@ -40385,6 +40793,7 @@ function realtimeInstructionChecks(instructions = '') {
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
+    approvals: /get_pending_approvals|resolve_approval|waiting for approval|approval id|confirm:true/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),
     realtimeArchive: /save_realtime_dogfood_archive|Realtime dogfood evidence.*local JSON|save, export, archive/i.test(text),
