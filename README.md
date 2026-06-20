@@ -13,6 +13,7 @@ Local Mac-first realtime desktop buddy.
 - Renderer-recorded Realtime SDP negotiation evidence, so successful or failed real WebRTC starts update `/api/realtime/evidence`.
 - Renderer-recorded Realtime voice latency receipts for click-to-live, SDP negotiation, and live-to-progress timing in CUI/API evidence.
 - Realtime evidence separates SDP negotiation from renderer live/data-channel state, making dogfood blockers more precise.
+- Realtime tool manifest budget in `/api/realtime/config` and the `realtime` eval lane, so startup cost from tool count/schema size stays visible while JAVIS grows more capable.
 - Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
 - Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
 - Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, compact work-next preview/run, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.

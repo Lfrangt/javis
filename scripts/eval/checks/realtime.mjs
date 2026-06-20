@@ -87,7 +87,21 @@ export default {
       out.push(fail('realtime.config', 'Realtime config snapshot', `GET /api/realtime/config ${config.status} ${config.error || config.data?.error || ''}`));
       return out;
     }
-    out.push(ok('realtime.config', 'Realtime config snapshot', `${realtime.model || 'model?'} · voice=${realtime.voice || 'voice?'} · tools=${realtime.toolCount ?? 0}`));
+    out.push(ok('realtime.config', 'Realtime config snapshot', `${realtime.model || 'model?'} · voice=${realtime.voice || 'voice?'} · tools=${realtime.toolCount ?? 0} · manifest=${Math.ceil((realtime.toolManifestBudget?.bytes || 0) / 1024)}KB`));
+
+    out.push(
+      realtime.toolManifestBudget?.ok === true &&
+        realtime.toolManifestBudget.toolCount === realtime.toolCount &&
+        realtime.toolManifestBudget.toolCount <= realtime.toolManifestBudget.maxTools &&
+        realtime.toolManifestBudget.bytes > 0 &&
+        realtime.toolManifestBudget.bytes <= realtime.toolManifestBudget.maxBytes &&
+        Array.isArray(realtime.toolManifestBudget.largestTools) &&
+        realtime.toolManifestBudget.largestTools.length > 0 &&
+        Array.isArray(realtime.toolManifestBudget.widestSchemas) &&
+        realtime.toolManifestBudget.widestSchemas.length > 0
+        ? ok('realtime.tool_manifest_budget', 'Realtime tool manifest budget', `${realtime.toolManifestBudget.toolCount}/${realtime.toolManifestBudget.maxTools} tools · ${Math.ceil(realtime.toolManifestBudget.bytes / 1024)}KB/${Math.ceil(realtime.toolManifestBudget.maxBytes / 1024)}KB`)
+        : fail('realtime.tool_manifest_budget', 'Realtime tool manifest budget', 'tool manifest exceeds startup budget or budget evidence is missing', realtime.toolManifestBudget),
+    );
 
     out.push(
       realtime.hasOpenAiKey

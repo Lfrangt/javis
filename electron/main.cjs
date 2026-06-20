@@ -44624,6 +44624,46 @@ function realtimeInstructionChecks(instructions = '') {
   };
 }
 
+function realtimeToolManifestBudget(tools = []) {
+  const normalizedTools = Array.isArray(tools) ? tools : [];
+  const rows = normalizedTools.map((tool) => {
+    const serialized = JSON.stringify(tool || {});
+    const parameters = tool?.parameters || {};
+    return {
+      name: compactRecordText(tool?.name || '', 120),
+      bytes: Buffer.byteLength(serialized, 'utf8'),
+      descriptionBytes: Buffer.byteLength(String(tool?.description || ''), 'utf8'),
+      parameterBytes: Buffer.byteLength(JSON.stringify(parameters), 'utf8'),
+      propertyCount: parameters?.properties && typeof parameters.properties === 'object'
+        ? Object.keys(parameters.properties).length
+        : 0,
+    };
+  });
+  const bytes = Buffer.byteLength(JSON.stringify(normalizedTools), 'utf8');
+  const maxTools = 120;
+  const maxBytes = 180000;
+  const largestTools = [...rows].sort((a, b) => b.bytes - a.bytes).slice(0, 8);
+  const longestDescriptions = [...rows].sort((a, b) => b.descriptionBytes - a.descriptionBytes).slice(0, 8);
+  const widestSchemas = [...rows].sort((a, b) => b.parameterBytes - a.parameterBytes).slice(0, 8);
+  return {
+    ok: normalizedTools.length <= maxTools && bytes <= maxBytes,
+    toolCount: normalizedTools.length,
+    maxTools,
+    bytes,
+    maxBytes,
+    headroomTools: Math.max(0, maxTools - normalizedTools.length),
+    headroomBytes: Math.max(0, maxBytes - bytes),
+    largestTools,
+    longestDescriptions,
+    widestSchemas,
+    guidance: [
+      'Keep Realtime startup fast by routing durable work through meta-tools before adding many direct tools.',
+      'Prefer compact voice payloads and CUI/API-only full diagnostics for large registries.',
+      'If this budget fails, move low-frequency tools behind route_task, run_autonomy_loop, or a compact capability/meta-tool.',
+    ],
+  };
+}
+
 function realtimeConfigSnapshot(options = {}) {
   const config = createRealtimeSessionConfig({ micMode: options.micMode });
   const toolNames = Array.isArray(config.tools)
@@ -44635,9 +44675,10 @@ function realtimeConfigSnapshot(options = {}) {
   const failedInstructionChecks = Object.entries(instructionChecks)
     .filter(([, passed]) => !passed)
     .map(([name]) => name);
+  const toolManifestBudget = realtimeToolManifestBudget(config.tools);
 
   return {
-    ok: missingRequiredTools.length === 0 && failedInstructionChecks.length === 0,
+    ok: missingRequiredTools.length === 0 && failedInstructionChecks.length === 0 && toolManifestBudget.ok,
     generatedAt: new Date().toISOString(),
     model: config.model,
     voice: config.audio?.output?.voice || '',
@@ -44652,6 +44693,7 @@ function realtimeConfigSnapshot(options = {}) {
     wake: wakeStatusSnapshot(),
     toolCount: toolNames.length,
     toolNames,
+    toolManifestBudget,
     requiredTools: {
       names: REALTIME_REQUIRED_TOOLS,
       missing: missingRequiredTools,
