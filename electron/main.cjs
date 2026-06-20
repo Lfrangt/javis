@@ -21869,6 +21869,438 @@ function normalizeMcpServer(name, server, source = {}) {
   };
 }
 
+function mcpRawServerEntries(options = {}) {
+  const limit = Math.max(1, Math.min(500, Number(options.limit || 250)));
+  const entries = [];
+  for (const source of MCP_CONFIG_SOURCES) {
+    if (entries.length >= limit) break;
+    const sourcePath = source.path;
+    try {
+      if (!fs.existsSync(sourcePath) || !fs.statSync(sourcePath).isFile()) continue;
+      const json = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
+      const serverMap = mcpConfigServerMap(json);
+      if (!serverMap) continue;
+      for (const [name, server] of Object.entries(serverMap)) {
+        if (entries.length >= limit) break;
+        const record = server && typeof server === 'object' && !Array.isArray(server) ? server : {};
+        entries.push({
+          name: String(name || '').slice(0, 120),
+          source,
+          server: record,
+          normalized: normalizeMcpServer(name, record, source),
+        });
+      }
+    } catch {
+      // Discovery already reports invalid files; raw matching stays best-effort.
+    }
+  }
+  return entries;
+}
+
+function mcpFindRawServer(options = {}) {
+  const requestedName = String(options.serverName || options.server || '').trim().toLowerCase();
+  const requestedSourceId = String(options.sourceId || '').trim().toLowerCase();
+  const requestedTransport = String(options.transport || '').trim().toLowerCase();
+  const requestedCommand = String(options.command || '').trim().toLowerCase();
+  const requestedUrlHost = String(options.urlHost || '').trim().toLowerCase();
+  const entries = mcpRawServerEntries({ limit: options.limit || 250 })
+    .filter((entry) => options.includeDisabled === true || entry.normalized.enabled);
+  if (!entries.length) return null;
+  const scored = entries.map((entry, index) => {
+    const normalized = entry.normalized || {};
+    const name = String(normalized.name || entry.name || '').toLowerCase();
+    const sourceId = String(normalized.sourceId || entry.source?.id || '').toLowerCase();
+    const transport = String(normalized.transport || '').toLowerCase();
+    const command = String(normalized.command || '').toLowerCase();
+    const urlHost = String(normalized.urlHost || '').toLowerCase();
+    let score = 0;
+    if (!requestedName) score += 1;
+    else if (name === requestedName) score += 100;
+    else if (name.includes(requestedName) || requestedName.includes(name)) score += 45;
+    if (requestedSourceId && sourceId === requestedSourceId) score += 50;
+    if (requestedTransport && transport === requestedTransport) score += 12;
+    if (requestedCommand && command === requestedCommand) score += 8;
+    if (requestedUrlHost && urlHost === requestedUrlHost) score += 8;
+    if (normalized.enabled) score += 2;
+    if (sourceId === 'project_mcp' || sourceId === 'project_cursor_mcp') score += 1;
+    return { entry, score, index };
+  })
+    .filter((item) => {
+      if (requestedSourceId && String(item.entry.normalized.sourceId || '').toLowerCase() !== requestedSourceId) return false;
+      if (requestedName && item.score < 40) return false;
+      return true;
+    })
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+  return scored[0]?.entry || null;
+}
+
+function mcpServerEnvForSpawn(entry = {}) {
+  const rawEnv = entry.server?.env && typeof entry.server.env === 'object' && !Array.isArray(entry.server.env)
+    ? entry.server.env
+    : {};
+  const env = { ...process.env };
+  for (const [key, value] of Object.entries(rawEnv)) {
+    if (!key) continue;
+    if (value === undefined || value === null) continue;
+    env[String(key)] = String(value);
+  }
+  return env;
+}
+
+function normalizeMcpApprovalArgs(args = {}) {
+  const timeoutMs = Math.max(2000, Math.min(20000, Number(args.timeoutMs || 8000)));
+  return {
+    serverName: compactRecordText(args.serverName || args.server || '', 120),
+    toolName: compactRecordText(args.toolName || args.tool || '', 120),
+    task: compactRecordText(args.task || args.message || args.instruction || '', 500),
+    intent: compactRecordText(args.intent || '', 80),
+    transport: compactRecordText(args.transport || '', 40),
+    sourceId: compactRecordText(args.sourceId || '', 80),
+    sourceLabel: compactRecordText(args.sourceLabel || '', 120),
+    command: compactRecordText(args.command || '', 120),
+    urlHost: compactRecordText(args.urlHost || '', 120),
+    source: compactRecordText(args.source || 'approval', 80),
+    timeoutMs,
+  };
+}
+
+function sanitizeMcpTool(tool = {}) {
+  const raw = tool && typeof tool === 'object' ? tool : {};
+  let inputSchema = cloneJsonObject(raw.inputSchema || raw.schema || {}, {});
+  if (JSON.stringify(inputSchema).length > 12000) {
+    inputSchema = {
+      type: 'object',
+      redactedLargeSchema: true,
+      summary: 'Input schema was larger than the local display limit.',
+    };
+  }
+  const annotations = raw.annotations && typeof raw.annotations === 'object' && !Array.isArray(raw.annotations)
+    ? cloneJsonObject(raw.annotations, {})
+    : {};
+  return {
+    name: compactRecordText(raw.name || '', 160),
+    title: compactRecordText(raw.title || raw.annotations?.title || '', 180),
+    description: compactRecordText(raw.description || '', 900),
+    inputSchema,
+    annotations,
+  };
+}
+
+function mcpStdioSafety(args = {}) {
+  return {
+    requiresApproval: true,
+    approvalConfirmed: true,
+    startsServers: Boolean(args.startsServers),
+    serverProcessStarted: Boolean(args.serverProcessStarted),
+    commandsExecuted: Boolean(args.commandsExecuted),
+    callsMcpTools: false,
+    listsToolSchemas: Boolean(args.listsToolSchemas),
+    envValuesRedacted: true,
+    urlQueriesRedacted: true,
+    timeoutMs: Math.max(0, Number(args.timeoutMs || 0)),
+  };
+}
+
+function mcpErrorResult(status, args = {}, extra = {}) {
+  return {
+    ok: false,
+    status,
+    approvalConfirmed: true,
+    executed: false,
+    adapter: 'stdio_tools_list',
+    serverName: compactRecordText(args.serverName || '', 120),
+    toolName: compactRecordText(args.toolName || '', 120),
+    task: compactRecordText(args.task || '', 240),
+    summary: compactRecordText(extra.summary || status, 500),
+    safety: mcpStdioSafety({
+      startsServers: Boolean(extra.startsServers),
+      serverProcessStarted: Boolean(extra.serverProcessStarted),
+      commandsExecuted: Boolean(extra.commandsExecuted),
+      listsToolSchemas: false,
+      timeoutMs: args.timeoutMs,
+    }),
+    error: compactRecordText(extra.error || '', 1000),
+    nextAction: compactRecordText(extra.nextAction || 'Review the MCP server config, then create a new confirmed request.', 500),
+  };
+}
+
+function startMcpStdioProcess(entry, args = {}) {
+  const command = String(entry.server?.command || '').trim();
+  const commandArgs = Array.isArray(entry.server?.args)
+    ? entry.server.args.map((item) => String(item))
+    : [];
+  if (!command) throw new Error('MCP stdio server has no command.');
+  const child = spawn(command, commandArgs, {
+    cwd: process.cwd(),
+    env: mcpServerEnvForSpawn(entry),
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stdin.setDefaultEncoding('utf8');
+  appendAudit('mcp.adapter.process_started', {
+    serverName: entry.normalized.name,
+    sourceId: entry.normalized.sourceId,
+    command: entry.normalized.command,
+    argsCount: commandArgs.length,
+    timeoutMs: args.timeoutMs,
+  });
+  return child;
+}
+
+async function inspectMcpServerToolsFromApproval(rawArgs = {}) {
+  const args = normalizeMcpApprovalArgs(rawArgs);
+  if (!LOCAL_EXEC_ENABLED) {
+    return mcpErrorResult('local_execution_disabled', args, {
+      summary: 'MCP approval was confirmed, but local execution is disabled, so JAVIS did not start the server.',
+      nextAction: 'Enable local execution in the CUI before approving MCP server inspection.',
+    });
+  }
+  const entry = mcpFindRawServer(args);
+  if (!entry) {
+    return mcpErrorResult('server_not_found', args, {
+      summary: 'MCP approval was confirmed, but the selected server is no longer configured or enabled.',
+      nextAction: 'Run MCP discovery again and create a fresh approval for the selected server.',
+    });
+  }
+  const normalized = entry.normalized;
+  const transport = mcpTransportForServer(entry.server);
+  if (transport !== 'stdio') {
+    return mcpErrorResult('unsupported_transport', args, {
+      summary: `MCP server ${normalized.name} uses ${transport}; this adapter currently supports stdio tools/list only.`,
+      nextAction: 'Use a stdio MCP server or add the HTTP/SSE MCP client adapter next.',
+    });
+  }
+  if (!entry.server?.command) {
+    return mcpErrorResult('missing_command', args, {
+      summary: `MCP server ${normalized.name} is stdio but has no command configured.`,
+      nextAction: 'Fix the MCP server command in its config file, then create a fresh approval.',
+    });
+  }
+
+  let child = null;
+  let settled = false;
+  const stderrChunks = [];
+  const pending = new Map();
+  let nextId = 1;
+  let stdoutBuffer = '';
+
+  const stopChild = () => {
+    if (!child || settled) return;
+    settled = true;
+    try {
+      child.stdin.end();
+    } catch {}
+    try {
+      child.kill('SIGTERM');
+    } catch {}
+    const killer = setTimeout(() => {
+      try {
+        child.kill('SIGKILL');
+      } catch {}
+    }, 700);
+    if (typeof killer.unref === 'function') killer.unref();
+  };
+
+  const writeMessage = (message) => {
+    if (!child || child.killed) throw new Error('MCP server process is not running.');
+    child.stdin.write(`${JSON.stringify(message)}\n`);
+  };
+
+  const rejectPending = (error) => {
+    for (const pendingRequest of pending.values()) {
+      clearTimeout(pendingRequest.timer);
+      pendingRequest.reject(error);
+    }
+    pending.clear();
+  };
+
+  const handleMessage = (message) => {
+    if (!message || typeof message !== 'object') return;
+    if (Object.prototype.hasOwnProperty.call(message, 'id') && pending.has(message.id)) {
+      const pendingRequest = pending.get(message.id);
+      pending.delete(message.id);
+      clearTimeout(pendingRequest.timer);
+      if (message.error) {
+        pendingRequest.reject(new Error(compactRecordText(JSON.stringify(message.error), 1000)));
+      } else {
+        pendingRequest.resolve(message.result || {});
+      }
+      return;
+    }
+    if (message.method && Object.prototype.hasOwnProperty.call(message, 'id')) {
+      if (message.method === 'ping') {
+        writeMessage({ jsonrpc: '2.0', id: message.id, result: {} });
+      } else {
+        writeMessage({
+          jsonrpc: '2.0',
+          id: message.id,
+          error: { code: -32601, message: 'Method not found' },
+        });
+      }
+    }
+  };
+
+  const sendRequest = (method, params = undefined) => {
+    const id = nextId;
+    nextId += 1;
+    const message = { jsonrpc: '2.0', id, method };
+    if (params !== undefined) message.params = params;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`MCP request timed out: ${method}`));
+      }, args.timeoutMs);
+      if (typeof timer.unref === 'function') timer.unref();
+      pending.set(id, { method, resolve, reject, timer });
+      try {
+        writeMessage(message);
+      } catch (error) {
+        clearTimeout(timer);
+        pending.delete(id);
+        reject(error);
+      }
+    });
+  };
+
+  try {
+    child = startMcpStdioProcess(entry, args);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdin.on('error', (error) => {
+      rejectPending(error);
+    });
+    child.stdout.on('data', (chunk) => {
+      stdoutBuffer += String(chunk || '');
+      const lines = stdoutBuffer.split(/\r?\n/);
+      stdoutBuffer = lines.pop() || '';
+      for (const line of lines) {
+        const text = line.trim();
+        if (!text) continue;
+        try {
+          handleMessage(JSON.parse(text));
+        } catch (error) {
+          appendAudit('mcp.adapter.stdout_parse_failed', {
+            serverName: normalized.name,
+            sourceId: normalized.sourceId,
+            error: error instanceof Error ? error.message : String(error),
+            lineLength: text.length,
+          });
+        }
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      if (stderrChunks.join('').length < 3000) stderrChunks.push(String(chunk || '').slice(0, 1200));
+    });
+    child.on('error', (error) => {
+      rejectPending(error);
+    });
+    child.on('close', (code, signal) => {
+      rejectPending(new Error(`MCP server closed before completing request: code=${code ?? ''} signal=${signal || ''}`));
+    });
+
+    const initialize = await sendRequest('initialize', {
+      protocolVersion: '2025-03-26',
+      capabilities: {},
+      clientInfo: {
+        name: 'JAVIS',
+        version: String(packageInfo.version || '0.1.0'),
+      },
+    });
+    writeMessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
+
+    const tools = [];
+    let cursor = '';
+    let pageCount = 0;
+    for (let page = 0; page < 3; page += 1) {
+      const params = cursor ? { cursor } : {};
+      const result = await sendRequest('tools/list', params);
+      pageCount += 1;
+      const pageTools = Array.isArray(result.tools) ? result.tools.map(sanitizeMcpTool).filter((tool) => tool.name) : [];
+      tools.push(...pageTools);
+      cursor = compactRecordText(result.nextCursor || '', 500);
+      if (!cursor) break;
+    }
+    const requestedToolFound = args.toolName
+      ? tools.some((tool) => tool.name === args.toolName || tool.name.toLowerCase() === args.toolName.toLowerCase())
+      : false;
+    const result = {
+      ok: true,
+      status: 'tools_listed',
+      approvalConfirmed: true,
+      executed: false,
+      adapter: 'stdio_tools_list',
+      serverName: normalized.name,
+      sourceId: normalized.sourceId,
+      sourceLabel: normalized.sourceLabel,
+      transport: 'stdio',
+      command: normalized.command,
+      toolName: args.toolName,
+      requestedToolFound,
+      task: args.task,
+      summary: requestedToolFound
+        ? `MCP server ${normalized.name} listed ${tools.length} tool schema(s); requested tool ${args.toolName} exists.`
+        : `MCP server ${normalized.name} listed ${tools.length} tool schema(s); requested tool ${args.toolName || '-'} was not found in the current schema list.`,
+      initialize: {
+        protocolVersion: compactRecordText(initialize.protocolVersion || '', 80),
+        serverInfo: initialize.serverInfo && typeof initialize.serverInfo === 'object'
+          ? {
+              name: compactRecordText(initialize.serverInfo.name || '', 160),
+              version: compactRecordText(initialize.serverInfo.version || '', 80),
+            }
+          : null,
+        capabilityKeys: initialize.capabilities && typeof initialize.capabilities === 'object'
+          ? Object.keys(initialize.capabilities).sort().slice(0, 40)
+          : [],
+      },
+      counts: {
+        tools: tools.length,
+        pages: pageCount,
+        hasMore: Boolean(cursor),
+      },
+      tools,
+      stderr: compactRecordText(stderrChunks.join('\n'), 2000),
+      safety: mcpStdioSafety({
+        startsServers: true,
+        serverProcessStarted: true,
+        commandsExecuted: true,
+        listsToolSchemas: true,
+        timeoutMs: args.timeoutMs,
+      }),
+      nextAction: requestedToolFound
+        ? 'Review the returned input schema, then create a separate confirmed tools/call request before running the MCP tool.'
+        : tools.length
+          ? 'Pick one of the returned MCP tool names, review its input schema, then create a fresh confirmed call request.'
+          : 'The server returned no tools. Check the server config/logs or choose a different MCP server.',
+    };
+    appendAudit('mcp.adapter.tools_listed', {
+      serverName: normalized.name,
+      sourceId: normalized.sourceId,
+      toolName: args.toolName,
+      requestedToolFound,
+      tools: tools.length,
+    });
+    return result;
+  } catch (error) {
+    appendAudit('mcp.adapter.failed', {
+      serverName: normalized.name,
+      sourceId: normalized.sourceId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return mcpErrorResult('tools_list_failed', args, {
+      startsServers: true,
+      serverProcessStarted: Boolean(child),
+      commandsExecuted: Boolean(child),
+      summary: `MCP server ${normalized.name} did not complete initialize/tools/list within the guarded adapter.`,
+      error: [
+        error instanceof Error ? error.message : String(error),
+        stderrChunks.length ? `stderr: ${compactRecordText(stderrChunks.join('\n'), 1000)}` : '',
+      ].filter(Boolean).join('\n'),
+      nextAction: 'Inspect the MCP server config and stderr, then retry the confirmed tools/list request.',
+    });
+  } finally {
+    stopChild();
+  }
+}
+
 function mcpServerDiscoverySnapshot(options = {}) {
   const limit = Math.max(1, Math.min(200, Number(options.limit || 80)));
   const generatedAt = new Date().toISOString();
@@ -22038,6 +22470,7 @@ function mcpServerWorkflowScore(server = {}, terms = [], options = {}) {
   let score = server.enabled ? 2 : -20;
   const matches = [];
   const requestedServer = String(options.serverName || options.server || '').trim().toLowerCase();
+  const requestedSourceId = String(options.sourceId || '').trim().toLowerCase();
   if (requestedServer) {
     if (name === requestedServer) {
       score += 100;
@@ -22045,6 +22478,14 @@ function mcpServerWorkflowScore(server = {}, terms = [], options = {}) {
     } else if (name.includes(requestedServer) || text.includes(requestedServer)) {
       score += 55;
       matches.push('server_match');
+    }
+  }
+  if (requestedSourceId) {
+    if (String(server.sourceId || '').toLowerCase() === requestedSourceId) {
+      score += 45;
+      matches.push('source_exact');
+    } else {
+      score -= 5;
     }
   }
   for (const term of terms) {
@@ -22134,6 +22575,10 @@ function mcpWorkflowPreview(options = {}) {
         intent,
         transport: selected.transport,
         risk: selected.risk,
+        sourceId: selected.sourceId,
+        sourceLabel: selected.sourceLabel,
+        command: selected.command,
+        urlHost: selected.urlHost,
         source: options.source || 'mcp_workflow',
       },
     }, 'mcp_execution_requires_confirmation');
@@ -22153,7 +22598,7 @@ function mcpWorkflowPreview(options = {}) {
         : 'needs_mcp_config';
   const summary = executeRequested
     ? approval
-      ? `MCP execution request is waiting for approval: ${approval.summary}. No MCP server has been started.`
+      ? `MCP tools/list inspection is waiting for approval: ${approval.summary}. No MCP server has been started yet.`
       : requestApproval && selected && !requestedToolName
         ? 'Choose a specific MCP tool name before creating an execution approval request.'
         : 'MCP execution requires an explicit approval request. Preview remains safe and does not start servers or call tools.'
@@ -22184,16 +22629,18 @@ function mcpWorkflowPreview(options = {}) {
     {
       id: 'inspect_server_tools',
       label: 'Inspect server tools',
-      status: 'future_confirmed_step',
-      output: 'A later MCP client step should connect to the selected server, list tool schemas, and keep env values redacted.',
+      status: approval ? 'approval_required' : executeRequested ? 'needs_explicit_approval_request' : 'confirmed_step_available',
+      output: approval
+        ? `Pending approval ${approval.id} created. If approved, JAVIS will start the stdio server only long enough to initialize and list tool schemas.`
+        : 'A confirmed MCP client step can connect to a stdio server, list tool schemas, and keep env values redacted.',
       requiresConfirmation: true,
     },
     {
       id: 'execute_tool_call',
       label: 'Execute an MCP tool call',
-      status: approval ? 'approval_required' : executeRequested ? 'needs_explicit_approval_request' : 'not_requested',
+      status: 'not_implemented',
       output: approval
-        ? `Pending approval ${approval.id} created. Approval records intent only; this build still does not start MCP servers or call MCP tools.`
+        ? `Pending approval ${approval.id} is for tools/list inspection only; this build still does not call MCP tools.`
         : executeRequested
           ? 'Not executed. Pass requestApproval:true with a selected server and toolName to create a local confirmation gate.'
         : 'Not executed. Execution will require an explicit task, selected server, reviewed tool schema, and confirmation.',
@@ -22243,6 +22690,7 @@ function mcpWorkflowPreview(options = {}) {
       urlQueriesRedacted: true,
       requiresConfirmationForExecution: true,
       approvalCreatesNoToolCall: true,
+      approvalMayStartServerForToolsList: true,
     },
     blockedReason: executeRequested && !approval
       ? requestApproval && selected && !requestedToolName
@@ -22253,7 +22701,7 @@ function mcpWorkflowPreview(options = {}) {
       : '',
     nextAction: executeRequested
       ? approval
-        ? `Review approval ${approval.id}; approving it records confirmed intent and keeps MCP execution blocked until the client adapter exists.`
+        ? `Review approval ${approval.id}; approving it may start ${selected?.name || 'the selected MCP server'} briefly to initialize and list tool schemas, but still will not call a tool.`
         : requestApproval && selected && !requestedToolName
           ? 'Provide toolName for the selected MCP server, then rerun with requestApproval:true.'
           : 'Review this preview, then rerun with requestApproval:true, serverName, and toolName to create a local confirmation gate.'
@@ -36137,25 +36585,8 @@ async function executeLocalAction(args = {}, options = {}) {
 
 async function executeApprovedAction(approval) {
   if (approval.action === 'mcp_execution_request') {
-    const args = approval.args || {};
-    return JSON.stringify({
-      ok: true,
-      status: 'adapter_pending',
-      approvalConfirmed: true,
-      executed: false,
-      serverName: compactRecordText(args.serverName || '', 120),
-      toolName: compactRecordText(args.toolName || '', 120),
-      task: compactRecordText(args.task || '', 240),
-      summary: 'MCP execution request approved and recorded. This build still does not start MCP servers or call MCP tools until the MCP client adapter is implemented.',
-      safety: {
-        startsServers: false,
-        commandsExecuted: false,
-        callsMcpTools: false,
-        envValuesRedacted: true,
-        requiresMcpClientAdapter: true,
-      },
-      nextAction: 'Implement the confirmed MCP client adapter for this approved request, then run it through the same approval record.',
-    });
+    const result = await inspectMcpServerToolsFromApproval(approval.args || {});
+    return JSON.stringify(result);
   }
   if (approval.action === 'browser_control') {
     if (approval.args?.domAction) {
@@ -36252,8 +36683,17 @@ async function executeApproval(approval) {
   try {
     const result = await executeApprovedAction(approval);
     if (approval.action === 'mcp_execution_request') {
-      setApproval(approval.id, { status: 'approved', result });
-      return { ok: true, output: result, approval: approvals.get(approval.id), continuation: null };
+      let parsed = null;
+      try {
+        parsed = JSON.parse(result);
+      } catch {}
+      const status = parsed?.ok === true
+        ? 'executed'
+        : ['local_execution_disabled', 'server_not_found', 'unsupported_transport', 'missing_command'].includes(String(parsed?.status || ''))
+          ? 'approved'
+          : 'failed';
+      setApproval(approval.id, { status, result });
+      return { ok: parsed?.ok === true, output: result, approval: approvals.get(approval.id), continuation: null };
     }
     const continuation = await continueAppWorkflowAfterApproval(approval, result);
     const output = continuation?.output
@@ -41385,6 +41825,7 @@ function startApiServer() {
         query: req.query.query || '',
         serverName: req.query.serverName || req.query.server || '',
         toolName: req.query.toolName || req.query.tool || '',
+        sourceId: req.query.sourceId || req.query.mcpSourceId || '',
         intent: req.query.intent || '',
         limit: req.query.limit || 80,
         source: req.query.source || 'api',

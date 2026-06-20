@@ -1224,7 +1224,7 @@ function printMcpWorkflow(result) {
   console.log('====================');
   console.log(workflow.summary || 'No MCP workflow preview summary available.');
   console.log(`Status: ${workflow.status || 'unknown'} · intent=${workflow.intent || '-'} · candidates=${counts.candidates || 0} · servers=${counts.servers || 0}`);
-  console.log(`Safety: preview-only=${safety.previewOnly ? 'yes' : 'no'} · starts servers=${safety.startsServers ? 'yes' : 'no'} · commands executed=${safety.commandsExecuted ? 'yes' : 'no'} · calls MCP tools=${safety.callsMcpTools ? 'yes' : 'no'} · env values redacted=${safety.envValuesRedacted ? 'yes' : 'no'} · confirmation required=${safety.requiresConfirmationForExecution ? 'yes' : 'no'}`);
+  console.log(`Safety: preview-only=${safety.previewOnly ? 'yes' : 'no'} · starts servers=${safety.startsServers ? 'yes' : 'no'} · commands executed=${safety.commandsExecuted ? 'yes' : 'no'} · calls MCP tools=${safety.callsMcpTools ? 'yes' : 'no'} · schema-start-after-approval=${safety.approvalMayStartServerForToolsList ? 'yes' : 'no'} · env values redacted=${safety.envValuesRedacted ? 'yes' : 'no'} · confirmation required=${safety.requiresConfirmationForExecution ? 'yes' : 'no'}`);
   if (workflow.task) console.log(`Task: ${compact(workflow.task, 220)}`);
   const selected = workflow.selectedServer || null;
   if (selected) {
@@ -1257,6 +1257,7 @@ async function showMcpWorkflow(options = {}) {
   const task = options.task || argvValue('--task', '') || argvValue('--query', '') || 'Choose an MCP server for this task without executing.';
   const serverName = options.serverName || argvValue('--server', '') || argvValue('--server-name', '');
   const toolName = options.toolName || argvValue('--tool', '') || argvValue('--tool-name', '');
+  const sourceId = options.sourceId || argvValue('--source-id', '') || argvValue('--mcp-source-id', '');
   const requestApproval = options.requestApproval === true || process.argv.includes('--request-approval');
   const result = await request('/api/mcp/workflow', {
     method: 'POST',
@@ -1265,6 +1266,7 @@ async function showMcpWorkflow(options = {}) {
       task,
       serverName,
       toolName,
+      sourceId,
       execute: requestApproval,
       requestApproval,
     },

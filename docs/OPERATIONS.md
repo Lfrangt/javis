@@ -156,7 +156,7 @@ curl -X POST http://127.0.0.1:3417/api/mcp/workflow \
   -d '{"task":"Choose the MCP server for this task, but do not execute.","execute":false}'
 ```
 
-This uses the same sanitized MCP discovery data to select candidate servers and print the next confirmed steps. It is preview-only by default: it does not start MCP server commands, does not call MCP tools, and still redacts env values plus URL query strings. Passing `execute:true` plus `requestApproval:true`, a `serverName`, and a `toolName` creates a local pending approval request only; approving that record confirms intent but still does not start MCP servers until the MCP client adapter is implemented. Realtime voice can call `plan_mcp_workflow` when the user asks which MCP/external tool bridge should handle a concrete task.
+This uses the same sanitized MCP discovery data to select candidate servers and print the next confirmed steps. It is preview-only by default: it does not start MCP server commands, does not call MCP tools, and still redacts env values plus URL query strings. Passing `execute:true` plus `requestApproval:true`, a `serverName`, and a `toolName` creates a local pending approval request. Approving a stdio MCP request can briefly start that server, send MCP `initialize`, send `notifications/initialized`, run `tools/list`, return sanitized tool schemas, and stop the process. It still does not call MCP tools; `tools/call` remains a separate future confirmation path. Realtime voice can call `plan_mcp_workflow` when the user asks which MCP/external tool bridge should handle a concrete task.
 
 Use option `C. Show creative workflow benchmarks`, or:
 

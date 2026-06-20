@@ -160,6 +160,76 @@ export default {
       );
     }
 
+    const stdioServers = Array.isArray(mcpData.servers)
+      ? mcpData.servers.filter((server) => server?.enabled !== false && server?.transport === 'stdio' && server?.command)
+      : [];
+    const runnableStdioServer = stdioServers[0] || null;
+    if (!runnableStdioServer) {
+      out.push(skip('knowledge.mcp_stdio_tools_list_adapter', 'MCP stdio tools/list adapter', 'no stdio MCP server available for live adapter check'));
+    } else {
+      const mcpAdapterApproval = await ctx.api('/api/mcp/workflow', {
+        method: 'POST',
+        body: {
+          source: 'eval_knowledge_mcp_stdio_adapter',
+          task: 'Approve MCP stdio tools/list schema inspection only.',
+          serverName: runnableStdioServer.name,
+          toolName: 'list_tools',
+          execute: true,
+          requestApproval: true,
+          limit: 20,
+        },
+        timeoutMs: 15000,
+      });
+      const approvalId = mcpAdapterApproval.data?.mcpWorkflow?.approval?.id || '';
+      let approveResult = null;
+      let output = null;
+      let cleanupOk = false;
+      if (approvalId) {
+        approveResult = await ctx.api(`/api/approvals/${approvalId}/approve`, {
+          method: 'POST',
+          body: { reason: 'eval: MCP stdio tools/list adapter' },
+          timeoutMs: 30000,
+        });
+        try {
+          output = JSON.parse(approveResult.data?.output || '{}');
+        } catch {
+          output = null;
+        }
+        const removed = await ctx.api(`/api/approvals/${approvalId}`, {
+          method: 'DELETE',
+          timeoutMs: 15000,
+        });
+        cleanupOk = removed.ok === true;
+      }
+      if (output?.status === 'local_execution_disabled') {
+        out.push(skip('knowledge.mcp_stdio_tools_list_adapter', 'MCP stdio tools/list adapter', 'local execution disabled; approval remained non-executing'));
+      } else {
+        out.push(
+          mcpAdapterApproval.ok &&
+            mcpAdapterApproval.status === 202 &&
+            approveResult?.ok === true &&
+            output?.ok === true &&
+            output?.status === 'tools_listed' &&
+            output?.adapter === 'stdio_tools_list' &&
+            output?.safety?.startsServers === true &&
+            output?.safety?.commandsExecuted === true &&
+            output?.safety?.callsMcpTools === false &&
+            output?.safety?.listsToolSchemas === true &&
+            output?.safety?.envValuesRedacted === true &&
+            Array.isArray(output?.tools) &&
+            typeof output?.counts?.tools === 'number' &&
+            cleanupOk
+            ? ok('knowledge.mcp_stdio_tools_list_adapter', 'MCP stdio tools/list adapter', `${output.counts.tools || 0} tool schema(s) listed from ${output.serverName || runnableStdioServer.name}`)
+            : fail('knowledge.mcp_stdio_tools_list_adapter', 'MCP stdio tools/list adapter', `approve ${approvalId || '-'} failed`, {
+              approval: mcpAdapterApproval.data,
+              approve: approveResult?.data,
+              output,
+              cleanupOk,
+            }),
+        );
+      }
+    }
+
     try {
       const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-mcp-servers'], {
         cwd: process.cwd(),
