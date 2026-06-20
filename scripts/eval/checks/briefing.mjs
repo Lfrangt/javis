@@ -49,6 +49,7 @@ export default {
     const realtimeAction = next.find((action) => action.source === 'realtime_voice') || null;
     const realtimePending = realtimeVoice.status && realtimeVoice.status !== 'ready';
     const realtimeGuide = realtimeAction?.dogfoodGuide || {};
+    const realtimeActionPlan = realtimeAction?.dogfoodActionPlan || {};
     const realtimeGuideReady = Boolean(
       !realtimeAction ||
         (
@@ -63,11 +64,24 @@ export default {
           realtimeGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff')
         ),
     );
+    const realtimeActionPlanReady = Boolean(
+      !realtimeAction ||
+        (
+          realtimeActionPlan.version === 1 &&
+          realtimeActionPlan.scope === 'workbench' &&
+          Array.isArray(realtimeActionPlan.previewable) &&
+          realtimeActionPlan.previewable.some((action) => action.startsMicrophone === false && action.readOnly === true) &&
+          Array.isArray(realtimeActionPlan.manual) &&
+          realtimeActionPlan.manual.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
+          realtimeActionPlan.boundaries?.some((item) => /microphone|confirmMic/i.test(item))
+        ),
+    );
     out.push(
       !realtimeVoice.status ||
         (['ready', 'pending', 'blocked'].includes(realtimeVoice.status) &&
           typeof realtimeVoice.phase === 'string' &&
           realtimeGuideReady &&
+          realtimeActionPlanReady &&
           (!realtimePending || (
             realtimeAction &&
             realtimeAction.phase === realtimeVoice.phase &&
@@ -102,6 +116,7 @@ export default {
       ? workNext.briefing.nextActions
       : [];
     const selectedGuide = selectedAction?.dogfoodGuide || {};
+    const selectedPlan = selectedAction?.dogfoodActionPlan || {};
     const matchesBriefing = !selectedAction ||
       (next.length === 0 && workNextActions.length === 0) ||
       workNextActions.some((item) => item?.id && item.id === selectedAction.id);
@@ -109,7 +124,11 @@ export default {
       selectedGuide.monitor?.cui &&
         Array.isArray(selectedGuide.prompts) &&
         selectedGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
-        String(workNext.output).includes('get_work_handoff'),
+        String(workNext.output).includes('get_work_handoff') &&
+        selectedPlan.version === 1 &&
+        selectedPlan.scope === 'workbench' &&
+        selectedPlan.previewable?.some((action) => action.startsMicrophone === false) &&
+        selectedPlan.manual?.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true),
     );
     out.push(
       workNextReady && matchesBriefing && workNextGuideOk

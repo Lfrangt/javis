@@ -1180,6 +1180,9 @@ export default {
       body: { source: 'eval', name: 'get_autopilot_status', arguments: { workflowLimit: 6, jobLimit: 6 } },
     });
     const autopilotStatusOutput = parseToolOutput(autopilotStatusTool);
+    const autopilotDogfoodCandidate = Array.isArray(autopilotStatusOutput?.candidates)
+      ? autopilotStatusOutput.candidates.find((candidate) => candidate.dogfoodActionPlan)
+      : null;
     out.push(
       autopilotStatusTool.ok &&
         autopilotStatusTool.data?.ok === true &&
@@ -1192,6 +1195,13 @@ export default {
         typeof autopilotStatusOutput.candidateCounts.total === 'number' &&
         typeof autopilotStatusOutput.candidateCounts.autoExecutable === 'number' &&
         Array.isArray(autopilotStatusOutput.waitingFor) &&
+        (!autopilotDogfoodCandidate || (
+          autopilotDogfoodCandidate.dogfoodActionPlan.version === 1 &&
+          autopilotDogfoodCandidate.dogfoodActionPlan.firstPreviewable?.startsMicrophone === false &&
+          (autopilotDogfoodCandidate.dogfoodActionPlan.firstManual?.requiresLiveVoice === true ||
+            autopilotDogfoodCandidate.dogfoodActionPlan.firstManual?.requiresMicConfirmation === true) &&
+          autopilotStatusOutput.waitingFor.some((item) => item.id === 'realtime_dogfood_prepare')
+        )) &&
         autopilotStatusOutput.decisionPreview &&
         Array.isArray(autopilotStatusOutput.candidates) &&
         autopilotStatusOutput.candidates.every((candidate) => candidate.id && candidate.decision && typeof candidate.decision.reason === 'string')

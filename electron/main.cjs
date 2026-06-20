@@ -26302,6 +26302,50 @@ function autopilotStateSnapshot() {
   };
 }
 
+function summarizeDogfoodActionPlanForAutopilot(plan = null) {
+  if (!plan || typeof plan !== 'object') return null;
+  const previewable = Array.isArray(plan.previewable) ? plan.previewable : [];
+  const manual = Array.isArray(plan.manual) ? plan.manual : [];
+  const primary = plan.primary || null;
+  return {
+    version: Number(plan.version || 0),
+    scope: compactRecordText(plan.scope || '', 80),
+    status: compactRecordText(plan.status || '', 80),
+    accepted: Boolean(plan.accepted),
+    primary: primary
+      ? {
+        id: compactRecordText(primary.id || '', 120),
+        label: compactRecordText(primary.label || primary.id || '', 140),
+        startsMicrophone: Boolean(primary.startsMicrophone),
+        requiresMicConfirmation: Boolean(primary.requiresMicConfirmation),
+        requiresLiveVoice: Boolean(primary.requiresLiveVoice),
+        requiresUserPresence: Boolean(primary.requiresUserPresence),
+      }
+      : null,
+    previewableCount: previewable.length,
+    manualCount: manual.length,
+    firstPreviewable: previewable[0]
+      ? {
+        id: compactRecordText(previewable[0].id || '', 120),
+        label: compactRecordText(previewable[0].label || previewable[0].id || '', 140),
+        command: compactRecordText(previewable[0].command || '', 180),
+        endpoint: compactRecordText(previewable[0].endpoint || '', 140),
+        startsMicrophone: Boolean(previewable[0].startsMicrophone),
+      }
+      : null,
+    firstManual: manual[0]
+      ? {
+        id: compactRecordText(manual[0].id || '', 120),
+        label: compactRecordText(manual[0].label || manual[0].id || '', 140),
+        startsMicrophone: Boolean(manual[0].startsMicrophone),
+        requiresMicConfirmation: Boolean(manual[0].requiresMicConfirmation),
+        requiresLiveVoice: Boolean(manual[0].requiresLiveVoice),
+      }
+      : null,
+    spokenSummary: compactRecordText(plan.spokenSummary || '', 260),
+  };
+}
+
 function autopilotEligibilityDecision(action) {
   if (!action || typeof action !== 'object') {
     return {
@@ -26421,6 +26465,7 @@ function autopilotActionDecision(action, index = 0) {
     routeRecoveryLabel: compactRecordText(action.routeRecovery?.recommended?.label || '', 140),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     phase: compactRecordText(action.phase || '', 80),
+    dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
     decision: eligibility,
   };
 }
@@ -26530,6 +26575,19 @@ function autopilotWaitingConditions({ reason = '', candidates = [], selectedActi
       status: 'manual',
       actionId: manual.id,
       actionSource: manual.source,
+    });
+  }
+
+  const dogfoodPrep = candidates.find((candidate) => candidate.dogfoodActionPlan?.firstPreviewable);
+  if (dogfoodPrep?.dogfoodActionPlan?.firstPreviewable) {
+    const prep = dogfoodPrep.dogfoodActionPlan.firstPreviewable;
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'realtime_dogfood_prepare',
+      label: 'Realtime dogfood can prepare',
+      summary: `Without starting microphone capture, JAVIS can still prepare: ${prep.label || prep.id}.`,
+      status: 'previewable',
+      actionId: dogfoodPrep.id,
+      actionSource: dogfoodPrep.source,
     });
   }
 
@@ -28791,7 +28849,59 @@ function realtimeVoiceWorkbenchSnapshot() {
     voiceHealth,
   };
   snapshot.dogfoodGuide = realtimeDogfoodGuideFromEvidence(snapshot);
+  snapshot.actionPlan = realtimeDogfoodWorkbenchActionPlan(snapshot);
   return snapshot;
+}
+
+function realtimeDogfoodWorkbenchGateFromStep(step = {}) {
+  const idMap = {
+    provider_ready: 'provider_ready',
+    session_negotiated: 'start_live_voice',
+    voice_session_live: 'start_live_voice',
+    worker_progress_injected: 'inject_worker_progress',
+    progress_version_synced: 'sync_latest_progress',
+    passive_context_only: 'sync_latest_progress',
+    spoken_summary_ready: 'ask_progress',
+  };
+  const groupMap = {
+    provider_ready: 'live_voice',
+    session_negotiated: 'live_voice',
+    voice_session_live: 'live_voice',
+    worker_progress_injected: 'live_voice',
+    progress_version_synced: 'live_voice',
+    passive_context_only: 'live_voice',
+    spoken_summary_ready: 'spoken_answer',
+  };
+  const mappedId = idMap[step.id] || step.id || 'realtime_dogfood_step';
+  return realtimeDogfoodAcceptanceGate({
+    id: mappedId,
+    group: groupMap[step.id] || 'live_voice',
+    label: step.label || mappedId,
+    ok: Boolean(step.ok),
+    detail: step.detail || '',
+    nextAction: step.nextAction || '',
+    evidence: {
+      sourceStepId: step.id || '',
+      stepStatus: step.status || (step.ok ? 'ready' : 'pending'),
+      prompt: step.evidence?.prompt || step.evidence?.tool || '',
+    },
+  });
+}
+
+function realtimeDogfoodWorkbenchActionPlan(evidence = {}) {
+  const checklist = Array.isArray(evidence.checklist) ? evidence.checklist : [];
+  const gates = checklist.map(realtimeDogfoodWorkbenchGateFromStep);
+  const gaps = gates.filter((gate) => !gate.ok);
+  const accepted = Boolean(evidence.ready || evidence.readyForVoiceProgressQuestion || gaps.length === 0);
+  return {
+    ...realtimeDogfoodAcceptanceActionPlan({
+      accepted,
+      nextGap: gaps[0] || null,
+      gaps,
+      gates,
+    }),
+    scope: 'workbench',
+  };
 }
 
 function realtimeDogfoodGuideFromEvidence(evidence = {}) {
@@ -30096,6 +30206,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     'forget_shortcut',
   ]);
   const commandById = {
+    provider_ready: 'GET /api/realtime/config?micMode=open',
     open_monitor: 'npm run config -- --print-realtime-evidence',
     start_live_voice: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
     inject_worker_progress: 'POST /api/realtime/dogfood/start { execute:true, prepareWhenLive:true }',
@@ -30119,6 +30230,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     archive_saved: 'npm run config -- --save-realtime-dogfood-archive',
   };
   const endpointById = {
+    provider_ready: '/api/realtime/config',
     open_monitor: '/api/realtime/evidence',
     start_live_voice: '/api/realtime/dogfood/renderer/start',
     inject_worker_progress: '/api/realtime/dogfood/start',
@@ -30128,7 +30240,8 @@ function realtimeDogfoodActionForGate(gate = {}) {
   const startsMicrophone = id === 'start_live_voice';
   const requiresLiveVoice = liveVoiceGates.has(id);
   const writesLocalJson = id === 'archive_saved' || id === 'save_productivity_dogfood_archive';
-  const readOnly = id === 'open_monitor';
+  const readOnly = id === 'open_monitor' || id === 'provider_ready';
+  const requiresUserPresence = startsMicrophone || requiresLiveVoice || id === 'archive_saved' || id === 'provider_ready';
   return realtimeDogfoodPlanAction({
     id,
     label,
@@ -30140,7 +30253,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     prompt,
     startsMicrophone,
     requiresMicConfirmation: startsMicrophone,
-    requiresUserPresence: startsMicrophone || requiresLiveVoice || id === 'archive_saved',
+    requiresUserPresence,
     requiresLiveVoice,
     writesLocalJson,
     readOnly,
@@ -32465,6 +32578,7 @@ function summarizeAutonomyWorkNext(next = {}) {
           requiresUserPresence: Boolean(action.requiresUserPresence),
           riskLevel: Number(action.riskLevel || 0),
           summary: compactRecordText(action.summary || '', 300),
+          dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
         }
       : null,
     nextActionCount: Array.isArray(next.briefing?.nextActions) ? next.briefing.nextActions.length : 0,
@@ -35011,6 +35125,13 @@ function workflowBriefing(options = {}) {
       status: realtimeWorkbench.status,
       blocker: realtimeWorkbench.blocker,
       dogfoodGuide: realtimeWorkbench.dogfoodGuide,
+      dogfoodActionPlan: realtimeWorkbench.actionPlan,
+      preparableActions: Array.isArray(realtimeWorkbench.actionPlan?.previewable)
+        ? realtimeWorkbench.actionPlan.previewable.slice(0, 3)
+        : [],
+      manualActions: Array.isArray(realtimeWorkbench.actionPlan?.manual)
+        ? realtimeWorkbench.actionPlan.manual.slice(0, 3)
+        : [],
       executable: realtimeWorkbench.phase === 'needs_live_session',
       autoEligible: false,
       autopilotEligible: false,
@@ -35902,8 +36023,20 @@ async function workNextAction(options = {}) {
       durationMs: options.durationMs || 45000,
       source: options.source || 'work_next',
     });
+    if (action.dogfoodActionPlan) {
+      result = {
+        ...result,
+        dogfoodActionPlan: action.dogfoodActionPlan,
+      };
+    }
     executed = Boolean(result.executed);
-    output = result.output;
+    output = [
+      result.output,
+      action.dogfoodActionPlan?.spokenSummary ? `Plan: ${action.dogfoodActionPlan.spokenSummary}` : '',
+      action.preparableActions?.length
+        ? `Can prepare without mic: ${action.preparableActions.map((item) => item.label || item.id).join(', ')}.`
+        : '',
+    ].filter(Boolean).join('\n');
   } else if (action.source === 'maintenance') {
     result = await runMaintenanceSnapshot({
       execute,
