@@ -4724,7 +4724,7 @@ function routingSpeedPolicyVoicePayload(snapshot = {}, options = {}) {
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
-    realtime: ['get_routing_speed_policy', 'get_local_capabilities', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
+    realtime: ['get_routing_speed_policy', 'get_local_capabilities', 'get_learning_distillation', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
     background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
     codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
     claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
@@ -4885,7 +4885,7 @@ async function localCapabilitySnapshot(options = {}) {
   const recommendedStart = [
     { when: 'User asks why JAVIS is fast/slow or which model/lane to use', tool: 'get_routing_speed_policy', reason: 'Read the routing speed policy before deciding whether to answer, route, or delegate.' },
     { when: 'User asks what you can do or which tool to use', tool: 'get_local_capabilities', reason: 'Read the current capability map and guardrails.' },
-    { when: 'User asks what you have learned about their habits or preferences', tool: 'get_learning_profile', reason: 'Report local inferred learning without exposing raw screen, clipboard, or page contents.' },
+    { when: 'User asks what you have learned about their habits, preferences, or reusable workflows', tool: 'get_learning_distillation', reason: 'Report local inferred learning, recent changes, reusable workflow artifacts, and safety boundaries without exposing raw screen, clipboard, or page contents.' },
     { when: 'User asks what changed recently in their habits', tool: 'get_learning_evolution', reason: 'Compare recent local metadata against an older local baseline without exposing raw content.' },
     { when: 'User asks where work stands or what is next', tool: 'get_work_handoff', reason: 'Speak a short work handoff from current evidence.' },
     { when: 'User asks who owns current agent work or whether Codex/Claude can work in parallel', tool: 'get_collaboration_state', reason: 'Read scoped claims, conflicts, and the collaboration handoff before starting another worker.' },
@@ -7087,6 +7087,151 @@ function learningDistillationSnapshot(options = {}) {
         requiresConfirmation: true,
       },
     ],
+  };
+}
+
+function learningDistillationVoiceSnapshot(options = {}) {
+  const full = learningDistillationSnapshot({
+    ...(options || {}),
+    source: options.source || 'voice',
+    skillLimit: options.skillLimit || 4,
+    demonstrationLimit: options.demonstrationLimit || 4,
+    shortcutLimit: options.shortcutLimit || 4,
+  });
+  const profile = full.profile || {};
+  const evolution = full.evolution || {};
+  const artifacts = full.artifacts || {};
+  const demonstrations = artifacts.demonstrations || {};
+  const shortcuts = artifacts.shortcuts || {};
+  const skills = artifacts.skills || {};
+  const payload = {
+    ok: true,
+    kind: full.kind,
+    generatedAt: full.generatedAt,
+    source: full.source,
+    summary: compactRecordText(full.summary || '', 420),
+    spokenSummary: compactRecordText(full.spokenSummary || full.summary || '', 520),
+    state: {
+      configured: Boolean(full.state?.configured),
+      enabled: Boolean(full.state?.enabled),
+      paused: Boolean(full.state?.paused),
+      includeInPrompts: Boolean(full.state?.includeInPrompts),
+    },
+    profile: {
+      sourceEventCount: Number(profile.sourceEventCount || 0),
+      summary: compactRecordText(profile.summary || '', 420),
+      signals: Array.isArray(profile.signals) ? profile.signals.map((item) => compactRecordText(item, 160)).slice(0, 5) : [],
+      topApps: Array.isArray(profile.topApps)
+        ? profile.topApps.slice(0, 4).map((item) => ({
+            name: compactRecordText(item.name || '', 80),
+            share: Number(item.share || 0),
+          })).filter((item) => item.name)
+        : [],
+      topBrowserHosts: Array.isArray(profile.topBrowserHosts)
+        ? profile.topBrowserHosts.slice(0, 4).map((item) => ({
+            host: compactRecordText(item.host || '', 120),
+            share: Number(item.share || 0),
+          })).filter((item) => item.host)
+        : [],
+      activeHours: Array.isArray(profile.activeHours)
+        ? profile.activeHours.slice(0, 4).map((item) => ({
+            hour: Number(item.hour || 0),
+            count: Number(item.count || 0),
+          }))
+        : [],
+    },
+    evolution: {
+      enoughBaseline: Boolean(evolution.enoughBaseline),
+      sourceEventCount: Number(evolution.sourceEventCount || 0),
+      summary: compactRecordText(evolution.summary || '', 320),
+      spokenSummary: compactRecordText(evolution.spokenSummary || '', 420),
+      recentCount: Number(evolution.windows?.recent?.count || 0),
+      baselineCount: Number(evolution.windows?.baseline?.count || 0),
+      changes: Array.isArray(evolution.changes)
+        ? evolution.changes.slice(0, 5).map((change) => ({
+            id: compactRecordText(change.id || '', 80),
+            label: compactRecordText(change.label || '', 100),
+            direction: compactRecordText(change.direction || '', 40),
+            from: compactRecordText(change.from || '', 100),
+            to: compactRecordText(change.to || '', 100),
+            confidence: Number(change.confidence || 0),
+          }))
+        : [],
+    },
+    artifacts: {
+      demonstrations: {
+        counts: demonstrations.counts || {},
+        recent: Array.isArray(demonstrations.recent)
+          ? demonstrations.recent.slice(0, 3).map((demo) => ({
+              title: compactRecordText(demo.title || '', 120),
+              status: compactRecordText(demo.status || '', 40),
+              stepCount: Number(demo.stepCount || 0),
+            }))
+          : [],
+      },
+      shortcuts: {
+        counts: shortcuts.counts || {},
+        recent: Array.isArray(shortcuts.recent)
+          ? shortcuts.recent.slice(0, 3).map((shortcut) => ({
+              phrase: compactRecordText(shortcut.phrase || '', 120),
+              enabled: Boolean(shortcut.enabled),
+              skill: compactRecordText(shortcut.skill || '', 120),
+              usedCount: Number(shortcut.usedCount || 0),
+            }))
+          : [],
+      },
+      skills: {
+        returned: Number(skills.returned || 0),
+        recent: Array.isArray(skills.recent)
+          ? skills.recent.slice(0, 3).map((skill) => ({
+              name: compactRecordText(skill.name || '', 120),
+              kind: compactRecordText(skill.kind || '', 40),
+              description: compactRecordText(skill.description || '', 180),
+            }))
+          : [],
+      },
+    },
+    privacy: {
+      localOnly: full.privacy?.localOnly === true,
+      metadataOnly: full.privacy?.metadataOnly === true,
+      modelFreeDistillation: full.privacy?.modelFreeDistillation === true,
+      inferredNotExplicitMemory: full.privacy?.inferredNotExplicitMemory === true,
+      rawContentStoredByDefault: full.privacy?.rawContentStoredByDefault === false,
+      noRawScreenshots: full.privacy?.noRawScreenshots === true,
+      noClipboardText: full.privacy?.noClipboardText === true,
+      noPageBodies: full.privacy?.noPageBodies === true,
+      noPermissionGrant: full.privacy?.noPermissionGrant === true,
+      promptInjectionRisk: compactRecordText(full.privacy?.promptInjectionRisk || '', 260),
+    },
+    boundaries: Array.isArray(full.boundaries) ? full.boundaries.map((item) => compactRecordText(item, 180)).slice(0, 5) : [],
+    nextActions: Array.isArray(full.nextActions)
+      ? full.nextActions.slice(0, 5).map((action) => ({
+          id: compactRecordText(action.id || '', 80),
+          label: compactRecordText(action.label || '', 160),
+          requiresConfirmation: Boolean(action.requiresConfirmation),
+        }))
+      : [],
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 9000,
+      omitted: [
+        'learningFile',
+        'local skill paths',
+        'full recent/baseline windows',
+        'ambient events',
+        'raw screenshots',
+        'clipboard text',
+        'page bodies',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
   };
 }
 
@@ -28270,9 +28415,11 @@ const REALTIME_APPROVAL_TOOL_NAMES = new Set([
 ]);
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
 const REALTIME_LEARNING_EVOLUTION_TOOL_NAME = 'get_learning_evolution';
+const REALTIME_LEARNING_DISTILLATION_TOOL_NAME = 'get_learning_distillation';
 const REALTIME_LEARNING_TOOL_NAMES = new Set([
   REALTIME_LEARNING_TOOL_NAME,
   REALTIME_LEARNING_EVOLUTION_TOOL_NAME,
+  REALTIME_LEARNING_DISTILLATION_TOOL_NAME,
 ]);
 const REALTIME_BROWSER_TOOL_NAMES = new Set([
   'get_browser_context',
@@ -28677,36 +28824,56 @@ function realtimeLearningToolSummary(name, args = {}, result = {}) {
   const windows = output.windows || {};
   const recentWindow = windows.recent || {};
   const baselineWindow = windows.baseline || {};
-  const changes = Array.isArray(output.changes) ? output.changes : [];
+  const distillationEvolution = output.evolution || {};
+  const distillationArtifacts = output.artifacts || {};
+  const changes = Array.isArray(output.changes)
+    ? output.changes
+    : Array.isArray(distillationEvolution.changes)
+      ? distillationEvolution.changes
+      : [];
+  const action = name === REALTIME_LEARNING_DISTILLATION_TOOL_NAME
+    ? 'distillation'
+    : name === REALTIME_LEARNING_EVOLUTION_TOOL_NAME
+      ? 'evolution'
+      : 'profile';
   return {
-    action: name === REALTIME_LEARNING_EVOLUTION_TOOL_NAME ? 'evolution' : 'profile',
-    spokenSummary: compactRecordText(output.spokenSummary || profile.summary || '', 420),
+    action,
+    spokenSummary: compactRecordText(output.spokenSummary || profile.summary || output.summary || '', 420),
     source: compactRecordText(output.source || args?.source || '', 80),
-    configured: Boolean(output.configured),
-    enabled: Boolean(output.enabled),
-    paused: Boolean(output.paused),
-    includeInPrompts: Boolean(output.includeInPrompts),
-    sourceEventCount: boundedCount(profile.sourceEventCount ?? output.sourceEventCount, 1000000),
+    configured: Boolean(output.configured ?? output.state?.configured),
+    enabled: Boolean(output.enabled ?? output.state?.enabled),
+    paused: Boolean(output.paused ?? output.state?.paused),
+    includeInPrompts: Boolean(output.includeInPrompts ?? output.state?.includeInPrompts),
+    sourceEventCount: boundedCount(profile.sourceEventCount ?? output.sourceEventCount ?? distillationEvolution.sourceEventCount, 1000000),
     signalCount: Array.isArray(profile.signals) ? profile.signals.length : 0,
     topApps: Array.isArray(profile.topApps) ? profile.topApps.map((item) => compactRecordText(item.name || '', 80)).filter(Boolean).slice(0, 6) : [],
     topHosts: Array.isArray(profile.topBrowserHosts) ? profile.topBrowserHosts.map((item) => compactRecordText(item.host || '', 120)).filter(Boolean).slice(0, 6) : [],
     recentContextCount: Array.isArray(profile.recentContexts) ? profile.recentContexts.length : 0,
     hasEvolution: name === REALTIME_LEARNING_EVOLUTION_TOOL_NAME && output.ok === true,
-    enoughBaseline: Boolean(output.enoughBaseline),
+    hasDistillation: name === REALTIME_LEARNING_DISTILLATION_TOOL_NAME && output.ok === true,
+    enoughBaseline: Boolean(output.enoughBaseline ?? distillationEvolution.enoughBaseline),
     changeCount: changes.length,
     changeIds: changes.map((change) => compactRecordText(change.id || '', 80)).filter(Boolean).slice(0, 8),
-    recentEventCount: boundedCount(recentWindow.count, 1000000),
-    baselineEventCount: boundedCount(baselineWindow.count, 1000000),
+    recentEventCount: boundedCount(recentWindow.count ?? distillationEvolution.recentCount, 1000000),
+    baselineEventCount: boundedCount(baselineWindow.count ?? distillationEvolution.baselineCount, 1000000),
+    demonstrationCount: boundedCount(distillationArtifacts.demonstrations?.counts?.total, 1000),
+    shortcutCount: boundedCount(distillationArtifacts.shortcuts?.counts?.total, 1000),
+    skillCount: boundedCount(distillationArtifacts.skills?.returned, 1000),
     excludedApps: boundedCount(controls.excludedApps, 1000),
     excludedHosts: boundedCount(controls.excludedHosts, 1000),
     excludedFolders: boundedCount(controls.excludedFolders, 1000),
     localOnly: privacy.localOnly === true,
+    metadataOnly: privacy.metadataOnly === true,
+    modelFreeDistillation: privacy.modelFreeDistillation === true,
     inferredNotExplicitMemory: privacy.inferredNotExplicitMemory === true,
     noRawScreenshots: privacy.noRawScreenshots === true,
     noClipboardText: privacy.noClipboardText === true,
     noPageBodies: privacy.noPageBodies === true,
     noPermissionGrant: privacy.noPermissionGrant === true,
-    nextAction: compactRecordText(output.nextAction || '', 240),
+    confirmationGatedNextActions: Array.isArray(output.nextActions)
+      ? output.nextActions.filter((actionItem) => actionItem.requiresConfirmation === true).length
+      : 0,
+    nextAction: compactRecordText(output.nextAction || output.nextActions?.[0]?.label || '', 240),
   };
 }
 
@@ -29434,27 +29601,51 @@ function realtimeLearningToolEvidence(limit = 8) {
     event.learning?.noPageBodies === true &&
     event.learning?.noPermissionGrant === true
   ));
+  const hasLearningDistillation = recent.some((event) => (
+    event.name === REALTIME_LEARNING_DISTILLATION_TOOL_NAME &&
+    event.ok &&
+    event.learning?.hasDistillation === true &&
+    event.learning?.spokenSummary &&
+    event.learning?.localOnly === true &&
+    event.learning?.metadataOnly === true &&
+    event.learning?.modelFreeDistillation === true &&
+    event.learning?.inferredNotExplicitMemory === true &&
+    event.learning?.noRawScreenshots === true &&
+    event.learning?.noClipboardText === true &&
+    event.learning?.noPageBodies === true &&
+    event.learning?.noPermissionGrant === true
+  ));
   return {
-    ok: hasLearningProfile || hasLearningEvolution,
+    ok: hasLearningProfile || hasLearningEvolution || hasLearningDistillation,
     count: recent.length,
     hasLearningProfile,
     hasLearningEvolution,
+    hasLearningDistillation,
     hasSourceEvents: recent.some((event) => Number(event.learning?.sourceEventCount || 0) > 0),
     hasSignals: recent.some((event) => Number(event.learning?.signalCount || 0) > 0),
     hasChanges: recent.some((event) => Number(event.learning?.changeCount || 0) > 0),
+    hasReusableArtifacts: recent.some((event) => (
+      Number(event.learning?.demonstrationCount || 0) +
+      Number(event.learning?.shortcutCount || 0) +
+      Number(event.learning?.skillCount || 0)
+    ) > 0),
+    hasConfirmationGatedNextActions: recent.some((event) => Number(event.learning?.confirmationGatedNextActions || 0) > 0),
     privacySafe: recent.length > 0 && recent.every((event) => (
       event.learning?.localOnly === true &&
       event.learning?.noRawScreenshots === true &&
       event.learning?.noClipboardText === true &&
-      event.learning?.noPageBodies === true
+      event.learning?.noPageBodies === true &&
+      event.learning?.noPermissionGrant === true
     )),
     last: recent[0] || null,
     recent,
-    nextAction: hasLearningProfile && hasLearningEvolution
-      ? 'Ask live voice what changed in local habits and confirm it frames the answer as local inferred context, not explicit memory.'
+    nextAction: hasLearningProfile && hasLearningEvolution && hasLearningDistillation
+      ? 'Ask live voice to summarize local distillation and confirm it mentions inferred context, reusable artifacts, and confirmation boundaries.'
+      : hasLearningProfile && hasLearningEvolution
+        ? 'Ask live voice to call get_learning_distillation for the combined local habit/workflow/boundary summary.'
       : hasLearningProfile
         ? 'Ask live voice what changed recently in inferred local habits and confirm get_learning_evolution appears here.'
-        : 'Ask the live voice session: 你最近学到了我什么使用习惯？最近有什么变化？',
+        : 'Ask the live voice session: 你最近学到了我什么使用习惯？最近有什么变化？本地蒸馏状态是什么？',
   };
 }
 
@@ -29913,6 +30104,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
       '你最近学到了我什么使用习惯？',
       '最近我的使用习惯有什么变化？',
+      '把本地蒸馏状态总结一下：你学到了什么、有哪些可复用工作流、哪些动作还需要我确认？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
       '保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
       '我来教你一个流程，开始记录这个 UI 流程',
@@ -29977,9 +30169,9 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       },
       {
         id: 'learning_tool',
-        label: 'Realtime called get_learning_profile',
-        ok: Boolean(learningTools.hasLearningProfile),
-        tool: REALTIME_LEARNING_TOOL_NAME,
+        label: 'Realtime called local learning profile, evolution, and distillation tools',
+        ok: Boolean(learningTools.hasLearningProfile && learningTools.hasLearningEvolution && learningTools.hasLearningDistillation),
+        tool: REALTIME_LEARNING_DISTILLATION_TOOL_NAME,
       },
       {
         id: 'learning_evolution_tool',
@@ -30174,11 +30366,14 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       count: Number(learningTools.count || 0),
       hasLearningProfile: Boolean(learningTools.hasLearningProfile),
       hasLearningEvolution: Boolean(learningTools.hasLearningEvolution),
+      hasLearningDistillation: Boolean(learningTools.hasLearningDistillation),
       privacySafe: Boolean(learningTools.privacySafe),
       hasSourceEvents: Boolean(learningTools.hasSourceEvents),
       hasSignals: Boolean(learningTools.hasSignals),
       hasChanges: Boolean(learningTools.hasChanges),
-      nextAction: learningTools.nextAction || 'Ask the live voice session what local habits JAVIS has inferred and what changed recently.',
+      hasReusableArtifacts: Boolean(learningTools.hasReusableArtifacts),
+      hasConfirmationGatedNextActions: Boolean(learningTools.hasConfirmationGatedNextActions),
+      nextAction: learningTools.nextAction || 'Ask the live voice session what local habits JAVIS has inferred, what changed, and what reusable workflow artifacts exist.',
     },
     browserTools: {
       observed: Boolean(browserTools.ok),
@@ -30430,10 +30625,19 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
     realtimeDogfoodDrillStep({
       id: 'ask_learning_profile',
       label: 'Ask what local habits JAVIS has inferred',
-      ok: Boolean(learningTools.hasLearningProfile),
-      detail: learningTools.hasLearningProfile ? 'get_learning_profile was observed in recent Realtime tool evidence.' : 'No get_learning_profile call has been observed in recent Realtime tool evidence.',
-      nextAction: 'Ask: 你最近学到了我什么使用习惯？',
-      evidence: { tool: REALTIME_LEARNING_TOOL_NAME, count: Number(learningTools.count || 0) },
+      ok: Boolean(learningTools.hasLearningProfile && learningTools.hasLearningEvolution && learningTools.hasLearningDistillation),
+      detail: learningTools.hasLearningDistillation
+        ? 'get_learning_profile, get_learning_evolution, and get_learning_distillation were observed in recent Realtime tool evidence.'
+        : 'No complete local learning distillation tool sequence has been observed in recent Realtime evidence.',
+      nextAction: 'Ask: 把本地蒸馏状态总结一下：你学到了什么、有哪些可复用工作流、哪些动作还需要我确认？',
+      evidence: {
+        tool: REALTIME_LEARNING_DISTILLATION_TOOL_NAME,
+        count: Number(learningTools.count || 0),
+        hasLearningProfile: Boolean(learningTools.hasLearningProfile),
+        hasLearningEvolution: Boolean(learningTools.hasLearningEvolution),
+        hasLearningDistillation: Boolean(learningTools.hasLearningDistillation),
+        hasReusableArtifacts: Boolean(learningTools.hasReusableArtifacts),
+      },
     }),
     realtimeDogfoodDrillStep({
       id: 'ask_learning_evolution',
@@ -30670,9 +30874,10 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
     },
     ask_learning_profile: {
       promptType: 'spoken',
-      prompt: '你最近学到了我什么使用习惯？',
-      copyText: '你最近学到了我什么使用习惯？',
-      reason: 'This verifies the Realtime session calls get_learning_profile and frames it as local inferred context, not explicit memory.',
+      prompt: '把本地蒸馏状态总结一下：你学到了什么、有哪些可复用工作流、哪些动作还需要我确认？',
+      copyText: '把本地蒸馏状态总结一下：你学到了什么、有哪些可复用工作流、哪些动作还需要我确认？',
+      followUpPrompts: ['你最近学到了我什么使用习惯？', '最近我的使用习惯有什么变化？'],
+      reason: 'This verifies the Realtime session calls get_learning_profile, get_learning_evolution, and get_learning_distillation while framing them as local inferred context, not explicit memory or action permission.',
     },
     ask_browser_workflow: {
       promptType: 'spoken',
@@ -30767,7 +30972,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
     { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), label: 'local capability map', tool: REALTIME_CAPABILITY_TOOL_NAME },
     { id: 'mcp', ok: Boolean(evidence.mcpTools?.hasDiscovery), label: 'MCP server discovery', tool: REALTIME_MCP_TOOL_NAME },
-    { id: 'learning', ok: Boolean(evidence.learningTools?.hasLearningProfile), label: 'local learning profile', tool: REALTIME_LEARNING_TOOL_NAME },
+    { id: 'learning', ok: Boolean(evidence.learningTools?.hasLearningProfile && evidence.learningTools?.hasLearningDistillation), label: 'local learning distillation', tool: REALTIME_LEARNING_DISTILLATION_TOOL_NAME },
     { id: 'browser', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), label: 'browser read/workflow', tool: 'run_browser_workflow' },
     {
       id: 'demonstration',
@@ -30944,7 +31149,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'mcp', label: 'MCP server discovery', ok: Boolean(evidence.mcpTools?.hasDiscovery), tool: REALTIME_MCP_TOOL_NAME },
     { id: 'mcp_tool_call', label: 'MCP tool-call approval preview', ok: Boolean(evidence.mcpTools?.hasToolCallPreview), tool: REALTIME_MCP_TOOL_CALL_TOOL_NAME },
     { id: 'approval', label: 'approval queue review', ok: Boolean(evidence.approvalTools?.hasList && evidence.approvalTools?.hasConfirmationGate), tool: 'get_pending_approvals' },
-    { id: 'learning', label: 'local learning profile', ok: Boolean(evidence.learningTools?.hasLearningProfile), tool: REALTIME_LEARNING_TOOL_NAME },
+    { id: 'learning', label: 'local learning distillation', ok: Boolean(evidence.learningTools?.hasLearningProfile && evidence.learningTools?.hasLearningDistillation), tool: REALTIME_LEARNING_DISTILLATION_TOOL_NAME },
     { id: 'browser', label: 'browser read/workflow', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), tool: 'run_browser_workflow' },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
     { id: 'shortcut', label: 'shortcut list/save/forget', ok: Boolean(evidence.shortcutTools?.hasList && evidence.shortcutTools?.hasSave && evidence.shortcutTools?.hasForget), tool: 'save_skill_shortcut' },
@@ -31224,7 +31429,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     ask_local_capabilities: 'Ask live voice to call get_local_capabilities.',
     plan_mcp_tool_call: 'Ask live voice to call plan_mcp_tool_call in preview/approval mode.',
     review_and_resolve_approval: 'Ask live voice to call get_pending_approvals, then resolve_approval only for one confirmed id.',
-    ask_learning_profile: 'Ask live voice to call get_learning_profile and get_learning_evolution.',
+    ask_learning_profile: 'Ask live voice to call get_learning_profile, get_learning_evolution, and get_learning_distillation.',
     ask_browser_workflow: 'Ask live voice to call read_browser_page or run_browser_workflow preview-first.',
     save_productivity_dogfood_archive: 'Ask live voice to call save_productivity_dogfood_archive preview-safe.',
     teach_ui_demonstration: 'Ask live voice to run the UI demonstration Record & Replay flow.',
@@ -42082,6 +42287,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(learningEvolutionSnapshot({ ...(args || {}), source: 'voice' })) };
   }
 
+  if (name === 'get_learning_distillation') {
+    return { ok: true, output: JSON.stringify(learningDistillationVoiceSnapshot({ ...(args || {}), source: 'voice' })) };
+  }
+
   if (name === 'get_presence_state') {
     return { ok: true, output: JSON.stringify(presenceStateSnapshot({ limit: args?.limit || 5 })) };
   }
@@ -43855,6 +44064,23 @@ function createRealtimeSessionConfig(options = {}) {
         parameters: {
           type: 'object',
           properties: {
+            recentLimit: { type: 'number' },
+            baselineLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_learning_distillation',
+        description: 'Get one compact local user-distillation status packet for voice: inferred habits, recent changes, reusable workflow artifacts, privacy boundaries, prompt-injection risk, and confirmation-gated next actions. Read-only and metadata-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+            skillLimit: { type: 'number' },
+            demonstrationLimit: { type: 'number' },
+            shortcutLimit: { type: 'number' },
             recentLimit: { type: 'number' },
             baselineLimit: { type: 'number' },
           },

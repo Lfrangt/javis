@@ -42,6 +42,7 @@ const REQUIRED_TOOLS = [
   'get_local_capabilities',
   'get_learning_profile',
   'get_learning_evolution',
+  'get_learning_distillation',
   'get_mcp_servers',
   'plan_mcp_workflow',
   'plan_mcp_tool_call',
@@ -448,6 +449,41 @@ export default {
         : fail('realtime.learning_evolution_tool', 'Realtime local learning evolution tool', `tool execute ${learningEvolutionTool.status}`, learningEvolutionTool.data),
     );
 
+    const learningDistillationTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_learning_distillation', arguments: { recentLimit: 8, baselineLimit: 24, skillLimit: 4 } },
+    });
+    const learningDistillationOutput = parseToolOutput(learningDistillationTool);
+    const learningDistillationBytes = Buffer.byteLength(learningDistillationTool.data?.output || '', 'utf8');
+    out.push(
+      learningDistillationTool.ok &&
+        learningDistillationTool.data?.ok === true &&
+        learningDistillationOutput?.ok === true &&
+        learningDistillationOutput?.kind === 'local_user_distillation' &&
+        learningDistillationOutput?.responseBudget?.compact === true &&
+        learningDistillationBytes > 0 &&
+        learningDistillationBytes <= 9000 &&
+        typeof learningDistillationOutput.spokenSummary === 'string' &&
+        typeof learningDistillationOutput.profile?.sourceEventCount === 'number' &&
+        Array.isArray(learningDistillationOutput.evolution?.changes) &&
+        typeof learningDistillationOutput.artifacts?.demonstrations?.counts?.total === 'number' &&
+        typeof learningDistillationOutput.artifacts?.shortcuts?.counts?.total === 'number' &&
+        typeof learningDistillationOutput.artifacts?.skills?.returned === 'number' &&
+        learningDistillationOutput.privacy?.localOnly === true &&
+        learningDistillationOutput.privacy?.metadataOnly === true &&
+        learningDistillationOutput.privacy?.modelFreeDistillation === true &&
+        learningDistillationOutput.privacy?.inferredNotExplicitMemory === true &&
+        learningDistillationOutput.privacy?.noRawScreenshots === true &&
+        learningDistillationOutput.privacy?.noClipboardText === true &&
+        learningDistillationOutput.privacy?.noPageBodies === true &&
+        learningDistillationOutput.privacy?.noPermissionGrant === true &&
+        Array.isArray(learningDistillationOutput.boundaries) &&
+        learningDistillationOutput.boundaries.some((item) => /inferred habits/i.test(item)) &&
+        learningDistillationOutput.nextActions?.some((action) => action.id === 'save_skill_or_memory' && action.requiresConfirmation === true)
+        ? ok('realtime.learning_distillation_tool', 'Realtime local learning distillation tool', `${learningDistillationBytes}/9000B · ${learningDistillationOutput.spokenSummary}`)
+        : fail('realtime.learning_distillation_tool', 'Realtime local learning distillation tool', `tool execute ${learningDistillationTool.status}`, learningDistillationTool.data),
+    );
+
     const learningEvidence = await ctx.api('/api/realtime/evidence');
     const learningToolEvidence = learningEvidence.data?.evidence?.learningTools;
     const learningToolEvents = Array.isArray(learningToolEvidence?.recent) ? learningToolEvidence.recent : [];
@@ -455,6 +491,9 @@ export default {
       learningEvidence.ok &&
         learningToolEvidence?.hasLearningProfile === true &&
         learningToolEvidence?.hasLearningEvolution === true &&
+        learningToolEvidence?.hasLearningDistillation === true &&
+        learningToolEvidence?.hasReusableArtifacts === true &&
+        learningToolEvidence?.hasConfirmationGatedNextActions === true &&
         learningToolEvidence?.privacySafe === true &&
         learningToolEvents.some((event) => (
           event.name === 'get_learning_profile' &&
@@ -466,6 +505,20 @@ export default {
             event.learning?.noPermissionGrant === true
         )) &&
         learningToolEvents.some((event) => (
+          event.name === 'get_learning_distillation' &&
+            event.source === 'eval' &&
+            event.learning?.hasDistillation === true &&
+            event.learning?.localOnly === true &&
+            event.learning?.metadataOnly === true &&
+            event.learning?.modelFreeDistillation === true &&
+            event.learning?.inferredNotExplicitMemory === true &&
+            event.learning?.noRawScreenshots === true &&
+            event.learning?.noClipboardText === true &&
+            event.learning?.noPageBodies === true &&
+            event.learning?.noPermissionGrant === true &&
+            Number(event.learning?.confirmationGatedNextActions || 0) > 0
+        )) &&
+        learningToolEvents.some((event) => (
           event.name === 'get_learning_evolution' &&
             event.source === 'eval' &&
             event.learning?.hasEvolution === true &&
@@ -475,8 +528,8 @@ export default {
             event.learning?.noPageBodies === true &&
             event.learning?.noPermissionGrant === true
         ))
-        ? ok('realtime.learning_profile_tool_evidence', 'Realtime local learning tool evidence', 'get_learning_profile and get_learning_evolution are visible in privacy-safe Realtime evidence')
-        : fail('realtime.learning_profile_tool_evidence', 'Realtime local learning profile tool evidence', 'expected get_learning_profile to appear in realtime evidence', learningToolEvidence),
+        ? ok('realtime.learning_profile_tool_evidence', 'Realtime local learning tool evidence', 'get_learning_profile, get_learning_evolution, and get_learning_distillation are visible in privacy-safe Realtime evidence')
+        : fail('realtime.learning_profile_tool_evidence', 'Realtime local learning profile tool evidence', 'expected local learning tools to appear in realtime evidence', learningToolEvidence),
     );
 
     const capabilityApi = await ctx.api('/api/capabilities?query=browser&includeNext=false');
@@ -2185,7 +2238,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_local_capabilities') &&
-        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_profile') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_distillation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_evolution') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'run_browser_workflow') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'save_productivity_dogfood_archive') &&
@@ -2311,7 +2364,7 @@ export default {
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodBriefData.evidenceTools) &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'capability' && item.tool === 'get_local_capabilities') &&
-        dogfoodBriefData.evidenceTools.some((item) => item.id === 'learning' && item.tool === 'get_learning_profile') &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'learning' && item.tool === 'get_learning_distillation') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'browser' && item.tool === 'run_browser_workflow') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'demonstration' && item.tool === 'draft_ui_demonstration_skill')
         ? ok('realtime.dogfood_brief', 'Realtime dogfood operator brief', `${dogfoodBriefData.counts.ready}/${dogfoodBriefData.counts.steps} ready · next=${dogfoodBriefData.nextPrompt?.copyText || dogfoodBriefData.currentStep?.label || '-'}`)
@@ -2333,7 +2386,7 @@ export default {
           output.includes('Evidence gates:') &&
           output.includes('Gap:') &&
           output.includes('get_local_capabilities') &&
-          output.includes('get_learning_profile') &&
+          output.includes('get_learning_distillation') &&
           output.includes('run_browser_workflow') &&
           output.includes('开始记录') &&
           output.includes('/api/realtime/evidence')

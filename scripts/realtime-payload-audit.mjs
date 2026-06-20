@@ -73,6 +73,15 @@ export const REALTIME_PAYLOAD_CASES = [
     expectCompact: true,
   },
   {
+    id: 'learning_distillation',
+    label: 'Learning distillation',
+    tool: 'get_learning_distillation',
+    arguments: { recentLimit: 8, baselineLimit: 24, skillLimit: 4 },
+    maxBytes: 9000,
+    expectCompact: true,
+    forbiddenPaths: ['state.learningFile', 'artifacts.skills.recent.0.path'],
+  },
+  {
     id: 'local_capabilities_browser',
     label: 'Local capabilities - browser',
     tool: 'get_local_capabilities',

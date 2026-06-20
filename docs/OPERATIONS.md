@@ -318,6 +318,8 @@ This is the operator-facing local user-distillation packet: inferred habit profi
 explicit UI demonstrations, skill shortcuts, matching local skills, privacy boundaries, prompt-injection
 risk, and confirmation-gated next actions. It is read-only, local-first, model-free, and stores no raw
 screenshots, clipboard text, or page bodies.
+Realtime voice can call `get_learning_distillation` for the same information as a compact payload when
+the user asks what JAVIS has learned, what changed recently, or which learned workflows are reusable.
 
 Use option `31. Show browser activity`, or `npm run config -- --print-browser-activity`, to inspect the local browser activity summary. Realtime voice can ask for the same data through `get_browser_activity`. This is metadata-only: app, host, title, timestamp, and redacted URL context from ambient observations. It does not store page text, and learning exclusions for apps/sites/folders are applied before the activity summary is built.
 
