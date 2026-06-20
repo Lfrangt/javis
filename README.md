@@ -15,7 +15,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime evidence separates SDP negotiation from renderer live/data-channel state, making dogfood blockers more precise.
 - Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
 - Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
-- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
+- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, compact work-next preview/run, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
 - Realtime voice self-diagnostics through `get_realtime_evidence`, so voice can explain whether WebRTC/live progress is connected, what is blocked, and the next dogfood step.
 - Realtime attention explanations through `get_attention_explanation`, so voice can briefly explain pet color, quiet/notify decisions, cooldown, and recent attention history without opening a desktop dashboard.
 - Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, perception-consent, UI-demonstration Record & Replay, and shortcut list/save/recall/forget flows from CUI/API.
@@ -65,7 +65,7 @@ Local Mac-first realtime desktop buddy.
 - Local work progress check-ins for background jobs, workflows, grouped Codex/Claude/local worker batches, and recoverable failed-worker plans.
 - Realtime voice recovery inspection and targeted recovery for failed workers through `get_worker_recovery` and `run_worker_recovery`, with execution still bounded by normal recovery policy.
 - Voice-ready work handoff that compresses readiness, progress, session, collaboration, next actions, and workflow continuation suggestions into one short spoken summary.
-- Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, workflows, and Realtime dogfood; Realtime blockers include a guided handoff dogfood pack plus a workbench `actionPlan` that separates no-mic preparation from manual live-voice steps.
+- Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, workflows, and Realtime dogfood; Realtime blockers include a guided handoff dogfood pack plus a workbench `actionPlan` that separates no-mic preparation from manual live-voice steps, while the Realtime `get_work_next` tool returns a compact voice payload instead of the full workbench JSON.
 - Overnight autopilot decision evidence through `/api/autopilot`, CUI status, and Realtime voice `get_autopilot_status`, showing candidate counts, waiting conditions, the selected safe action, skip summaries, and what the resident needs before it can continue unattended.
 - Local work sessions for focus goals, session notes, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, spoken check-ins, and deterministic end-of-session summaries.
 - Local memory for user-approved preferences, project facts, and durable notes.
@@ -165,7 +165,7 @@ Local Express service on 127.0.0.1:3417
   /api/briefing         -> local status, blockers, recent work, and next actions
   /api/work/progress    -> spoken-style job/workflow progress check-in
   /api/work/handoff     -> voice-ready handoff over readiness, progress, sessions, collaboration, and continuations
-  /api/work/next        -> preview or execute one safe next workbench action; Realtime voice uses get_work_next for read-only next-step previews and run_work_next only after an explicit execute request
+  /api/work/next        -> preview or execute one safe next workbench action; Realtime voice uses compact get_work_next for read-only next-step previews and run_work_next only after an explicit execute request
 /api/autonomy/run     -> bounded route/learning/observe/preview/verify/recovery-scan loop for one task, with machine-readable agencyPlan
   /api/jobs             -> persisted background job history
   /api/jobs/recovery    -> recoverable failed-job summaries with attempts, diagnostics, child recovery jobs, and recommended next actions

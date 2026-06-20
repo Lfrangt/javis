@@ -1452,6 +1452,7 @@ export default {
       },
     });
     const workNextOutput = parseToolOutput(workNextTool);
+    const workNextOutputBytes = Buffer.byteLength(workNextTool.data?.output || '', 'utf8');
     const workNextAction = workNextOutput?.action || null;
     const workNextRecommended = workNextOutput?.result?.routeRecovery?.recommended || workNextAction?.routeRecovery?.recommended || null;
     const workNextBrowserFill = workNextRecommended?.browserFillRecovery || workNextOutput?.result?.routeExecution?.browserFillRecovery || null;
@@ -1460,6 +1461,9 @@ export default {
         workNextTool.data?.ok === true &&
         workNextOutput?.ok === true &&
         workNextOutput.executed === false &&
+        workNextOutput?.responseBudget?.compact === true &&
+        workNextOutputBytes > 0 &&
+        workNextOutputBytes <= 20000 &&
         typeof workNextOutput.output === 'string' &&
         (!workNextAction || (
           typeof workNextAction.id === 'string' &&
@@ -1473,7 +1477,7 @@ export default {
           Array.isArray(workNextBrowserFill.manual) &&
           workNextBrowserFill.manual.every((item) => item.storesSensitiveValue === false)
         ))
-        ? ok('realtime.work_next_tool', 'Realtime work-next preview tool', `${workNextAction?.source || 'standby'} · executed=false · ${workNextOutput.output.slice(0, 160)}`)
+        ? ok('realtime.work_next_tool', 'Realtime work-next preview tool', `${workNextAction?.source || 'standby'} · executed=false · ${workNextOutputBytes}B · ${workNextOutput.output.slice(0, 160)}`)
         : fail('realtime.work_next_tool', 'Realtime work-next preview tool', `tool execute ${workNextTool.status}`, workNextTool.data),
     );
 
@@ -1487,6 +1491,8 @@ export default {
         workNextToolEvidence?.safePreview === true &&
         workNextEvalEvent?.workNext?.readOnlyPreview === true &&
         workNextEvalEvent?.workNext?.executed === false &&
+        Number(workNextEvalEvent?.result?.outputBytes || 0) > 0 &&
+        Number(workNextEvalEvent?.result?.outputBytes || 0) <= 20000 &&
         typeof workNextEvalEvent?.workNext?.actionSource === 'string' &&
         (!workNextBrowserFill || (
           workNextToolEvidence.hasBrowserFillHandoff === true &&

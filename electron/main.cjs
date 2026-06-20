@@ -36549,6 +36549,238 @@ async function workNextAction(options = {}) {
   };
 }
 
+function compactBrowserFillRecoveryForVoice(plan = null) {
+  if (!plan || typeof plan !== 'object') return null;
+  const blocked = Array.isArray(plan.blocked) ? plan.blocked : [];
+  const manual = Array.isArray(plan.manual) ? plan.manual : [];
+  const previewable = Array.isArray(plan.previewable) ? plan.previewable : [];
+  return {
+    version: Number(plan.version || 0),
+    type: compactRecordText(plan.type || '', 80),
+    status: compactRecordText(plan.status || '', 120),
+    workflowId: compactRecordText(plan.workflowId || '', 120),
+    title: compactRecordText(plan.title || '', 160),
+    summary: compactRecordText(plan.summary || '', 320),
+    nextAction: compactRecordText(plan.nextAction || '', 320),
+    spokenSummary: compactRecordText(plan.spokenSummary || '', 320),
+    safePreparedCount: boundedCount(plan.safePreparedCount, 1000),
+    blockedCount: boundedCount(plan.blockedCount, 1000),
+    previewableCount: previewable.length,
+    manualCount: manual.length,
+    blocked: blocked.slice(0, 8).map((item) => ({
+      field: compactRecordText(item.field || item.name || '', 120),
+      reason: compactRecordText(item.reason || item.type || '', 160),
+      storesSensitiveValue: false,
+    })),
+    manual: manual.slice(0, 8).map((item) => ({
+      id: compactRecordText(item.id || '', 140),
+      label: compactRecordText(item.label || '', 160),
+      type: compactRecordText(item.type || '', 100),
+      requiresUserPresence: Boolean(item.requiresUserPresence),
+      requiresConfirmation: Boolean(item.requiresConfirmation),
+      startsBrowserAction: Boolean(item.startsBrowserAction),
+      storesSensitiveValue: false,
+    })),
+    boundaries: Array.isArray(plan.boundaries) ? plan.boundaries.slice(0, 4).map((item) => compactRecordText(item, 220)) : [],
+    output: compactRecordText(plan.output || '', 600),
+  };
+}
+
+function compactRouteRecoveryCandidateForVoice(candidate = null) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  return {
+    id: compactRecordText(candidate.id || '', 160),
+    type: compactRecordText(candidate.type || '', 100),
+    label: compactRecordText(candidate.label || '', 160),
+    summary: compactRecordText(candidate.summary || '', 320),
+    reason: compactRecordText(candidate.reason || '', 240),
+    executable: Boolean(candidate.executable),
+    autoEligible: Boolean(candidate.autoEligible),
+    trustedAutoEligible: Boolean(candidate.trustedAutoEligible),
+    requiresUserPresence: Boolean(candidate.requiresUserPresence),
+    riskLevel: boundedCount(candidate.riskLevel, 4),
+    workflowId: compactRecordText(candidate.workflowId || '', 120),
+    jobId: compactRecordText(candidate.jobId || '', 120),
+    recoveryType: compactRecordText(candidate.recoveryType || '', 100),
+    browserFillRecovery: compactBrowserFillRecoveryForVoice(candidate.browserFillRecovery),
+    endpoint: candidate.endpoint
+      ? {
+        method: compactRecordText(candidate.endpoint.method || '', 20),
+        path: compactRecordText(candidate.endpoint.path || '', 180),
+      }
+      : null,
+  };
+}
+
+function compactRouteRecoveryForVoice(routeRecovery = null) {
+  if (!routeRecovery || typeof routeRecovery !== 'object') return null;
+  const candidates = Array.isArray(routeRecovery.candidates) ? routeRecovery.candidates : [];
+  const linked = routeRecovery.linked || {};
+  return {
+    ok: routeRecovery.ok !== false,
+    source: compactRecordText(routeRecovery.source || '', 80),
+    candidateCount: boundedCount(routeRecovery.candidateCount ?? candidates.length, 1000),
+    executableCandidateCount: boundedCount(routeRecovery.executableCandidateCount, 1000),
+    recommended: compactRouteRecoveryCandidateForVoice(routeRecovery.recommended),
+    candidates: candidates.slice(0, 4).map(compactRouteRecoveryCandidateForVoice).filter(Boolean),
+    linked: {
+      job: linked.job
+        ? {
+          id: compactRecordText(linked.job.id || '', 120),
+          title: compactRecordText(linked.job.title || '', 180),
+          mode: compactRecordText(linked.job.mode || '', 40),
+          status: compactRecordText(linked.job.status || '', 40),
+          failureKind: compactRecordText(linked.job.failureKind || '', 80),
+          recoveryActions: boundedCount(linked.job.recoveryActions, 1000),
+        }
+        : null,
+      workflow: linked.workflow
+        ? {
+          id: compactRecordText(linked.workflow.id || '', 120),
+          title: compactRecordText(linked.workflow.title || '', 180),
+          kind: compactRecordText(linked.workflow.kind || '', 80),
+          intent: compactRecordText(linked.workflow.intent || '', 120),
+          status: compactRecordText(linked.workflow.status || '', 40),
+          hasResult: Boolean(linked.workflow.hasResult),
+        }
+        : null,
+    },
+    output: compactRecordText(routeRecovery.output || '', 600),
+  };
+}
+
+function compactWorkNextActionForVoice(action = null) {
+  if (!action || typeof action !== 'object') return null;
+  return {
+    id: compactRecordText(action.id || '', 180),
+    label: compactRecordText(action.label || action.title || action.id || '', 180),
+    source: compactRecordText(action.source || '', 80),
+    phase: compactRecordText(action.phase || '', 80),
+    status: compactRecordText(action.status || '', 80),
+    summary: compactRecordText(action.summary || '', 420),
+    priority: boundedCount(action.priority, 1000),
+    executable: Boolean(action.executable),
+    autoEligible: Boolean(action.autoEligible),
+    autopilotEligible: action.autopilotEligible !== false,
+    manualOnly: Boolean(action.manualOnly),
+    manualOnlyReason: compactRecordText(action.manualOnlyReason || '', 240),
+    requiresUserPresence: Boolean(action.requiresUserPresence),
+    riskLevel: boundedCount(action.riskLevel, 4),
+    workflowAction: compactRecordText(action.workflowAction || '', 80),
+    workflowId: compactRecordText(action.workflowId || '', 120),
+    jobId: compactRecordText(action.jobId || '', 120),
+    routeId: compactRecordText(action.routeId || '', 120),
+    routeRecovery: action.routeRecovery
+      ? {
+        candidateCount: boundedCount(action.routeRecovery.candidateCount, 1000),
+        executableCandidateCount: boundedCount(action.routeRecovery.executableCandidateCount, 1000),
+        recommended: compactRouteRecoveryCandidateForVoice(action.routeRecovery.recommended),
+        linked: action.routeRecovery.linked
+          ? {
+            hasJob: Boolean(action.routeRecovery.linked.job),
+            hasWorkflow: Boolean(action.routeRecovery.linked.workflow),
+          }
+          : null,
+      }
+      : null,
+    dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
+    preparableActionCount: Array.isArray(action.preparableActions) ? action.preparableActions.length : 0,
+  };
+}
+
+function compactWorkNextResultForVoice(result = null) {
+  if (!result || typeof result !== 'object') return null;
+  const routeRecovery = result.routeRecovery || result.routeExecution?.routeRecovery || null;
+  const browserFillRecovery = result.browserFillRecovery || result.routeExecution?.browserFillRecovery || routeRecovery?.recommended?.browserFillRecovery || null;
+  return {
+    ok: result.ok !== false,
+    preview: Boolean(result.preview),
+    manualOnly: Boolean(result.manualOnly),
+    queued: Boolean(result.queued),
+    executed: Boolean(result.executed),
+    output: compactRecordText(result.output || '', 800),
+    routeRecovery: compactRouteRecoveryForVoice(routeRecovery),
+    browserFillRecovery: compactBrowserFillRecoveryForVoice(browserFillRecovery),
+    workflow: result.workflow
+      ? {
+        id: compactRecordText(result.workflow.id || '', 120),
+        title: compactRecordText(result.workflow.title || '', 180),
+        kind: compactRecordText(result.workflow.kind || '', 80),
+        status: compactRecordText(result.workflow.status || '', 60),
+      }
+      : null,
+    job: result.job
+      ? {
+        id: compactRecordText(result.job.id || '', 120),
+        title: compactRecordText(result.job.title || '', 180),
+        mode: compactRecordText(result.job.mode || '', 40),
+        status: compactRecordText(result.job.status || '', 60),
+      }
+      : null,
+    pendingApprovalCount: Array.isArray(result.pending) ? result.pending.length : 0,
+    activeLedgerCount: Array.isArray(result.activeLedger) ? result.activeLedger.length : 0,
+    counts: result.counts || null,
+  };
+}
+
+function compactWorkNextBriefingForVoice(briefing = null) {
+  if (!briefing || typeof briefing !== 'object') return null;
+  const nextActions = Array.isArray(briefing.nextActions) ? briefing.nextActions : [];
+  const followUps = Array.isArray(briefing.followUps) ? briefing.followUps : [];
+  return {
+    summary: compactRecordText(briefing.summary || '', 420),
+    readiness: briefing.readiness
+      ? {
+        overall: compactRecordText(briefing.readiness.overall || '', 40),
+        summary: compactRecordText(briefing.readiness.summary || '', 240),
+      }
+      : null,
+    counts: briefing.counts || null,
+    nextActionCount: nextActions.length,
+    followUpCount: followUps.length,
+    firstNextActions: nextActions.slice(0, 3).map(compactWorkNextActionForVoice).filter(Boolean),
+  };
+}
+
+function workNextVoiceToolPayload(result = {}, options = {}) {
+  const payload = {
+    ok: result.ok !== false,
+    executed: Boolean(result.executed),
+    previewOnly: !result.executed,
+    source: compactRecordText(options.source || 'voice', 80),
+    action: compactWorkNextActionForVoice(result.action),
+    autopilotDecision: result.autopilotDecision
+      ? {
+        executable: Boolean(result.autopilotDecision.executable),
+        reason: compactRecordText(result.autopilotDecision.reason || '', 120),
+        detail: compactRecordText(result.autopilotDecision.detail || '', 240),
+      }
+      : null,
+    output: compactRecordText(result.output || '', 1400),
+    result: compactWorkNextResultForVoice(result.result),
+    briefing: compactWorkNextBriefingForVoice(result.briefing),
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 20000,
+      omitted: [
+        'briefing.nextActions.full',
+        'briefing.followUps.full',
+        'dogfoodGuide.expectedEvidence.full',
+        'workflow/job raw records',
+        'raw tool outputs',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
+  };
+}
+
 function trimText(value, maxLength = 24000) {
   const text = String(value || '');
   if (text.length <= maxLength) return text;
@@ -40626,12 +40858,12 @@ async function executeTool(name, args) {
 
   if (name === 'get_work_next') {
     const result = await workNextAction({ ...(args || {}), execute: false, source: 'voice' });
-    return { ok: true, output: JSON.stringify(result) };
+    return { ok: true, output: JSON.stringify(workNextVoiceToolPayload(result, { source: 'voice' })) };
   }
 
   if (name === 'run_work_next') {
     const result = await workNextAction({ ...(args || {}), execute: true, source: 'voice' });
-    return { ok: result.ok, output: JSON.stringify(result) };
+    return { ok: result.ok, output: JSON.stringify(workNextVoiceToolPayload(result, { source: 'voice' })) };
   }
 
   if (name === 'get_work_session') {
