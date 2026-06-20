@@ -2179,10 +2179,22 @@ async function startRealtimeDogfoodDrillFromCui(rl) {
 
 function printRendererDogfood(result) {
   const state = result?.rendererDogfood || result?.rendererDogfoodState || result || {};
+  const preflight = result?.preflight || state.preflight || {};
   console.log('JAVIS Renderer Realtime Dogfood');
   console.log('===============================');
   console.log(`Run: ${state.runId || result?.runId || '-'}`);
   console.log(`Status: ${state.status || (result?.executed ? 'dispatched' : 'preview')} · renderer=${result?.rendererAvailable ?? state.rendererAvailable ? 'ready' : 'unknown'} · starts microphone=${result?.startsMicrophone || state.startsMicrophone ? 'yes' : 'no'}`);
+  if (preflight.status) {
+    console.log(`Preflight: ${preflight.status} · ready=${preflight.readyToStart ? 'yes' : 'no'} · provider=${preflight.providerReady ? 'ready' : 'not-ready'} · confirmMic=${preflight.requiresMicConfirmation ? 'required' : 'no'}`);
+    if (preflight.nextPrompt?.copyText) console.log(`Next prompt: ${compact(preflight.nextPrompt.copyText, 220)}`);
+    if (Array.isArray(preflight.blockers) && preflight.blockers.length) {
+      console.log('Blockers:');
+      for (const blocker of preflight.blockers.slice(0, 3)) {
+        console.log(`- ${blocker.label || blocker.id}: ${compact(blocker.nextAction || blocker.detail || '', 220)}`);
+      }
+    }
+    if (preflight.commands?.scriptExecute) console.log(`Command: ${preflight.commands.scriptExecute}`);
+  }
   if (result?.output) console.log(`\n${compact(result.output, 1200)}`);
   const events = Array.isArray(state.events) ? state.events : [];
   if (events.length) {

@@ -1760,6 +1760,41 @@ export default {
           }),
     );
 
+    const rendererPreflight = await ctx.api('/api/realtime/dogfood/renderer');
+    const rendererPreflightData = rendererPreflight.data?.rendererDogfood || {};
+    const preflight = rendererPreflightData.preflight || {};
+    const rendererPreview = await ctx.api('/api/realtime/dogfood/renderer/start', {
+      method: 'POST',
+      body: { execute: false, source: 'eval_renderer_preflight' },
+    });
+    const previewPreflight = rendererPreview.data?.preflight || {};
+    out.push(
+      rendererPreflight.ok &&
+        rendererPreview.ok &&
+        rendererPreflightData.ok === true &&
+        preflight.manualOnly === true &&
+        preflight.startsMicrophone === false &&
+        preflight.triggerStartsMicrophone === true &&
+        preflight.requiresMicConfirmation === true &&
+        preflight.safety?.preflightStartsMicrophone === false &&
+        preflight.safety?.executeRequiresConfirmMic === true &&
+        preflight.safety?.microphoneOnlyAfterExplicitConfirmation === true &&
+        preflight.safety?.actionPolicyBypassed === false &&
+        preflight.endpoint?.path === '/api/realtime/dogfood/renderer/start' &&
+        preflight.endpoint?.executeBody?.confirmMic === true &&
+        preflight.commands?.scriptExecute?.includes('--execute --confirm-mic') &&
+        typeof preflight.nextPrompt?.copyText === 'string' &&
+        preflight.nextPrompt.copyText.length > 0 &&
+        ['ready', 'blocked'].includes(preflight.status) &&
+        rendererPreview.data?.executed === false &&
+        rendererPreview.data?.startsMicrophone === true &&
+        rendererPreview.data?.requiresMicConfirmation === true &&
+        previewPreflight.startsMicrophone === false &&
+        previewPreflight.safety?.preflightStartsMicrophone === false
+        ? ok('realtime.renderer_dogfood_preflight', 'Renderer dogfood preflight', `${preflight.status} · next=${preflight.nextPrompt.stepId || 'prompt'}`)
+        : fail('realtime.renderer_dogfood_preflight', 'Renderer dogfood preflight', 'expected read-only renderer preflight and preview confirmation gate', { snapshot: rendererPreflight.data, preview: rendererPreview.data }),
+    );
+
     const evidence = await ctx.api('/api/realtime/evidence');
     const e = evidence.data?.evidence;
     const checklistIds = new Set((Array.isArray(e?.checklist) ? e.checklist : []).map((step) => step.id));

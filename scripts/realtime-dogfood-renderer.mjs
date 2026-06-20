@@ -81,6 +81,17 @@ function summarizeAcceptance(acceptance = {}) {
   return parts.join(' ');
 }
 
+function summarizePreflight(preflight = {}) {
+  const blockers = Array.isArray(preflight.blockers) ? preflight.blockers : [];
+  return [
+    `preflight=${preflight.status || '-'}`,
+    `ready=${preflight.readyToStart ? 'yes' : 'no'}`,
+    `renderer=${preflight.rendererAvailable ? 'ready' : 'missing'}`,
+    `provider=${preflight.providerReady ? 'ready' : 'not-ready'}`,
+    blockers[0]?.id ? `blocker=${blockers[0].id}` : '',
+  ].filter(Boolean).join(' ');
+}
+
 async function pollRun(ctx, runId, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let latest = null;
@@ -217,6 +228,10 @@ async function main() {
     return;
   }
   console.log(start.data?.output || 'Renderer dogfood preview ready.');
+  if (start.data?.preflight) {
+    console.log(`Preflight: ${summarizePreflight(start.data.preflight)}`);
+    if (start.data.preflight.nextAction) console.log(`Preflight next action: ${start.data.preflight.nextAction}`);
+  }
   if (!execute) {
     console.log('Preview only. Re-run with --execute --confirm-mic to start the real renderer/WebRTC path.');
     return;

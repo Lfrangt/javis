@@ -30132,11 +30132,124 @@ function formatRealtimeDogfoodGuideLines(guide = {}) {
   ].filter(Boolean);
 }
 
+function realtimeRendererDogfoodPreflight(options = {}) {
+  const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
+  const prompt = options.prompt || realtimeDogfoodNextPromptSnapshot({ evidence });
+  const rendererAvailable = Boolean(mainWindow && !mainWindow.isDestroyed());
+  const providerReady = evidence.checks?.providerReady === true || evidence.voiceHealth?.status === 'ready';
+  const blockers = [];
+  if (!rendererAvailable) {
+    blockers.push({
+      id: 'renderer_unavailable',
+      label: 'Renderer window unavailable',
+      detail: 'The Electron renderer window is not available to receive the dogfood start event.',
+      nextAction: 'Start or restart the JAVIS desktop resident before triggering renderer dogfood.',
+    });
+  }
+  if (!providerReady) {
+    blockers.push({
+      id: 'provider_not_ready',
+      label: 'Realtime provider not ready',
+      detail: evidence.voiceHealth?.summary || 'Realtime provider is not ready.',
+      nextAction: evidence.voiceHealth?.next || evidence.blocker?.nextAction || 'Check OPENAI_API_KEY, billing, quota, and recent provider errors.',
+    });
+  }
+  if (!prompt.copyable || !(prompt.copyText || prompt.prompt)) {
+    blockers.push({
+      id: 'missing_prompt',
+      label: 'Dogfood prompt unavailable',
+      detail: 'No next Realtime dogfood prompt is available to send after the live data channel opens.',
+      nextAction: 'Refresh /api/realtime/dogfood/prompt or reset the dogfood drill state.',
+    });
+  }
+  const readyToStart = blockers.length === 0;
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    status: readyToStart ? 'ready' : 'blocked',
+    readyToStart,
+    manualOnly: true,
+    requiresUserPresence: true,
+    startsMicrophone: false,
+    triggerStartsMicrophone: true,
+    requiresMicConfirmation: true,
+    rendererAvailable,
+    providerReady,
+    provider: {
+      status: evidence.voiceHealth?.status || '',
+      kind: evidence.voiceHealth?.kind || '',
+      summary: compactRecordText(evidence.voiceHealth?.summary || '', 260),
+      next: compactRecordText(evidence.voiceHealth?.next || '', 260),
+    },
+    currentEvidence: {
+      status: evidence.status || 'pending',
+      phase: evidence.phase || '',
+      blocker: evidence.blocker
+        ? {
+          id: evidence.blocker.id || '',
+          label: evidence.blocker.label || '',
+          summary: compactRecordText(evidence.blocker.summary || '', 220),
+          nextAction: compactRecordText(evidence.blocker.nextAction || '', 220),
+        }
+        : null,
+      gapSummary: {
+        status: evidence.gapSummary?.status || '',
+        summary: compactRecordText(evidence.gapSummary?.summary || '', 320),
+        nextStepId: evidence.gapSummary?.nextStep?.id || '',
+        pending: Number(evidence.gapSummary?.counts?.pending || 0),
+        total: Number(evidence.gapSummary?.counts?.total || 0),
+      },
+    },
+    nextPrompt: {
+      stepId: prompt.step?.id || '',
+      promptType: prompt.promptType || '',
+      prompt: compactRecordText(prompt.prompt || '', 400),
+      copyText: compactRecordText(prompt.copyText || prompt.prompt || '', 400),
+      followUpPrompts: Array.isArray(prompt.followUpPrompts) ? prompt.followUpPrompts.slice(0, 5) : [],
+    },
+    blockers,
+    commands: {
+      scriptPreview: 'npm run dogfood:realtime-renderer',
+      scriptExecute: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
+      scriptAcceptanceOnly: 'npm run dogfood:realtime-renderer -- --acceptance-only --no-save-archive',
+      cui: 'npm run config -> R. Run renderer Realtime dogfood',
+      monitor: 'npm run config -> V. Watch Realtime voice evidence',
+    },
+    endpoint: {
+      method: 'POST',
+      path: '/api/realtime/dogfood/renderer/start',
+      previewBody: { execute: false },
+      executeBody: {
+        execute: true,
+        confirmMic: true,
+        prepareProgress: true,
+        prepareWhenLive: true,
+        durationMs: 45000,
+        promptDelayMs: 35000,
+      },
+    },
+    safety: {
+      preflightStartsMicrophone: false,
+      executeRequiresConfirmMic: true,
+      microphoneOnlyAfterExplicitConfirmation: true,
+      archiveStoresRawAudio: false,
+      archiveIncludesScreenImage: false,
+      actionPolicyBypassed: false,
+      autopilotEligible: false,
+    },
+    nextAction: readyToStart
+      ? 'When the user is present, run the renderer trigger with execute:true and confirmMic:true, then monitor option V.'
+      : blockers[0]?.nextAction || 'Resolve the renderer dogfood preflight blocker before starting microphone capture.',
+  };
+}
+
 function realtimeRendererDogfoodSnapshot() {
+  const preflight = realtimeRendererDogfoodPreflight();
   return {
     ok: true,
     eventName: RENDERER_DOGFOOD_EVENT_NAME,
     rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    preflight,
     ...realtimeRendererDogfoodState,
     active: Boolean(realtimeRendererDogfoodState.active),
     startsMicrophone: Boolean(realtimeRendererDogfoodState.startsMicrophone),
@@ -30213,6 +30326,7 @@ async function startRealtimeRendererDogfood(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const confirmMic = options.confirmMic === true || String(options.confirmMic || '').toLowerCase() === 'true';
   const nextPrompt = realtimeDogfoodNextPromptSnapshot();
+  const preflight = realtimeRendererDogfoodPreflight({ prompt: nextPrompt });
   const prompts = normalizeRendererDogfoodPrompts(options.prompts || options.prompt, nextPrompt.copyText || nextPrompt.prompt);
   const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
   const detail = {
@@ -30235,11 +30349,13 @@ async function startRealtimeRendererDogfood(options = {}) {
     manualOnly: true,
     requiresUserPresence: true,
     rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    preflight,
     detail,
     dogfoodStart: realtimeDogfoodStartStateSnapshot(),
     output: [
       'Preview renderer Realtime dogfood trigger.',
       'This path starts the renderer WebRTC voice session only when execute:true and confirmMic:true are both provided.',
+      `Preflight: ${preflight.status}${preflight.blockers.length ? ` · ${preflight.blockers[0].label}` : ''}.`,
       prompts.length ? `Prompt(s): ${prompts.join(' | ')}` : '',
     ].filter(Boolean).join('\n'),
   };
