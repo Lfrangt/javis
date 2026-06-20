@@ -71,6 +71,7 @@ export default {
           realtimeActionPlan.scope === 'workbench' &&
           Array.isArray(realtimeActionPlan.previewable) &&
           realtimeActionPlan.previewable.some((action) => action.startsMicrophone === false && action.readOnly === true) &&
+          realtimeActionPlan.previewable.some((action) => action.id === 'prepare_live_run' && action.startsMicrophone === false && action.command?.includes('dogfood:realtime-prepare')) &&
           Array.isArray(realtimeActionPlan.manual) &&
           realtimeActionPlan.manual.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
           realtimeActionPlan.boundaries?.some((item) => /microphone|confirmMic/i.test(item))
@@ -121,13 +122,19 @@ export default {
       (next.length === 0 && workNextActions.length === 0) ||
       workNextActions.some((item) => item?.id && item.id === selectedAction.id);
     const workNextGuideOk = selectedAction?.source !== 'realtime_voice' || Boolean(
-      selectedGuide.monitor?.cui &&
+        selectedGuide.monitor?.cui &&
         Array.isArray(selectedGuide.prompts) &&
         selectedGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
-        String(workNext.output).includes('get_work_handoff') &&
+        selectedGuide.expectedEvidence?.some((item) => item.tool === 'get_work_handoff') &&
+        String(workNext.output).includes('Preview Realtime live dogfood preparation without starting microphone capture') &&
+        String(workNext.output).includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance') &&
+        workNext.result?.startsMicrophone === false &&
+        workNext.result?.requiresMicConfirmationForLiveStart === true &&
+        Number(workNext.result?.promptCount || 0) > 8 &&
         selectedPlan.version === 1 &&
         selectedPlan.scope === 'workbench' &&
         selectedPlan.previewable?.some((action) => action.startsMicrophone === false) &&
+        selectedPlan.previewable?.some((action) => action.id === 'prepare_live_run' && action.startsMicrophone === false) &&
         selectedPlan.manual?.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true),
     );
     out.push(
@@ -139,6 +146,48 @@ export default {
         })
         : fail('briefing.worknext', 'Work-next', `GET /api/work/next did not return a coherent preview envelope (${wn.status})`, wn.data),
     );
+
+    if (realtimeAction?.id) {
+      const realtimePreparePreview = await ctx.api(`/api/work/next?actionId=${encodeURIComponent(realtimeAction.id)}`);
+      const prepareNext = realtimePreparePreview.data?.next || {};
+      const prepareResult = prepareNext.result || {};
+      out.push(
+        realtimePreparePreview.ok &&
+          prepareNext.ok === true &&
+          prepareNext.executed === false &&
+          prepareNext.action?.id === realtimeAction.id &&
+          prepareResult.startsMicrophone === false &&
+          prepareResult.requiresMicConfirmationForLiveStart === true &&
+          Number(prepareResult.promptCount || 0) > 8 &&
+          String(prepareNext.output || '').includes('Preview Realtime live dogfood preparation without starting microphone capture') &&
+          String(prepareNext.output || '').includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance')
+          ? ok('briefing.worknext_realtime_prepare', 'Work-next Realtime prepare preview', `${prepareResult.promptCount} prompt(s), no mic`)
+          : fail('briefing.worknext_realtime_prepare', 'Work-next Realtime prepare preview', 'explicit realtime work-next did not return a no-mic prepare cockpit', realtimePreparePreview.data),
+      );
+    }
+
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-next'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 20000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      out.push(
+        output.includes('Next action:') &&
+          output.includes('Guide:') &&
+          output.includes('Monitor: npm run config -> V. Watch Realtime voice evidence') &&
+          output.includes('现在做到哪了') &&
+          output.includes('get_work_handoff') &&
+          output.includes('Preview Realtime live dogfood preparation without starting microphone capture') &&
+          output.includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance')
+          ? ok('briefing.cui_worknext', 'CUI work-next guide', 'config CUI prints the guided Realtime work-next prepare path')
+          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print the Realtime prepare guide', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('briefing.cui_worknext', 'CUI work-next guide', error instanceof Error ? error.message : String(error)));
+    }
 
     const routeSeed = await ctx.api('/api/tasks/parallel', {
       method: 'POST',
@@ -176,27 +225,6 @@ export default {
           routeWorkNext: routeWorkNext?.data,
         }),
     );
-
-    try {
-      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-next'], {
-        cwd: process.cwd(),
-        env: process.env,
-        timeout: 10000,
-        maxBuffer: 1024 * 1024,
-      });
-      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
-      out.push(
-        output.includes('Next action:') &&
-          output.includes('Guide:') &&
-          output.includes('Monitor: npm run config -> V. Watch Realtime voice evidence') &&
-          output.includes('现在做到哪了') &&
-          output.includes('get_work_handoff')
-          ? ok('briefing.cui_worknext', 'CUI work-next guide', 'config CUI prints the guided Realtime work-next path')
-          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print the Realtime guide', { output: output.slice(0, 2000) }),
-      );
-    } catch (error) {
-      out.push(fail('briefing.cui_worknext', 'CUI work-next guide', error instanceof Error ? error.message : String(error)));
-    }
 
     const handoffResponse = await ctx.api('/api/work/handoff?maxChars=760&nextLimit=2&followUpLimit=2');
     const handoff = handoffResponse.data?.handoff;

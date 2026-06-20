@@ -248,9 +248,10 @@ without turning the first failure into a dead end.
 Recovery actions are also surfaced through `/api/briefing`, `/api/work/next`, and the Realtime `get_worker_recovery` tool; low-risk diagnostic
 actions can be reviewed there without opening a separate UI. Realtime voice dogfood blockers are
 surfaced there too: when `/api/realtime/evidence` is stuck at `needs_live_session`, running work-next
-uses the same summon/wake path as `Option+Space` and parks the pet at the notch for the live session.
-This Realtime voice action is marked manual-only because starting microphone/live voice requires an
-explicit user action; overnight autopilot must skip it.
+uses the same no-mic Realtime preparation cockpit as `npm run dogfood:realtime-prepare`: it loads the
+full prompt script, starts or reuses the operator tracker, can save local prep evidence, and prints the
+final mic-confirmed renderer command. This Realtime voice action remains manual-only because starting
+microphone/live voice requires an explicit user action; overnight autopilot must skip the actual live start.
 Blocked route records now return a structured route recovery envelope from `/api/work/next`: linked failed jobs expose their existing recovery actions, linked workflows expose continuation/copy-result options, browser fill drafts expose a `browser_fill_sensitive_handoff` summary with safe prepared-field counts and sensitive/manual fields redacted, and routes without an executable candidate still include the exact inspect target. You can target a specific route with `GET /api/work/next?actionId=route:<route-id>`. Realtime voice uses `get_work_next` for the same read-only preview when the user asks what single step should happen next, but its tool payload is intentionally compact for voice latency and omits full briefing/workflow/job records; `run_work_next` is reserved for explicit "run/execute/continue" requests. When the recommended route candidate is an existing failed-job recovery action that is already trusted/low-risk eligible, `/api/work/next` also exposes the autopilot decision that allows the unattended loop to run that one recovery candidate.
 Retryable failed jobs can be advanced from work-next or `POST /api/jobs/:id/recovery/run` into a
 narrower recovery job with the original task, attempts, diagnostics, and log tail attached. Realtime
@@ -269,7 +270,7 @@ heartbeat/release commands, conflict pairs, and the next safe coordination actio
 
 Use option `15. Run next work item` to preview and then execute the current workbench action after
 typing `RUN`. This is the manual path for recovering blocked jobs or routed work, processing the top Inbox item,
-checking progress, summoning a real Realtime voice dogfood session, or delivering a completed workflow result without memorizing HTTP calls. Realtime voice actions print a small guide with the pet/hotkey start path, CUI monitor, the prompts `后台现在怎么样` and `现在做到哪了？接下来做什么？`, and the expected `get_work_handoff` evidence. Internal
+checking progress, preparing a real Realtime voice dogfood session, or delivering a completed workflow result without memorizing HTTP calls. Realtime voice actions print a small guide with the no-mic preparation path, CUI monitor, the prompts `后台现在怎么样` and `现在做到哪了？接下来做什么？`, and the expected `get_work_handoff` evidence. Internal
 smoke/verification workflows are not offered as deliverable results.
 
 Use option `16. Show autopilot status`, or `npm run config -- --print-autopilot`, to see the resident overnight loop, last tick, last result,

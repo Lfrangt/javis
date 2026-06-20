@@ -32513,6 +32513,20 @@ function realtimeDogfoodAcceptanceActionPlan({ accepted = false, nextGap = null,
       readOnly: true,
       canPreview: true,
     }),
+    realtimeDogfoodPlanAction({
+      id: 'prepare_live_run',
+      label: 'Prepare live run without mic',
+      group: 'live_voice',
+      summary: 'Load the full prompt script, start or reuse the operator tracker, and save local prep evidence without microphone capture.',
+      nextAction: 'Run npm run dogfood:realtime-prepare before asking the user to start the mic-confirmed live run.',
+      command: 'npm run dogfood:realtime-prepare',
+      endpoint: '/api/work/next?actionId=realtime_voice:needs_live_session',
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      requiresUserPresence: false,
+      writesLocalJson: true,
+      canPreview: true,
+    }),
   ];
   const primary = accepted
     ? realtimeDogfoodPlanAction({
@@ -33670,6 +33684,15 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
       nextAction: 'Confirm renderer, provider, and next prompt are ready.',
     },
     {
+      id: 'prepare_live_run',
+      label: 'Prepare live run without mic',
+      command: 'npm run dogfood:realtime-prepare',
+      endpoint: '/api/work/next',
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      nextAction: 'Load the full prompt script, start or reuse the operator tracker, and save local prep evidence before the live mic run.',
+    },
+    {
       id: 'start_live_voice',
       label: 'Start renderer WebRTC voice',
       command: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
@@ -34004,6 +34027,129 @@ async function startRealtimeRendererDogfood(options = {}) {
       'The renderer will start a real WebRTC voice session, wait for the data channel, send configured prompts, and report evidence events.',
       drill?.progressSample?.output || '',
     ].filter(Boolean).join('\n'),
+  };
+}
+
+async function prepareRealtimeDogfoodLiveRun(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const source = String(options.source || 'work_next_realtime_prepare').slice(0, 80);
+  const promptLimit = Math.max(1, Math.min(32, Number(options.promptLimit || 32)));
+  const pack = realtimeDogfoodLiveDrillPackSnapshot({
+    promptLimit,
+    sessionLimit: options.sessionLimit || 6,
+    auditLimit: options.auditLimit || 50,
+  });
+  const prompts = Array.isArray(pack.prompts?.script)
+    ? pack.prompts.script.map((item) => compactRecordText(item, 400)).filter(Boolean).slice(0, promptLimit)
+    : [];
+  const preview = await startRealtimeRendererDogfood({
+    execute: false,
+    confirmMic: false,
+    promptLimit,
+    prompts,
+    source,
+  });
+  const sessionBefore = realtimeDogfoodOperatorSessionSnapshot({
+    limit: options.sessionLimit || 6,
+    source,
+  });
+  let sessionResult = {
+    ok: true,
+    executed: false,
+    reused: Boolean(sessionBefore.active?.id),
+    sessions: sessionBefore,
+    output: sessionBefore.active?.id
+      ? `Reusing active Realtime dogfood operator session ${sessionBefore.active.id}.`
+      : 'No operator session started in preview mode.',
+  };
+  if (execute && !sessionBefore.active?.id) {
+    sessionResult = {
+      ...startRealtimeDogfoodOperatorSession({
+        source,
+        allowConcurrent: false,
+      }),
+      executed: true,
+      reused: false,
+    };
+  } else if (execute && sessionBefore.active?.id) {
+    sessionResult = {
+      ...sessionResult,
+      executed: false,
+      reused: true,
+    };
+  }
+
+  const archive = execute
+    ? saveRealtimeDogfoodArchive({
+        source,
+        promptLimit,
+        sessionLimit: options.sessionLimit || 6,
+        auditLimit: options.auditLimit || 50,
+        note: 'work-next prepared Realtime live dogfood without starting microphone capture',
+      }).archive
+    : realtimeDogfoodArchiveSnapshot({
+        source,
+        promptLimit,
+        sessionLimit: options.sessionLimit || 6,
+        auditLimit: options.auditLimit || 50,
+      });
+  const acceptance = realtimeDogfoodAcceptanceSnapshot({
+    archive,
+    source,
+    preflight: preview.preflight,
+  });
+  const session = sessionResult.sessions?.active || null;
+  const output = [
+    execute
+      ? 'Prepared Realtime live dogfood without starting microphone capture.'
+      : 'Preview Realtime live dogfood preparation without starting microphone capture.',
+    `Safety: starts microphone=no; renderer execute=false; final live start still requires --execute --confirm-mic.`,
+    `Preflight: ${preview.preflight?.status || 'unknown'}; renderer=${preview.rendererAvailable ? 'ready' : 'missing'}; provider=${preview.preflight?.providerReady ? 'ready' : 'not-ready'}.`,
+    `Prompt script: ${prompts.length} prompt(s)${prompts.at(-1) ? `; last=${compactRecordText(prompts.at(-1), 120)}` : ''}.`,
+    session ? `Operator session: ${session.status || 'active'} ${session.id || ''}.` : 'Operator session: none.',
+    `Archive: ${archive.saved ? 'saved' : 'preview'} ${archive.file?.path || ''}.`,
+    `Acceptance: ${Number(acceptance.counts?.passed || 0)}/${Number(acceptance.counts?.gates || 0)}; next=${acceptance.nextGap?.group || '-'}/${acceptance.nextGap?.id || '-'}.`,
+    'Monitor: npm run config -- --print-realtime-evidence',
+    'Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+  ].filter(Boolean).join('\n');
+
+  appendAudit('realtime.dogfood_prepare_live', {
+    source,
+    execute,
+    startsMicrophone: false,
+    promptCount: prompts.length,
+    sessionId: session?.id || '',
+    archiveSaved: Boolean(archive.saved),
+    acceptancePassed: Number(acceptance.counts?.passed || 0),
+    acceptanceGates: Number(acceptance.counts?.gates || 0),
+  });
+
+  return {
+    ok: true,
+    executed: execute,
+    previewOnly: !execute,
+    startsMicrophone: false,
+    requiresMicConfirmationForLiveStart: true,
+    promptCount: prompts.length,
+    output,
+    pack,
+    rendererPreview: preview,
+    session: sessionResult,
+    archive,
+    acceptance,
+    next: {
+      monitorCommand: 'npm run config -- --print-realtime-evidence',
+      liveCommand: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+    },
+    safety: {
+      startsMicrophone: false,
+      rendererExecute: false,
+      executeRequiresConfirmMic: true,
+      rawAudioStored: false,
+      screenImageIncluded: false,
+      actionPolicyBypassed: false,
+      autopilotEligible: false,
+    },
   };
 }
 
@@ -38744,11 +38890,12 @@ async function workNextAction(options = {}) {
         : `这个 workflow 还没有可交付结果: ${workflow.title}`;
     }
   } else if (action.source === 'realtime_voice') {
-    result = await startRealtimeDogfoodDrill({
+    result = await prepareRealtimeDogfoodLiveRun({
       execute,
-      prepareProgress: execute,
-      durationMs: options.durationMs || 45000,
       source: options.source || 'work_next',
+      promptLimit: options.promptLimit || 32,
+      sessionLimit: options.sessionLimit || 6,
+      auditLimit: options.auditLimit || 50,
     });
     if (action.dogfoodActionPlan) {
       result = {

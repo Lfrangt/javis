@@ -2313,6 +2313,7 @@ export default {
 
     const liveDrillPack = await ctx.api('/api/realtime/dogfood/pack');
     const liveDrillPackData = liveDrillPack.data?.pack || {};
+    const prepareStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'prepare_live_run') || {};
     const startStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'start_live_voice') || {};
     const archiveStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'save_archive') || {};
     const acceptanceStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'check_acceptance') || {};
@@ -2346,6 +2347,8 @@ export default {
         liveDrillPackData.prompts.next.copyText.length > 0 &&
         Array.isArray(liveDrillPackData?.operatorSteps) &&
         liveDrillPackData.operatorSteps.length >= 6 &&
+        prepareStep.startsMicrophone === false &&
+        prepareStep.command?.includes('dogfood:realtime-prepare') &&
         startStep.startsMicrophone === true &&
         startStep.requiresMicConfirmation === true &&
         archiveStep.startsMicrophone === false &&
