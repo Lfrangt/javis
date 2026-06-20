@@ -7,6 +7,7 @@ import url from 'node:url';
 const execFileAsync = promisify(execFile);
 const here = path.dirname(url.fileURLToPath(import.meta.url));
 const collabCli = path.join(here, '..', '..', 'collab.mjs');
+const configCui = path.join(here, '..', '..', 'config-cui.cjs');
 
 export default {
   lane: 'collaboration',
@@ -86,6 +87,24 @@ export default {
       );
     } catch (error) {
       out.push(fail('collaboration.cli_handoff', 'Collaboration CLI handoff', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [configCui, '--print-collaboration-handoff'], {
+        timeout: 8000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      out.push(
+        stdout.includes('Collaboration Handoff') &&
+          stdout.includes(scope) &&
+          stdout.includes('heartbeat=') &&
+          stdout.includes('release=')
+          ? ok('collaboration.cui_handoff', 'Collaboration CUI handoff', 'config CUI prints handoff, active scope, heartbeat, and release commands')
+          : fail('collaboration.cui_handoff', 'Collaboration CUI handoff', 'CUI handoff output missing expected content', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('collaboration.cui_handoff', 'Collaboration CUI handoff', error instanceof Error ? error.message : String(error)));
     }
 
     const conflict = await ctx.api('/api/collaboration/claims', {

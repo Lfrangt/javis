@@ -50,7 +50,7 @@ Local Mac-first realtime desktop buddy.
 - Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context and recalled local skill plans.
 - OpenClaw-style lane contract registry for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, and risk boundaries.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
-- Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, get a handoff summary, and avoid overlapping write races.
+- Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, get a CUI/API/CLI handoff summary, and avoid overlapping write races.
 - No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
 - Fast lane for lightweight Q&A.
 - Deep lane for slower background tasks with persisted logs, cancellation, and recalled skill-plan context when routing found a matching local workflow.

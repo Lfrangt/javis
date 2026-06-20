@@ -183,13 +183,14 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor, autopilotResult, browserJs, shortcutsResult, perceptionResult] = await Promise.all([
+    const [status, doctor, autopilotResult, browserJs, shortcutsResult, perceptionResult, collaborationHandoffResult] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
       request('/api/autopilot').catch(() => ({ autopilot: null })),
       request('/api/browser/javascript').catch((error) => ({ javascript: { enabled: false, error: error instanceof Error ? error.message : String(error) } })),
       request('/api/shortcuts?limit=5').catch(() => ({ shortcuts: null })),
       request('/api/perception/consent?limit=3').catch(() => ({ perception: null })),
+      request('/api/collaboration/handoff?limit=5').catch(() => ({ handoff: null })),
     ]);
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
@@ -238,7 +239,12 @@ async function printStatus() {
       const latest = shortcuts.items?.[0];
       console.log(`Shortcuts: ${counts.enabled || 0} enabled / ${counts.total || 0} saved${latest?.phrase ? ` · latest "${compact(latest.phrase, 60)}"` : ''}`);
     }
-    if (status.collaboration) {
+    if (collaborationHandoffResult.handoff) {
+      const handoff = collaborationHandoffResult.handoff;
+      const counts = handoff.counts || {};
+      const next = handoff.nextActions?.[0]?.label ? ` · next ${handoff.nextActions[0].label}` : '';
+      console.log(`Collab: ${handoff.mode || 'unknown'} · ${counts.active || 0} active · ${counts.conflicts || 0} conflict pair(s)${next}`);
+    } else if (status.collaboration) {
       const counts = status.collaboration.counts || {};
       console.log(`Collab: ${counts.active || 0} active claim(s) · ${counts.conflicts || 0} conflict pair(s)`);
     }
@@ -324,7 +330,7 @@ async function printStatus() {
   console.log('24. Show learning evolution');
   console.log('25. Preview learning skill draft');
   console.log('26. Export learning skill');
-  console.log('27. Show collaboration claims');
+  console.log('27. Show collaboration handoff');
   console.log('28. Show UI demonstrations');
   console.log('29. Show skill shortcuts');
   console.log('30. Promote shortcut candidate');
@@ -926,10 +932,63 @@ function printCollaborationClaims(collaboration) {
   }
 }
 
+function printCollaborationHandoff(result) {
+  const handoff = result?.handoff || result || {};
+  const counts = handoff.counts || {};
+  const ownerGroups = Array.isArray(handoff.ownerGroups) ? handoff.ownerGroups : [];
+  const conflictPairs = Array.isArray(handoff.conflictPairs) ? handoff.conflictPairs : [];
+  const nextActions = Array.isArray(handoff.nextActions) ? handoff.nextActions : [];
+  const activeScopes = Array.isArray(handoff.activeScopes) ? handoff.activeScopes : [];
+  console.log('Collaboration Handoff');
+  console.log('=====================');
+  console.log(handoff.spokenSummary || handoff.summary || 'No collaboration handoff available.');
+  console.log(`Mode: ${handoff.mode || '-'} · active ${counts.active || 0} · conflicts ${counts.conflicts || 0} · total ${counts.total || 0}`);
+  if (ownerGroups.length) {
+    console.log('\nOwner groups:');
+    for (const group of ownerGroups.slice(0, 8)) {
+      const scopes = Array.isArray(group.scopes) ? group.scopes.slice(0, 3).join('; ') : '';
+      console.log(`- ${group.owner || group.agent || '-'} / ${group.lane || '-'} · ${group.active || 0} active · ${group.writeScopes || 0} write${scopes ? ` · ${compact(scopes, 180)}` : ''}`);
+      if (Array.isArray(group.tasks) && group.tasks.length) console.log(`  tasks=${compact(group.tasks.join(' | '), 180)}`);
+    }
+  }
+  if (conflictPairs.length) {
+    console.log('\nConflicts:');
+    for (const pair of conflictPairs.slice(0, 6)) {
+      const left = pair.left || {};
+      const right = pair.right || {};
+      console.log(`- ${left.owner || left.agent || '-'} <-> ${right.owner || right.agent || '-'} · ${compact(pair.key || left.key || right.key || '-', 180)}`);
+    }
+  }
+  if (nextActions.length) {
+    console.log('\nNext actions:');
+    for (const action of nextActions.slice(0, 5)) {
+      console.log(`- ${action.label || action.id || '-'}: ${compact(action.summary || '', 220)}`);
+    }
+  }
+  if (!activeScopes.length) {
+    console.log('\nActive scopes: none');
+  } else {
+    console.log('\nActive scopes:');
+    for (const claim of activeScopes.slice(0, 10)) {
+      const expires = claim.expiresAt ? ` · expires ${formatTime(claim.expiresAt)}` : '';
+      console.log(`- ${claim.owner || claim.agent || 'agent'} · ${claim.access}:${compact(claim.key || claim.scope || '-', 180)}${expires}`);
+      if (claim.task) console.log(`  task=${compact(claim.task, 180)}`);
+      if (claim.nextHeartbeatCommand) console.log(`  heartbeat=${claim.nextHeartbeatCommand}`);
+      if (claim.releaseCommand) console.log(`  release=${claim.releaseCommand}`);
+    }
+  }
+}
+
 async function showCollaborationClaims() {
   const result = await request('/api/collaboration?limit=20');
   console.log('');
   printCollaborationClaims(result.collaboration || {});
+}
+
+async function showCollaborationHandoff() {
+  const result = await request('/api/collaboration/handoff?limit=20');
+  console.log('');
+  printCollaborationHandoff(result);
 }
 
 function printDemonstrations(demonstrations) {
@@ -2292,6 +2351,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-collaboration-handoff') || process.argv.includes('--collaboration-handoff') || process.argv.includes('--collaboration')) {
+    await showCollaborationHandoff();
+    return;
+  }
+
+  if (process.argv.includes('--print-collaboration-claims') || process.argv.includes('--collaboration-claims')) {
+    await showCollaborationClaims();
+    return;
+  }
+
   if (process.argv.includes('--print-capabilities') || process.argv.includes('--capabilities')) {
     const queryIndex = process.argv.findIndex((item) => item === '--query');
     const laneIndex = process.argv.findIndex((item) => item === '--lane');
@@ -2502,6 +2571,8 @@ async function main() {
       } else if (answer === '26') {
         await exportLearningSkillDraft(rl);
       } else if (answer === '27') {
+        await showCollaborationHandoff();
+      } else if (answer === 'claims' || answer === 'collaboration claims') {
         await showCollaborationClaims();
       } else if (answer === '28') {
         await showDemonstrations();
