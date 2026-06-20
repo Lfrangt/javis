@@ -35153,6 +35153,45 @@ async function executeTool(name, args) {
     };
   }
 
+  if (name === 'get_screen_privacy') {
+    return {
+      ok: true,
+      output: JSON.stringify({
+        ok: true,
+        privacy: {
+          ...screenPrivacySnapshot(),
+          rules: args?.includeRules === false ? undefined : screenPrivacySnapshot().rules,
+        },
+        presets: screenPrivacyPresetList({ includeRules: args?.includeRules === true }),
+        recommendedPreset: recommendedScreenPrivacyPresetStatus(),
+        regionPresets: screenPrivacyRegionPresetList({ includeRules: args?.includeRules === true }),
+        privacyFile: SCREEN_PRIVACY_FILE,
+      }),
+    };
+  }
+
+  if (name === 'preview_screen_privacy_region_preset') {
+    try {
+      const result = screenPrivacyRegionPresetPreview(args?.id, {
+        dryRun: true,
+        width: args?.width,
+        height: args?.height,
+      });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === 'apply_screen_privacy_region_preset') {
+    try {
+      const result = applyScreenPrivacyRegionPreset(args?.id, { source: 'voice' });
+      return { ok: true, output: JSON.stringify(result) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_control_mode') {
     return {
       ok: true,
@@ -35984,6 +36023,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use control_browser_dom only when the user explicitly asks to click, fill, or select an element inside the current webpage. Do not use it for submits, purchases, sends, logins, deletes, or account changes without confirmation.',
       'Use get_config_check when setup, permission, resident mode, or local worker readiness is unclear.',
       'Use get_perception_consent when the user asks what JAVIS can see, hear, read, control, what permissions are active, what is stored, or why an action is allowed/blocked. It reads the local consent registry and keeps the desktop pet minimal.',
+      'Use get_screen_privacy when the user asks what screen context is hidden, masked, or safe for JAVIS to see. Use preview_screen_privacy_region_preset before adding a region mask. Use apply_screen_privacy_region_preset only when the user explicitly asks to mask a known screen area such as notch_band, menu_bar, top_right_notifications, dock_bottom, left_sidebar, or right_sidebar.',
       'Use get_control_mode when the user asks whether JAVIS is observing, asking, trusted, or in supervised takeover mode. Use set_control_mode only when the user explicitly asks to change autonomy.',
       'Use get_attention_policy when the user asks whether JAVIS should interrupt, why the pet is red/yellow/green, why no notification fired, or what needs attention. It is read-only and should keep the answer short.',
       'Use get_attention_explanation when the user asks for a spoken explanation of the pet color, attention history, the last notification, or why JAVIS stayed quiet. It returns a short Chinese spokenSummary plus read-only evidence.',
@@ -36231,6 +36271,52 @@ function createRealtimeSessionConfig(options = {}) {
             limit: { type: 'number' },
             auditLimit: { type: 'number' },
           },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_screen_privacy',
+        description: 'Read current screen privacy mode, active app/window/browser/region rules, recommended preset status, and available region mask presets. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            includeRules: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'preview_screen_privacy_region_preset',
+        description: 'Preview a local screen region mask preset such as notch_band or top_right_notifications before applying it. Read-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: {
+              type: 'string',
+              enum: ['menu_bar', 'notch_band', 'top_right_notifications', 'dock_bottom', 'left_sidebar', 'right_sidebar'],
+            },
+            width: { type: 'number' },
+            height: { type: 'number' },
+          },
+          required: ['id'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'apply_screen_privacy_region_preset',
+        description: 'Apply one local screen region mask preset. Use only after the user explicitly asks to hide/mask that area; this changes local privacy rules but grants no new system permission.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: {
+              type: 'string',
+              enum: ['menu_bar', 'notch_band', 'top_right_notifications', 'dock_bottom', 'left_sidebar', 'right_sidebar'],
+            },
+          },
+          required: ['id'],
           additionalProperties: false,
         },
       },
@@ -37903,6 +37989,9 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_browser_activity',
   'get_config_check',
   'get_perception_consent',
+  'get_screen_privacy',
+  'preview_screen_privacy_region_preset',
+  'apply_screen_privacy_region_preset',
   'get_control_mode',
   'get_attention_policy',
   'get_attention_explanation',
@@ -37956,6 +38045,7 @@ function realtimeInstructionChecks(instructions = '') {
     contextPlanner: /plan_context/i.test(text),
     screenGrounding: /describe_screen/i.test(text),
     perceptionConsent: /get_perception_consent|what JAVIS can see|what JAVIS can control|permission.*active|consent registry/i.test(text),
+    screenPrivacyControls: /get_screen_privacy|preview_screen_privacy_region_preset|apply_screen_privacy_region_preset|screen.*hidden|region mask|top_right_notifications|notch_band/i.test(text),
     controlMode: /get_control_mode|set_control_mode|control mode/i.test(text),
     attentionPolicy: /get_attention_policy|should interrupt|pet is red\/yellow\/green|notification fired|needs attention/i.test(text),
     attentionExplanation: /get_attention_explanation|spoken explanation of the pet color|attention history|last notification|stayed quiet/i.test(text),

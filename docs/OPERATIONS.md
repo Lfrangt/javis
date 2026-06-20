@@ -449,6 +449,12 @@ npm run config -- --print-screen-region-presets
 npm run config -- --add-screen-region-mask notch_band
 npm run config -- --preview-screen-privacy-preset
 npm run config -- --apply-screen-privacy-preset
+curl -X POST http://127.0.0.1:3417/api/tools/execute \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"get_screen_privacy","arguments":{"includeRules":true}}'
+curl -X POST http://127.0.0.1:3417/api/tools/execute \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"apply_screen_privacy_region_preset","arguments":{"id":"notch_band"}}'
 curl -X POST http://127.0.0.1:3417/api/setup/actions \
   -H 'Content-Type: application/json' \
   -d '{"action":"apply_screen_privacy_sensitive_defaults"}'

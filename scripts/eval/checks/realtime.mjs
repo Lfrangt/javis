@@ -14,6 +14,9 @@ const REQUIRED_TOOLS = [
   'get_browser_activity',
   'get_config_check',
   'get_perception_consent',
+  'get_screen_privacy',
+  'preview_screen_privacy_region_preset',
+  'apply_screen_privacy_region_preset',
   'get_control_mode',
   'get_attention_policy',
   'get_attention_explanation',
@@ -302,6 +305,69 @@ export default {
         ))
         ? ok('realtime.perception_consent_tool', 'Realtime perception consent tool', `${perceptionSurfaces.length} surface(s) · ${perceptionOutput.summary || ''}`)
         : fail('realtime.perception_consent_tool', 'Realtime perception consent tool', `tool execute ${perceptionTool.status}`, perceptionTool.data),
+    );
+
+    const screenPrivacyBeforeTool = await ctx.api('/api/screen/privacy');
+    const originalScreenPrivacy = screenPrivacyBeforeTool.data?.privacy || {};
+    const originalScreenPrivacyRules = Array.isArray(originalScreenPrivacy.rules) ? originalScreenPrivacy.rules : [];
+    const screenPrivacyTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_screen_privacy', arguments: { includeRules: true } },
+    });
+    const screenPrivacyOutput = parseToolOutput(screenPrivacyTool);
+    const regionPresetIds = new Set((screenPrivacyOutput?.regionPresets?.presets || []).map((preset) => preset.id));
+    const screenRegionPreviewTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'preview_screen_privacy_region_preset',
+        arguments: { id: 'notch_band', width: 96, height: 64 },
+      },
+    });
+    const screenRegionPreviewOutput = parseToolOutput(screenRegionPreviewTool);
+    const screenRegionApplyTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'apply_screen_privacy_region_preset',
+        arguments: { id: 'notch_band' },
+      },
+    });
+    const screenRegionApplyOutput = parseToolOutput(screenRegionApplyTool);
+    const screenPrivacyRestore = await ctx.api('/api/screen/privacy', {
+      method: 'PUT',
+      body: {
+        source: 'eval_realtime_screen_privacy_restore',
+        mode: originalScreenPrivacy.mode || 'private',
+        rules: originalScreenPrivacyRules,
+      },
+    });
+    out.push(
+      screenPrivacyTool.ok &&
+        screenPrivacyTool.data?.ok === true &&
+        screenPrivacyOutput?.ok === true &&
+        screenPrivacyOutput?.privacy?.mode &&
+        screenPrivacyOutput?.recommendedPreset?.preset?.id === 'sensitive_defaults' &&
+        regionPresetIds.has('notch_band') &&
+        regionPresetIds.has('top_right_notifications') &&
+        screenRegionPreviewTool.ok &&
+        screenRegionPreviewTool.data?.ok === true &&
+        screenRegionPreviewOutput?.preset?.id === 'notch_band' &&
+        screenRegionPreviewOutput?.maskPreview?.preview?.mask?.applied === true &&
+        screenRegionApplyTool.ok &&
+        screenRegionApplyTool.data?.ok === true &&
+        screenRegionApplyOutput?.applied === true &&
+        screenRegionApplyOutput?.rule?.id === 'region_preset_notch_band' &&
+        screenRegionApplyOutput?.privacy?.enforcement?.regionRendererMask === true &&
+        screenPrivacyRestore.ok &&
+        JSON.stringify(screenPrivacyRestore.data?.privacy?.rules || []) === JSON.stringify(originalScreenPrivacyRules)
+        ? ok('realtime.screen_privacy_tools', 'Realtime screen privacy tools', 'voice tools can read, preview, and apply screen region masks, then restore local privacy rules')
+        : fail('realtime.screen_privacy_tools', 'Realtime screen privacy tools', 'screen privacy Realtime tools did not expose or apply expected region preset safely', {
+          screenPrivacyTool: screenPrivacyTool.data,
+          screenRegionPreviewTool: screenRegionPreviewTool.data,
+          screenRegionApplyTool: screenRegionApplyTool.data,
+          screenPrivacyRestore: screenPrivacyRestore.data,
+        }),
     );
 
     const learningTool = await ctx.api('/api/tools/execute', {
