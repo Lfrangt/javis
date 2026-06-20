@@ -332,7 +332,8 @@ async function printStatus() {
   console.log('32. Show perception consent');
   console.log('33. Show screen privacy');
   console.log('34. Apply recommended screen privacy');
-  console.log('35. Quit');
+  console.log('35. Add screen region mask');
+  console.log('36. Quit');
 }
 
 async function setupAction(action) {
@@ -1205,6 +1206,16 @@ function printScreenPrivacy(result) {
       if (preset.description) console.log(`  ${compact(preset.description, 180)}`);
     }
   }
+  const regionPresets = result?.regionPresets || {};
+  const regionPresetItems = Array.isArray(regionPresets.presets) ? regionPresets.presets : [];
+  if (regionPresetItems.length) {
+    console.log('\nRegion presets:');
+    for (const preset of regionPresetItems.slice(0, 8)) {
+      const region = preset.region || {};
+      console.log(`- ${preset.id} · ${preset.applied ? 'applied' : 'available'} · ${region.x},${region.y} ${region.width}x${region.height} ${region.unit || 'percent'}`);
+      if (preset.description) console.log(`  ${compact(preset.description, 180)}`);
+    }
+  }
   const rules = Array.isArray(privacy.rules) ? privacy.rules : [];
   if (!rules.length) {
     console.log('\nRules: none');
@@ -1223,6 +1234,27 @@ async function showScreenPrivacy() {
   const result = await request('/api/screen/privacy');
   console.log('');
   printScreenPrivacy(result);
+}
+
+function printScreenRegionPresets(regionPresets) {
+  const presets = Array.isArray(regionPresets?.presets) ? regionPresets.presets : [];
+  console.log('Screen Region Presets');
+  console.log('=====================');
+  if (!presets.length) {
+    console.log('No region presets available.');
+    return;
+  }
+  presets.forEach((preset, index) => {
+    const region = preset.region || {};
+    console.log(`${index + 1}. ${preset.id} · ${preset.applied ? 'applied' : 'available'} · ${region.x},${region.y} ${region.width}x${region.height} ${region.unit || 'percent'}`);
+    if (preset.description) console.log(`   ${compact(preset.description, 180)}`);
+  });
+}
+
+async function showScreenRegionPresets() {
+  const result = await request('/api/screen/privacy/region-presets');
+  console.log('');
+  printScreenRegionPresets(result.regionPresets || result);
 }
 
 function printScreenPrivacyPresetPreview(preview) {
@@ -1254,6 +1286,62 @@ async function applyRecommendedScreenPrivacy(rl, options = {}) {
     body: { source: 'cui' },
   });
   console.log(`\n${result.output || 'Applied screen privacy preset.'}`);
+}
+
+async function addScreenRegionMask(rl, options = {}) {
+  const listResult = await request('/api/screen/privacy/region-presets');
+  const regionPresets = listResult.regionPresets || listResult;
+  const presets = Array.isArray(regionPresets.presets) ? regionPresets.presets : [];
+  console.log('');
+  printScreenRegionPresets(regionPresets);
+
+  let selectedId = options.preset || '';
+  if (!selectedId && rl) {
+    const answer = (await rl.question(`Choose preset [1-${presets.length}] or type custom: `)).trim().toLowerCase();
+    if (answer === 'custom') {
+      const x = Number((await rl.question('x percent [0-100]: ')).trim());
+      const y = Number((await rl.question('y percent [0-100]: ')).trim());
+      const width = Number((await rl.question('width percent [1-100]: ')).trim());
+      const height = Number((await rl.question('height percent [1-100]: ')).trim());
+      const label = (await rl.question('Label [Custom screen mask]: ')).trim() || 'Custom screen mask';
+      const result = await request('/api/screen/privacy/rules', {
+        method: 'POST',
+        body: {
+          source: 'cui',
+          id: `custom_region_${Date.now().toString(36)}`,
+          kind: 'region',
+          effect: 'blur',
+          label,
+          region: { unit: 'percent', x, y, width, height },
+        },
+      });
+      console.log(`\nAdded ${result.rule?.label || label}.`);
+      return;
+    }
+    const selected = presets[Number(answer) - 1] || presets.find((preset) => preset.id === answer);
+    selectedId = selected?.id || '';
+  }
+
+  if (!selectedId) {
+    console.log('\nNo region mask selected.');
+    return;
+  }
+  const preview = await request(`/api/screen/privacy/region-presets/${encodeURIComponent(selectedId)}`);
+  const preset = preview.preview?.preset || {};
+  const counts = preview.preview?.counts || {};
+  console.log(`\n${preset.label || selectedId}: would add ${counts.wouldAdd || 0}, update ${counts.wouldUpdate || 0}.`);
+  if (rl) {
+    const answer = (await rl.question('Type APPLY to save this region mask: ')).trim();
+    if (answer !== 'APPLY') {
+      console.log('\nNo change made.');
+      return;
+    }
+  }
+  const result = await request(`/api/screen/privacy/region-presets/${encodeURIComponent(selectedId)}/apply`, {
+    method: 'POST',
+    body: { source: 'cui' },
+  });
+  console.log(`\n${result.output || 'Applied screen region mask.'}`);
 }
 
 function printShortcutCandidate(candidate, index) {
@@ -2218,6 +2306,20 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-screen-region-presets')) {
+    await showScreenRegionPresets();
+    return;
+  }
+
+  const addRegionIndex = process.argv.findIndex((item) => item === '--add-screen-region-mask');
+  if (addRegionIndex >= 0) {
+    const maybePreset = process.argv[addRegionIndex + 1] || '';
+    await addScreenRegionMask(null, {
+      preset: maybePreset && !maybePreset.startsWith('--') ? maybePreset : 'top_right_notifications',
+    });
+    return;
+  }
+
   if (process.argv.includes('--preview-screen-privacy-preset')) {
     await applyRecommendedScreenPrivacy(null, { dryRun: true });
     return;
@@ -2363,7 +2465,9 @@ async function main() {
         await showScreenPrivacy();
       } else if (answer === '34') {
         await applyRecommendedScreenPrivacy(rl);
-      } else if (answer === '35' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '35') {
+        await addScreenRegionMask(rl);
+      } else if (answer === '36' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

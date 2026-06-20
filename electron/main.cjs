@@ -182,6 +182,44 @@ const SCREEN_PRIVACY_PRESETS = [
     ],
   },
 ];
+const SCREEN_PRIVACY_REGION_PRESETS = [
+  {
+    id: 'menu_bar',
+    label: 'Menu bar',
+    description: 'Mask the macOS menu bar across the top of the screen.',
+    region: { unit: 'percent', x: 0, y: 0, width: 100, height: 5 },
+  },
+  {
+    id: 'notch_band',
+    label: 'Notch band',
+    description: 'Mask the center-top notch/dynamic-island area.',
+    region: { unit: 'percent', x: 36, y: 0, width: 28, height: 8 },
+  },
+  {
+    id: 'top_right_notifications',
+    label: 'Top-right notifications',
+    description: 'Mask the area where macOS notification banners and menu extras often appear.',
+    region: { unit: 'percent', x: 68, y: 0, width: 32, height: 20 },
+  },
+  {
+    id: 'dock_bottom',
+    label: 'Bottom Dock',
+    description: 'Mask the bottom Dock and app-switching area.',
+    region: { unit: 'percent', x: 0, y: 86, width: 100, height: 14 },
+  },
+  {
+    id: 'left_sidebar',
+    label: 'Left sidebar',
+    description: 'Mask the left edge for sidebars, file lists, or private navigation.',
+    region: { unit: 'percent', x: 0, y: 0, width: 18, height: 100 },
+  },
+  {
+    id: 'right_sidebar',
+    label: 'Right sidebar',
+    description: 'Mask the right edge for inspector panels, chats, or private sidebars.',
+    region: { unit: 'percent', x: 82, y: 0, width: 18, height: 100 },
+  },
+];
 
 const CREATIVE_APP_CATALOG = [
   {
@@ -2809,6 +2847,116 @@ function removeScreenPrivacyRule(id, options = {}) {
     source: String(options.source || 'api').slice(0, 80),
   });
   return screenPrivacySnapshot();
+}
+
+function screenPrivacyRegionPresetById(id) {
+  const presetId = String(id || '').trim();
+  return SCREEN_PRIVACY_REGION_PRESETS.find((preset) => preset.id === presetId) || null;
+}
+
+function screenPrivacyRegionPresetRuleInput(preset, options = {}) {
+  return {
+    id: options.id || `region_preset_${preset.id}`,
+    kind: 'region',
+    effect: 'blur',
+    label: options.label || preset.label,
+    regionPresetId: preset.id,
+    regionPresetLabel: preset.label,
+    region: preset.region,
+    enabled: options.enabled !== false,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+}
+
+function screenPrivacyRegionPresetRule(preset, options = {}) {
+  return normalizeScreenPrivacyRules([screenPrivacyRegionPresetRuleInput(preset, options)])[0];
+}
+
+function screenPrivacyRegionPresetList(options = {}) {
+  const currentIds = new Set((Array.isArray(screenPrivacy?.rules) ? screenPrivacy.rules : []).map((rule) => rule.id));
+  const includeRules = options.includeRules === true || String(options.includeRules || '').toLowerCase() === 'true';
+  const presets = SCREEN_PRIVACY_REGION_PRESETS.map((preset) => {
+    const rule = screenPrivacyRegionPresetRule(preset);
+    return {
+      id: preset.id,
+      label: preset.label,
+      description: preset.description,
+      applied: Boolean(rule && currentIds.has(rule.id)),
+      ruleId: rule?.id || '',
+      region: rule?.region || normalizeScreenPrivacyRegion(preset.region),
+      rule: includeRules ? rule : undefined,
+    };
+  });
+  return {
+    ok: true,
+    count: presets.length,
+    presets,
+  };
+}
+
+function screenPrivacyRegionPresetPreview(id, options = {}) {
+  const preset = screenPrivacyRegionPresetById(id);
+  if (!preset) throw new Error(`Unknown screen privacy region preset: ${id || 'missing'}.`);
+  const rule = screenPrivacyRegionPresetRule(preset, options);
+  if (!rule) throw new Error(`Invalid screen privacy region preset: ${id}.`);
+  const existing = Array.isArray(screenPrivacy.rules) ? screenPrivacy.rules : [];
+  const existingIds = new Set(existing.map((item) => item.id));
+  const baseRules = existing.filter((item) => item.id !== rule.id);
+  const privacy = normalizeScreenPrivacy({
+    ...screenPrivacy,
+    rules: [...baseRules, rule],
+    updatedAt: Date.now(),
+  });
+  const maskPreview = screenPrivacyRegionMaskPreview({
+    width: options.width || 96,
+    height: options.height || 64,
+    mode: privacy.mode,
+    rules: [rule],
+  });
+  return {
+    ok: true,
+    dryRun: options.dryRun !== false,
+    preset: {
+      id: preset.id,
+      label: preset.label,
+      description: preset.description,
+      region: rule.region,
+      ruleId: rule.id,
+    },
+    counts: {
+      existing: existing.length,
+      wouldAdd: existingIds.has(rule.id) ? 0 : 1,
+      wouldUpdate: existingIds.has(rule.id) ? 1 : 0,
+      nextTotal: privacy.ruleCounts.total,
+      nextEnabled: privacy.ruleCounts.enabled,
+    },
+    rule,
+    privacy,
+    maskPreview,
+    output: `${preset.label}: mask ${rule.region.x},${rule.region.y} ${rule.region.width}x${rule.region.height} ${rule.region.unit}.`,
+  };
+}
+
+function applyScreenPrivacyRegionPreset(id, options = {}) {
+  const dryRun = options.dryRun === true || String(options.dryRun || '').toLowerCase() === 'true';
+  const preview = screenPrivacyRegionPresetPreview(id, { ...(options || {}), dryRun });
+  if (dryRun) return preview;
+  screenPrivacy = normalizeScreenPrivacy(preview.privacy);
+  persistScreenPrivacy();
+  appendAudit('screen_privacy.region_preset_applied', {
+    id: preview.preset.id,
+    label: preview.preset.label,
+    rule: preview.rule.id,
+    source: String(options.source || 'api').slice(0, 80),
+  });
+  return {
+    ...preview,
+    dryRun: false,
+    applied: true,
+    privacy: screenPrivacySnapshot(),
+    output: `Applied ${preview.preset.label} screen mask. ${screenPrivacy.rulesSummary}`,
+  };
 }
 
 function screenPrivacyPresetById(id) {
@@ -39954,7 +40102,12 @@ function startApiServer() {
   });
 
   api.get('/api/screen/privacy', (_req, res) => {
-    res.json({ privacy: screenPrivacySnapshot(), presets: screenPrivacyPresetList(), privacyFile: SCREEN_PRIVACY_FILE });
+    res.json({
+      privacy: screenPrivacySnapshot(),
+      presets: screenPrivacyPresetList(),
+      regionPresets: screenPrivacyRegionPresetList(),
+      privacyFile: SCREEN_PRIVACY_FILE,
+    });
   });
 
   api.put('/api/screen/privacy', (req, res) => {
@@ -40000,6 +40153,34 @@ function startApiServer() {
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'Screen privacy preset apply failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/screen/privacy/region-presets', (req, res) => {
+    try {
+      res.json({ regionPresets: screenPrivacyRegionPresetList({ includeRules: req.query.includeRules }) });
+    } catch (error) {
+      jsonError(res, 500, 'Screen privacy region preset list failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/screen/privacy/region-presets/:id', (req, res) => {
+    try {
+      res.json({ preview: screenPrivacyRegionPresetPreview(req.params.id, { dryRun: true }) });
+    } catch (error) {
+      jsonError(res, 404, 'Screen privacy region preset preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/screen/privacy/region-presets/:id/apply', (req, res) => {
+    try {
+      const result = applyScreenPrivacyRegionPreset(req.params.id, {
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Screen privacy region preset apply failed', error instanceof Error ? error.message : String(error));
     }
   });
 

@@ -44,6 +44,29 @@ export default {
       method: 'POST',
       body: { action: 'apply_screen_privacy_sensitive_defaults' },
     });
+    const regionPresets = await ctx.api('/api/screen/privacy/region-presets?includeRules=true');
+    const regionItems = Array.isArray(regionPresets.data?.regionPresets?.presets) ? regionPresets.data.regionPresets.presets : [];
+    const topRightRegion = regionItems.find((preset) => preset.id === 'top_right_notifications');
+    const regionPreview = await ctx.api('/api/screen/privacy/region-presets/notch_band', {
+      method: 'GET',
+    });
+    const regionDryRun = await ctx.api('/api/screen/privacy/region-presets/notch_band/apply', {
+      method: 'POST',
+      body: { dryRun: true, source: 'eval_screen_privacy_region_dry_run' },
+    });
+    const regionApply = await ctx.api('/api/screen/privacy/region-presets/notch_band/apply', {
+      method: 'POST',
+      body: { source: 'eval_screen_privacy_region_apply' },
+    });
+    const regionPresetMaskPreview = await ctx.api('/api/screen/privacy/region-mask-preview', {
+      method: 'POST',
+      body: {
+        width: 96,
+        height: 64,
+        mode,
+        rules: regionApply.data?.rule ? [regionApply.data.rule] : [],
+      },
+    });
     const passwordCheck = await ctx.api('/api/screen/privacy/check', {
       method: 'POST',
       body: {
@@ -99,6 +122,20 @@ export default {
         setupPresetApply.data?.action === 'apply_screen_privacy_sensitive_defaults' &&
         setupPresetApply.data?.privacy?.enforcement?.regionRendererMask === true &&
         setupPresetApply.data?.config?.items?.some((item) => item.id === 'screen_privacy_preset') &&
+        regionPresets.ok &&
+        regionItems.length >= 5 &&
+        topRightRegion?.region?.width >= 25 &&
+        regionPreview.ok &&
+        regionPreview.data?.preview?.preset?.id === 'notch_band' &&
+        regionPreview.data?.preview?.maskPreview?.preview?.mask?.applied === true &&
+        regionDryRun.ok &&
+        regionDryRun.data?.dryRun === true &&
+        regionDryRun.data?.counts?.wouldAdd >= 0 &&
+        regionApply.ok &&
+        regionApply.data?.applied === true &&
+        regionApply.data?.rule?.id === 'region_preset_notch_band' &&
+        regionPresetMaskPreview.ok &&
+        regionPresetMaskPreview.data?.preview?.samples?.insideMasked === true &&
         passwordCheck.ok &&
         passwordCheck.data?.policy?.blocked === true &&
         passwordCheck.data?.policy?.reason?.includes('preset_sensitive_defaults_app_passwords') &&
@@ -118,6 +155,11 @@ export default {
           presetDryRun: presetDryRun.data,
           presetApply: presetApply.data,
           setupPresetApply: setupPresetApply.data,
+          regionPresets: regionPresets.data,
+          regionPreview: regionPreview.data,
+          regionDryRun: regionDryRun.data,
+          regionApply: regionApply.data,
+          regionPresetMaskPreview: regionPresetMaskPreview.data,
           passwordCheck: passwordCheck.data,
           accountHostCheck: accountHostCheck.data,
           paymentWindowCheck: paymentWindowCheck.data,
@@ -257,16 +299,25 @@ export default {
         timeout: 10000,
         maxBuffer: 1024 * 1024,
       });
-      const output = `${cui.stdout || ''}\n${cui.stderr || ''}\n${preset.stdout || ''}\n${preset.stderr || ''}`;
+      const regions = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-screen-region-presets'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}\n${preset.stdout || ''}\n${preset.stderr || ''}\n${regions.stdout || ''}\n${regions.stderr || ''}`;
       out.push(
         output.includes('Screen Privacy') &&
           output.includes('Mode:') &&
           output.includes('Enforcement:') &&
           output.includes('Presets:') &&
+          output.includes('Region presets:') &&
           output.includes('sensitive_defaults') &&
           output.includes('would add') &&
-          output.includes('Sample checks:')
-          ? ok('screen.privacy_cui', 'Screen privacy CUI', 'config CUI prints screen privacy mode/rules and previews the recommended preset')
+          output.includes('Sample checks:') &&
+          output.includes('Screen Region Presets') &&
+          output.includes('top_right_notifications')
+          ? ok('screen.privacy_cui', 'Screen privacy CUI', 'config CUI prints screen privacy mode/rules and previews preset/region controls')
           : fail('screen.privacy_cui', 'Screen privacy CUI', 'expected --print-screen-privacy to print mode/rules/enforcement', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
