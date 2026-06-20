@@ -46,10 +46,19 @@ export default {
         loop.workNext &&
         loop.progress &&
         loop.recovery?.snapshot?.counts &&
+        loop.agencyPlan?.version === 1 &&
+        typeof loop.agencyPlan.status === 'string' &&
+        Array.isArray(loop.agencyPlan.nextActions) &&
+        loop.agencyPlan.nextActions.length >= 1 &&
+        typeof loop.agencyPlan.spokenSummary === 'string' &&
+        Array.isArray(loop.agencyPlan.askUserOnlyFor) &&
+        loop.agencyPlan.askUserOnlyFor.some((item) => /irreversible|credentials|permission|microphone/i.test(item)) &&
+        Array.isArray(loop.agencyPlan.boundaries) &&
+        loop.agencyPlan.boundaries.some((item) => /action policy/i.test(item)) &&
         loop.learning?.privacy?.localOnly === true &&
         loop.learning?.privacy?.noPermissionGrant === true &&
         loop.safety?.learningContext?.noPolicyBypass === true
-        ? ok('autonomy.preview_loop', 'Autonomy loop preview', `${loop.route.label || loop.route.lane} · ${loop.steps.length} bounded step(s)`)
+        ? ok('autonomy.preview_loop', 'Autonomy loop preview', `${loop.route.label || loop.route.lane} · ${loop.steps.length} bounded step(s) · agency=${loop.agencyPlan.status}`)
         : fail('autonomy.preview_loop', 'Autonomy loop preview', `expected preview-only route/learning/observe/work-next/verify/recovery envelope (${preview.status})`, preview.data),
     );
 
@@ -120,10 +129,14 @@ export default {
         voiceIds.has('learning_context') &&
         voiceIds.has('work_next_preview') &&
         voiceIds.has('recovery_scan') &&
+        voiceOutput?.agencyPlan?.version === 1 &&
+        Array.isArray(voiceOutput.agencyPlan.nextActions) &&
+        voiceOutput.agencyPlan.nextActions.length >= 1 &&
+        voiceOutput.agencyPlan.boundaries?.some((item) => /approval|policy/i.test(item)) &&
         voiceOutput?.safety?.recoveryBudget?.retryRequested === false &&
         voiceOutput?.safety?.learningContext?.noPermissionGrant === true &&
         voiceOutput?.safety?.usesExistingRouting === true
-        ? ok('autonomy.voice_tool', 'Realtime autonomy voice tool', `${voiceOutput.route?.label || voiceOutput.route?.lane} preview exposed through tool execution`)
+        ? ok('autonomy.voice_tool', 'Realtime autonomy voice tool', `${voiceOutput.route?.label || voiceOutput.route?.lane} preview exposed through tool execution · agency=${voiceOutput.agencyPlan.status}`)
         : fail('autonomy.voice_tool', 'Realtime autonomy voice tool', `expected run_autonomy_loop tool preview (${voiceTool.status})`, { response: voiceTool.data, output: voiceOutput }),
     );
 

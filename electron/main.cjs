@@ -32233,6 +32233,8 @@ function summarizeAutonomyWorkNext(next = {}) {
           executable: Boolean(action.executable),
           autoEligible: Boolean(action.autoEligible),
           autopilotEligible: Boolean(action.autopilotEligible),
+          manualOnly: Boolean(action.manualOnly),
+          requiresUserPresence: Boolean(action.requiresUserPresence),
           riskLevel: Number(action.riskLevel || 0),
           summary: compactRecordText(action.summary || '', 300),
         }
@@ -32393,6 +32395,185 @@ function summarizeAutonomyRecoveryResult(result = {}) {
         }
       : null,
     recoveryCounts: result.recovery?.counts || {},
+  };
+}
+
+function autonomyAgencyAction({ id, label, source, summary = '', tool = '', executable = false, requiresUser = false, riskLevel = 0, reason = '', command = '' }) {
+  return {
+    id: compactRecordText(id || label || source || tool || 'action', 120),
+    label: compactRecordText(label || id || tool || 'Next action', 140),
+    source: compactRecordText(source || '', 80),
+    summary: compactRecordText(summary || reason || '', 280),
+    tool: compactRecordText(tool || '', 80),
+    executable: Boolean(executable),
+    requiresUser: Boolean(requiresUser),
+    riskLevel: Math.max(0, Math.min(5, Number(riskLevel || 0))),
+    reason: compactRecordText(reason || '', 220),
+    command: compactRecordText(command || '', 220),
+  };
+}
+
+function buildAutonomyAgencyPlan(context = {}) {
+  const task = compactRecordText(context.task || '', 420);
+  const route = context.routeSummary || {};
+  const contextPlan = route.contextPlan || {};
+  const workNext = context.workNextSummary || null;
+  const progress = context.progress || null;
+  const recovery = context.recoverySummary || null;
+  const recoveryCandidate = context.recoveryCandidate || null;
+  const observation = context.observation ? summarizeAutonomyObservation(context.observation) : null;
+  const primary = [];
+  const fallbacks = [];
+  const evidence = [];
+  const blockers = [];
+
+  if (Array.isArray(contextPlan.recommendedTools) && contextPlan.recommendedTools.length) {
+    primary.push(autonomyAgencyAction({
+      id: 'use_context_tools',
+      label: 'Use recommended context tools',
+      source: 'context_plan',
+      tool: contextPlan.recommendedTools.slice(0, 3).join(', '),
+      executable: false,
+      summary: `先收集 ${contextPlan.mode || 'task'} 上下文，再决定是否执行。`,
+      reason: contextPlan.summary || route.reason,
+    }));
+    evidence.push(`context:${contextPlan.mode || 'unknown'}`);
+  }
+
+  if (workNext?.action) {
+    primary.push(autonomyAgencyAction({
+      id: workNext.action.id || 'work_next',
+      label: workNext.action.label || 'Run work-next',
+      source: 'work_next',
+      tool: 'run_work_next',
+      executable: Boolean(workNext.action.executable),
+      requiresUser: workNext.action.manualOnly === true || workNext.action.requiresUserPresence === true,
+      riskLevel: workNext.action.riskLevel,
+      summary: workNext.action.summary,
+      reason: 'The local workbench selected this as the next bounded action.',
+      command: workNext.action.executable ? 'POST /api/work/next { execute:true }' : 'GET /api/work/next',
+    }));
+    evidence.push(`work-next:${workNext.action.source || 'candidate'}`);
+  } else {
+    fallbacks.push(autonomyAgencyAction({
+      id: 'route_delegate',
+      label: 'Delegate from route preview',
+      source: 'route_preview',
+      tool: route.lane === 'codex' || route.lane === 'claude' ? 'delegate_task' : 'route_task',
+      executable: false,
+      summary: route.output || route.reason || 'Use the routed lane with the assembled context plan.',
+      reason: 'No work-next action was available, so continue from the route decision.',
+    }));
+  }
+
+  if (recoveryCandidate?.action) {
+    const recoveryExecutable = Boolean(
+      recoveryCandidate.action.trustedAutoEligible ||
+      (recoveryCandidate.action.autoEligible && Number(recoveryCandidate.action.riskLevel || 0) <= 1),
+    );
+    const action = autonomyAgencyAction({
+      id: `recover:${recoveryCandidate.jobId}:${recoveryCandidate.action.id || recoveryCandidate.action.recoveryType}`,
+      label: recoveryCandidate.action.label || 'Recover failed worker',
+      source: 'worker_recovery',
+      tool: 'run_worker_recovery',
+      executable: recoveryExecutable,
+      riskLevel: recoveryCandidate.action.riskLevel,
+      summary: `${recoveryCandidate.jobTitle || 'Failed worker'} · ${recoveryCandidate.failureKind || 'failed'}`,
+      reason: recoveryCandidate.action.reason || 'A failed worker has a targeted recovery action.',
+      command: `POST /api/jobs/${recoveryCandidate.jobId}/recovery/run`,
+    });
+    (recoveryExecutable ? primary : fallbacks).push(action);
+    evidence.push(`recovery:${recoveryCandidate.failureKind || 'candidate'}`);
+  } else if (recovery?.counts?.recoverable) {
+    fallbacks.push(autonomyAgencyAction({
+      id: 'inspect_recovery',
+      label: 'Inspect failed-worker recovery',
+      source: 'worker_recovery',
+      tool: 'get_worker_recovery',
+      executable: false,
+      summary: recovery.summary || `${recovery.counts.recoverable} recoverable failed worker(s).`,
+      reason: recovery.nextAction || 'Recovery candidates exist but none are directly executable by this loop.',
+    }));
+  }
+
+  if (observation?.errors?.length) {
+    blockers.push({
+      id: 'observation_error',
+      label: 'Observation error',
+      summary: observation.errors.slice(0, 3).join('; '),
+      next: 'Retry with narrower context, fix the named permission, or use non-screen/browser evidence.',
+    });
+  }
+  if (route.requiresOpenAiKey && !OPENAI_API_KEY) {
+    blockers.push({
+      id: 'openai_key',
+      label: 'OpenAI key missing',
+      summary: 'The routed lane needs an OpenAI key.',
+      next: 'Open .env from CUI and add OPENAI_API_KEY, or route to an available local worker.',
+    });
+  }
+  if (route.requiresLocalExecution && !LOCAL_EXEC_ENABLED) {
+    blockers.push({
+      id: 'local_execution',
+      label: 'Local execution disabled',
+      summary: 'The routed lane needs local execution.',
+      next: 'Enable trusted local execution only after reviewing the action policy.',
+    });
+  }
+
+  const activeJobs = Number(progress?.counts?.activeJobs || 0);
+  const activeRoutes = Number(progress?.counts?.activeRoutes || 0);
+  const recoverable = Number(recovery?.counts?.recoverable || progress?.recovery?.counts?.recoverable || 0);
+  const status = blockers.length
+    ? 'blocked'
+    : context.recoveryAttempt?.queued
+      ? 'recovering'
+      : activeJobs || activeRoutes
+        ? 'waiting'
+        : primary.some((action) => action.executable && !action.requiresUser)
+          ? 'can_execute'
+          : primary.length || fallbacks.length
+            ? 'can_continue'
+            : 'needs_user';
+  const askUserOnlyFor = [
+    'missing or ambiguous user intent',
+    'credentials, login, payment, account, private, send, delete, install, export, or irreversible actions',
+    'macOS permission prompts and microphone/live voice start',
+    'overlapping write-scope conflicts that the collaboration ledger cannot serialize safely',
+  ];
+  const boundaries = [
+    'Use route_task, work-next, worker recovery, browser/file/app tools, or delegated workers; do not bypass action policy.',
+    'Run at most one bounded next action per autonomy tick.',
+    'Keep local inferred learning as soft context only; it never grants permission.',
+    'Preserve approval gates for Level 4, private, irreversible, account, send, delete, purchase, install, and export actions.',
+  ];
+  const ordered = [...primary, ...fallbacks].slice(0, 6);
+  const spokenSummary = ordered[0]
+    ? `${ordered[0].label}: ${ordered[0].summary || ordered[0].reason || '继续下一步'}`
+    : blockers[0]
+      ? `${blockers[0].label}: ${blockers[0].next}`
+      : 'No autonomous next step is available yet.';
+
+  return {
+    version: 1,
+    status,
+    objective: task,
+    primary: primary[0] || null,
+    nextActions: ordered,
+    fallbacks: fallbacks.slice(0, 4),
+    blockers,
+    evidence,
+    counts: {
+      primary: primary.length,
+      fallbacks: fallbacks.length,
+      blockers: blockers.length,
+      activeJobs,
+      activeRoutes,
+      recoverable,
+    },
+    askUserOnlyFor,
+    boundaries,
+    spokenSummary: compactRecordText(spokenSummary, 320),
   };
 }
 
@@ -32665,9 +32846,20 @@ async function runAutonomyLoop(options = {}) {
     status = 'done';
   }
   const nextAction = finalStep?.nextAction || routeSummary.output || 'No next action.';
+  const agencyPlan = buildAutonomyAgencyPlan({
+    task,
+    routeSummary,
+    observation,
+    workNextSummary,
+    progress,
+    recoverySummary,
+    recoveryCandidate,
+    recoveryAttempt,
+  });
   const output = [
     execute ? `Autonomy loop executed through ${routeSummary.label || routeSummary.lane}.` : `Autonomy loop previewed ${routeSummary.label || routeSummary.lane}.`,
     finalStep?.detail || '',
+    agencyPlan.spokenSummary ? `Plan: ${agencyPlan.spokenSummary}` : '',
     `Next: ${nextAction}`,
   ].filter(Boolean).join('\n');
   const result = {
@@ -32710,6 +32902,7 @@ async function runAutonomyLoop(options = {}) {
             : null,
         }
       : null,
+    agencyPlan,
     safety: {
       bounded: true,
       maxSteps,
@@ -32751,6 +32944,8 @@ async function runAutonomyLoop(options = {}) {
     queued: result.queued,
     recoveryCandidates: recoverySummary?.counts?.recoverable || 0,
     recoveryAttempted: Boolean(recoveryAttempt),
+    agencyStatus: agencyPlan.status,
+    agencyPrimary: agencyPlan.primary?.id || '',
     learningEffect: learningSummary.decisionEffect || '',
     learningUsed: Boolean(learningSummary.usedInPrompt),
     durationMs: result.durationMs,
@@ -40277,7 +40472,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use save_productivity_dogfood_archive when the user asks to save, export, archive, or keep the productivity dogfood evidence. Do not pass execute:true and confirm:true unless the user explicitly asks for a live Mac run after reviewing the preview.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
-      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> learning_context -> observe -> preview -> verify -> recovery-scan steps by default; local learning is soft metadata context only, never permission. Pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
+      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> learning_context -> observe -> preview -> verify -> recovery-scan steps by default and returns agencyPlan with spokenSummary, nextActions, fallbacks, blockers, and boundaries. Read agencyPlan before asking the user; only ask when agencyPlan says the boundary is missing intent, credentials, permission, microphone/live voice, private/irreversible action, or unsafe conflict. Local learning is soft metadata context only, never permission. Pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
       'Use get_routing_speed_policy when the user asks why JAVIS is fast or slow, which model/lane should handle a task, how to keep voice responsive, or whether a task should be answered inline, routed to background, sent to Codex/Claude, or handled by browser/file/app tools.',
       'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
       'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
@@ -41003,7 +41198,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_autonomy_loop',
-        description: 'Run a bounded autonomy loop for one user task: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing routing/policy, verify progress, and scan failed-worker recovery. Defaults to preview-only; recovery retry requires execute:true plus retry:true. Learning evidence is metadata-only soft context and never grants permission.',
+        description: 'Run a bounded autonomy loop for one user task: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing routing/policy, verify progress, and scan failed-worker recovery. Returns agencyPlan with the primary next action, fallback attempts, blockers, ask-user-only boundaries, and a spoken summary. Defaults to preview-only; recovery retry requires execute:true plus retry:true. Learning evidence is metadata-only soft context and never grants permission.',
         parameters: {
           type: 'object',
           properties: {
@@ -42469,7 +42664,7 @@ function realtimeInstructionChecks(instructions = '') {
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
-    autonomyLoop: /run_autonomy_loop|bounded route.*learning_context.*observe.*preview.*verify|recovery-scan|existing routing, action policy/i.test(text),
+    autonomyLoop: /run_autonomy_loop|bounded route.*learning_context.*observe.*preview.*verify|recovery-scan|agencyPlan|existing routing, action policy/i.test(text),
     approvals: /get_pending_approvals|resolve_approval|waiting for approval|approval id|confirm:true/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),

@@ -156,6 +156,7 @@ Default file policy:
 - App workflow approvals store only the remaining workflow steps needed to continue after the approved action; later steps still re-enter the same policy checks.
 - Failed jobs keep `attempts`, `failureKind`, and `recoveryPlan` with a redacted diagnostics snapshot so JAVIS can diagnose and continue instead of returning a bare failure.
 - Work-next recovery jobs are capped by `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` per failed parent job and keep Level 3 code-agent policy checks.
+- Autonomy `agencyPlan` is a planning envelope, not an execution bypass. Its next actions and fallbacks must still run through `route_task`, work-next, browser/file/app tools, worker recovery, approvals, and action policy. Its `askUserOnlyFor` boundaries are the only reasons the agent should stop and ask instead of trying a safe preview or recovery path.
 - Autopilot ticks are limited to low-risk recovery diagnostics and safe-planner app workflow retries; they skip during live voice sessions or active background jobs.
 - Collaboration claims expire after `JAVIS_COLLABORATION_CLAIM_TTL_MS` when a worker stops heartbeating. Expiration only releases the coordination claim; it does not revert files or decide whether the worker's changes are correct.
 - Read/list/search default roots are the current project, Desktop, Documents, and Downloads.
