@@ -1,7 +1,11 @@
 import { ok, warn, fail } from '../_client.mjs';
+import { execFile } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export default {
   lane: 'learning',
@@ -28,6 +32,45 @@ export default {
       `${profile.sourceEventCount || 0} source event(s) · ${profile.summary || 'no summary yet'}`,
       { sourceEventCount: profile.sourceEventCount || 0 },
     ));
+
+    const evolution = await ctx.api('/api/learning/evolution?source=eval&recentLimit=8&baselineLimit=24');
+    const evolutionData = evolution.data?.evolution;
+    out.push(
+      evolution.ok &&
+        evolutionData?.ok === true &&
+        typeof evolutionData.spokenSummary === 'string' &&
+        Array.isArray(evolutionData.changes) &&
+        evolutionData.windows?.recent &&
+        evolutionData.windows?.baseline &&
+        evolutionData.privacy?.localOnly === true &&
+        evolutionData.privacy?.metadataOnly === true &&
+        evolutionData.privacy?.noRawScreenshots === true &&
+        evolutionData.privacy?.noClipboardText === true &&
+        evolutionData.privacy?.noPageBodies === true &&
+        evolutionData.privacy?.noPermissionGrant === true
+        ? ok('learning.evolution', 'Learning evolution snapshot', `${evolutionData.windows.recent.count || 0} recent · ${evolutionData.windows.baseline.count || 0} baseline · ${evolutionData.changes.length} change(s)`)
+        : fail('learning.evolution', 'Learning evolution snapshot', `GET /api/learning/evolution ${evolution.status}`, evolution.data),
+    );
+
+    try {
+      const learningEvolutionCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-learning-evolution'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${learningEvolutionCui.stdout || ''}\n${learningEvolutionCui.stderr || ''}`;
+      out.push(
+        output.includes('Learning Evolution') &&
+          output.includes('Privacy:') &&
+          output.includes('metadata-only=yes') &&
+          output.includes('Events:')
+          ? ok('learning.evolution_cui', 'Learning evolution CUI', 'config CUI prints local evolution snapshot')
+          : fail('learning.evolution_cui', 'Learning evolution CUI', 'expected config CUI to print local evolution details', { output: output.slice(0, 1800) }),
+      );
+    } catch (error) {
+      out.push(fail('learning.evolution_cui', 'Learning evolution CUI', error instanceof Error ? error.message : String(error)));
+    }
 
     const draft = await ctx.api('/api/learning/skill-draft?source=eval&force=true&routeLimit=2&workflowLimit=2');
     const skill = draft.data?.skill;

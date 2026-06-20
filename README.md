@@ -30,7 +30,7 @@ Local Mac-first realtime desktop buddy.
 - Screen privacy presets for password managers, account/login pages, banking/payment hosts, sensitive system windows, and a notification-strip region mask, with preview/apply APIs and CUI visibility.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
 - Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, and optional private screen-frame refresh without intervention.
-- Local inferred learning profile distilled from passive ambient metadata without calling a model, with pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
+- Local inferred learning profile distilled from passive ambient metadata without calling a model, with metadata-only evolution snapshots, pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
 - Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, expose Realtime evidence for demonstration list/start/capture/finish/replay/draft/save gates, attach recalled local skills as structured `skillRecallPlan` evidence during later task routing, promote confirmed repeats into local skill shortcuts, manage those shortcuts from CUI/API/Realtime voice tools, and pass recalled plans into queued background/Codex/Claude workers.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context, quiet attention policy, attention-notification throttling, and intervention guardrails.
 - Browser context: supported frontmost browser tab title and URL.
@@ -105,7 +105,7 @@ Use the terminal CUI to paste `OPENAI_API_KEY` locally. It hides the input, writ
 
 The same CUI can explicitly toggle `JAVIS_ENABLE_LOCAL_EXEC` for Level 3 local actions after typing `ENABLE` or `DISABLE`.
 It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowledges that automatic Level 3 local actions are intentional while Level 4 sends, purchases, deletes, form submissions, and account changes still require confirmation.
-The CUI also exposes microphone permission recovery, explicit control-mode switching, Realtime evidence watching or one-shot printing, Realtime dogfood brief/prompt/session/archive controls, voice-ready work handoff printing, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh, inferred-memory save, learning skill draft preview/export, local skill shortcut review/promotion, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
+The CUI also exposes microphone permission recovery, explicit control-mode switching, Realtime evidence watching or one-shot printing, Realtime dogfood brief/prompt/session/archive controls, voice-ready work handoff printing, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh/evolution, inferred-memory save, learning skill draft preview/export, local skill shortcut review/promotion, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
 
 Use `npm run verify:ax` as a read-only Accessibility targeting smoke test. For the strict Chrome/Gemini side-pane case, focus Chrome and run `npm run verify:ax -- --require-chromium`.
 
@@ -168,6 +168,7 @@ Local Express service on 127.0.0.1:3417
   /api/lanes/contracts -> lane owner/scope/handoff/risk contracts for routing
   /api/memory           -> local memory list/search/create/delete
   /api/learning         -> local inferred profile, controls, exclusions, and prompt-use state
+  /api/learning/evolution -> metadata-only recent-vs-baseline local habit change snapshot
   /api/learning/settings -> pause/resume learning, prompt inclusion, and exclusion lists
   /api/learning/remember -> save the inferred learning profile into local memory
   /api/learning/skill-draft -> preview or generate a local Codex skill draft from learning evidence

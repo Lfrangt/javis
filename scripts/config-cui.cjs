@@ -321,19 +321,20 @@ async function printStatus() {
   console.log('21. Pause/resume learning');
   console.log('22. Manage learning exclusions');
   console.log('23. Delete inferred learning data');
-  console.log('24. Preview learning skill draft');
-  console.log('25. Export learning skill');
-  console.log('26. Show collaboration claims');
-  console.log('27. Show UI demonstrations');
-  console.log('28. Show skill shortcuts');
-  console.log('29. Promote shortcut candidate');
-  console.log('30. Show browser activity');
-  console.log('31. Show attention policy');
-  console.log('32. Show perception consent');
-  console.log('33. Show screen privacy');
-  console.log('34. Apply recommended screen privacy');
-  console.log('35. Add screen region mask');
-  console.log('36. Quit');
+  console.log('24. Show learning evolution');
+  console.log('25. Preview learning skill draft');
+  console.log('26. Export learning skill');
+  console.log('27. Show collaboration claims');
+  console.log('28. Show UI demonstrations');
+  console.log('29. Show skill shortcuts');
+  console.log('30. Promote shortcut candidate');
+  console.log('31. Show browser activity');
+  console.log('32. Show attention policy');
+  console.log('33. Show perception consent');
+  console.log('34. Show screen privacy');
+  console.log('35. Apply recommended screen privacy');
+  console.log('36. Add screen region mask');
+  console.log('37. Quit');
 }
 
 async function setupAction(action) {
@@ -751,6 +752,49 @@ function printLearningControls(learning) {
   console.log(`Excluded apps: ${(controls.excludedApps || []).join(', ') || '-'}`);
   console.log(`Excluded sites: ${(controls.excludedHosts || []).join(', ') || '-'}`);
   console.log(`Excluded folders: ${(controls.excludedFolders || []).join(', ') || '-'}`);
+}
+
+function printLearningEvolution(evolution) {
+  const recent = evolution?.windows?.recent || {};
+  const baseline = evolution?.windows?.baseline || {};
+  const changes = Array.isArray(evolution?.changes) ? evolution.changes : [];
+  const privacy = evolution?.privacy || {};
+  console.log('Learning Evolution');
+  console.log('==================');
+  console.log(evolution?.spokenSummary || evolution?.summary || 'No local learning evolution summary available.');
+  console.log(`Events: recent ${recent.count || 0} · baseline ${baseline.count || 0} · enough baseline=${evolution?.enoughBaseline ? 'yes' : 'no'}`);
+  console.log(`Privacy: local-only=${privacy.localOnly ? 'yes' : 'no'} · metadata-only=${privacy.metadataOnly ? 'yes' : 'no'} · raw screenshots=${privacy.noRawScreenshots ? 'no' : 'unknown'} · clipboard text=${privacy.noClipboardText ? 'no' : 'unknown'} · page bodies=${privacy.noPageBodies ? 'no' : 'unknown'}`);
+  if (!changes.length) {
+    console.log('\nChanges: none');
+  } else {
+    console.log('\nChanges:');
+    for (const change of changes.slice(0, 8)) {
+      const shift = [change.from, change.to].filter(Boolean).join(' -> ') || change.to || change.id || '-';
+      console.log(`- ${change.label || change.id || 'change'} · ${shift} · confidence ${change.confidence ?? '-'}`);
+      if (change.evidence) console.log(`  ${compact(change.evidence, 180)}`);
+    }
+  }
+  const topRecentApps = Array.isArray(recent.topApps) ? recent.topApps.slice(0, 3).map((item) => `${item.name} ${Math.round((item.share || 0) * 100)}%`) : [];
+  const topBaselineApps = Array.isArray(baseline.topApps) ? baseline.topApps.slice(0, 3).map((item) => `${item.name} ${Math.round((item.share || 0) * 100)}%`) : [];
+  if (topRecentApps.length || topBaselineApps.length) {
+    console.log('\nApp focus:');
+    console.log(`- recent: ${topRecentApps.join(', ') || '-'}`);
+    console.log(`- baseline: ${topBaselineApps.join(', ') || '-'}`);
+  }
+  const topRecentHosts = Array.isArray(recent.topBrowserHosts) ? recent.topBrowserHosts.slice(0, 3).map((item) => `${item.host} ${Math.round((item.share || 0) * 100)}%`) : [];
+  const topBaselineHosts = Array.isArray(baseline.topBrowserHosts) ? baseline.topBrowserHosts.slice(0, 3).map((item) => `${item.host} ${Math.round((item.share || 0) * 100)}%`) : [];
+  if (topRecentHosts.length || topBaselineHosts.length) {
+    console.log('\nBrowser focus:');
+    console.log(`- recent: ${topRecentHosts.join(', ') || '-'}`);
+    console.log(`- baseline: ${topBaselineHosts.join(', ') || '-'}`);
+  }
+  if (evolution?.nextAction) console.log(`\nNext: ${evolution.nextAction}`);
+}
+
+async function showLearningEvolution() {
+  const result = await request('/api/learning/evolution?source=cui');
+  console.log('');
+  printLearningEvolution(result.evolution || result);
 }
 
 async function toggleLearning(rl) {
@@ -1616,23 +1660,26 @@ function printRealtimeEvidence(result) {
     console.log(`- ${event.name || 'get_local_capabilities'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nLocal learning tool:');
-  console.log(`- observed ${Number(learningTools.count || 0)} recent event(s) · called=${learningTools.hasLearningProfile ? 'yes' : 'no'} · privacy=${learningTools.privacySafe ? 'safe' : 'pending'}`);
-  console.log(`- source events=${learningTools.hasSourceEvents ? 'yes' : 'no'} · signals=${learningTools.hasSignals ? 'yes' : 'no'}`);
-  console.log(`- next ${compact(learningTools.nextAction || dogfood.learningTools?.nextAction || 'Ask live voice what local habits JAVIS has inferred.', 220)}`);
+  console.log(`- observed ${Number(learningTools.count || 0)} recent event(s) · profile=${learningTools.hasLearningProfile ? 'yes' : 'no'} · evolution=${learningTools.hasLearningEvolution ? 'yes' : 'no'} · privacy=${learningTools.privacySafe ? 'safe' : 'pending'}`);
+  console.log(`- source events=${learningTools.hasSourceEvents ? 'yes' : 'no'} · signals=${learningTools.hasSignals ? 'yes' : 'no'} · changes=${learningTools.hasChanges ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(learningTools.nextAction || dogfood.learningTools?.nextAction || 'Ask live voice what local habits JAVIS has inferred and what changed recently.', 220)}`);
   for (const event of learningEvents.slice(0, 4)) {
     const learning = event.learning || {};
     const bits = [
       event.ok ? 'ok' : 'fail',
       event.source || '-',
+      learning.action || event.name || '-',
       learning.enabled ? 'enabled' : learning.paused ? 'paused' : 'off',
       learning.includeInPrompts ? 'prompt-on' : 'prompt-off',
       `events=${Number(learning.sourceEventCount || 0)}`,
       learning.signalCount ? `signals=${learning.signalCount}` : '',
+      learning.changeCount ? `changes=${learning.changeCount}` : '',
+      learning.hasEvolution ? 'evolution' : '',
       learning.localOnly ? 'local-only' : '',
       learning.noRawScreenshots ? 'no-raw-screen' : '',
     ].filter(Boolean);
     const summary = learning.spokenSummary ? ` · ${compact(learning.spokenSummary, 180)}` : '';
-    console.log(`- ${event.name || 'get_learning_profile'} · ${bits.join(' · ')}${summary}`);
+    console.log(`- ${event.name || 'learning_tool'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nBrowser tools:');
   console.log(`- observed ${Number(browserTools.count || 0)} recent event(s) · actions ${(browserTools.observedActions || []).join(', ') || '-'}`);
@@ -2266,6 +2313,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-learning-evolution') || process.argv.includes('--learning-evolution')) {
+    await showLearningEvolution();
+    return;
+  }
+
   if (process.argv.includes('--print-browser-benchmarks') || process.argv.includes('--browser-benchmarks')) {
     await showBrowserBenchmarks();
     return;
@@ -2444,30 +2496,32 @@ async function main() {
       } else if (answer === '23') {
         await deleteLearningData(rl);
       } else if (answer === '24') {
-        await previewLearningSkillDraft();
+        await showLearningEvolution();
       } else if (answer === '25') {
-        await exportLearningSkillDraft(rl);
+        await previewLearningSkillDraft();
       } else if (answer === '26') {
-        await showCollaborationClaims();
+        await exportLearningSkillDraft(rl);
       } else if (answer === '27') {
-        await showDemonstrations();
+        await showCollaborationClaims();
       } else if (answer === '28') {
-        await showSkillShortcuts();
+        await showDemonstrations();
       } else if (answer === '29') {
-        await promoteShortcutCandidate(rl);
+        await showSkillShortcuts();
       } else if (answer === '30') {
-        await showBrowserActivity();
+        await promoteShortcutCandidate(rl);
       } else if (answer === '31') {
-        await showAttentionPolicy();
+        await showBrowserActivity();
       } else if (answer === '32') {
-        await showPerceptionConsent();
+        await showAttentionPolicy();
       } else if (answer === '33') {
-        await showScreenPrivacy();
+        await showPerceptionConsent();
       } else if (answer === '34') {
-        await applyRecommendedScreenPrivacy(rl);
+        await showScreenPrivacy();
       } else if (answer === '35') {
+        await applyRecommendedScreenPrivacy(rl);
+      } else if (answer === '36') {
         await addScreenRegionMask(rl);
-      } else if (answer === '36' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '37' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');

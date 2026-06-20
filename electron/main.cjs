@@ -4096,7 +4096,7 @@ function laneContractValidationSnapshot() {
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
-    realtime: ['get_local_capabilities', 'get_learning_profile', 'get_work_handoff', 'get_realtime_evidence', 'get_attention_explanation'],
+    realtime: ['get_local_capabilities', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_realtime_evidence', 'get_attention_explanation'],
     background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
     codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
     claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
@@ -4253,6 +4253,7 @@ async function localCapabilitySnapshot(options = {}) {
   const recommendedStart = [
     { when: 'User asks what you can do or which tool to use', tool: 'get_local_capabilities', reason: 'Read the current capability map and guardrails.' },
     { when: 'User asks what you have learned about their habits or preferences', tool: 'get_learning_profile', reason: 'Report local inferred learning without exposing raw screen, clipboard, or page contents.' },
+    { when: 'User asks what changed recently in their habits', tool: 'get_learning_evolution', reason: 'Compare recent local metadata against an older local baseline without exposing raw content.' },
     { when: 'User asks where work stands or what is next', tool: 'get_work_handoff', reason: 'Speak a short work handoff from current evidence.' },
     { when: 'Task may be quick, background, Codex, Claude, browser, file, or app work', tool: 'route_task', reason: 'Keep voice responsive while preserving ownership and recovery evidence.' },
     { when: 'User asks to split work across agents', tool: 'route_parallel_tasks', reason: 'Create scoped parallel work with collaboration ownership records.' },
@@ -5760,6 +5761,198 @@ function learningVoiceProfileSnapshot(options = {}) {
         ? 'Use this as lightweight local context only; promote a signal to explicit memory only after the user asks.'
         : 'Keep ambient observation enabled long enough to distill stable local patterns, or add explicit memories manually.'
       : 'Enable local learning from the CUI only if the user wants JAVIS to infer habits from local metadata.',
+  };
+}
+
+function aggregateLearningEvents(events = [], options = {}) {
+  const limit = Math.max(1, Math.min(MAX_LEARNING_SOURCE_EVENTS, Number(options.limit || MAX_LEARNING_SOURCE_EVENTS)));
+  const selected = Array.isArray(events)
+    ? events
+      .filter((event) => event?.frontmost?.available || event?.browser?.available)
+      .filter((event) => !learningExclusionForAmbientEvent(event))
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .slice(0, limit)
+    : [];
+  const total = selected.length;
+  const appCounts = new Map();
+  const hostCounts = new Map();
+  const hourCounts = new Map();
+  for (const event of selected) {
+    const createdAt = Number(event.createdAt || 0);
+    const appName = String(event.frontmost?.app || event.browser?.app || '').trim();
+    incrementLearningCounter(appCounts, appName, { name: appName, lastSeenAt: createdAt });
+
+    const host = browserHostFromAmbientEvent(event);
+    incrementLearningCounter(hostCounts, host, {
+      host,
+      title: sanitizeLearningTitle(event.browser?.title || '', event.browser?.app || event.frontmost?.app || ''),
+      lastSeenAt: createdAt,
+    });
+
+    if (createdAt) {
+      const hour = new Date(createdAt).getHours();
+      incrementLearningCounter(hourCounts, String(hour), { hour, lastSeenAt: createdAt });
+    }
+  }
+  const eventTimes = selected.map((event) => Number(event.createdAt || 0)).filter(Boolean);
+  return {
+    count: total,
+    sourceRange: {
+      oldestAt: eventTimes.length ? Math.min(...eventTimes) : 0,
+      newestAt: eventTimes.length ? Math.max(...eventTimes) : 0,
+    },
+    topApps: learningCounterList(appCounts, total, (item) => ({ name: item.name || item.key })),
+    topBrowserHosts: learningCounterList(hostCounts, total, (item) => ({ host: item.host || item.key, title: item.title || '' })),
+    activeHours: learningCounterList(hourCounts, total, (item) => ({ hour: Number(item.hour || item.key) }), 6),
+    recentContexts: uniqueRecentAmbientContexts(selected, 5),
+  };
+}
+
+function learningShareFor(list = [], key, value) {
+  const normalized = String(value ?? '').trim();
+  if (!normalized) return 0;
+  const match = Array.isArray(list)
+    ? list.find((item) => String(item?.[key] || '').trim() === normalized)
+    : null;
+  return Number(match?.share || 0);
+}
+
+function learningEvolutionConfidence(recentCount, baselineCount, delta) {
+  const sampleScore = Math.min(1, Math.log10(Math.max(1, Number(recentCount || 0) + Number(baselineCount || 0))) / 2);
+  const movementScore = Math.min(1, Math.abs(Number(delta || 0)) / 0.35);
+  return Number(Math.max(0.12, Math.min(0.95, sampleScore * 0.55 + movementScore * 0.45)).toFixed(2));
+}
+
+function learningPercent(value) {
+  return `${Math.round(Math.max(0, Math.min(1, Number(value || 0))) * 100)}%`;
+}
+
+function learningHourLabel(value) {
+  const hour = Math.max(0, Math.min(23, Number(value || 0)));
+  return `${String(hour).padStart(2, '0')}:00`;
+}
+
+function pushLearningEvolutionChange(changes, options = {}) {
+  const recent = options.recent || {};
+  const baseline = options.baseline || {};
+  const recentValue = String(recent[options.key] ?? '').trim();
+  const baselineValue = String(baseline[options.key] ?? '').trim();
+  const recentShare = Number(recent.share || 0);
+  const baselineShare = Number(baseline.share || 0);
+  const baselineShareForRecent = Number(options.baselineShareForRecent || 0);
+  const delta = Number((recentShare - baselineShareForRecent).toFixed(3));
+  const changed = recentValue && recentValue !== baselineValue;
+  const moved = Math.abs(delta) >= Number(options.threshold || 0.12);
+  if (!recentValue || (!changed && !moved)) return;
+  const formatter = options.formatter || ((value) => value);
+  changes.push({
+    id: options.id,
+    label: options.label,
+    direction: changed ? 'shift' : delta > 0 ? 'up' : 'down',
+    from: baselineValue ? formatter(baselineValue) : '',
+    to: formatter(recentValue),
+    delta,
+    confidence: learningEvolutionConfidence(options.recentCount, options.baselineCount, delta),
+    evidence: [
+      `${formatter(recentValue)} recent ${learningPercent(recentShare)}`,
+      baselineValue ? `baseline top ${formatter(baselineValue)} ${learningPercent(baselineShare)}` : '',
+      baselineShareForRecent ? `prior share ${learningPercent(baselineShareForRecent)}` : '',
+    ].filter(Boolean).join('; '),
+  });
+}
+
+function learningEvolutionSnapshot(options = {}) {
+  const eventLimit = Math.max(8, Math.min(MAX_LEARNING_SOURCE_EVENTS, Number(options.eventLimit || MAX_LEARNING_SOURCE_EVENTS)));
+  const events = ambientSnapshot(eventLimit)
+    .filter((event) => event?.frontmost?.available || event?.browser?.available)
+    .filter((event) => !learningExclusionForAmbientEvent(event))
+    .sort((a, b) => b.createdAt - a.createdAt);
+  const defaultRecentLimit = Math.max(4, Math.min(30, Math.ceil(events.length * 0.35) || 12));
+  const recentLimit = Math.max(1, Math.min(80, Number(options.recentLimit || defaultRecentLimit)));
+  const baselineLimit = Math.max(1, Math.min(200, Number(options.baselineLimit || Math.max(20, eventLimit - recentLimit))));
+  const recentEvents = events.slice(0, recentLimit);
+  const baselineEvents = events.slice(recentEvents.length, recentEvents.length + baselineLimit);
+  const recent = aggregateLearningEvents(recentEvents, { limit: recentLimit });
+  const baseline = aggregateLearningEvents(baselineEvents, { limit: baselineLimit });
+  const changes = [];
+
+  pushLearningEvolutionChange(changes, {
+    id: 'app_focus_shift',
+    label: 'App focus changed',
+    key: 'name',
+    recent: recent.topApps[0],
+    baseline: baseline.topApps[0],
+    baselineShareForRecent: learningShareFor(baseline.topApps, 'name', recent.topApps[0]?.name),
+    recentCount: recent.count,
+    baselineCount: baseline.count,
+    threshold: 0.14,
+  });
+
+  pushLearningEvolutionChange(changes, {
+    id: 'browser_host_shift',
+    label: 'Browser focus changed',
+    key: 'host',
+    recent: recent.topBrowserHosts[0],
+    baseline: baseline.topBrowserHosts[0],
+    baselineShareForRecent: learningShareFor(baseline.topBrowserHosts, 'host', recent.topBrowserHosts[0]?.host),
+    recentCount: recent.count,
+    baselineCount: baseline.count,
+    threshold: 0.12,
+  });
+
+  pushLearningEvolutionChange(changes, {
+    id: 'active_hour_shift',
+    label: 'Active hour changed',
+    key: 'hour',
+    recent: recent.activeHours[0],
+    baseline: baseline.activeHours[0],
+    baselineShareForRecent: learningShareFor(baseline.activeHours, 'hour', recent.activeHours[0]?.hour),
+    recentCount: recent.count,
+    baselineCount: baseline.count,
+    threshold: 0.12,
+    formatter: learningHourLabel,
+  });
+
+  const enoughBaseline = recent.count >= 4 && baseline.count >= 4;
+  const changePhrases = changes.slice(0, 3).map((change) => {
+    if (change.from && change.from !== change.to) return `${change.from} -> ${change.to}`;
+    return `${change.to} ${change.delta >= 0 ? '上升' : '下降'} ${learningPercent(Math.abs(change.delta))}`;
+  });
+  const spokenSummary = !events.length
+    ? '我还没有本地使用元数据，暂时不能判断你的使用习惯变化。'
+    : !enoughBaseline
+      ? `我已有 ${events.length} 条本地元数据，但新旧窗口还不够稳定，先继续只在本地观察，不下结论。`
+      : changePhrases.length
+        ? `我只根据本地元数据看到近期习惯有变化：${changePhrases.join('；')}。这些只是推断，不是你确认过的记忆。`
+        : `我对比了近期 ${recent.count} 条和之前 ${baseline.count} 条本地元数据，暂时没有看到明显习惯偏移。`;
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'api', 80),
+    sourceEventCount: events.length,
+    enoughBaseline,
+    summary: enoughBaseline
+      ? `${changes.length} local learning evolution change(s) from ${recent.count} recent and ${baseline.count} baseline metadata event(s).`
+      : `Need more local metadata for stable evolution: ${recent.count} recent and ${baseline.count} baseline event(s).`,
+    spokenSummary,
+    changes,
+    windows: {
+      recent,
+      baseline,
+    },
+    privacy: {
+      localOnly: true,
+      metadataOnly: true,
+      modelFreeDistillation: true,
+      inferredNotExplicitMemory: true,
+      noRawScreenshots: true,
+      noClipboardText: true,
+      noPageBodies: true,
+      noPermissionGrant: true,
+    },
+    nextAction: enoughBaseline
+      ? 'Use this as a routing hint only; ask the user before turning any inferred change into durable memory or action.'
+      : 'Keep ambient observation enabled long enough to compare recent behavior against an older local baseline.',
   };
 }
 
@@ -24623,6 +24816,11 @@ const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
 const REALTIME_CAPABILITY_TOOL_NAME = 'get_local_capabilities';
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
+const REALTIME_LEARNING_EVOLUTION_TOOL_NAME = 'get_learning_evolution';
+const REALTIME_LEARNING_TOOL_NAMES = new Set([
+  REALTIME_LEARNING_TOOL_NAME,
+  REALTIME_LEARNING_EVOLUTION_TOOL_NAME,
+]);
 const REALTIME_BROWSER_TOOL_NAMES = new Set([
   'get_browser_context',
   'get_browser_activity',
@@ -24817,23 +25015,34 @@ function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
 }
 
 function realtimeLearningToolSummary(name, args = {}, result = {}) {
-  if (name !== REALTIME_LEARNING_TOOL_NAME) return null;
+  if (!REALTIME_LEARNING_TOOL_NAMES.has(name)) return null;
   const output = realtimeToolOutputObject(result) || {};
   const profile = output.profile || {};
   const controls = output.controls || {};
   const privacy = output.privacy || {};
+  const windows = output.windows || {};
+  const recentWindow = windows.recent || {};
+  const baselineWindow = windows.baseline || {};
+  const changes = Array.isArray(output.changes) ? output.changes : [];
   return {
+    action: name === REALTIME_LEARNING_EVOLUTION_TOOL_NAME ? 'evolution' : 'profile',
     spokenSummary: compactRecordText(output.spokenSummary || profile.summary || '', 420),
     source: compactRecordText(output.source || args?.source || '', 80),
     configured: Boolean(output.configured),
     enabled: Boolean(output.enabled),
     paused: Boolean(output.paused),
     includeInPrompts: Boolean(output.includeInPrompts),
-    sourceEventCount: boundedCount(profile.sourceEventCount, 1000000),
+    sourceEventCount: boundedCount(profile.sourceEventCount ?? output.sourceEventCount, 1000000),
     signalCount: Array.isArray(profile.signals) ? profile.signals.length : 0,
     topApps: Array.isArray(profile.topApps) ? profile.topApps.map((item) => compactRecordText(item.name || '', 80)).filter(Boolean).slice(0, 6) : [],
     topHosts: Array.isArray(profile.topBrowserHosts) ? profile.topBrowserHosts.map((item) => compactRecordText(item.host || '', 120)).filter(Boolean).slice(0, 6) : [],
     recentContextCount: Array.isArray(profile.recentContexts) ? profile.recentContexts.length : 0,
+    hasEvolution: name === REALTIME_LEARNING_EVOLUTION_TOOL_NAME && output.ok === true,
+    enoughBaseline: Boolean(output.enoughBaseline),
+    changeCount: changes.length,
+    changeIds: changes.map((change) => compactRecordText(change.id || '', 80)).filter(Boolean).slice(0, 8),
+    recentEventCount: boundedCount(recentWindow.count, 1000000),
+    baselineEventCount: boundedCount(baselineWindow.count, 1000000),
     excludedApps: boundedCount(controls.excludedApps, 1000),
     excludedHosts: boundedCount(controls.excludedHosts, 1000),
     excludedFolders: boundedCount(controls.excludedFolders, 1000),
@@ -25117,9 +25326,12 @@ function recordRealtimeToolCall(options = {}) {
     capabilityReadyCount: capability?.readyCount || 0,
     capabilityLocalExecutionEnabled: Boolean(capability?.localExecutionEnabled),
     capabilityControlMode: capability?.controlMode || '',
+    learningAction: learning?.action || '',
     learningSummary: learning?.spokenSummary || '',
     learningSourceEventCount: learning?.sourceEventCount || 0,
     learningSignalCount: learning?.signalCount || 0,
+    learningEvolutionChangeCount: learning?.changeCount || 0,
+    learningEvolutionEnoughBaseline: Boolean(learning?.enoughBaseline),
     learningLocalOnly: Boolean(learning?.localOnly),
     learningNoRawScreenshots: Boolean(learning?.noRawScreenshots),
     browserAction: browser?.action || '',
@@ -25343,9 +25555,10 @@ function realtimeCapabilityToolEvidence(limit = 8) {
 
 function realtimeLearningToolEvidence(limit = 8) {
   const recent = realtimeToolCallEvents
-    .filter((event) => event.name === REALTIME_LEARNING_TOOL_NAME)
+    .filter((event) => REALTIME_LEARNING_TOOL_NAMES.has(event.name))
     .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
   const hasLearningProfile = recent.some((event) => (
+    event.name === REALTIME_LEARNING_TOOL_NAME &&
     event.ok &&
     event.learning?.spokenSummary &&
     event.learning?.localOnly === true &&
@@ -25355,12 +25568,26 @@ function realtimeLearningToolEvidence(limit = 8) {
     event.learning?.noPageBodies === true &&
     event.learning?.noPermissionGrant === true
   ));
+  const hasLearningEvolution = recent.some((event) => (
+    event.name === REALTIME_LEARNING_EVOLUTION_TOOL_NAME &&
+    event.ok &&
+    event.learning?.hasEvolution === true &&
+    event.learning?.spokenSummary &&
+    event.learning?.localOnly === true &&
+    event.learning?.inferredNotExplicitMemory === true &&
+    event.learning?.noRawScreenshots === true &&
+    event.learning?.noClipboardText === true &&
+    event.learning?.noPageBodies === true &&
+    event.learning?.noPermissionGrant === true
+  ));
   return {
-    ok: hasLearningProfile,
+    ok: hasLearningProfile || hasLearningEvolution,
     count: recent.length,
     hasLearningProfile,
+    hasLearningEvolution,
     hasSourceEvents: recent.some((event) => Number(event.learning?.sourceEventCount || 0) > 0),
     hasSignals: recent.some((event) => Number(event.learning?.signalCount || 0) > 0),
+    hasChanges: recent.some((event) => Number(event.learning?.changeCount || 0) > 0),
     privacySafe: recent.length > 0 && recent.every((event) => (
       event.learning?.localOnly === true &&
       event.learning?.noRawScreenshots === true &&
@@ -25369,9 +25596,11 @@ function realtimeLearningToolEvidence(limit = 8) {
     )),
     last: recent[0] || null,
     recent,
-    nextAction: hasLearningProfile
-      ? 'Ask live voice what local habits JAVIS has inferred and confirm it frames them as local inferred context, not explicit memory.'
-      : 'Ask the live voice session: 你最近学到了我什么使用习惯？',
+    nextAction: hasLearningProfile && hasLearningEvolution
+      ? 'Ask live voice what changed in local habits and confirm it frames the answer as local inferred context, not explicit memory.'
+      : hasLearningProfile
+        ? 'Ask live voice what changed recently in inferred local habits and confirm get_learning_evolution appears here.'
+        : 'Ask the live voice session: 你最近学到了我什么使用习惯？最近有什么变化？',
   };
 }
 
@@ -25771,6 +26000,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
       '你最近学到了我什么使用习惯？',
+      '最近我的使用习惯有什么变化？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
       '保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
       '我来教你一个流程，开始记录这个 UI 流程',
@@ -25826,6 +26056,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         label: 'Realtime called get_learning_profile',
         ok: Boolean(learningTools.hasLearningProfile),
         tool: REALTIME_LEARNING_TOOL_NAME,
+      },
+      {
+        id: 'learning_evolution_tool',
+        label: 'Realtime called get_learning_evolution',
+        ok: Boolean(learningTools.hasLearningEvolution),
+        tool: REALTIME_LEARNING_EVOLUTION_TOOL_NAME,
       },
       {
         id: 'browser_tool',
@@ -25975,10 +26211,12 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       observed: Boolean(learningTools.ok),
       count: Number(learningTools.count || 0),
       hasLearningProfile: Boolean(learningTools.hasLearningProfile),
+      hasLearningEvolution: Boolean(learningTools.hasLearningEvolution),
       privacySafe: Boolean(learningTools.privacySafe),
       hasSourceEvents: Boolean(learningTools.hasSourceEvents),
       hasSignals: Boolean(learningTools.hasSignals),
-      nextAction: learningTools.nextAction || 'Ask the live voice session what local habits JAVIS has inferred.',
+      hasChanges: Boolean(learningTools.hasChanges),
+      nextAction: learningTools.nextAction || 'Ask the live voice session what local habits JAVIS has inferred and what changed recently.',
     },
     browserTools: {
       observed: Boolean(browserTools.ok),
@@ -26165,6 +26403,18 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_LEARNING_TOOL_NAME, count: Number(learningTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_learning_evolution',
+      label: 'Ask what inferred local habits changed recently',
+      ok: Boolean(learningTools.hasLearningEvolution),
+      detail: learningTools.hasLearningEvolution ? 'get_learning_evolution was observed in recent Realtime tool evidence.' : 'No get_learning_evolution call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 最近我的使用习惯有什么变化？',
+      evidence: {
+        tool: REALTIME_LEARNING_EVOLUTION_TOOL_NAME,
+        count: Number(learningTools.count || 0),
+        hasChanges: Boolean(learningTools.hasChanges),
+      },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'ask_browser_workflow',
       label: 'Ask voice to inspect the current browser page safely',
       ok: Boolean(browserTools.hasWorkflow || browserTools.hasPageRead),
@@ -26282,6 +26532,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
       '你最近学到了我什么使用习惯？',
+      '最近我的使用习惯有什么变化？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
       '保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
       '我来教你一个流程，开始记录这个 UI 流程',
@@ -35569,6 +35820,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(learningVoiceProfileSnapshot({ ...(args || {}), source: 'voice' })) };
   }
 
+  if (name === 'get_learning_evolution') {
+    return { ok: true, output: JSON.stringify(learningEvolutionSnapshot({ ...(args || {}), source: 'voice' })) };
+  }
+
   if (name === 'get_presence_state') {
     return { ok: true, output: JSON.stringify(presenceStateSnapshot({ limit: args?.limit || 5 })) };
   }
@@ -36068,6 +36323,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use forget_skill_shortcut when the user explicitly asks to delete, forget, or remove a saved skill shortcut phrase.',
       'Skill shortcuts only recall a skillRecallPlan for routing; they do not execute skills, approve actions, or expand permissions.',
       'Use get_learning_profile when the user asks what you have learned from passive local observation, recent app/browser focus, or inferred work patterns.',
+      'Use get_learning_evolution when the user asks how their habits changed, what is different recently, whether JAVIS is adapting, or how local learning is evolving over time.',
       'Treat the learning profile as local inferred context, not as user-confirmed memory or a reason to act without being asked.',
       'Use draft_learning_skill when the user asks to turn learned habits, repeated workflows, or a demonstrated local process into a reviewable Codex-style skill draft. This does not save files.',
       'Use set_learning_controls when the user asks to pause, resume, or stop using inferred local learning in prompts.',
@@ -37229,6 +37485,19 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'get_learning_evolution',
+        description: 'Compare recent passive local metadata against an older local baseline and explain what inferred habits changed. Read-only, metadata-only, and not explicit memory.',
+        parameters: {
+          type: 'object',
+          properties: {
+            recentLimit: { type: 'number' },
+            baselineLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_presence_state',
         description: 'Get the resident standby/watch/work state: what JAVIS is passively observing, whether it is waiting for wake, what local learning has inferred, and whether any approvals or background work need attention. Read-only.',
         parameters: {
@@ -38012,6 +38281,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_collaboration_state',
   'get_local_capabilities',
   'get_learning_profile',
+  'get_learning_evolution',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -38052,6 +38322,7 @@ function realtimeInstructionChecks(instructions = '') {
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     localCapabilities: /get_local_capabilities|what JAVIS can do|local capability map|which local tools are available|browser\/file\/app\/Codex\/Claude\/local execution is ready/i.test(text),
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
+    learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),
@@ -39275,6 +39546,17 @@ function startApiServer() {
 
   api.get('/api/learning', (_req, res) => {
     res.json({ learning: learningStateSnapshot() });
+  });
+
+  api.get('/api/learning/evolution', (req, res) => {
+    res.json({
+      evolution: learningEvolutionSnapshot({
+        source: req.query.source || 'api',
+        eventLimit: req.query.eventLimit,
+        recentLimit: req.query.recentLimit,
+        baselineLimit: req.query.baselineLimit,
+      }),
+    });
   });
 
   api.put('/api/learning/settings', express.json({ limit: '64kb' }), (req, res) => {

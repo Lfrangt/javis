@@ -37,6 +37,7 @@ const REQUIRED_TOOLS = [
   'get_collaboration_state',
   'get_local_capabilities',
   'get_learning_profile',
+  'get_learning_evolution',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -393,12 +394,38 @@ export default {
         : fail('realtime.learning_profile_tool', 'Realtime local learning profile tool', `tool execute ${learningTool.status}`, learningTool.data),
     );
 
+    const learningEvolutionTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_learning_evolution', arguments: { recentLimit: 8, baselineLimit: 24 } },
+    });
+    const learningEvolutionOutput = parseToolOutput(learningEvolutionTool);
+    out.push(
+      learningEvolutionTool.ok &&
+        learningEvolutionTool.data?.ok === true &&
+        learningEvolutionOutput?.ok === true &&
+        typeof learningEvolutionOutput.spokenSummary === 'string' &&
+        Array.isArray(learningEvolutionOutput.changes) &&
+        learningEvolutionOutput.windows?.recent &&
+        learningEvolutionOutput.windows?.baseline &&
+        learningEvolutionOutput.privacy?.localOnly === true &&
+        learningEvolutionOutput.privacy?.metadataOnly === true &&
+        learningEvolutionOutput.privacy?.modelFreeDistillation === true &&
+        learningEvolutionOutput.privacy?.inferredNotExplicitMemory === true &&
+        learningEvolutionOutput.privacy?.noRawScreenshots === true &&
+        learningEvolutionOutput.privacy?.noClipboardText === true &&
+        learningEvolutionOutput.privacy?.noPageBodies === true &&
+        learningEvolutionOutput.privacy?.noPermissionGrant === true
+        ? ok('realtime.learning_evolution_tool', 'Realtime local learning evolution tool', `${learningEvolutionOutput.windows.recent.count || 0} recent · ${learningEvolutionOutput.windows.baseline.count || 0} baseline · ${learningEvolutionOutput.spokenSummary}`)
+        : fail('realtime.learning_evolution_tool', 'Realtime local learning evolution tool', `tool execute ${learningEvolutionTool.status}`, learningEvolutionTool.data),
+    );
+
     const learningEvidence = await ctx.api('/api/realtime/evidence');
     const learningToolEvidence = learningEvidence.data?.evidence?.learningTools;
     const learningToolEvents = Array.isArray(learningToolEvidence?.recent) ? learningToolEvidence.recent : [];
     out.push(
       learningEvidence.ok &&
         learningToolEvidence?.hasLearningProfile === true &&
+        learningToolEvidence?.hasLearningEvolution === true &&
         learningToolEvidence?.privacySafe === true &&
         learningToolEvents.some((event) => (
           event.name === 'get_learning_profile' &&
@@ -406,10 +433,20 @@ export default {
           event.learning?.localOnly === true &&
           event.learning?.noRawScreenshots === true &&
           event.learning?.noClipboardText === true &&
-          event.learning?.noPageBodies === true &&
-          event.learning?.noPermissionGrant === true
+            event.learning?.noPageBodies === true &&
+            event.learning?.noPermissionGrant === true
+        )) &&
+        learningToolEvents.some((event) => (
+          event.name === 'get_learning_evolution' &&
+            event.source === 'eval' &&
+            event.learning?.hasEvolution === true &&
+            event.learning?.localOnly === true &&
+            event.learning?.noRawScreenshots === true &&
+            event.learning?.noClipboardText === true &&
+            event.learning?.noPageBodies === true &&
+            event.learning?.noPermissionGrant === true
         ))
-        ? ok('realtime.learning_profile_tool_evidence', 'Realtime local learning profile tool evidence', 'get_learning_profile is visible in privacy-safe Realtime evidence')
+        ? ok('realtime.learning_profile_tool_evidence', 'Realtime local learning tool evidence', 'get_learning_profile and get_learning_evolution are visible in privacy-safe Realtime evidence')
         : fail('realtime.learning_profile_tool_evidence', 'Realtime local learning profile tool evidence', 'expected get_learning_profile to appear in realtime evidence', learningToolEvidence),
     );
 
@@ -1196,6 +1233,7 @@ export default {
           output.includes('get_perception_consent') &&
           output.includes('get_local_capabilities') &&
           output.includes('get_learning_profile') &&
+          output.includes('get_learning_evolution') &&
           output.includes('run_browser_workflow') &&
           output.includes('draft_ui_demonstration_skill')
           ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
@@ -1451,6 +1489,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         e.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         e.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
+        e.drill.steps.some((step) => step.id === 'ask_learning_evolution') &&
         e.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
         e.drill.steps.some((step) => step.id === 'save_productivity_dogfood_archive') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
@@ -1464,6 +1503,7 @@ export default {
         e.autopilotTools?.hasStatus === true &&
         e.capabilityTools?.hasCapabilityMap === true &&
         e.learningTools?.hasLearningProfile === true &&
+        e.learningTools?.hasLearningEvolution === true &&
         e.browserTools?.hasWorkflow === true &&
         e.browserTools?.hasSafeWorkflowPreview === true &&
         e.productivityDogfoodTools?.hasSavedArchive === true &&
@@ -1507,6 +1547,7 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
         d.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         d.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
+        d.drill.steps.some((step) => step.id === 'ask_learning_evolution') &&
         d.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
         d.drill.steps.some((step) => step.id === 'save_productivity_dogfood_archive') &&
         d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
@@ -1523,6 +1564,7 @@ export default {
         d.capabilityTools?.hasCapabilityMap === true &&
         d.capabilityTools?.hasRecommendedTools === true &&
         d.learningTools?.hasLearningProfile === true &&
+        d.learningTools?.hasLearningEvolution === true &&
         d.learningTools?.privacySafe === true &&
         d.browserTools?.hasWorkflow === true &&
         d.browserTools?.hasSafeWorkflowPreview === true &&
@@ -1540,6 +1582,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('变化')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
@@ -1550,6 +1593,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_local_capabilities') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_profile') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_evolution') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'run_browser_workflow') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'save_productivity_dogfood_archive') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
