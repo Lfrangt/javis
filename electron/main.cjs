@@ -3760,7 +3760,7 @@ function laneContractValidationSnapshot() {
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
-    realtime: ['get_local_capabilities', 'get_work_handoff', 'get_realtime_evidence', 'get_attention_explanation'],
+    realtime: ['get_local_capabilities', 'get_learning_profile', 'get_work_handoff', 'get_realtime_evidence', 'get_attention_explanation'],
     background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
     codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
     claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
@@ -3916,6 +3916,7 @@ async function localCapabilitySnapshot(options = {}) {
   ];
   const recommendedStart = [
     { when: 'User asks what you can do or which tool to use', tool: 'get_local_capabilities', reason: 'Read the current capability map and guardrails.' },
+    { when: 'User asks what you have learned about their habits or preferences', tool: 'get_learning_profile', reason: 'Report local inferred learning without exposing raw screen, clipboard, or page contents.' },
     { when: 'User asks where work stands or what is next', tool: 'get_work_handoff', reason: 'Speak a short work handoff from current evidence.' },
     { when: 'Task may be quick, background, Codex, Claude, browser, file, or app work', tool: 'route_task', reason: 'Keep voice responsive while preserving ownership and recovery evidence.' },
     { when: 'User asks to split work across agents', tool: 'route_parallel_tasks', reason: 'Create scoped parallel work with collaboration ownership records.' },
@@ -5365,6 +5366,64 @@ function learningStateSnapshot() {
     learningFile: LEARNING_FILE,
     controls,
     profile: normalizeLearnedProfile(learnedProfile),
+  };
+}
+
+function learningVoiceProfileSnapshot(options = {}) {
+  const state = learningStateSnapshot();
+  const profile = state.profile || {};
+  const controls = state.controls || {};
+  const topApps = (profile.topApps || []).slice(0, Math.max(1, Math.min(8, Number(options.appLimit || options.limit || 5))));
+  const topBrowserHosts = (profile.topBrowserHosts || []).slice(0, Math.max(1, Math.min(8, Number(options.hostLimit || options.limit || 5))));
+  const signals = normalizeLearningStringList(profile.signals, Math.max(1, Math.min(8, Number(options.signalLimit || 5))));
+  const sourceEventCount = Math.max(0, Number(profile.sourceEventCount || 0));
+  const spokenSummary = sourceEventCount
+    ? `我从本地环境的 ${sourceEventCount} 条元数据里推断出一些使用习惯：${compactRecordText(profile.summary || learnedProfileSummary(profile), 260)}`
+    : state.configured
+      ? '本地学习已配置，但还没有足够的被动元数据形成稳定习惯画像。'
+      : '本地学习还没有开启；我不会把被动观察写入习惯画像。';
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'api', 80),
+    configured: Boolean(state.configured),
+    enabled: Boolean(state.enabled),
+    paused: Boolean(state.paused),
+    includeInPrompts: Boolean(state.includeInPrompts),
+    learningFile: state.learningFile,
+    spokenSummary,
+    profile: {
+      sourceEventCount,
+      summary: compactRecordText(profile.summary || '', 800),
+      signals,
+      topApps,
+      topBrowserHosts,
+      activeHours: (profile.activeHours || []).slice(0, 6),
+      recentContexts: (profile.recentContexts || []).slice(0, 5),
+      lastDistilledAt: Number(profile.lastDistilledAt || 0),
+      updatedAt: Number(profile.updatedAt || 0),
+    },
+    controls: {
+      paused: Boolean(controls.paused),
+      includeInPrompts: Boolean(controls.includeInPrompts),
+      excludedApps: Array.isArray(controls.excludedApps) ? controls.excludedApps.length : 0,
+      excludedHosts: Array.isArray(controls.excludedHosts) ? controls.excludedHosts.length : 0,
+      excludedFolders: Array.isArray(controls.excludedFolders) ? controls.excludedFolders.length : 0,
+    },
+    privacy: {
+      localOnly: true,
+      modelFreeDistillation: true,
+      inferredNotExplicitMemory: true,
+      noRawScreenshots: true,
+      noClipboardText: true,
+      noPageBodies: true,
+      noPermissionGrant: true,
+    },
+    nextAction: state.configured
+      ? sourceEventCount
+        ? 'Use this as lightweight local context only; promote a signal to explicit memory only after the user asks.'
+        : 'Keep ambient observation enabled long enough to distill stable local patterns, or add explicit memories manually.'
+      : 'Enable local learning from the CUI only if the user wants JAVIS to infer habits from local metadata.',
   };
 }
 
@@ -23851,6 +23910,7 @@ const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
 const REALTIME_CAPABILITY_TOOL_NAME = 'get_local_capabilities';
+const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
 
 function realtimeToolOutputObject(result = {}) {
   if (!result || typeof result.output !== 'string') return null;
@@ -24035,6 +24095,37 @@ function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeLearningToolSummary(name, args = {}, result = {}) {
+  if (name !== REALTIME_LEARNING_TOOL_NAME) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const profile = output.profile || {};
+  const controls = output.controls || {};
+  const privacy = output.privacy || {};
+  return {
+    spokenSummary: compactRecordText(output.spokenSummary || profile.summary || '', 420),
+    source: compactRecordText(output.source || args?.source || '', 80),
+    configured: Boolean(output.configured),
+    enabled: Boolean(output.enabled),
+    paused: Boolean(output.paused),
+    includeInPrompts: Boolean(output.includeInPrompts),
+    sourceEventCount: boundedCount(profile.sourceEventCount, 1000000),
+    signalCount: Array.isArray(profile.signals) ? profile.signals.length : 0,
+    topApps: Array.isArray(profile.topApps) ? profile.topApps.map((item) => compactRecordText(item.name || '', 80)).filter(Boolean).slice(0, 6) : [],
+    topHosts: Array.isArray(profile.topBrowserHosts) ? profile.topBrowserHosts.map((item) => compactRecordText(item.host || '', 120)).filter(Boolean).slice(0, 6) : [],
+    recentContextCount: Array.isArray(profile.recentContexts) ? profile.recentContexts.length : 0,
+    excludedApps: boundedCount(controls.excludedApps, 1000),
+    excludedHosts: boundedCount(controls.excludedHosts, 1000),
+    excludedFolders: boundedCount(controls.excludedFolders, 1000),
+    localOnly: privacy.localOnly === true,
+    inferredNotExplicitMemory: privacy.inferredNotExplicitMemory === true,
+    noRawScreenshots: privacy.noRawScreenshots === true,
+    noClipboardText: privacy.noClipboardText === true,
+    noPageBodies: privacy.noPageBodies === true,
+    noPermissionGrant: privacy.noPermissionGrant === true,
+    nextAction: compactRecordText(output.nextAction || '', 240),
+  };
+}
+
 function demonstrationActionForToolCall(name, output = {}) {
   if (name === 'get_ui_demonstrations') return 'list';
   if (name === 'start_ui_demonstration') return 'start';
@@ -24137,6 +24228,7 @@ function recordRealtimeToolCall(options = {}) {
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
   const capability = realtimeCapabilityToolSummary(name, options.args || {}, result);
+  const learning = realtimeLearningToolSummary(name, options.args || {}, result);
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
   const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
   const event = {
@@ -24155,6 +24247,7 @@ function recordRealtimeToolCall(options = {}) {
     attention,
     perception,
     capability,
+    learning,
     demonstration,
     dogfoodSession,
   };
@@ -24193,6 +24286,11 @@ function recordRealtimeToolCall(options = {}) {
     capabilityReadyCount: capability?.readyCount || 0,
     capabilityLocalExecutionEnabled: Boolean(capability?.localExecutionEnabled),
     capabilityControlMode: capability?.controlMode || '',
+    learningSummary: learning?.spokenSummary || '',
+    learningSourceEventCount: learning?.sourceEventCount || 0,
+    learningSignalCount: learning?.signalCount || 0,
+    learningLocalOnly: Boolean(learning?.localOnly),
+    learningNoRawScreenshots: Boolean(learning?.noRawScreenshots),
     demonstrationAction: demonstration?.action || '',
     demonstrationId: demonstration?.demonstrationId || '',
     demonstrationStepCount: demonstration?.stepCount || 0,
@@ -24358,6 +24456,40 @@ function realtimeCapabilityToolEvidence(limit = 8) {
     nextAction: hasCapabilityMap
       ? 'Ask live voice which local capability or tool should handle the current task and confirm it answers from the capability map.'
       : 'Ask the live voice session: 你现在能做什么？这个任务应该用哪个工具？',
+  };
+}
+
+function realtimeLearningToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => event.name === REALTIME_LEARNING_TOOL_NAME)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasLearningProfile = recent.some((event) => (
+    event.ok &&
+    event.learning?.spokenSummary &&
+    event.learning?.localOnly === true &&
+    event.learning?.inferredNotExplicitMemory === true &&
+    event.learning?.noRawScreenshots === true &&
+    event.learning?.noClipboardText === true &&
+    event.learning?.noPageBodies === true &&
+    event.learning?.noPermissionGrant === true
+  ));
+  return {
+    ok: hasLearningProfile,
+    count: recent.length,
+    hasLearningProfile,
+    hasSourceEvents: recent.some((event) => Number(event.learning?.sourceEventCount || 0) > 0),
+    hasSignals: recent.some((event) => Number(event.learning?.signalCount || 0) > 0),
+    privacySafe: recent.length > 0 && recent.every((event) => (
+      event.learning?.localOnly === true &&
+      event.learning?.noRawScreenshots === true &&
+      event.learning?.noClipboardText === true &&
+      event.learning?.noPageBodies === true
+    )),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasLearningProfile
+      ? 'Ask live voice what local habits JAVIS has inferred and confirm it frames them as local inferred context, not explicit memory.'
+      : 'Ask the live voice session: 你最近学到了我什么使用习惯？',
   };
 }
 
@@ -24677,10 +24809,11 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
+  const learningTools = evidence.learningTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
-    goal: 'Prove a real Realtime voice session can speak current progress, call capability/work/status/privacy tools, learn one demonstrated workflow as a safe replay/skill draft, and leave evidence.',
+    goal: 'Prove a real Realtime voice session can speak current progress, call capability/work/status/privacy/learning tools, learn one demonstrated workflow as a safe replay/skill draft, and leave evidence.',
     manualOnly: true,
     requiresUserPresence: true,
     current: {
@@ -24711,6 +24844,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
+      '你最近学到了我什么使用习惯？',
       '我来教你一个流程，开始记录这个 UI 流程',
     ],
     expectedEvidence: [
@@ -24760,13 +24894,19 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: REALTIME_CAPABILITY_TOOL_NAME,
       },
       {
+        id: 'learning_tool',
+        label: 'Realtime called get_learning_profile',
+        ok: Boolean(learningTools.hasLearningProfile),
+        tool: REALTIME_LEARNING_TOOL_NAME,
+      },
+      {
         id: 'demonstration_tool',
         label: 'Realtime recorded a UI demonstration and drafted a skill safely',
         ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
         tool: 'draft_ui_demonstration_skill',
       },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, capability, and UI demonstration prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, autopilot, attention, perception, capability, learning, and UI demonstration prompts.',
   };
 }
 
@@ -24778,6 +24918,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
+  const learningTools = evidence.learningTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
@@ -24803,7 +24944,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, learningTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -24888,6 +25029,15 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasLocalExecutionState: Boolean(capabilityTools.hasLocalExecutionState),
       nextAction: capabilityTools.nextAction || 'Ask the live voice session what JAVIS can do and which local tool should handle this task.',
     },
+    learningTools: {
+      observed: Boolean(learningTools.ok),
+      count: Number(learningTools.count || 0),
+      hasLearningProfile: Boolean(learningTools.hasLearningProfile),
+      privacySafe: Boolean(learningTools.privacySafe),
+      hasSourceEvents: Boolean(learningTools.hasSourceEvents),
+      hasSignals: Boolean(learningTools.hasSignals),
+      nextAction: learningTools.nextAction || 'Ask the live voice session what local habits JAVIS has inferred.',
+    },
     demonstrationTools: {
       observed: Boolean(demonstrationTools.ok),
       count: Number(demonstrationTools.count || 0),
@@ -24931,6 +25081,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const attentionTools = options.attentionTools || evidence.attentionTools || {};
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
   const capabilityTools = options.capabilityTools || evidence.capabilityTools || {};
+  const learningTools = options.learningTools || evidence.learningTools || {};
   const demonstrationTools = options.demonstrationTools || evidence.demonstrationTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
@@ -25038,6 +25189,14 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       evidence: { tool: REALTIME_CAPABILITY_TOOL_NAME, count: Number(capabilityTools.count || 0) },
     }),
     realtimeDogfoodDrillStep({
+      id: 'ask_learning_profile',
+      label: 'Ask what local habits JAVIS has inferred',
+      ok: Boolean(learningTools.hasLearningProfile),
+      detail: learningTools.hasLearningProfile ? 'get_learning_profile was observed in recent Realtime tool evidence.' : 'No get_learning_profile call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 你最近学到了我什么使用习惯？',
+      evidence: { tool: REALTIME_LEARNING_TOOL_NAME, count: Number(learningTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'teach_ui_demonstration',
       label: 'Teach one repeatable UI workflow',
       ok: Boolean(demonstrationTools.hasSafeReplayPlan && demonstrationTools.hasDraft && demonstrationTools.hasConfirmationGate && demonstrationTools.noRawStored),
@@ -25116,6 +25275,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
+      '你最近学到了我什么使用习惯？',
       '我来教你一个流程，开始记录这个 UI 流程',
       '记录这一步：观察当前窗口并记住我要确认保存状态',
       '结束记录，并生成回放计划和 skill 草稿',
@@ -25202,6 +25362,12 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       copyText: '你现在能做什么？这个任务应该用哪个工具？',
       reason: 'This verifies the Realtime session calls get_local_capabilities before choosing how to act.',
     },
+    ask_learning_profile: {
+      promptType: 'spoken',
+      prompt: '你最近学到了我什么使用习惯？',
+      copyText: '你最近学到了我什么使用习惯？',
+      reason: 'This verifies the Realtime session calls get_learning_profile and frames it as local inferred context, not explicit memory.',
+    },
     teach_ui_demonstration: {
       promptType: 'spoken_sequence',
       prompt: '我来教你一个流程，开始记录这个 UI 流程',
@@ -25287,6 +25453,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
     { id: 'attention', ok: Boolean(evidence.attentionTools?.hasExplanation), label: 'attention explanation', tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), label: 'local capability map', tool: REALTIME_CAPABILITY_TOOL_NAME },
+    { id: 'learning', ok: Boolean(evidence.learningTools?.hasLearningProfile), label: 'local learning profile', tool: REALTIME_LEARNING_TOOL_NAME },
     {
       id: 'demonstration',
       ok: Boolean(
@@ -25458,6 +25625,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'attention', label: 'attention explanation', ok: Boolean(evidence.attentionTools?.hasExplanation), tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', label: 'local capability map', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), tool: REALTIME_CAPABILITY_TOOL_NAME },
+    { id: 'learning', label: 'local learning profile', ok: Boolean(evidence.learningTools?.hasLearningProfile), tool: REALTIME_LEARNING_TOOL_NAME },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
     { id: 'shortcut', label: 'shortcut list/save/forget', ok: Boolean(evidence.shortcutTools?.hasList && evidence.shortcutTools?.hasSave && evidence.shortcutTools?.hasForget), tool: 'save_skill_shortcut' },
   ];
@@ -25680,6 +25848,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_attention_explanation', 'voice_tools', 'Ask why the pet stayed quiet or changed color'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_perception_consent', 'voice_tools', 'Ask what JAVIS can see or control'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_local_capabilities', 'voice_tools', 'Ask which local capability or tool should handle the task'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'ask_learning_profile', 'learning_loop', 'Ask what local habits JAVIS has inferred'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'teach_ui_demonstration', 'learning_loop', 'Teach one repeatable UI workflow'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'list_shortcuts', 'shortcut_loop', 'Ask voice to list saved shortcut phrases'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_shortcut_with_confirmation', 'shortcut_loop', 'Save a shortcut phrase after explicit confirmation'),
@@ -26824,6 +26993,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const attentionTools = realtimeAttentionToolEvidence(8);
   const perceptionTools = realtimePerceptionToolEvidence(8);
   const capabilityTools = realtimeCapabilityToolEvidence(8);
+  const learningTools = realtimeLearningToolEvidence(8);
   const demonstrationTools = realtimeDemonstrationToolEvidence(8);
   const dogfoodStart = realtimeDogfoodStartStateSnapshot();
   const liveAt = Number(conversation.liveAt || 0);
@@ -26891,6 +27061,7 @@ function realtimeVoiceEvidenceSnapshot() {
     attentionTools,
     perceptionTools,
     capabilityTools,
+    learningTools,
     demonstrationTools,
     progressSync,
     progress: {
@@ -27042,6 +27213,14 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         hasRecommendedTools: Boolean(evidence.capabilityTools?.hasRecommendedTools),
         hasLocalExecutionState: Boolean(evidence.capabilityTools?.hasLocalExecutionState),
         nextAction: evidence.capabilityTools?.nextAction || '',
+      },
+      learning: {
+        observed: Boolean(evidence.learningTools?.hasLearningProfile),
+        count: Number(evidence.learningTools?.count || 0),
+        privacySafe: Boolean(evidence.learningTools?.privacySafe),
+        hasSourceEvents: Boolean(evidence.learningTools?.hasSourceEvents),
+        hasSignals: Boolean(evidence.learningTools?.hasSignals),
+        nextAction: evidence.learningTools?.nextAction || '',
       },
       demonstrations: {
         observed: Boolean(evidence.demonstrationTools?.ok),
@@ -34254,7 +34433,7 @@ async function executeTool(name, args) {
   }
 
   if (name === 'get_learning_profile') {
-    return { ok: true, output: JSON.stringify(learningStateSnapshot()) };
+    return { ok: true, output: JSON.stringify(learningVoiceProfileSnapshot({ ...(args || {}), source: 'voice' })) };
   }
 
   if (name === 'get_presence_state') {
@@ -36603,6 +36782,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_work_handoff',
   'get_collaboration_state',
   'get_local_capabilities',
+  'get_learning_profile',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -36641,6 +36821,7 @@ function realtimeInstructionChecks(instructions = '') {
     attentionExplanation: /get_attention_explanation|spoken explanation of the pet color|attention history|last notification|stayed quiet/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
     localCapabilities: /get_local_capabilities|what JAVIS can do|local capability map|which local tools are available|browser\/file\/app\/Codex\/Claude\/local execution is ready/i.test(text),
+    learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),

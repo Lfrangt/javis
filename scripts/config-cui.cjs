@@ -1311,6 +1311,8 @@ function printRealtimeEvidence(result) {
   const perceptionEvents = Array.isArray(perceptionTools.recent) ? perceptionTools.recent : [];
   const capabilityTools = evidence.capabilityTools || {};
   const capabilityEvents = Array.isArray(capabilityTools.recent) ? capabilityTools.recent : [];
+  const learningTools = evidence.learningTools || {};
+  const learningEvents = Array.isArray(learningTools.recent) ? learningTools.recent : [];
   const demonstrationTools = evidence.demonstrationTools || {};
   const demonstrationEvents = Array.isArray(demonstrationTools.recent) ? demonstrationTools.recent : [];
   const toolCalls = Array.isArray(evidence.toolCalls) ? evidence.toolCalls : [];
@@ -1481,6 +1483,25 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = capability.spokenSummary ? ` · ${compact(capability.spokenSummary, 180)}` : '';
     console.log(`- ${event.name || 'get_local_capabilities'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nLocal learning tool:');
+  console.log(`- observed ${Number(learningTools.count || 0)} recent event(s) · called=${learningTools.hasLearningProfile ? 'yes' : 'no'} · privacy=${learningTools.privacySafe ? 'safe' : 'pending'}`);
+  console.log(`- source events=${learningTools.hasSourceEvents ? 'yes' : 'no'} · signals=${learningTools.hasSignals ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(learningTools.nextAction || dogfood.learningTools?.nextAction || 'Ask live voice what local habits JAVIS has inferred.', 220)}`);
+  for (const event of learningEvents.slice(0, 4)) {
+    const learning = event.learning || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      learning.enabled ? 'enabled' : learning.paused ? 'paused' : 'off',
+      learning.includeInPrompts ? 'prompt-on' : 'prompt-off',
+      `events=${Number(learning.sourceEventCount || 0)}`,
+      learning.signalCount ? `signals=${learning.signalCount}` : '',
+      learning.localOnly ? 'local-only' : '',
+      learning.noRawScreenshots ? 'no-raw-screen' : '',
+    ].filter(Boolean);
+    const summary = learning.spokenSummary ? ` · ${compact(learning.spokenSummary, 180)}` : '';
+    console.log(`- ${event.name || 'get_learning_profile'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nUI demonstration tools:');
   console.log(`- observed ${Number(demonstrationTools.count || 0)} recent event(s) · actions ${(demonstrationTools.observedActions || []).join(', ') || '-'}`);

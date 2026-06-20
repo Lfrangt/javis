@@ -31,6 +31,7 @@ const REQUIRED_TOOLS = [
   'get_work_handoff',
   'get_collaboration_state',
   'get_local_capabilities',
+  'get_learning_profile',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -180,6 +181,49 @@ export default {
         ))
         ? ok('realtime.perception_consent_tool', 'Realtime perception consent tool', `${perceptionSurfaces.length} surface(s) · ${perceptionOutput.summary || ''}`)
         : fail('realtime.perception_consent_tool', 'Realtime perception consent tool', `tool execute ${perceptionTool.status}`, perceptionTool.data),
+    );
+
+    const learningTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_learning_profile', arguments: { limit: 3 } },
+    });
+    const learningOutput = parseToolOutput(learningTool);
+    out.push(
+      learningTool.ok &&
+        learningTool.data?.ok === true &&
+        learningOutput?.ok === true &&
+        typeof learningOutput.spokenSummary === 'string' &&
+        learningOutput.privacy?.localOnly === true &&
+        learningOutput.privacy?.modelFreeDistillation === true &&
+        learningOutput.privacy?.inferredNotExplicitMemory === true &&
+        learningOutput.privacy?.noRawScreenshots === true &&
+        learningOutput.privacy?.noClipboardText === true &&
+        learningOutput.privacy?.noPageBodies === true &&
+        learningOutput.privacy?.noPermissionGrant === true &&
+        typeof learningOutput.profile?.sourceEventCount === 'number' &&
+        Array.isArray(learningOutput.profile?.signals)
+        ? ok('realtime.learning_profile_tool', 'Realtime local learning profile tool', `${learningOutput.profile.sourceEventCount} source event(s) · ${learningOutput.spokenSummary}`)
+        : fail('realtime.learning_profile_tool', 'Realtime local learning profile tool', `tool execute ${learningTool.status}`, learningTool.data),
+    );
+
+    const learningEvidence = await ctx.api('/api/realtime/evidence');
+    const learningToolEvidence = learningEvidence.data?.evidence?.learningTools;
+    const learningToolEvents = Array.isArray(learningToolEvidence?.recent) ? learningToolEvidence.recent : [];
+    out.push(
+      learningEvidence.ok &&
+        learningToolEvidence?.hasLearningProfile === true &&
+        learningToolEvidence?.privacySafe === true &&
+        learningToolEvents.some((event) => (
+          event.name === 'get_learning_profile' &&
+          event.source === 'eval' &&
+          event.learning?.localOnly === true &&
+          event.learning?.noRawScreenshots === true &&
+          event.learning?.noClipboardText === true &&
+          event.learning?.noPageBodies === true &&
+          event.learning?.noPermissionGrant === true
+        ))
+        ? ok('realtime.learning_profile_tool_evidence', 'Realtime local learning profile tool evidence', 'get_learning_profile is visible in privacy-safe Realtime evidence')
+        : fail('realtime.learning_profile_tool_evidence', 'Realtime local learning profile tool evidence', 'expected get_learning_profile to appear in realtime evidence', learningToolEvidence),
     );
 
     const capabilityApi = await ctx.api('/api/capabilities?query=browser&includeNext=false');
@@ -621,7 +665,8 @@ export default {
         realtimeEvidenceOutput.tools?.dogfoodSession &&
         realtimeEvidenceOutput.tools?.attention &&
         realtimeEvidenceOutput.tools?.perception &&
-        realtimeEvidenceOutput.tools?.capabilities
+        realtimeEvidenceOutput.tools?.capabilities &&
+        realtimeEvidenceOutput.tools?.learning
         ? ok('realtime.evidence_tool', 'Realtime evidence voice tool', `${realtimeEvidenceOutput.status}/${realtimeEvidenceOutput.phase} · ${realtimeEvidenceOutput.nextAction}`)
         : fail('realtime.evidence_tool', 'Realtime evidence voice tool', `tool execute ${realtimeEvidenceTool.status}`, realtimeEvidenceTool.data),
     );
@@ -943,6 +988,7 @@ export default {
           output.includes('Attention explanation tool:') &&
           output.includes('Perception consent tool:') &&
           output.includes('Local capability tool:') &&
+          output.includes('Local learning tool:') &&
           output.includes('UI demonstration tools:') &&
           output.includes('Dogfood drill:') &&
           output.includes('Latency:') &&
@@ -960,9 +1006,10 @@ export default {
           output.includes('get_attention_explanation') &&
           output.includes('get_perception_consent') &&
           output.includes('get_local_capabilities') &&
+          output.includes('get_learning_profile') &&
           output.includes('draft_ui_demonstration_skill')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, UI demonstration, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, UI demonstration, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, autopilot, attention, perception, capability, learning, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -1213,6 +1260,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         e.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
+        e.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
         e.gapSummary?.manualOnly === true &&
         e.gapSummary?.startsMicrophone === false &&
@@ -1223,6 +1271,7 @@ export default {
         e.handoffTools?.hasHandoff === true &&
         e.autopilotTools?.hasStatus === true &&
         e.capabilityTools?.hasCapabilityMap === true &&
+        e.learningTools?.hasLearningProfile === true &&
         e.latency?.quality === 'fast' &&
         e.progress?.spokenSummary
         ? ok('realtime.evidence_checklist', 'Realtime evidence checklist', `${e.status}/${e.phase} · ${e.nextAction}`)
@@ -1261,6 +1310,7 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
         d.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
+        d.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
         d.gapSummary?.manualOnly === true &&
         d.gapSummary?.startsMicrophone === false &&
@@ -1274,6 +1324,8 @@ export default {
         d.perceptionTools?.hasConsent === true &&
         d.capabilityTools?.hasCapabilityMap === true &&
         d.capabilityTools?.hasRecommendedTools === true &&
+        d.learningTools?.hasLearningProfile === true &&
+        d.learningTools?.privacySafe === true &&
         d.demonstrationTools?.hasSafeReplayPlan === true &&
         d.demonstrationTools?.hasDraft === true &&
         d.demonstrationTools?.hasConfirmationGate === true &&
@@ -1285,6 +1337,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
@@ -1292,6 +1345,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_local_capabilities') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_profile') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
@@ -1314,6 +1368,7 @@ export default {
       'ask_attention_explanation',
       'ask_perception_consent',
       'ask_local_capabilities',
+      'ask_learning_profile',
       'teach_ui_demonstration',
       'list_shortcuts',
       'save_shortcut_with_confirmation',
@@ -1331,11 +1386,13 @@ export default {
         drillGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         Array.isArray(drillData.prompts) &&
         drillData.prompts.some((prompt) => prompt.includes('autopilot')) &&
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillData.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        drillData.prompts.some((prompt) => prompt.includes('学到了')) &&
         drillData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         drillData.prompts.some((prompt) => prompt.includes('后台现在怎么样')) &&
         drill.data?.evidence?.drill?.steps?.length === drillData.steps.length
@@ -1392,7 +1449,7 @@ export default {
         dogfoodBriefData?.monitor?.endpoint === '/api/realtime/evidence' &&
         dogfoodBriefData?.monitor?.brief?.includes('--print-realtime-dogfood-brief') &&
         dogfoodBriefData?.start?.hotkey &&
-        dogfoodBriefData?.counts?.steps >= 15 &&
+        dogfoodBriefData?.counts?.steps >= 16 &&
         dogfoodBriefData?.gapSummary?.counts?.total === dogfoodBriefData.counts.steps &&
         dogfoodBriefData?.gapSummary?.counts?.pending === dogfoodBriefData.counts.pending &&
         dogfoodBriefData?.gapSummary?.startsMicrophone === false &&
@@ -1400,9 +1457,11 @@ export default {
         dogfoodBriefData?.safety?.recordReplayRequiresConfirmation === true &&
         Array.isArray(dogfoodBriefData.prompts) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        dogfoodBriefData.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodBriefData.evidenceTools) &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'capability' && item.tool === 'get_local_capabilities') &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'learning' && item.tool === 'get_learning_profile') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'demonstration' && item.tool === 'draft_ui_demonstration_skill')
         ? ok('realtime.dogfood_brief', 'Realtime dogfood operator brief', `${dogfoodBriefData.counts.ready}/${dogfoodBriefData.counts.steps} ready · next=${dogfoodBriefData.nextPrompt?.copyText || dogfoodBriefData.currentStep?.label || '-'}`)
         : fail('realtime.dogfood_brief', 'Realtime dogfood operator brief', `GET /api/realtime/dogfood/brief ${dogfoodBrief.status}`, dogfoodBrief.data),
@@ -1423,6 +1482,7 @@ export default {
           output.includes('Evidence gates:') &&
           output.includes('Gap:') &&
           output.includes('get_local_capabilities') &&
+          output.includes('get_learning_profile') &&
           output.includes('开始记录') &&
           output.includes('/api/realtime/evidence')
           ? ok('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', 'config CUI prints one-page live dogfood brief without starting voice')
@@ -1445,6 +1505,7 @@ export default {
       'ask_attention_explanation',
       'ask_perception_consent',
       'ask_local_capabilities',
+      'ask_learning_profile',
       'teach_ui_demonstration',
       'save_shortcut_with_confirmation',
       'route_recalled_shortcut',
@@ -1457,7 +1518,7 @@ export default {
         acceptanceData?.requiresUserPresence === true &&
         acceptanceData?.accepted === false &&
         acceptanceData?.status === 'pending' &&
-        acceptanceData?.counts?.gates >= 16 &&
+        acceptanceData?.counts?.gates >= 17 &&
         acceptanceData?.counts?.gaps >= 1 &&
         requiredAcceptanceGates.every((id) => acceptanceGateIds.has(id)) &&
         ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
@@ -1529,7 +1590,7 @@ export default {
         acceptanceTool.data?.ok === true &&
         acceptanceToolOutput?.acceptance?.manualOnly === true &&
         acceptanceToolOutput?.acceptance?.startsMicrophone === false &&
-        acceptanceToolOutput?.acceptance?.counts?.gates >= 16 &&
+        acceptanceToolOutput?.acceptance?.counts?.gates >= 17 &&
         Array.isArray(acceptanceToolOutput?.acceptance?.gates)
         ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.acceptance.counts.passed}/${acceptanceToolOutput.acceptance.counts.gates} gate(s) pass`)
         : fail('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `tool execute ${acceptanceTool.status}`, acceptanceTool.data),
