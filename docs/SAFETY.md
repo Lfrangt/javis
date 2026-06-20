@@ -6,6 +6,7 @@ JAVIS controls a real computer, so local actions are treated as a security bound
 
 - Screen capture requires explicit macOS permission.
 - API keys and other secrets should be entered through the terminal CUI or edited in `.env` locally; they should not be pasted into chat. The CUI hides API key input and never prints the saved value.
+- The resident API binds to `127.0.0.1` and uses a local runtime token by default. Only `/api/health` is public; protected endpoints require `X-JAVIS-Token` or `Authorization: Bearer`, and browser-origin requests are limited to trusted local renderer origins.
 - Live screen context is only sent after the user starts voice/screen context or enables passive ambient capture locally, and it can be toggled off through API/CUI controls.
 - Local wake-word integration is trigger-only. `JAVIS_WAKE_ENGINE_CMD` may start a local command that reports a wake event, but the wake path only starts the voice session; it does not execute computer actions by itself.
 - Conversation state is renderer-reported lifecycle telemetry for voice sessions. It records connecting/live/idle/error, mic mode, screen-context flag, and heartbeat freshness; it does not grant action permission or execute tools by itself.

@@ -142,6 +142,7 @@ Electron renderer
         |
         v
 Local Express service on 127.0.0.1:3417
+  protected by the local runtime token except /api/health
   /api/health           -> resident server health and storage state
   /api/readiness        -> setup, permission, policy, and runtime checks
   /api/config/check     -> setup files, resident mode, permissions, policy, and worker readiness

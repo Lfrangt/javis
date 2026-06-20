@@ -33,6 +33,15 @@ while a newer LaunchAgent instance appears to be running.
 curl http://127.0.0.1:3417/api/health
 ```
 
+`/api/health` is intentionally public for local liveness probes. Other local API
+endpoints require the runtime token by default. Scripts such as `npm run doctor`,
+`npm run config`, and `npm run eval` discover it automatically. For manual curl:
+
+```bash
+TOKEN="$(cat "$HOME/Library/Application Support/JAVIS/Runtime/api-token")"
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/readiness
+```
+
 The health endpoint reports:
 
 - process uptime and version
@@ -45,9 +54,9 @@ The health endpoint reports:
 For setup and permission debugging:
 
 ```bash
-curl http://127.0.0.1:3417/api/readiness
-curl http://127.0.0.1:3417/api/config/check
-curl http://127.0.0.1:3417/api/setup/guide
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/readiness
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/config/check
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/guide
 npm run doctor
 ```
 
@@ -58,8 +67,9 @@ The config check adds repeatable setup evidence for `.env`, `.env.example`, resi
 The setup guide turns current blockers into one safe next action:
 
 ```bash
-curl http://127.0.0.1:3417/api/setup/guide
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/guide
 curl -X POST http://127.0.0.1:3417/api/setup/next \
+  -H "X-JAVIS-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{}'
 ```

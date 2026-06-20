@@ -1,5 +1,23 @@
 import { ok, warn, fail } from '../_client.mjs';
 
+async function rawApi(ctx, pathname, { method = 'GET', headers = {}, body } = {}) {
+  try {
+    const response = await fetch(`${ctx.baseUrl}${pathname}`, {
+      method,
+      headers: {
+        Accept: 'application/json',
+        ...headers,
+        ...(body ? { 'Content-Type': 'application/json' } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    const data = await response.json().catch(() => null);
+    return { ok: response.ok, status: response.status, data };
+  } catch (error) {
+    return { ok: false, status: 0, data: null, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 // Safety gates (GOAL "hard stops for sends, deletes, purchases, account
 // changes" + issue note "keep the Level 3 policy / approval gates"). Read-only:
 // previews Level-3 policy behavior and confirms Level-4 export-style work is
@@ -8,6 +26,44 @@ export default {
   lane: 'safety',
   async run(ctx) {
     const out = [];
+
+    const publicHealth = await rawApi(ctx, '/api/health');
+    const noTokenReadiness = await rawApi(ctx, '/api/readiness');
+    const badTokenReadiness = await rawApi(ctx, '/api/readiness', {
+      headers: { 'X-JAVIS-Token': 'javis-eval-bad-token' },
+    });
+    const untrustedOrigin = await rawApi(ctx, '/api/readiness', {
+      headers: {
+        ...(ctx.token ? { 'X-JAVIS-Token': ctx.token } : {}),
+        Origin: 'https://malicious.example.invalid',
+      },
+    });
+    const trustedTokenReadiness = ctx.token
+      ? await rawApi(ctx, '/api/readiness', { headers: { 'X-JAVIS-Token': ctx.token } })
+      : { ok: false, status: 0, data: null, error: 'no runtime token discovered' };
+    const tokenProtected =
+      publicHealth.ok &&
+      noTokenReadiness.status === 401 &&
+      badTokenReadiness.status === 401 &&
+      untrustedOrigin.status === 403 &&
+      trustedTokenReadiness.ok;
+    out.push(
+      tokenProtected
+        ? ok('safety.api_auth', 'Local API token and origin gate', 'health is public; protected endpoints reject missing/bad tokens and untrusted origins; runtime token is accepted', {
+          publicHealth: publicHealth.status,
+          noTokenReadiness: noTokenReadiness.status,
+          badTokenReadiness: badTokenReadiness.status,
+          untrustedOrigin: untrustedOrigin.status,
+          trustedTokenReadiness: trustedTokenReadiness.status,
+        })
+        : fail('safety.api_auth', 'Local API token and origin gate', `expected public health=200, missing/bad token=401, untrusted origin=403, trusted token=200; got health=${publicHealth.status} missing=${noTokenReadiness.status} bad=${badTokenReadiness.status} origin=${untrustedOrigin.status} trusted=${trustedTokenReadiness.status}`, {
+          publicHealth,
+          noTokenReadiness,
+          badTokenReadiness,
+          untrustedOrigin,
+          trustedTokenReadiness,
+        }),
+    );
 
     const pol = await ctx.api('/api/actions/policy');
     const policy = pol.data?.policy || pol.data;
