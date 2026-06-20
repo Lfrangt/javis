@@ -4103,10 +4103,341 @@ function laneContractValidationSnapshot() {
   };
 }
 
+function routingSpeedProfiles() {
+  const control = controlModeSnapshot();
+  const cliReady = LOCAL_EXEC_ENABLED && actionPolicy.allow?.cli_command?.enabled === true;
+  const codexCommand = process.env.JAVIS_CODEX_CMD || 'codex exec';
+  const claudeCommand = process.env.JAVIS_CLAUDE_CMD || 'claude -p';
+  const profile = (item) => ({
+    ...item,
+    summary: compactRecordText(item.summary || '', 300),
+    handoffRule: compactRecordText(item.handoffRule || '', 260),
+    useWhen: Array.isArray(item.useWhen) ? item.useWhen.map((entry) => compactRecordText(entry, 160)).slice(0, 6) : [],
+    avoidWhen: Array.isArray(item.avoidWhen) ? item.avoidWhen.map((entry) => compactRecordText(entry, 160)).slice(0, 6) : [],
+    firstTools: Array.isArray(item.firstTools) ? item.firstTools.slice(0, 8) : [],
+  });
+  return [
+    profile({
+      id: 'realtime_voice',
+      lane: 'realtime',
+      contractId: 'realtime',
+      owner: 'realtime',
+      label: 'Realtime voice front door',
+      modelRole: 'speech_to_speech',
+      model: models.realtime,
+      voice: models.realtimeVoice,
+      priority: 1,
+      latencyClass: 'instant',
+      targetFirstResponseMs: 900,
+      targetSpokenWords: 40,
+      canRunInBackground: false,
+      parallelEligible: false,
+      startsMicrophone: false,
+      requiresUserPresence: true,
+      summary: 'Keep conversation flowing: acknowledge, answer simple questions, inspect lightweight context, and hand slow work away.',
+      useWhen: ['wake/follow-up voice turns', 'simple Q&A', 'spoken status', 'approval review', 'quick clarification before a tool run'],
+      avoidWhen: ['deep research', 'repo edits', 'long synthesis', 'irreversible private actions'],
+      firstTools: ['get_routing_speed_policy', 'plan_context', 'get_local_capabilities', 'route_task', 'get_work_handoff'],
+      handoffRule: 'Speak a short response first, then use route_task/delegate_task for durable work.',
+    }),
+    profile({
+      id: 'fast_text',
+      lane: 'quick',
+      contractId: 'realtime',
+      owner: 'realtime',
+      label: 'Fast text answer',
+      modelRole: 'fast_model',
+      model: models.fast,
+      priority: 2,
+      latencyClass: 'fast',
+      targetFirstResponseMs: 2500,
+      targetSpokenWords: 80,
+      canRunInBackground: false,
+      parallelEligible: false,
+      startsMicrophone: false,
+      requiresUserPresence: false,
+      summary: 'Use the fast model for short non-durable answers when deterministic local commands are not enough.',
+      useWhen: ['short factual or explanatory questions', 'small drafting help', 'no file/app/browser mutation needed'],
+      avoidWhen: ['multi-step work', 'needs artifact/result file', 'needs browsing or repo edits'],
+      firstTools: ['route_task', 'plan_context'],
+      handoffRule: 'If the answer will exceed a short spoken response, queue background instead of blocking voice.',
+    }),
+    profile({
+      id: 'local_command',
+      lane: 'local',
+      contractId: 'local',
+      owner: 'local',
+      label: 'Deterministic local command',
+      modelRole: 'no_model',
+      model: 'none',
+      priority: 3,
+      latencyClass: 'instant',
+      targetFirstResponseMs: 1200,
+      targetSpokenWords: 50,
+      canRunInBackground: true,
+      parallelEligible: true,
+      startsMicrophone: false,
+      requiresUserPresence: false,
+      summary: 'Run narrow resident/status/open/capture/file/clipboard commands before spending model latency.',
+      useWhen: ['resident status', 'open app or URL', 'clipboard capture', 'file list/read/search/write through policy', 'known CLI command'],
+      avoidWhen: ['ambiguous UI target', 'private or irreversible action without confirmation'],
+      firstTools: ['run_mac_action', 'run_file_action', 'run_cli_tool', 'get_work_next'],
+      handoffRule: 'Preview first when risk or target is ambiguous; Level 4 remains confirmation-gated.',
+    }),
+    profile({
+      id: 'browser_workflow',
+      lane: 'browser',
+      contractId: 'browser',
+      owner: 'browser',
+      label: 'Browser workflow',
+      modelRole: 'structured_browser_tools',
+      model: 'tool-first',
+      priority: 4,
+      latencyClass: 'interactive',
+      targetFirstResponseMs: 3500,
+      targetSpokenWords: 70,
+      canRunInBackground: true,
+      parallelEligible: true,
+      startsMicrophone: false,
+      requiresUserPresence: false,
+      summary: 'Use browser DOM/page tools for webpage-aware work before falling back to background synthesis.',
+      useWhen: ['current page summary', 'extract actions', 'safe form-fill draft', 'search/result review', 'multi-page research continuation'],
+      avoidWhen: ['submits, purchases, logins, account changes without explicit confirmation'],
+      firstTools: ['get_browser_context', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow'],
+      handoffRule: 'Read page/DOM first, preview actions, then execute only through browser policy and confirmation gates.',
+    }),
+    profile({
+      id: 'file_app_workflow',
+      lane: 'app',
+      contractId: 'app',
+      owner: 'app',
+      label: 'File/app workflow',
+      modelRole: 'structured_local_tools',
+      model: 'tool-first',
+      priority: 5,
+      latencyClass: 'interactive',
+      targetFirstResponseMs: 4000,
+      targetSpokenWords: 70,
+      canRunInBackground: true,
+      parallelEligible: false,
+      startsMicrophone: false,
+      requiresUserPresence: false,
+      summary: 'Use file, Accessibility, productivity, or creative-app planners for real computer work with verification.',
+      useWhen: ['file organization', 'current app control', 'Notes/Reminders/Calendar/Mail', 'video editing or music composition staging'],
+      avoidWhen: ['destructive file changes, sends, exports, or account actions without explicit confirmation'],
+      firstTools: ['run_file_workflow', 'read_accessibility_tree', 'plan_app_workflow', 'plan_creative_workflow', 'plan_productivity_workflow'],
+      handoffRule: 'Plan and verify one guarded step at a time; app-specific saves/exports stay confirmation-gated.',
+    }),
+    profile({
+      id: 'background_model',
+      lane: 'background',
+      contractId: 'background',
+      owner: 'background',
+      label: 'Background deep model',
+      modelRole: 'strong_model',
+      model: models.background,
+      priority: 6,
+      latencyClass: 'slow',
+      targetFirstResponseMs: 10000,
+      targetSpokenWords: 60,
+      canRunInBackground: true,
+      parallelEligible: true,
+      startsMicrophone: false,
+      requiresUserPresence: false,
+      summary: 'Queue deep research, long synthesis, and durable plans without blocking the voice turn.',
+      useWhen: ['long analysis', 'research', 'report/draft/plan', 'compare many sources', 'multi-step non-code work'],
+      avoidWhen: ['repo mutation requiring tests', 'live UI actions that need current targets'],
+      firstTools: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
+      handoffRule: 'Tell the user it is running, then provide progress through work handoff/check-ins.',
+    }),
+    profile({
+      id: 'codex_worker',
+      lane: 'codex',
+      contractId: 'codex',
+      owner: 'codex',
+      label: 'Codex code worker',
+      modelRole: 'code_agent',
+      model: codexCommand,
+      priority: 7,
+      latencyClass: 'worker',
+      targetFirstResponseMs: 15000,
+      targetSpokenWords: 60,
+      canRunInBackground: true,
+      parallelEligible: true,
+      available: Boolean(cliReady && commandExists(codexCommand)),
+      startsMicrophone: false,
+      requiresUserPresence: false,
+      summary: 'Use Codex for repo-bound implementation, tests, review, and commits with scoped ownership.',
+      useWhen: ['implementation', 'debugging', 'tests', 'repo docs', 'code review', 'diff/commit work'],
+      avoidWhen: ['non-code browser/app actions', 'overlapping write scopes already claimed by another worker'],
+      firstTools: ['route_task', 'route_parallel_tasks', 'delegate_task', 'get_collaboration_state'],
+      handoffRule: 'Claim scope before edits; serialize overlapping write scopes through collaboration ledger.',
+    }),
+    profile({
+      id: 'claude_worker',
+      lane: 'claude',
+      contractId: 'claude',
+      owner: 'claude',
+      label: 'Claude Code worker',
+      modelRole: 'code_agent',
+      model: claudeCommand,
+      priority: 8,
+      latencyClass: 'worker',
+      targetFirstResponseMs: 15000,
+      targetSpokenWords: 60,
+      canRunInBackground: true,
+      parallelEligible: true,
+      available: Boolean(cliReady && commandExists(claudeCommand)),
+      startsMicrophone: false,
+      requiresUserPresence: false,
+      summary: 'Use Claude Code when requested or when an independent code-heavy scope can run beside Codex.',
+      useWhen: ['explicit Claude request', 'independent code investigation', 'parallel docs/code review where scopes do not overlap'],
+      avoidWhen: ['same write scope as Codex/local worker', 'tasks without a clear repo/file boundary'],
+      firstTools: ['route_task', 'route_parallel_tasks', 'delegate_task', 'get_collaboration_state'],
+      handoffRule: 'Use collaboration claims and release/handoff status so Codex and Claude do not race.',
+    }),
+  ];
+}
+
+function routingSpeedProfileForLane(lane) {
+  const normalized = normalizeRoutingLane(lane);
+  const profiles = routingSpeedProfiles();
+  return profiles.find((profile) => profile.lane === normalized) ||
+    profiles.find((profile) => profile.contractId === normalized) ||
+    profiles.find((profile) => profile.id === 'fast_text');
+}
+
+function routingSpeedPolicySnapshot(options = {}) {
+  const task = String(options.message || options.task || options.query || '').trim();
+  const includeSamples = options.includeSamples !== false && String(options.includeSamples || '').toLowerCase() !== 'false';
+  const profiles = routingSpeedProfiles().sort((a, b) => a.priority - b.priority);
+  const defaultOrder = [
+    'local_command',
+    'realtime_voice',
+    'fast_text',
+    'browser_workflow',
+    'file_app_workflow',
+    'background_model',
+    'codex_worker',
+    'claude_worker',
+  ];
+  const rules = [
+    'Keep the Realtime voice lane responsive: answer or acknowledge first, then hand slow work to a worker.',
+    'Run deterministic local commands before model calls when the intent is narrow and reversible.',
+    'Use the fast model for short Q&A; use the background model for long analysis, research, reports, and durable plans.',
+    'Use Codex or Claude Code for repo-bound code work with explicit scope ownership; serialize overlapping writes.',
+    'Use browser/file/app structured tools before raw screenshots or broad model context when the task is about a visible page, local file, or Mac app.',
+    'Never let speed policy bypass action policy, approval gates, microphone confirmation, or perception consent.',
+  ];
+  const sampleInputs = [
+    { id: 'status', message: '现在状态怎么样？' },
+    { id: 'research', message: '帮我调研一下这个产品方向，整理成报告。' },
+    { id: 'codex', message: '修复这个 Electron bug 并跑测试。' },
+    { id: 'claude', message: '用 Claude Code 检查这个实现有没有问题。' },
+    { id: 'browser', message: '帮我看看当前网页，提取下一步操作，先不要提交表单。', includeScreen: true },
+  ];
+  const samples = includeSamples
+    ? sampleInputs.map((sample) => {
+        const decision = routeTaskDecision(sample.message, {
+          execute: false,
+          includeScreen: sample.includeScreen,
+          useMemory: false,
+        });
+        const speed = routingSpeedProfileForLane(decision.lane);
+        return {
+          id: sample.id,
+          message: sample.message,
+          lane: decision.lane,
+          mode: decision.mode,
+          owner: decision.contract?.owner || ownerForRoutingLane(decision.lane),
+          profile: speed.id,
+          modelRole: speed.modelRole,
+          model: speed.model,
+          reason: decision.reason,
+          contextMode: decision.contextPlan.mode,
+          recommendedTools: decision.contextPlan.recommendedTools,
+        };
+      })
+    : [];
+  const decision = task
+    ? routeTaskDecision(task, {
+        execute: false,
+        includeScreen: options.includeScreen === true || String(options.includeScreen || '').toLowerCase() === 'true',
+        mode: options.mode || options.lane,
+        useMemory: false,
+      })
+    : null;
+  const selectedProfile = decision ? routingSpeedProfileForLane(decision.lane) : null;
+  return {
+    ok: true,
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'api', 80),
+    manualOnly: true,
+    startsMicrophone: false,
+    executesActions: false,
+    summary: 'Routing speed policy for voice: preserve live conversation speed, choose lane/model/tool before execution, and move durable work into background workers.',
+    spokenSummary: '我会先用实时语音保持对话流畅；简单问题走快模型，本地窄命令先不用模型，复杂研究走后台强模型，代码工作交给 Codex 或 Claude Code，浏览器/文件/App 任务先走结构化工具。',
+    models: {
+      realtime: models.realtime,
+      realtimeVoice: models.realtimeVoice,
+      fast: models.fast,
+      background: models.background,
+      vision: models.vision,
+      codexCommand: process.env.JAVIS_CODEX_CMD || 'codex exec',
+      claudeCommand: process.env.JAVIS_CLAUDE_CMD || 'claude -p',
+    },
+    policy: {
+      defaultOrder,
+      rules,
+      keepVoiceResponsive: true,
+      routeBeforeModelChoice: true,
+      deterministicBeforeModel: true,
+      backgroundForDurableWork: true,
+      conflictSerialization: true,
+      actionPolicyBypassed: false,
+      approvalGatesBypassed: false,
+      microphoneConfirmationBypassed: false,
+    },
+    profiles,
+    samples,
+    decision: decision
+      ? {
+          lane: decision.lane,
+          mode: decision.mode,
+          label: decision.label,
+          confidence: decision.confidence,
+          reason: decision.reason,
+          contract: decision.contract,
+          contextPlan: decision.contextPlan,
+          speedProfile: selectedProfile,
+          spokenPlan: compactRecordText(
+            selectedProfile?.canRunInBackground
+              ? `我先简短回应，然后把这个任务交给 ${selectedProfile.label}，后台跑并通过进度/交接汇报。`
+              : `这个适合 ${selectedProfile?.label || decision.label}，我会直接短答或先观察最小上下文。`,
+            280,
+          ),
+        }
+      : null,
+    endpoints: {
+      policy: '/api/routing/speed-policy',
+      routePreview: '/api/tasks/route',
+      capabilities: '/api/capabilities',
+      laneContracts: '/api/lanes/contracts',
+      workProgress: '/api/work/progress',
+    },
+    commands: {
+      print: 'npm run config -- --print-routing-speed-policy',
+      routePreview: 'curl -X POST http://127.0.0.1:3417/api/tasks/route -H "Content-Type: application/json" -d \'{"message":"...","execute":false}\'',
+      capabilities: 'npm run config -- --print-capabilities',
+    },
+  };
+}
+
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
-    realtime: ['get_local_capabilities', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
+    realtime: ['get_routing_speed_policy', 'get_local_capabilities', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
     background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
     codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
     claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
@@ -4265,6 +4596,7 @@ async function localCapabilitySnapshot(options = {}) {
     'Desktop pet stays minimal; capability details belong in CUI/API/voice tools.',
   ];
   const recommendedStart = [
+    { when: 'User asks why JAVIS is fast/slow or which model/lane to use', tool: 'get_routing_speed_policy', reason: 'Read the routing speed policy before deciding whether to answer, route, or delegate.' },
     { when: 'User asks what you can do or which tool to use', tool: 'get_local_capabilities', reason: 'Read the current capability map and guardrails.' },
     { when: 'User asks what you have learned about their habits or preferences', tool: 'get_learning_profile', reason: 'Report local inferred learning without exposing raw screen, clipboard, or page contents.' },
     { when: 'User asks what changed recently in their habits', tool: 'get_learning_evolution', reason: 'Compare recent local metadata against an older local baseline without exposing raw content.' },
@@ -4274,6 +4606,7 @@ async function localCapabilitySnapshot(options = {}) {
     { when: 'User asks to split work across agents', tool: 'route_parallel_tasks', reason: 'Create scoped parallel work with collaboration ownership records.' },
     { when: 'User asks what JAVIS can see or control', tool: 'get_perception_consent', reason: 'Report local perception surfaces and consent gates.' },
   ];
+  const speedPolicy = routingSpeedPolicySnapshot({ includeSamples: false, source: 'capability_map' });
   return {
     ok: true,
     version: 1,
@@ -4283,6 +4616,12 @@ async function localCapabilitySnapshot(options = {}) {
     spokenSummary: `我可以先观察和判断任务，再按需要交给浏览器、文件、Mac App、后台、Codex 或 Claude Code；当前控制模式是 ${control.label}，本地执行${LOCAL_EXEC_ENABLED ? '已开启' : '未开启'}。`,
     counts,
     capabilities: contracts,
+    speedPolicy: {
+      summary: speedPolicy.summary,
+      spokenSummary: speedPolicy.spokenSummary,
+      endpoint: '/api/routing/speed-policy',
+      command: 'npm run config -- --print-routing-speed-policy',
+    },
     recommendedStart,
     guardrails,
     readiness: {
@@ -20290,11 +20629,22 @@ function routeTaskDecision(message, options = {}) {
     lane,
     mode,
   });
+  const speedProfile = routingSpeedProfileForLane(lane);
   return {
     lane,
     mode,
     contract: laneContractReference(lane),
     label: lane === 'quick' ? 'Quick' : lane === 'background' ? 'Deep' : lane === 'codex' ? 'Codex' : 'Claude',
+    speedProfile: {
+      id: speedProfile.id,
+      label: speedProfile.label,
+      modelRole: speedProfile.modelRole,
+      model: speedProfile.model,
+      latencyClass: speedProfile.latencyClass,
+      canRunInBackground: Boolean(speedProfile.canRunInBackground),
+      parallelEligible: Boolean(speedProfile.parallelEligible),
+      handoffRule: speedProfile.handoffRule,
+    },
     confidence,
     reason: reasons.join('; ') || 'default fast lane',
     execute: Boolean(options.execute),
@@ -38853,6 +39203,11 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(capabilities) };
   }
 
+  if (name === 'get_routing_speed_policy') {
+    const speedPolicy = routingSpeedPolicySnapshot({ ...(args || {}), source: 'voice' });
+    return { ok: true, output: JSON.stringify(speedPolicy) };
+  }
+
   if (name === 'get_lane_contracts') {
     return { ok: true, output: JSON.stringify(laneContractSnapshot(args || {})) };
   }
@@ -39615,6 +39970,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
       'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> learning_context -> observe -> preview -> verify -> recovery-scan steps by default; local learning is soft metadata context only, never permission. Pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
+      'Use get_routing_speed_policy when the user asks why JAVIS is fast or slow, which model/lane should handle a task, how to keep voice responsive, or whether a task should be answered inline, routed to background, sent to Codex/Claude, or handled by browser/file/app tools.',
       'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
       'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
@@ -40576,6 +40932,24 @@ function createRealtimeSessionConfig(options = {}) {
           type: 'object',
           properties: {
             limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_routing_speed_policy',
+        description: 'Get the voice-first routing speed policy: when to answer inline with Realtime/fast model, when to queue background work, when to hand code to Codex or Claude Code, and when browser/file/app structured tools should run first. Read-only; does not execute actions or start microphone capture.',
+        parameters: {
+          type: 'object',
+          properties: {
+            message: { type: 'string' },
+            task: { type: 'string' },
+            query: { type: 'string' },
+            lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            includeScreen: { type: 'boolean' },
+            includeSamples: { type: 'boolean' },
           },
           additionalProperties: false,
         },
@@ -41737,6 +42111,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_pending_approvals',
   'resolve_approval',
   'get_collaboration_state',
+  'get_routing_speed_policy',
   'get_local_capabilities',
   'get_learning_profile',
   'get_learning_evolution',
@@ -41781,6 +42156,7 @@ function realtimeInstructionChecks(instructions = '') {
     attentionPolicy: /get_attention_policy|should interrupt|pet is red\/yellow\/green|notification fired|needs attention/i.test(text),
     attentionExplanation: /get_attention_explanation|spoken explanation of the pet color|attention history|last notification|stayed quiet/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
+    speedPolicy: /get_routing_speed_policy|speed policy|fast model|background model|which model\/lane|keep voice responsive/i.test(text),
     localCapabilities: /get_local_capabilities|what JAVIS can do|local capability map|which local tools are available|browser\/file\/app\/Codex\/Claude\/local execution is ready/i.test(text),
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
@@ -41933,6 +42309,19 @@ function startApiServer() {
   api.get('/api/lanes/contracts/:id', (req, res) => {
     const snapshot = laneContractSnapshot({ id: req.params.id });
     res.status(snapshot.ok ? 200 : 404).json({ laneContracts: snapshot });
+  });
+
+  api.get('/api/routing/speed-policy', (req, res) => {
+    try {
+      res.json({
+        speedPolicy: routingSpeedPolicySnapshot({
+          ...(req.query || {}),
+          source: 'api',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Routing speed policy failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/capabilities', async (req, res) => {

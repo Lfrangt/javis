@@ -233,6 +233,8 @@ Use option `V. Watch Realtime voice evidence` while dogfooding a real WebRTC voi
 
 Use option `L. Show local capability map`, `npm run config -- --print-capabilities`, `/api/capabilities`, or the Realtime `get_local_capabilities` tool when JAVIS needs to decide what it can do next. The snapshot is read-only: it summarizes lane contracts, browser/file/app/knowledge/Codex/Claude readiness, current control mode, local execution, guardrails, the collaboration handoff with active owners/conflicts/next coordination action, and the next safe work item without starting microphone capture or running local actions.
 
+Use option `S. Show routing speed policy`, `npm run config -- --print-routing-speed-policy`, `/api/routing/speed-policy`, or the Realtime `get_routing_speed_policy` tool when JAVIS needs to explain speed/model routing. It is read-only: it shows the Realtime voice front door, fast model, background model, Codex, Claude Code, local-command, browser, and file/app profiles with latency class, model/tool choice, background/parallel eligibility, and the confirmation gates that still apply.
+
 In trusted local mode, file write/create/copy/move roots default to the project, Desktop, Documents,
 and Downloads. Set `JAVIS_ALLOWED_WRITE_ROOTS` or edit `action-policy.json` in the CUI if you want a
 different local scope.

@@ -462,15 +462,45 @@ export default {
         capabilityApiOutput?.ok === true &&
         capabilityApiOutput?.next === null &&
         capabilityApiOutput?.controlMode?.mode &&
+        capabilityApiOutput?.speedPolicy?.endpoint === '/api/routing/speed-policy' &&
         Array.isArray(capabilityApiOutput.capabilities) &&
         capabilityApiOutput.capabilities.some((item) => item.id === 'browser' && item.recommendedTools?.includes('run_browser_workflow')) &&
         capabilityApiOutput.collaboration?.handoff?.mode &&
         Array.isArray(capabilityApiOutput.collaboration?.handoff?.nextActions) &&
+        capabilityApiOutput.recommendedStart.some((item) => item.tool === 'get_routing_speed_policy') &&
         capabilityApiOutput.recommendedStart.some((item) => item.tool === 'get_collaboration_state') &&
         Array.isArray(capabilityApiOutput.guardrails) &&
         capabilityApiOutput.guardrails.some((item) => /confirmation/i.test(item))
         ? ok('realtime.local_capabilities_api', 'Realtime local capability API', `${capabilityApiOutput.capabilities.length} matched capability row(s), collab ${capabilityApiOutput.collaboration.handoff.mode}`)
         : fail('realtime.local_capabilities_api', 'Realtime local capability API', `GET /api/capabilities ${capabilityApi.status}`, capabilityApi.data),
+    );
+
+    const speedPolicyTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_routing_speed_policy',
+        arguments: { message: '修复这个 Electron bug 并跑测试。' },
+      },
+    });
+    const speedPolicyToolOutput = parseToolOutput(speedPolicyTool);
+    out.push(
+      speedPolicyTool.ok &&
+        speedPolicyTool.data?.ok === true &&
+        speedPolicyToolOutput?.ok === true &&
+        speedPolicyToolOutput?.manualOnly === true &&
+        speedPolicyToolOutput?.startsMicrophone === false &&
+        speedPolicyToolOutput?.executesActions === false &&
+        speedPolicyToolOutput?.policy?.keepVoiceResponsive === true &&
+        speedPolicyToolOutput?.policy?.routeBeforeModelChoice === true &&
+        speedPolicyToolOutput?.policy?.approvalGatesBypassed === false &&
+        speedPolicyToolOutput?.decision?.lane === 'codex' &&
+        speedPolicyToolOutput?.decision?.speedProfile?.id === 'codex_worker' &&
+        Array.isArray(speedPolicyToolOutput?.profiles) &&
+        speedPolicyToolOutput.profiles.some((item) => item.id === 'fast_text' && item.model === speedPolicyToolOutput.models.fast) &&
+        speedPolicyToolOutput.profiles.some((item) => item.id === 'background_model' && item.model === speedPolicyToolOutput.models.background)
+        ? ok('realtime.routing_speed_policy_tool', 'Realtime routing speed policy tool', `${speedPolicyToolOutput.decision.lane} · ${speedPolicyToolOutput.decision.speedProfile.id}`)
+        : fail('realtime.routing_speed_policy_tool', 'Realtime routing speed policy tool', `tool execute ${speedPolicyTool.status}`, speedPolicyTool.data),
     );
 
     const capabilityTool = await ctx.api('/api/tools/execute', {

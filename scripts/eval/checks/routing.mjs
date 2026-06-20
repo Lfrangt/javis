@@ -1,8 +1,11 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { ok, warn, fail } from '../_client.mjs';
 
+const execFileAsync = promisify(execFile);
 const USER_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
 
 function writeEvalRoutingSkill() {
@@ -67,10 +70,56 @@ export default {
     });
     const quickDecision = quick.data?.decision;
     out.push(
-      quick.ok && quickDecision?.lane
-        ? ok('routing.preview', 'Task route preview', `${quickDecision.lane} · ${quickDecision.reason || 'routed'}`)
+      quick.ok && quickDecision?.lane && quickDecision?.speedProfile?.id
+        ? ok('routing.preview', 'Task route preview', `${quickDecision.lane} · ${quickDecision.speedProfile.id} · ${quickDecision.reason || 'routed'}`)
         : fail('routing.preview', 'Task route preview', `route ${quick.status} ${quick.error || quick.data?.error || ''}`, quick.data),
     );
+
+    const speedPolicy = await ctx.api('/api/routing/speed-policy?message=%E4%BF%AE%E5%A4%8D%E8%BF%99%E4%B8%AA%20Electron%20bug%20%E5%B9%B6%E8%B7%91%E6%B5%8B%E8%AF%95');
+    const speedPolicyData = speedPolicy.data?.speedPolicy || {};
+    const profileIds = new Set((Array.isArray(speedPolicyData.profiles) ? speedPolicyData.profiles : []).map((item) => item.id));
+    out.push(
+      speedPolicy.ok &&
+        speedPolicyData?.manualOnly === true &&
+        speedPolicyData?.startsMicrophone === false &&
+        speedPolicyData?.executesActions === false &&
+        speedPolicyData?.policy?.keepVoiceResponsive === true &&
+        speedPolicyData?.policy?.routeBeforeModelChoice === true &&
+        speedPolicyData?.policy?.deterministicBeforeModel === true &&
+        speedPolicyData?.policy?.actionPolicyBypassed === false &&
+        ['realtime_voice', 'fast_text', 'background_model', 'codex_worker', 'claude_worker', 'browser_workflow', 'file_app_workflow', 'local_command'].every((id) => profileIds.has(id)) &&
+        speedPolicyData?.models?.realtime &&
+        speedPolicyData?.models?.fast &&
+        speedPolicyData?.models?.background &&
+        speedPolicyData?.decision?.lane === 'codex' &&
+        speedPolicyData?.decision?.speedProfile?.id === 'codex_worker' &&
+        Array.isArray(speedPolicyData.samples) &&
+        speedPolicyData.samples.some((sample) => sample.profile === 'codex_worker')
+        ? ok('routing.speed_policy', 'Routing speed policy', `${speedPolicyData.decision.lane} · ${speedPolicyData.decision.speedProfile.id}`)
+        : fail('routing.speed_policy', 'Routing speed policy', `GET /api/routing/speed-policy ${speedPolicy.status}`, speedPolicy.data),
+    );
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-routing-speed-policy', '--message', '帮我调研这个产品方向并整理成报告'], {
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      out.push(
+        stdout.includes('JAVIS Routing Speed Policy') &&
+          stdout.includes('starts microphone=no') &&
+          stdout.includes('executes actions=no') &&
+          stdout.includes('realtime_voice') &&
+          stdout.includes('background_model') &&
+          stdout.includes('codex_worker') &&
+          stdout.includes('Decision:') &&
+          stdout.includes('lane=background')
+          ? ok('routing.speed_policy_cui', 'Routing speed policy CUI', 'config CUI prints model/lane speed policy')
+          : fail('routing.speed_policy_cui', 'Routing speed policy CUI', 'expected CUI output to include policy profiles and background decision', { stdout: stdout.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('routing.speed_policy_cui', 'Routing speed policy CUI', error instanceof Error ? error.message : String(error)));
+    }
 
     const parallel = await ctx.api('/api/tasks/parallel', {
       method: 'POST',

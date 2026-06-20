@@ -320,6 +320,7 @@ async function printStatus() {
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('L. Show local capability map');
+  console.log('S. Show routing speed policy');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
   console.log('K. Show knowledge workflow benchmarks');
@@ -651,6 +652,7 @@ function printLocalCapabilities(result) {
   const collaborationNext = collaborationHandoff.nextActions?.[0]?.label ? ` · next ${collaborationHandoff.nextActions[0].label}` : '';
   console.log(`Collab: ${collaborationHandoff.mode || 'unknown'} · ${collaboration.active || 0} active · ${collaboration.conflictPairs || 0} conflict pair(s)${collaborationNext}`);
   if (collaborationHandoff.summary) console.log(`Collab handoff: ${compact(collaborationHandoff.summary, 260)}`);
+  if (capabilities.speedPolicy?.spokenSummary) console.log(`Speed: ${compact(capabilities.speedPolicy.spokenSummary, 320)}`);
   if (capabilities.readiness?.summary) console.log(`Readiness: ${capabilities.readiness.overall || '-'} · ${compact(capabilities.readiness.summary, 220)}`);
   if (capabilities.next?.output) console.log(`Next: ${compact(capabilities.next.output, 260)}`);
   const guardrails = Array.isArray(capabilities.guardrails) ? capabilities.guardrails : [];
@@ -687,6 +689,60 @@ async function showLocalCapabilities(options = {}) {
   const result = await request(`/api/capabilities?${params.toString()}`);
   console.log('');
   printLocalCapabilities(result);
+}
+
+function printRoutingSpeedPolicy(result) {
+  const policy = result?.speedPolicy || result || {};
+  const models = policy.models || {};
+  const rules = policy.policy || {};
+  const decision = policy.decision || null;
+  console.log('JAVIS Routing Speed Policy');
+  console.log('==========================');
+  console.log(policy.spokenSummary || policy.summary || 'No routing speed policy available.');
+  console.log(`Manual only=yes · starts microphone=${policy.startsMicrophone ? 'yes' : 'no'} · executes actions=${policy.executesActions ? 'yes' : 'no'}`);
+  console.log(`Models: realtime=${models.realtime || '-'} · fast=${models.fast || '-'} · background=${models.background || '-'} · voice=${models.realtimeVoice || '-'}`);
+  console.log(`Workers: codex=${models.codexCommand || '-'} · claude=${models.claudeCommand || '-'}`);
+  if (Array.isArray(rules.defaultOrder) && rules.defaultOrder.length) {
+    console.log(`Order: ${rules.defaultOrder.join(' -> ')}`);
+  }
+  const ruleLines = Array.isArray(rules.rules) ? rules.rules : [];
+  if (ruleLines.length) {
+    console.log('\nRules:');
+    for (const rule of ruleLines.slice(0, 8)) console.log(`- ${compact(rule, 220)}`);
+  }
+  const profiles = Array.isArray(policy.profiles) ? policy.profiles : [];
+  if (profiles.length) {
+    console.log('\nProfiles:');
+    for (const item of profiles) {
+      const bg = item.canRunInBackground ? 'bg' : 'inline';
+      const parallel = item.parallelEligible ? 'parallel' : 'serial';
+      console.log(`- ${item.id || '-'} · ${item.latencyClass || '-'} · ${bg}/${parallel} · ${item.modelRole || '-'}:${item.model || '-'} · ${compact(item.summary || '', 200)}`);
+    }
+  }
+  const samples = Array.isArray(policy.samples) ? policy.samples : [];
+  if (samples.length) {
+    console.log('\nSamples:');
+    for (const sample of samples.slice(0, 6)) {
+      console.log(`- ${sample.id || '-'} -> ${sample.lane || '-'} / ${sample.profile || '-'} · ${compact(sample.reason || '', 180)}`);
+    }
+  }
+  if (decision) {
+    console.log('\nDecision:');
+    console.log(`- lane=${decision.lane || '-'} · profile=${decision.speedProfile?.id || '-'} · model=${decision.speedProfile?.model || '-'}`);
+    console.log(`- reason=${compact(decision.reason || '', 260)}`);
+    console.log(`- spoken=${compact(decision.spokenPlan || '', 260)}`);
+    const tools = decision.contextPlan?.recommendedTools || [];
+    if (tools.length) console.log(`- tools=${tools.join(', ')}`);
+  }
+}
+
+async function showRoutingSpeedPolicy(options = {}) {
+  const params = new URLSearchParams();
+  if (options.message) params.set('message', options.message);
+  if (options.lane) params.set('lane', options.lane);
+  const result = await request(`/api/routing/speed-policy?${params.toString()}`);
+  console.log('');
+  printRoutingSpeedPolicy(result);
 }
 
 async function showAutopilotStatus() {
@@ -2657,6 +2713,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-routing-speed-policy') || process.argv.includes('--routing-speed-policy')) {
+    const messageIndex = process.argv.findIndex((item) => item === '--message');
+    const laneIndex = process.argv.findIndex((item) => item === '--lane');
+    await showRoutingSpeedPolicy({
+      message: messageIndex >= 0 ? process.argv[messageIndex + 1] : '',
+      lane: laneIndex >= 0 ? process.argv[laneIndex + 1] : '',
+    });
+    return;
+  }
+
   if (process.argv.includes('--print-work-next') || process.argv.includes('--work-next')) {
     await showWorkbenchNext();
     return;
@@ -2826,6 +2892,8 @@ async function main() {
         await showWorkHandoff();
       } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {
         await showLocalCapabilities({ includeNext: true });
+      } else if (answer === 's' || answer === 'speed' || answer === 'speed policy' || answer === 'routing speed') {
+        await showRoutingSpeedPolicy();
       } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {
         await showBrowserBenchmarks();
       } else if (answer === 'f' || answer === 'file benchmark' || answer === 'file benchmarks') {
