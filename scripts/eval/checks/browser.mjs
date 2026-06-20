@@ -119,6 +119,29 @@ export default {
         : fail('browser.fill_draft_route_recovery', 'Browser fill draft route recovery', 'expected routed fill draft recovery to recommend sensitive-field handoff without leaking values', fillRouteRecovery?.data),
     );
 
+    const domActionPreview = await ctx.api('/api/browser/dom-action', {
+      method: 'POST',
+      body: {
+        action: 'click',
+        selector: '#submit',
+        execute: false,
+        source: 'eval_browser_dom_action_contract',
+      },
+    });
+    out.push(
+      domActionPreview.ok &&
+        domActionPreview.data?.executed === false &&
+        domActionPreview.data?.safety?.preflightReobserve === true &&
+        domActionPreview.data?.safety?.reobserveTiming === 'before_execute' &&
+        domActionPreview.data?.safety?.formSubmissionDefault === 'approval_required' &&
+        domActionPreview.data?.safety?.executesFormSubmitByDefault === false &&
+        domActionPreview.data?.plan?.metadata?.reobserveBeforeExecute === true &&
+        domActionPreview.data?.plan?.metadata?.noFormSubmitByDefault === true &&
+        domActionPreview.data?.plan?.metadata?.submitLikeRiskLevel === 4
+        ? ok('browser.dom_action_preview_contract', 'Browser DOM action preview contract', 'preview declares DOM re-observe and no-submit default')
+        : fail('browser.dom_action_preview_contract', 'Browser DOM action preview contract', `POST /api/browser/dom-action ${domActionPreview.status}`, domActionPreview.data),
+    );
+
     const fixtureExecute = await ctx.api('/api/browser/fill-draft', {
       method: 'POST',
       body: {
@@ -243,8 +266,10 @@ export default {
         bench?.safety?.noBrowserActions === true &&
         bench?.safety?.noModelCalls === true &&
         bench?.safety?.noSecretEcho === true &&
+        bench?.safety?.domReobserveBeforeAction === true &&
+        bench?.safety?.noFormSubmitByDefault === true &&
         bench?.safety?.sensitiveFieldsBlocked === true &&
-        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
+        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
         bench.cases.every((item) => item.ok === true && item.modelCall === false && item.browserAction === false)
         ? ok('browser.workflow_benchmarks', 'Browser workflow benchmarks', `${bench.counts.pass}/${bench.counts.total} preview fixture(s) passed`)
         : fail('browser.workflow_benchmarks', 'Browser workflow benchmarks', `GET /api/browser/benchmarks ${benchmarks.status}`, benchmarks.data),

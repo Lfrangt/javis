@@ -1144,6 +1144,14 @@ curl -X POST http://127.0.0.1:3417/api/browser/dom-action \
 
 `/api/browser/dom` is read-only and returns visible clickable/fillable controls with selectors. `/api/browser/dom-action` runs one guarded `click`, `fill`, or `select`. Use `execute:false` to preview; real execution still uses local execution, policy, approvals, and audit logs.
 
+DOM actions are preview-first and re-observed before execution. A preview returns a
+`safety` block showing `preflightReobserve=true`, `reobserveTiming=before_execute`,
+and `executesFormSubmitByDefault=false`. During a confirmed live action, JAVIS
+re-reads the current DOM target immediately before clicking/filling/selecting, then
+records `browser_dom.reobserved` in the audit trail. Submit/send/pay/delete/login
+style targets are promoted to Level 4 and require explicit confirmation instead of
+running by default.
+
 Browser DOM control can use Chrome/Safari Apple Events JavaScript. For Chrome, enable `显示 > 开发者 > 允许 Apple 事件中的 JavaScript`, or restart Chrome with a local DevTools port that matches `JAVIS_CHROME_DEBUG_PORT`:
 
 ```bash

@@ -17017,8 +17017,138 @@ function buildBrowserDomActionPlan(args = {}) {
       query,
       value,
     },
-    metadata: { browserAction, domAction },
+    metadata: {
+      browserAction,
+      domAction,
+      reobserveBeforeExecute: true,
+      noFormSubmitByDefault: true,
+      submitLikeRiskLevel: 4,
+    },
   };
+}
+
+function browserDomActionPreflightScript(plan) {
+  const args = plan.args || {};
+  return `
+(() => {
+  const domAction = ${JSON.stringify(args.domAction)};
+  const selector = ${JSON.stringify(args.selector || '')};
+  const query = ${JSON.stringify(args.query || '')}.toLowerCase();
+  const clean = (input, max = 220) => String(input || '').replace(/[\\t\\r\\n ]+/g, ' ').trim().slice(0, max);
+  const attrEscape = (input) => String(input).replace(/\\\\/g, '\\\\\\\\').replace(/"/g, '\\\\"');
+  const visible = (el) => {
+    if (!el || !(el instanceof Element)) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity || 1) === 0) return false;
+    const rect = el.getBoundingClientRect();
+    return rect.width > 1 && rect.height > 1;
+  };
+  const labelOf = (el) => {
+    const values = [
+      el.getAttribute('aria-label'),
+      el.getAttribute('title'),
+      el.getAttribute('alt'),
+      el.getAttribute('placeholder'),
+      el.getAttribute('name'),
+      el.innerText,
+      el.textContent,
+    ];
+    if (el.id) {
+      const label = document.querySelector('label[for="' + attrEscape(el.id) + '"]');
+      if (label) values.unshift(label.innerText);
+    }
+    if (el.labels) {
+      for (const label of Array.from(el.labels)) values.unshift(label.innerText);
+    }
+    if (['button', 'submit', 'reset'].includes(String(el.type || '').toLowerCase())) values.unshift(el.value);
+    return values.map((item) => clean(item)).filter(Boolean)[0] || '';
+  };
+  const selectorFor = (el) => {
+    if (el.id) return '#' + (window.CSS?.escape ? CSS.escape(el.id) : String(el.id).replace(/[^a-zA-Z0-9_-]/g, (char) => '\\\\' + char));
+    return el.tagName.toLowerCase();
+  };
+  const interactive = [
+    'a[href]', 'button', 'input', 'textarea', 'select',
+    '[role="button"]', '[role="link"]', '[role="menuitem"]',
+    '[role="checkbox"]', '[role="radio"]', '[role="tab"]',
+    '[contenteditable="true"]', '[tabindex]:not([tabindex="-1"])'
+  ].join(',');
+  let target = null;
+  if (selector) {
+    target = document.querySelector(selector);
+  } else {
+    target = Array.from(document.querySelectorAll(interactive))
+      .filter(visible)
+      .find((el) => labelOf(el).toLowerCase().includes(query) || clean(el.innerText || el.textContent).toLowerCase().includes(query));
+  }
+  if (!target) throw new Error('browser_dom_target_not_found');
+  if (!visible(target)) throw new Error('browser_dom_target_not_visible');
+  const tag = target.tagName.toLowerCase();
+  const type = String(target.getAttribute('type') || '').toLowerCase();
+  const role = clean(target.getAttribute('role') || '', 60);
+  const label = labelOf(target);
+  const text = clean(target.innerText || target.textContent || '', 180);
+  const name = clean(target.getAttribute('name') || '', 80);
+  const riskText = [type, role, label, text, name, selector, query].join(' ');
+  const submitLike = domAction === 'click' && (
+    type === 'submit' ||
+    /\\b(submit|send|buy|purchase|pay|checkout|delete|remove|confirm|login|log in|sign in|sign up|register|subscribe|post|publish|share|transfer|withdraw|deposit|trade)\\b|提交|发送|购买|付款|支付|删除|移除|确认|登录|注册|发布|分享|转账|提现|充值|交易/i.test(riskText)
+  );
+  const rect = target.getBoundingClientRect();
+  return JSON.stringify({
+    ok: true,
+    action: domAction,
+    selector: selector || selectorFor(target),
+    query,
+    tag,
+    type,
+    role,
+    label,
+    text,
+    name,
+    submitLike,
+    url: location.href,
+    title: document.title || '',
+    rect: {
+      x: Math.round(rect.x),
+      y: Math.round(rect.y),
+      width: Math.round(rect.width),
+      height: Math.round(rect.height)
+    }
+  });
+})()
+  `.trim();
+}
+
+function sanitizeBrowserDomPreflight(value = {}) {
+  return {
+    ok: Boolean(value.ok),
+    action: compactRecordText(value.action || '', 40),
+    selector: compactRecordText(value.selector || '', 220),
+    tag: compactRecordText(value.tag || '', 40),
+    type: compactRecordText(value.type || '', 40),
+    role: compactRecordText(value.role || '', 60),
+    label: compactRecordText(value.label || '', 120),
+    submitLike: Boolean(value.submitLike),
+    title: compactRecordText(value.title || '', 160),
+    url: compactRecordText(value.url || '', 500),
+    rect: value.rect || null,
+  };
+}
+
+async function reobserveBrowserDomActionTarget(plan, browser) {
+  const snapshot = await executeBrowserJavaScriptBridge(browser, browserDomActionPreflightScript(plan), { timeoutMs: 6000 });
+  const preflight = sanitizeBrowserDomPreflight(JSON.parse(snapshot.output || '{}'));
+  appendAudit('browser_dom.reobserved', {
+    app: browser.app,
+    action: plan.args?.domAction,
+    selector: preflight.selector,
+    label: compactRecordText(preflight.label, 120),
+    url: preflight.url || browser.url,
+    bridge: snapshot.bridge,
+    submitLike: preflight.submitLike,
+  });
+  return { ...preflight, bridge: snapshot.bridge };
 }
 
 function browserDomActionScript(plan) {
@@ -17128,7 +17258,7 @@ function browserDomActionScript(plan) {
   `.trim();
 }
 
-async function runBrowserDomActionPlan(plan, evaluation) {
+async function runBrowserDomActionPlan(plan, evaluation, options = {}) {
   if (evaluation.dryRun) {
     appendAudit('browser_dom.dry_run', {
       action: plan.args.domAction,
@@ -17137,7 +17267,7 @@ async function runBrowserDomActionPlan(plan, evaluation) {
     });
     return `[dry-run] ${plan.summary}`;
   }
-  const browser = await browserContextSnapshot({ app: plan.args.app });
+  const browser = options.browser || await browserContextSnapshot({ app: plan.args.app });
   if (!browser.supported || !browser.available) throw new Error(browser.error || 'frontmost_app_is_not_supported_browser');
   const executed = await executeBrowserJavaScriptBridge(browser, browserDomActionScript(plan), { timeoutMs: 6000 });
   const result = JSON.parse(executed.output || '{}');
@@ -17153,7 +17283,7 @@ async function runBrowserDomActionPlan(plan, evaluation) {
 }
 
 async function executeBrowserDomAction(args = {}, options = {}) {
-  const plan = buildBrowserDomActionPlan(args);
+  let plan = buildBrowserDomActionPlan(args);
   const preview = args.execute === false || options.preview === true;
   appendAudit('browser_dom.requested', {
     action: plan.args.domAction,
@@ -17163,8 +17293,8 @@ async function executeBrowserDomAction(args = {}, options = {}) {
     preview,
     approved: Boolean(options.approved),
   });
-  const evaluation = evaluateMacActionPlan(plan, { ...options, preview });
   if (preview) {
+    const evaluation = evaluateMacActionPlan(plan, { ...options, preview });
     return {
       ok: !evaluation.blocked,
       executed: false,
@@ -17172,13 +17302,38 @@ async function executeBrowserDomAction(args = {}, options = {}) {
       output: `Prepared ${plan.summary}${evaluation.needsApproval ? ` (${evaluation.reason})` : ''}.`,
       plan,
       evaluation,
+      safety: {
+        preflightReobserve: true,
+        reobserveTiming: 'before_execute',
+        formSubmissionDefault: 'approval_required',
+        submitLikeRiskLevel: 4,
+        executesFormSubmitByDefault: false,
+      },
     };
   }
-  const output = await runBrowserDomActionPlan(plan, evaluation);
+  const browser = await browserContextSnapshot({ app: plan.args.app });
+  if (!browser.supported || !browser.available) throw new Error(browser.error || 'frontmost_app_is_not_supported_browser');
+  const preflight = await reobserveBrowserDomActionTarget(plan, browser);
+  if (preflight.submitLike && plan.riskLevel < 4) {
+    plan = {
+      ...plan,
+      riskLevel: 4,
+      summary: `${plan.summary} (submit-like browser target requires explicit confirmation)`,
+      metadata: {
+        ...(plan.metadata || {}),
+        submitLikePreflight: true,
+        submitLikeRiskLevel: 4,
+      },
+    };
+  }
+  const evaluation = evaluateMacActionPlan(plan, { ...options, preview });
+  const output = await runBrowserDomActionPlan(plan, evaluation, { browser, preflight });
   appendAudit('browser_dom.completed', {
     action: plan.args.domAction,
     riskLevel: plan.riskLevel,
     dryRun: evaluation.dryRun,
+    reobserved: true,
+    submitLikePreflight: preflight.submitLike,
   });
   return {
     ok: true,
@@ -17186,6 +17341,14 @@ async function executeBrowserDomAction(args = {}, options = {}) {
     action: plan.args.domAction,
     output,
     plan,
+    preflight,
+    safety: {
+      preflightReobserve: true,
+      reobserveTiming: 'before_execute',
+      formSubmissionDefault: 'approval_required',
+      submitLikeRiskLevel: 4,
+      executesFormSubmitByDefault: false,
+    },
   };
 }
 
@@ -18264,6 +18427,8 @@ async function runBrowserTaskStep(step, execute, options = {}) {
       approval: result.approval,
       plan: result.plan,
       evaluation: result.evaluation,
+      preflight: result.preflight,
+      safety: result.safety,
     };
   }
 
@@ -20357,6 +20522,34 @@ async function browserWorkflowBenchmarkSnapshot(options = {}) {
       fillDraft.verification?.status === 'preview_only',
   }));
 
+  const domActionContract = await executeBrowserDomAction({
+    action: 'click',
+    selector: '#submit',
+    execute: false,
+    source: `${sourcePrefix}_dom_action_contract`,
+  }, { preview: true });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'dom_action_contract_fixture',
+    label: 'DOM action safety contract fixture',
+    intent: 'dom_action',
+    result: domActionContract,
+    secrets,
+    assertions: {
+      preflightReobserve: domActionContract.safety?.preflightReobserve === true,
+      reobserveTiming: domActionContract.safety?.reobserveTiming || '',
+      formSubmissionDefault: domActionContract.safety?.formSubmissionDefault || '',
+      noFormSubmitByDefault: domActionContract.safety?.executesFormSubmitByDefault === false,
+      planReobserve: domActionContract.plan?.metadata?.reobserveBeforeExecute === true,
+    },
+    ok: domActionContract.executed === false &&
+      domActionContract.safety?.preflightReobserve === true &&
+      domActionContract.safety?.reobserveTiming === 'before_execute' &&
+      domActionContract.safety?.formSubmissionDefault === 'approval_required' &&
+      domActionContract.safety?.executesFormSubmitByDefault === false &&
+      domActionContract.plan?.metadata?.reobserveBeforeExecute === true &&
+      domActionContract.plan?.metadata?.noFormSubmitByDefault === true,
+  }));
+
   const research = await runBrowserWorkflow({
     intent: 'research',
     mode: 'quick',
@@ -20475,6 +20668,8 @@ async function browserWorkflowBenchmarkSnapshot(options = {}) {
       noBrowserActions: true,
       noModelCalls: true,
       noSecretEcho: cases.every((item) => item.assertions?.leakedSecrets === false),
+      domReobserveBeforeAction: cases.find((item) => item.id === 'dom_action_contract_fixture')?.assertions?.preflightReobserve === true,
+      noFormSubmitByDefault: cases.find((item) => item.id === 'dom_action_contract_fixture')?.assertions?.noFormSubmitByDefault === true,
       sensitiveFieldsBlocked: cases.find((item) => item.id === 'fill_draft_fixture')?.assertions?.blockedSensitiveFields === 1,
     },
   };
