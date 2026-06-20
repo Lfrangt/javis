@@ -312,7 +312,7 @@ Use option `29. Show skill shortcuts` to inspect saved local trigger phrases for
 
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
-The desktop pet is intentionally minimal. It is a small voice capsule on the edge of the screen and avoids showing setup state, diagnostic chips, or configuration controls. In compact mode it consumes `/api/presence` and maps the resident state to traffic-light dots: red for attention/setup, yellow for waking/working, green for ready/standby, and green+yellow for observing or listening.
+The desktop pet is intentionally minimal. It is a small voice capsule on the edge of the screen and avoids showing setup state, diagnostic chips, or configuration controls. In compact mode it consumes the lightweight `/api/pet/status` payload and maps the resident state to traffic-light dots: red for attention/setup, yellow for waking/working, green for ready/standby, and green+yellow for observing or listening. Full doctor/config/briefing/context details stay in the terminal CUI, `/api/status`, Realtime tools, or the slower expanded-panel refresh.
 
 Click the pet to start or stop realtime voice with full-screen context once `OPENAI_API_KEY` is configured. If the key is missing, the pet opens the terminal CUI instead. Screen context is captured by the resident process, so it does not ask which window to share. Inside a live voice session, `JAVIS_WAKE_WORDS` defines soft wake words such as `JAVIS`, `Jarvis`, `贾维斯`, and `小贾`. For true local wake, set `JAVIS_WAKE_ENGINE_CMD` to a command that prints `wake` or one configured wake word; JAVIS will then expose that through `/api/wake/status` and the renderer will start voice automatically.
 
@@ -330,6 +330,7 @@ JAVIS also creates a macOS menu bar status item. It exposes resident controls wi
 
 ```bash
 curl http://127.0.0.1:3417/api/window/state
+curl http://127.0.0.1:3417/api/pet/status
 curl http://127.0.0.1:3417/api/menubar/state
 curl http://127.0.0.1:3417/api/notifications/state
 curl http://127.0.0.1:3417/api/attention

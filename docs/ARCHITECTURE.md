@@ -77,6 +77,7 @@ Renderer
 - Smart context assembly lane: creates a deterministic per-request context plan before expensive capture, deciding whether to gather resident state, Mac context, screen/vision, Accessibility, browser page/DOM, clipboard text, files, memory, learning, or delegated-worker context.
 - Observe lane: combined low-latency voice snapshot over Mac context, optional resident screen capture, optional vision summary, Accessibility outline, jobs, and approvals.
 - Presence lane: read-only standby/watch/work/attention state that packages ambient context, wake status, local learning, active work, and intervention guardrails for CUI/API/voice use.
+- Pet status lane: `/api/pet/status` is the lightweight Dynamic Island contract. It exposes only capsule color/mode, wake/voice/window state, minimal counts, and sanitized screen/privacy metadata; full diagnostics, learning profile, routing history, workflow logs, and raw screen images stay behind `/api/status`, CUI, Realtime tools, or expanded-panel refresh.
 - Fast text lane: lightweight Q&A.
 - No-model local command lane: deterministic status, Inbox, open-app/open-URL, and web-search commands that run before model routing.
 - Task router lane: local deterministic routing from casual requests to local commands, quick, background, Codex, or Claude lanes before execution, with relevant explicit memories, recalled local skill procedures, a persisted `contextPlan`, and `skillRecallPlan` evidence attached when model lanes or queued workers are used.

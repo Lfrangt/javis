@@ -466,7 +466,21 @@ type SessionCheckIn = {
   nextActions: BriefingNextAction[]
 }
 
+type PetStatusMeta = {
+  version: number
+  lightweight: boolean
+  surface: string
+  detailEndpoint: string
+  excludes: string[]
+  mode: PresenceMode
+  label: string
+  summary: string
+  next: string
+  color: 'red' | 'yellow' | 'green-yellow' | 'green' | string
+}
+
 type Status = {
+  pet?: PetStatusMeta
   api: {
     baseUrl: string
     hasOpenAiKey: boolean
@@ -499,6 +513,12 @@ type Status = {
   screenPrivacy?: ScreenPrivacy
   presence?: PresenceState
   conversation?: ConversationState
+  voiceHealth?: {
+    ok: boolean
+    status: string
+    summary: string
+    lastError: string
+  }
   progressVersion?: ProgressVersion
   speech?: {
     available: boolean
@@ -1157,13 +1177,16 @@ function App() {
   }, [])
 
   const loadPanelDetails = useCallback(async () => {
-    const [audit, context, config, doctor, briefing] = await Promise.all([
+    const [fullStatus, audit, context, config, doctor, briefing] = await Promise.all([
+      apiJson<Status>('/api/status'),
       apiJson<{ events: AuditEvent[] }>('/api/audit/recent?limit=8'),
       apiJson<{ context: MacContext }>('/api/mac/context'),
       apiJson<{ config: ConfigCheck }>('/api/config/check'),
       fetchDoctorReport(),
       fetchWorkBriefing(),
     ])
+    setStatus(fullStatus)
+    if (fullStatus.window) setExpanded(fullStatus.window.mode === 'panel')
     setRuntimeEvents(audit.events)
     setMacContext(context.context)
     setConfigCheck(config.config)
@@ -1379,15 +1402,39 @@ function App() {
       try {
         const next = await apiJson<Status>('/api/pet/status')
         if (disposed) return
-        setStatus(next)
-        if (next.window) setExpanded(next.window.mode === 'panel')
         setLastError('')
         const panelOpen = next.window?.mode === 'panel'
         const now = Date.now()
-        if (panelOpen && now - lastPanelDetailAt >= PANEL_DETAIL_POLL_MS) {
+        if (!panelOpen) {
+          setStatus(next)
+          if (next.window) setExpanded(false)
+          return
+        }
+        setExpanded(true)
+        if (now - lastPanelDetailAt >= PANEL_DETAIL_POLL_MS) {
           lastPanelDetailAt = now
           await loadPanelDetails()
+          return
         }
+        setStatus((current) => (current
+          ? {
+              ...current,
+              api: next.api,
+              actionPolicy: next.actionPolicy,
+              screenPrivacy: next.screenPrivacy,
+              presence: next.presence,
+              conversation: next.conversation,
+              voiceHealth: next.voiceHealth,
+              progressVersion: next.progressVersion,
+              wake: next.wake,
+              speech: next.speech,
+              window: next.window,
+              menuBar: next.menuBar,
+              notifications: next.notifications,
+              readiness: next.readiness,
+              screen: next.screen,
+            }
+          : next))
       } catch (error) {
         if (!disposed) {
           setLastError(error instanceof Error ? error.message : String(error))

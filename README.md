@@ -81,6 +81,7 @@ Local Mac-first realtime desktop buddy.
 - Clipboard actions: read, write, and clear clipboard text through policy/audit.
 - Tiny draggable always-on-top desktop buddy window.
 - Compact pet mode by default; configuration lives in the terminal CUI instead of the desktop pet.
+- Lightweight `/api/pet/status` endpoint for the desktop capsule: traffic-light mode, wake/voice/window state, and no raw screen image, model list, learning profile, routing history, logs, or runtime data directory.
 - Pet click starts or stops the realtime voice + screen-context session when the API key is configured.
 - Non-intrusive Dynamic Island-style parking at the Mac notch, with optional corner/display placement from the terminal CUI.
 - macOS menu bar status item for resident controls and setup shortcuts.
@@ -204,6 +205,7 @@ Local Express service on 127.0.0.1:3417
   /api/learning/distill -> refresh the local inferred profile now
   /api/learning/skill-draft -> build a reviewable SKILL.md draft from inferred local patterns
   /api/presence         -> resident standby/watch/work state, attention policy, and latest passive context
+  /api/pet/status       -> lightweight desktop pet state; full diagnostics remain in /api/status, CUI, or expanded-panel refresh
   /api/attention        -> quiet attention policy for pet color, notifications, cooldown, reasons, and operator-only history
   /api/attention/history -> recent operator-only attention notification sent/suppressed events
   /api/attention/notify -> apply the attention notification gate, with dry-run support for testing

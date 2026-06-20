@@ -25908,17 +25908,198 @@ function petPresenceSnapshot(options = {}) {
   };
 }
 
+function petConversationSnapshot(conversation = conversationStateSnapshot()) {
+  return {
+    status: conversation.status,
+    active: Boolean(conversation.active),
+    stale: Boolean(conversation.stale),
+    sessionId: conversation.sessionId || '',
+    micMode: conversation.micMode || 'push',
+    screenLive: Boolean(conversation.screenLive),
+    source: conversation.source || '',
+    error: compactRecordText(conversation.error || '', 180),
+    startedAt: Number(conversation.startedAt || 0),
+    liveAt: Number(conversation.liveAt || 0),
+    endedAt: Number(conversation.endedAt || 0),
+    updatedAt: Number(conversation.updatedAt || 0),
+    lastHeartbeatAt: Number(conversation.lastHeartbeatAt || 0),
+    transitionCount: Number(conversation.transitionCount || 0),
+    ageMs: conversation.ageMs ?? null,
+    activeForMs: conversation.activeForMs ?? null,
+    staleAfterMs: Number(conversation.staleAfterMs || 0),
+  };
+}
+
+function petWakeSnapshot(wake = wakeStatusSnapshot()) {
+  return {
+    words: Array.isArray(wake.words) ? wake.words.slice(0, 8) : [],
+    softWakeOnly: Boolean(wake.softWakeOnly),
+    triggerTtlMs: Number(wake.triggerTtlMs || 0),
+    pending: Boolean(wake.pending),
+    ageMs: wake.ageMs ?? null,
+    lastTriggerAt: Number(wake.lastTriggerAt || 0),
+    lastSource: compactRecordText(wake.lastSource || '', 80),
+    lastPhrase: compactRecordText(wake.lastPhrase || '', 80),
+    triggerCount: Number(wake.triggerCount || 0),
+    engine: {
+      configured: Boolean(wake.engine?.configured),
+      running: Boolean(wake.engine?.running),
+      pid: wake.engine?.pid || null,
+      startedAt: Number(wake.engine?.startedAt || 0),
+    },
+  };
+}
+
+function petScreenSnapshot(screenFrame = latestScreenSnapshot()) {
+  if (!screenFrame) return null;
+  const privacy = petScreenPrivacySnapshot(screenFrame.privacy || screenPrivacySnapshot());
+  return {
+    width: Number(screenFrame.width || 0),
+    height: Number(screenFrame.height || 0),
+    updatedAt: Number(screenFrame.updatedAt || 0),
+    source: compactRecordText(screenFrame.source || '', 80),
+    privacy,
+  };
+}
+
+function petScreenPrivacySnapshot(privacy = screenPrivacySnapshot()) {
+  const enforcement = privacy.enforcement || {};
+  return {
+    version: Number(privacy.version || 1),
+    mode: privacy.mode || 'private',
+    label: privacy.label || privacy.mode || 'Private',
+    maxWidth: Number(privacy.maxWidth || 0),
+    blurPx: Number(privacy.blurPx || 0),
+    jpegQuality: Number(privacy.jpegQuality || 0),
+    realtimeAllowed: privacy.realtimeAllowed !== false,
+    ruleCounts: privacy.ruleCounts || { total: 0, enabled: 0 },
+    rulesSummary: compactRecordText(privacy.rulesSummary || '', 180),
+    enforcement: {
+      regionRuleCount: Number(enforcement.regionRuleCount || 0),
+      regionRendererMask: enforcement.regionRendererMask === true,
+      appWindowContextFilter: enforcement.appWindowContextFilter === true,
+    },
+    updatedAt: Number(privacy.updatedAt || 0),
+  };
+}
+
+function petNotificationSnapshot() {
+  const state = notificationSnapshot();
+  return {
+    enabled: Boolean(state.enabled),
+    supported: Boolean(state.supported),
+    sent: Number(state.sent || 0),
+    skipped: Number(state.skipped || 0),
+    attention: {
+      sent: Number(state.attentionNotifications?.sent || 0),
+      skipped: Number(state.attentionNotifications?.skipped || 0),
+      lastNotificationAt: Number(state.attentionNotifications?.lastNotificationAt || 0),
+      cooldown: state.attention?.cooldown || null,
+    },
+  };
+}
+
+function petPresenceStatusSnapshot(presence = {}) {
+  const latest = presence.observing?.latest || {};
+  const browser = latest.browser || {};
+  const screen = presence.observing?.screen || {};
+  return {
+    ok: presence.ok !== false,
+    generatedAt: presence.generatedAt || new Date().toISOString(),
+    mode: presence.mode || 'standby',
+    label: presence.label || 'Standby',
+    summary: compactRecordText(presence.summary || '', 280),
+    intervention: {
+      passiveByDefault: presence.intervention?.passiveByDefault !== false,
+      requiresUserIntent: presence.intervention?.requiresUserIntent !== false,
+      canActWhenInvited: Boolean(presence.intervention?.canActWhenInvited),
+      trustedLocalMode: Boolean(presence.intervention?.trustedLocalMode),
+      maxAutoRiskLevel: Number(presence.intervention?.maxAutoRiskLevel || 0),
+      requireApprovalAtRiskLevel: Number(presence.intervention?.requireApprovalAtRiskLevel || 0),
+      next: compactRecordText(presence.intervention?.next || '', 220),
+      attentionLevel: compactRecordText(presence.intervention?.attentionLevel || '', 40),
+      shouldNotify: Boolean(presence.intervention?.shouldNotify),
+    },
+    observing: {
+      latest: {
+        available: Boolean(latest.available),
+        app: compactRecordText(latest.app || '', 80),
+        windowTitle: compactRecordText(latest.windowTitle || '', 120),
+        browser: {
+          available: Boolean(browser.available),
+          app: compactRecordText(browser.app || '', 80),
+          title: compactRecordText(browser.title || '', 120),
+          host: compactRecordText(browser.host || '', 120),
+        },
+      },
+      screen: {
+        available: Boolean(screen.available),
+        width: Number(screen.width || 0),
+        height: Number(screen.height || 0),
+        privacyMode: screen.privacyMode || '',
+        ageMs: screen.ageMs ?? null,
+      },
+    },
+  };
+}
+
+function petReadinessSummary(readiness = petReadinessSnapshot()) {
+  return {
+    overall: readiness.overall,
+    label: readiness.label,
+    summary: compactRecordText(readiness.summary || '', 220),
+    counts: readiness.counts,
+    primaryIssue: readiness.primaryIssue
+      ? {
+          id: readiness.primaryIssue.id,
+          label: readiness.primaryIssue.label,
+          status: readiness.primaryIssue.status,
+          summary: compactRecordText(readiness.primaryIssue.summary || '', 180),
+          next: compactRecordText(readiness.primaryIssue.next || '', 180),
+        }
+      : null,
+  };
+}
+
 function petStatusSnapshot() {
   const conversation = conversationStateSnapshot();
   const wake = wakeStatusSnapshot();
   const pendingApprovals = pendingApprovalSnapshot(5);
   const activeJobs = jobSnapshot(12).filter((job) => job.status === 'queued' || job.status === 'running');
   const readiness = petReadinessSnapshot();
-  const presence = petPresenceSnapshot({ conversation, wake, pendingApprovals, activeJobs, readiness });
+  const rawPresence = petPresenceSnapshot({ conversation, wake, pendingApprovals, activeJobs, readiness });
+  const presence = petPresenceStatusSnapshot(rawPresence);
+  const screenFrame = latestScreenSnapshot();
   return {
+    pet: {
+      version: 1,
+      lightweight: true,
+      surface: 'desktop_pet',
+      detailEndpoint: '/api/status',
+      excludes: [
+        'screen.imageDataUrl',
+        'runtime.dataDir',
+        'models',
+        'memory',
+        'learning',
+        'routing.recent',
+        'workflow logs/results',
+        'notification bodies',
+      ],
+      mode: presence.mode,
+      label: presence.label,
+      summary: compactRecordText(presence.summary || '', 240),
+      next: compactRecordText(presence.intervention?.next || '', 220),
+      color: presence.mode === 'setup_blocked' || presence.mode === 'needs_attention' || presence.mode === 'voice_error'
+        ? 'red'
+        : presence.mode === 'waking' || presence.mode === 'connecting' || presence.mode === 'working'
+          ? 'yellow'
+          : presence.mode === 'watching' || presence.mode === 'listening'
+            ? 'green-yellow'
+            : 'green',
+    },
     api: {
       baseUrl: API_BASE,
-      auth: apiAuthSnapshot(),
       hasOpenAiKey: Boolean(OPENAI_API_KEY),
       localExecutionEnabled: LOCAL_EXEC_ENABLED,
       trustedLocalMode: TRUSTED_LOCAL_MODE,
@@ -25926,53 +26107,60 @@ function petStatusSnapshot() {
     runtime: {
       version: packageInfo.version,
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-      dataDir: DATA_DIR,
     },
     actionPolicy: {
       dryRun: actionPolicy.dryRun,
       maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
       requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
     },
-    screenPrivacy: screenPrivacySnapshot(),
+    screenPrivacy: petScreenPrivacySnapshot(),
     presence,
-    conversation,
-    voiceHealth: realtimeVoiceHealthSnapshot({ conversation }),
+    conversation: petConversationSnapshot(conversation),
+    voiceHealth: (() => {
+      const health = realtimeVoiceHealthSnapshot({ conversation });
+      return {
+        ok: Boolean(health.ok),
+        status: health.status || '',
+        summary: compactRecordText(health.summary || health.message || '', 180),
+        lastError: compactRecordText(health.lastError || '', 180),
+      };
+    })(),
     progressVersion: workProgressSnapshot(),
-    wake,
+    wake: petWakeSnapshot(wake),
     speech: speechStateSnapshot(),
     window: windowStateSnapshot(),
     menuBar: menuBarSnapshot(),
-    notifications: notificationSnapshot(),
-    approvals: pendingApprovals,
-    models,
-    readiness: {
-      overall: readiness.overall,
-      label: readiness.label,
-      summary: readiness.summary,
-      counts: readiness.counts,
-      primaryIssue: readiness.primaryIssue,
-    },
+    notifications: petNotificationSnapshot(),
+    approvals: pendingApprovals.slice(0, 3).map((approval) => ({
+      id: approval.id,
+      action: approval.action,
+      riskLevel: approval.riskLevel,
+      summary: compactRecordText(approval.summary || '', 160),
+      status: approval.status,
+      createdAt: approval.createdAt,
+      updatedAt: approval.updatedAt,
+    })),
+    readiness: petReadinessSummary(readiness),
     activeJobs: Array.from(activeJobRuns.keys()),
-    workflows: workflowSnapshot(3),
     workflowCounts: workflowCounts(),
-    routing: {
-      counts: routingCounts(),
-      active: activeRoutingSnapshot(3),
-      ledger: activeRoutingSnapshot(3).map(routingLedgerEntry).filter(Boolean),
-      recent: routingSnapshot(3),
-    },
-    collaboration: collaborationSnapshot(4),
     inbox: {
       counts: inboxCounts(),
-      open: inboxSnapshot(3, 'open'),
+      open: [],
     },
     sessions: {
       counts: sessionCounts(),
-      active: activeSessionSnapshot(),
-      recent: sessionSnapshot(3),
+      active: null,
+      recent: [],
     },
-    screen: latestScreenSnapshot(),
-    queue: jobSnapshot(10),
+    screen: petScreenSnapshot(screenFrame),
+    queue: activeJobs.slice(0, 6).map((job) => ({
+      id: job.id,
+      title: compactRecordText(job.title || '', 120),
+      mode: job.mode,
+      status: job.status,
+      pid: job.pid || null,
+      updatedAt: job.updatedAt,
+    })),
   };
 }
 

@@ -31,6 +31,37 @@ export default {
         : warn('resident.window', 'Pet window + hotkeys', `GET /api/window/state ${win.status} ${win.error || ''}`),
     );
 
+    const pet = await ctx.api('/api/pet/status');
+    const p = pet.data || {};
+    const hasOwn = (key) => Object.prototype.hasOwnProperty.call(p, key);
+    const forbiddenTopLevel = ['models', 'routing', 'collaboration', 'memory', 'learnedProfile', 'shortcuts', 'demonstrations', 'workflows']
+      .filter((key) => hasOwn(key));
+    const queue = Array.isArray(p.queue) ? p.queue : [];
+    out.push(
+      pet.ok &&
+        p.pet?.lightweight === true &&
+        p.pet?.detailEndpoint === '/api/status' &&
+        Array.isArray(p.pet?.excludes) &&
+        p.pet.excludes.includes('screen.imageDataUrl') &&
+        typeof p.pet?.color === 'string' &&
+        p.window?.mode &&
+        p.presence?.intervention?.passiveByDefault === true &&
+        p.presence?.intervention?.requiresUserIntent === true &&
+        !p.screen?.imageDataUrl &&
+        !p.screenPrivacy?.rules &&
+        !p.screen?.privacy?.rules &&
+        !p.runtime?.dataDir &&
+        forbiddenTopLevel.length === 0 &&
+        queue.every((job) => !Object.prototype.hasOwnProperty.call(job, 'log') && !Object.prototype.hasOwnProperty.call(job, 'result'))
+        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${p.pet.color} · ${p.presence.mode} · detail=${p.pet.detailEndpoint}`)
+        : fail('resident.pet_status_lightweight', 'Pet status lightweight payload', `expected slim pet payload, got ${pet.status}`, {
+          forbiddenTopLevel,
+          hasImage: Boolean(p.screen?.imageDataUrl),
+          hasRuntimeDataDir: Boolean(p.runtime?.dataDir),
+          pet: p.pet,
+        }),
+    );
+
     const resident = await ctx.api('/api/resident/status');
     const res = resident.data?.resident;
     out.push(
