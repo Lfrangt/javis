@@ -304,6 +304,7 @@ async function printStatus() {
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
+  console.log('L. Show local capability map');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
   console.log('K. Show knowledge workflow benchmarks');
@@ -610,6 +611,58 @@ async function showWorkHandoff() {
   const result = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
   console.log('');
   printWorkHandoff(result);
+}
+
+function printLocalCapabilities(result) {
+  const capabilities = result?.capabilities || result || {};
+  const rows = Array.isArray(capabilities.capabilities) ? capabilities.capabilities : [];
+  const counts = capabilities.counts || {};
+  console.log('JAVIS Local Capabilities');
+  console.log('========================');
+  console.log(capabilities.spokenSummary || capabilities.summary || 'No capability summary available.');
+  console.log(`Counts: ready ${counts.ready || 0} · limited ${counts.limited || 0} · blocked ${counts.blocked || 0} · shown ${counts.total || rows.length}`);
+  const control = capabilities.controlMode || {};
+  const policy = capabilities.policy || {};
+  console.log(`Control: ${control.mode || '-'} · local execution=${control.localExecutionEnabled ? 'on' : 'off'} · trusted=${control.trustedLocalMode ? 'yes' : 'no'} · auto L${control.effectiveMaxAutoRiskLevel ?? '-'} · approval L${control.effectiveRequireApprovalAtRiskLevel ?? '-'}`);
+  console.log(`Policy: dryRun=${policy.dryRun ? 'yes' : 'no'} · cli=${Array.isArray(policy.cliAllowedCommands) ? policy.cliAllowedCommands.join(', ') || '-' : '-'} · write roots=${policy.writeRootCount ?? '-'}`);
+  const collaboration = capabilities.collaboration || {};
+  console.log(`Collab: ${collaboration.active || 0} active · ${collaboration.conflictPairs || 0} conflict pair(s)`);
+  if (capabilities.readiness?.summary) console.log(`Readiness: ${capabilities.readiness.overall || '-'} · ${compact(capabilities.readiness.summary, 220)}`);
+  if (capabilities.next?.output) console.log(`Next: ${compact(capabilities.next.output, 260)}`);
+  const guardrails = Array.isArray(capabilities.guardrails) ? capabilities.guardrails : [];
+  if (guardrails.length) {
+    console.log('\nGuardrails:');
+    for (const item of guardrails.slice(0, 6)) console.log(`- ${compact(item, 180)}`);
+  }
+  const starts = Array.isArray(capabilities.recommendedStart) ? capabilities.recommendedStart : [];
+  if (starts.length) {
+    console.log('\nRecommended start tools:');
+    for (const item of starts.slice(0, 6)) {
+      console.log(`- ${item.tool || '-'}: ${compact(item.reason || item.when || '', 180)}`);
+    }
+  }
+  if (!rows.length) {
+    console.log('\nCapabilities: none matched.');
+    return;
+  }
+  console.log('\nCapabilities:');
+  for (const item of rows) {
+    console.log(`- ${item.id || '-'} · ${item.status || '-'} · ${item.label || '-'}: ${compact(item.summary || '', 220)}`);
+    if (Array.isArray(item.recommendedTools) && item.recommendedTools.length) {
+      console.log(`  tools=${item.recommendedTools.slice(0, 10).join(', ')}`);
+    }
+    if (item.nextAction) console.log(`  next=${compact(item.nextAction, 180)}`);
+  }
+}
+
+async function showLocalCapabilities(options = {}) {
+  const params = new URLSearchParams();
+  params.set('includeNext', options.includeNext === true ? 'true' : 'false');
+  if (options.query) params.set('query', options.query);
+  if (options.lane) params.set('lane', options.lane);
+  const result = await request(`/api/capabilities?${params.toString()}`);
+  console.log('');
+  printLocalCapabilities(result);
 }
 
 async function showAutopilotStatus() {
@@ -1996,6 +2049,17 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-capabilities') || process.argv.includes('--capabilities')) {
+    const queryIndex = process.argv.findIndex((item) => item === '--query');
+    const laneIndex = process.argv.findIndex((item) => item === '--lane');
+    await showLocalCapabilities({
+      query: queryIndex >= 0 ? process.argv[queryIndex + 1] : '',
+      lane: laneIndex >= 0 ? process.argv[laneIndex + 1] : '',
+      includeNext: process.argv.includes('--include-next'),
+    });
+    return;
+  }
+
   if (process.argv.includes('--print-work-next') || process.argv.includes('--work-next')) {
     await showWorkbenchNext();
     return;
@@ -2117,6 +2181,8 @@ async function main() {
         await manageRealtimeDogfoodSession(rl);
       } else if (answer === 'h' || answer === 'handoff' || answer === 'work handoff') {
         await showWorkHandoff();
+      } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {
+        await showLocalCapabilities({ includeNext: true });
       } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {
         await showBrowserBenchmarks();
       } else if (answer === 'f' || answer === 'file benchmark' || answer === 'file benchmarks') {

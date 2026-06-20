@@ -39,6 +39,7 @@
 - Persist user-level workflow history with linked jobs and results.
 - Add deterministic work briefing over status, blockers, recent work, and next actions, filtering internal eval/doctor evidence out of user-facing Work Next.
 - Add deterministic lane contract registry for owner/scope/handoff/risk boundaries before model choice.
+- Add a voice-friendly local capability map over lane contracts, control mode, local execution, collaboration claims, and work-next so Realtime can decide whether to observe, route, delegate, use browser/file/app tools, or hand work to Codex/Claude without guessing.
 - Add deterministic spoken progress check-ins for background jobs and workflows.
 - Add unified work-next execution for one safe next action across the local workbench, including route-level recovery envelopes and autopilot eligibility evidence for trusted failed-job route recovery.
 - Add local work sessions for focus goals, notes/events, resume handoffs, automatic evidence capture, spoken check-ins, and end-of-session summaries.

@@ -3757,6 +3757,221 @@ function laneContractValidationSnapshot() {
   };
 }
 
+function capabilityToolHintsForContract(contract = {}) {
+  const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
+  const extras = {
+    realtime: ['get_local_capabilities', 'get_work_handoff', 'get_realtime_evidence', 'get_attention_explanation'],
+    background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
+    codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
+    claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
+    local: ['get_control_mode', 'get_setup_guide', 'run_cli_tool', 'run_mac_action', 'run_file_action'],
+    browser: ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
+    file: ['run_file_workflow', 'plan_file_organization', 'plan_file_batch', 'apply_file_plan', 'run_file_action'],
+    knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow'],
+    app: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow'],
+  };
+  return Array.from(new Set([...base, ...(extras[contract.id] || [])])).slice(0, 12);
+}
+
+function localCapabilityStatusForContract(contract = {}) {
+  const id = contract.id;
+  const control = controlModeSnapshot();
+  const cliReady = LOCAL_EXEC_ENABLED && actionPolicy.allow?.cli_command?.enabled === true;
+  const status = (value, summary, next = '') => ({
+    status: value,
+    summary: compactRecordText(summary, 260),
+    nextAction: compactRecordText(next, 260),
+  });
+
+  if (id === 'realtime') {
+    const health = realtimeVoiceHealthSnapshot();
+    if (health.status === 'blocked') return status('blocked', health.summary, health.next);
+    if (health.status === 'warning') return status('limited', health.summary, health.next);
+    return status('ready', 'Realtime voice can answer quickly, observe context, and hand durable work to specialist lanes.');
+  }
+
+  if (id === 'background') {
+    return OPENAI_API_KEY
+      ? status('ready', 'Background model work can be queued without blocking the live voice turn.')
+      : status('limited', 'Background model work is limited because OPENAI_API_KEY is missing.', 'Add OPENAI_API_KEY before relying on model-backed background work.');
+  }
+
+  if (id === 'codex') {
+    const command = process.env.JAVIS_CODEX_CMD || 'codex exec';
+    if (cliReady && commandExists(command)) return status('ready', `Codex worker command is available: ${command}.`);
+    return status('limited', `Codex worker command is not fully ready: ${command}.`, 'Enable local CLI execution and install/configure Codex CLI.');
+  }
+
+  if (id === 'claude') {
+    const command = process.env.JAVIS_CLAUDE_CMD || 'claude -p';
+    if (cliReady && commandExists(command)) return status('ready', `Claude Code worker command is available: ${command}.`);
+    return status('limited', `Claude Code worker command is not fully ready: ${command}.`, 'Enable local CLI execution and install/configure Claude Code.');
+  }
+
+  if (id === 'local') {
+    if (LOCAL_EXEC_ENABLED && control.mode !== 'observe_only') return status('ready', 'Local deterministic commands can run through action policy, audit, and approvals.');
+    return status('limited', 'Local deterministic actions can preview, but execution is currently constrained.', 'Switch out of observe_only and enable local execution when you want actions to run.');
+  }
+
+  if (id === 'browser') {
+    const canRead = actionPolicy.allow?.read_browser_page?.enabled === true;
+    const canControl = actionPolicy.allow?.browser_control?.enabled === true;
+    if (canRead && canControl) return status('ready', 'Browser page reading and guarded browser control are enabled.');
+    if (canRead || canControl) return status('limited', 'Browser capability is partially enabled.', 'Review read_browser_page and browser_control in action-policy.json.');
+    return status('limited', 'Browser activity metadata remains available, but page/control policy is limited.', 'Enable read_browser_page or browser_control when needed.');
+  }
+
+  if (id === 'file') {
+    const canRead = actionPolicy.allow?.read_file?.enabled === true || actionPolicy.allow?.list_directory?.enabled === true;
+    const canWrite = actionPolicy.allow?.write_file?.enabled === true || actionPolicy.allow?.move_file?.enabled === true;
+    if (canRead && canWrite) return status('ready', 'File read/search plus guarded write/copy/move actions are enabled for allowed roots.');
+    if (canRead) return status('limited', 'File read/search is enabled; mutation is constrained.', 'Use preview plans and confirm writes through policy.');
+    return status('limited', 'File actions are constrained by policy.', 'Review allowed roots and file action policy.');
+  }
+
+  if (id === 'knowledge') {
+    const canSearch = actionPolicy.allow?.read_file?.enabled === true || actionPolicy.allow?.search_files?.enabled === true;
+    return canSearch
+      ? status('ready', 'Knowledge vault discovery and read-only Markdown search can run through file policy.')
+      : status('limited', 'Knowledge workflows are limited because file search/read policy is constrained.', 'Enable allowed Markdown vault roots before using note workflows.');
+  }
+
+  if (id === 'app') {
+    const canReadTree = actionPolicy.allow?.read_accessibility_tree?.enabled === true;
+    const canAct = LOCAL_EXEC_ENABLED && control.mode !== 'observe_only';
+    if (canReadTree && canAct) return status('ready', 'Mac app observation, UI planning, and guarded current-app actions are available.');
+    if (canReadTree) return status('limited', 'Mac app UI reading/planning is available; execution is constrained.', 'Enable local execution or a less restrictive control mode before acting.');
+    return status('limited', 'Mac app control needs Accessibility tree permission/policy first.', 'Enable Accessibility tree policy and macOS permissions.');
+  }
+
+  return status('ready', 'Capability is described by its lane contract and existing action policy.');
+}
+
+async function localCapabilitySnapshot(options = {}) {
+  const requested = String(options.lane || options.id || '').trim().toLowerCase();
+  const query = String(options.query || options.task || options.message || '').trim().toLowerCase();
+  const queryParts = query.split(/[^a-z0-9_./:-]+/i).map((item) => item.trim()).filter(Boolean).slice(0, 8);
+  const queryTokens = query ? (queryParts.length ? queryParts : [query]) : [];
+  const limit = Math.max(1, Math.min(20, Number(options.limit || 12)));
+  const control = controlModeSnapshot();
+  const collaboration = collaborationSnapshot(8);
+  const collaborationCounts = collaboration.counts || {};
+  const activeCollaborationClaims = Array.isArray(collaboration.active)
+    ? collaboration.active
+    : Array.isArray(collaboration.activeClaims)
+      ? collaboration.activeClaims
+      : [];
+  const includeNext = options.includeNext !== false && String(options.includeNext || '').toLowerCase() !== 'false';
+  const workNext = !includeNext
+    ? null
+    : await workNextAction({ execute: false, source: options.source || 'capability_map' });
+  const readiness = readinessSnapshot();
+  const contracts = laneContractSnapshot({ lane: requested }).contracts
+    .map((contract) => {
+      const tools = capabilityToolHintsForContract(contract);
+      const state = localCapabilityStatusForContract(contract);
+      return {
+        id: contract.id,
+        label: contract.label,
+        owner: contract.owner,
+        status: state.status,
+        summary: state.summary,
+        nextAction: state.nextAction,
+        owns: (contract.owns || []).slice(0, 5).map((item) => compactRecordText(item, 160)),
+        nonGoals: (contract.nonGoals || []).slice(0, 4).map((item) => compactRecordText(item, 160)),
+        recommendedTools: tools,
+        handoff: {
+          defaultLane: contract.handoff?.defaultLane || '',
+          rule: compactRecordText(contract.handoff?.rule || '', 220),
+        },
+        riskBoundary: compactRecordText(contract.riskBoundary || '', 220),
+      };
+    })
+    .filter((capability) => {
+      if (!queryTokens.length) return true;
+      const haystack = [
+        capability.id,
+        capability.label,
+        capability.owner,
+        capability.summary,
+        capability.owns.join(' '),
+        capability.nonGoals.join(' '),
+        capability.recommendedTools.join(' '),
+      ].join(' ').toLowerCase();
+      return queryTokens.some((token) => haystack.includes(token));
+    })
+    .slice(0, limit);
+  const counts = {
+    total: contracts.length,
+    ready: contracts.filter((item) => item.status === 'ready').length,
+    limited: contracts.filter((item) => item.status === 'limited').length,
+    blocked: contracts.filter((item) => item.status === 'blocked').length,
+  };
+  const policy = effectiveActionPolicySnapshot();
+  const guardrails = [
+    'Read/observe first; use actions only after clear user intent.',
+    'Purchases, logins, deletes, sends, and irreversible private actions require explicit confirmation.',
+    'Local skills, shortcuts, and learned profiles are reusable procedure context, not permission.',
+    'Desktop pet stays minimal; capability details belong in CUI/API/voice tools.',
+  ];
+  const recommendedStart = [
+    { when: 'User asks what you can do or which tool to use', tool: 'get_local_capabilities', reason: 'Read the current capability map and guardrails.' },
+    { when: 'User asks where work stands or what is next', tool: 'get_work_handoff', reason: 'Speak a short work handoff from current evidence.' },
+    { when: 'Task may be quick, background, Codex, Claude, browser, file, or app work', tool: 'route_task', reason: 'Keep voice responsive while preserving ownership and recovery evidence.' },
+    { when: 'User asks to split work across agents', tool: 'route_parallel_tasks', reason: 'Create scoped parallel work with collaboration ownership records.' },
+    { when: 'User asks what JAVIS can see or control', tool: 'get_perception_consent', reason: 'Report local perception surfaces and consent gates.' },
+  ];
+  return {
+    ok: true,
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'api', 80),
+    summary: 'Local capability map for voice: observe, route, delegate, and act through existing policy instead of guessing.',
+    spokenSummary: `我可以先观察和判断任务，再按需要交给浏览器、文件、Mac App、后台、Codex 或 Claude Code；当前控制模式是 ${control.label}，本地执行${LOCAL_EXEC_ENABLED ? '已开启' : '未开启'}。`,
+    counts,
+    capabilities: contracts,
+    recommendedStart,
+    guardrails,
+    readiness: {
+      overall: readiness.overall,
+      summary: readiness.summary,
+      primaryIssue: readiness.primaryIssue,
+    },
+    controlMode: {
+      mode: control.mode,
+      label: control.label,
+      localExecutionEnabled: control.localExecutionEnabled,
+      trustedLocalMode: control.trustedLocalMode,
+      effectiveMaxAutoRiskLevel: control.effective.maxAutoRiskLevel,
+      effectiveRequireApprovalAtRiskLevel: control.effective.requireApprovalAtRiskLevel,
+    },
+    policy: {
+      dryRun: policy.dryRun,
+      localExecutionEnabled: policy.localExecutionEnabled,
+      trustedLocalMode: policy.trustedLocalMode,
+      maxAutoRiskLevel: policy.maxAutoRiskLevel,
+      requireApprovalAtRiskLevel: policy.requireApprovalAtRiskLevel,
+      writeRootCount: Array.isArray(actionPolicy.allow?.write_file?.allowedRoots)
+        ? actionPolicy.allow.write_file.allowedRoots.length
+        : 0,
+      cliAllowedCommands: Array.isArray(actionPolicy.allow?.cli_command?.allowedCommands)
+        ? actionPolicy.allow.cli_command.allowedCommands.slice(0, 12)
+        : [],
+    },
+    collaboration: {
+      active: Math.max(0, Number(collaborationCounts.active || activeCollaborationClaims.length || 0)),
+      conflictPairs: Math.max(0, Number(collaborationCounts.conflicts || collaboration.conflictPairs || 0)),
+      activeClaims: activeCollaborationClaims.slice(0, 5),
+    },
+    next: workNext ? {
+      ok: Boolean(workNext.ok),
+      action: workNext.action || '',
+      executed: Boolean(workNext.executed),
+      output: compactRecordText(workNext.output || '', 260),
+    } : null,
+  };
+}
+
 function normalizeApprovalContinuation(value) {
   if (!value || typeof value !== 'object') return null;
   if (value.type !== 'app_workflow') return null;
@@ -33679,6 +33894,11 @@ async function executeTool(name, args) {
     return { ok: briefing.ok, output: JSON.stringify(briefing) };
   }
 
+  if (name === 'get_local_capabilities') {
+    const capabilities = await localCapabilitySnapshot({ ...(args || {}), source: 'voice' });
+    return { ok: true, output: JSON.stringify(capabilities) };
+  }
+
   if (name === 'get_lane_contracts') {
     return { ok: true, output: JSON.stringify(laneContractSnapshot(args || {})) };
   }
@@ -34447,6 +34667,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
       'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
+      'Use get_local_capabilities when the user asks what JAVIS can do, which local tools are available, how to approach an unfamiliar computer task, or whether browser/file/app/Codex/Claude/local execution is ready.',
       'Use get_lane_contracts when routing, ownership, scope, handoff, or worker boundaries are unclear.',
       'Use route_task when the user asks for something that might be quick or might need background/Codex/Claude work; it keeps the voice lane responsive.',
       'Only request full clipboard text when the user asks about clipboard content or it is clearly needed for the task.',
@@ -35198,6 +35419,30 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'get_local_capabilities',
+        description: 'Get a voice-friendly local capability map: what JAVIS can observe, route, delegate, and operate right now; recommended tools; control mode; local execution status; guardrails; collaboration conflicts; and the next safe work action. Read-only and does not start microphone capture or execute local actions.',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string' },
+            message: { type: 'string' },
+            task: { type: 'string' },
+            lane: {
+              type: 'string',
+              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'knowledge', 'obsidian', 'app'],
+            },
+            id: {
+              type: 'string',
+              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'knowledge', 'obsidian', 'app'],
+            },
+            limit: { type: 'number' },
+            includeNext: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_lane_contracts',
         description: 'Get the deterministic JAVIS lane contracts: each lane owner, scope, non-goals, handoff path, tool posture, and risk boundary. Read-only.',
         parameters: {
@@ -35205,11 +35450,11 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             lane: {
               type: 'string',
-              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'app'],
+              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'knowledge', 'obsidian', 'app'],
             },
             id: {
               type: 'string',
-              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'app'],
+              enum: ['realtime', 'quick', 'background', 'codex', 'claude', 'local', 'cli', 'browser', 'file', 'knowledge', 'obsidian', 'app'],
             },
           },
           additionalProperties: false,
@@ -36238,9 +36483,11 @@ const REALTIME_REQUIRED_TOOLS = [
   'mark_realtime_dogfood_step',
   'end_realtime_dogfood_session',
   'get_worker_recovery',
+  'run_worker_recovery',
   'get_autopilot_status',
   'get_work_handoff',
   'get_collaboration_state',
+  'get_local_capabilities',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -36278,6 +36525,7 @@ function realtimeInstructionChecks(instructions = '') {
     attentionPolicy: /get_attention_policy|should interrupt|pet is red\/yellow\/green|notification fired|needs attention/i.test(text),
     attentionExplanation: /get_attention_explanation|spoken explanation of the pet color|attention history|last notification|stayed quiet/i.test(text),
     collaboration: /get_collaboration_state|Claude Code|Codex/i.test(text),
+    localCapabilities: /get_local_capabilities|what JAVIS can do|local capability map|which local tools are available|browser\/file\/app\/Codex\/Claude\/local execution is ready/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),
@@ -36421,6 +36669,31 @@ function startApiServer() {
   api.get('/api/lanes/contracts/:id', (req, res) => {
     const snapshot = laneContractSnapshot({ id: req.params.id });
     res.status(snapshot.ok ? 200 : 404).json({ laneContracts: snapshot });
+  });
+
+  api.get('/api/capabilities', async (req, res) => {
+    try {
+      const snapshot = await localCapabilitySnapshot({
+        ...(req.query || {}),
+        source: 'api',
+      });
+      res.json({ capabilities: snapshot });
+    } catch (error) {
+      jsonError(res, 500, 'Capability map failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/capabilities/:id', async (req, res) => {
+    try {
+      const snapshot = await localCapabilitySnapshot({
+        ...(req.query || {}),
+        id: req.params.id,
+        source: 'api',
+      });
+      res.status(snapshot.capabilities.length ? 200 : 404).json({ capabilities: snapshot });
+    } catch (error) {
+      jsonError(res, 500, 'Capability map failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/work/progress', (req, res) => {

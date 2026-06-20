@@ -30,6 +30,7 @@ const REQUIRED_TOOLS = [
   'get_autopilot_status',
   'get_work_handoff',
   'get_collaboration_state',
+  'get_local_capabilities',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -111,6 +112,12 @@ export default {
         ? ok('realtime.tools.required', 'Realtime tool inventory', `${REQUIRED_TOOLS.length} required tool(s) present`)
         : fail('realtime.tools.required', 'Realtime tool inventory', `missing: ${missing.join(', ')}`, { missing }),
     );
+    const localMissing = REQUIRED_TOOLS.filter((name) => !(realtime.toolNames || []).includes(name));
+    out.push(
+      localMissing.length === 0
+        ? ok('realtime.tools.local_required', 'Realtime local required tool inventory', `${REQUIRED_TOOLS.length} locally required tool(s) present`)
+        : fail('realtime.tools.local_required', 'Realtime local required tool inventory', `missing locally required tool(s): ${localMissing.join(', ')}`, { localMissing }),
+    );
 
     const failedInstructions = Array.isArray(realtime.failedInstructionChecks)
       ? realtime.failedInstructionChecks
@@ -174,6 +181,68 @@ export default {
         ? ok('realtime.perception_consent_tool', 'Realtime perception consent tool', `${perceptionSurfaces.length} surface(s) · ${perceptionOutput.summary || ''}`)
         : fail('realtime.perception_consent_tool', 'Realtime perception consent tool', `tool execute ${perceptionTool.status}`, perceptionTool.data),
     );
+
+    const capabilityApi = await ctx.api('/api/capabilities?query=browser&includeNext=false');
+    const capabilityApiOutput = capabilityApi.data?.capabilities;
+    out.push(
+      capabilityApi.ok &&
+        capabilityApiOutput?.ok === true &&
+        capabilityApiOutput?.next === null &&
+        capabilityApiOutput?.controlMode?.mode &&
+        Array.isArray(capabilityApiOutput.capabilities) &&
+        capabilityApiOutput.capabilities.some((item) => item.id === 'browser' && item.recommendedTools?.includes('run_browser_workflow')) &&
+        Array.isArray(capabilityApiOutput.guardrails) &&
+        capabilityApiOutput.guardrails.some((item) => /confirmation/i.test(item))
+        ? ok('realtime.local_capabilities_api', 'Realtime local capability API', `${capabilityApiOutput.capabilities.length} matched capability row(s)`)
+        : fail('realtime.local_capabilities_api', 'Realtime local capability API', `GET /api/capabilities ${capabilityApi.status}`, capabilityApi.data),
+    );
+
+    const capabilityTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_local_capabilities',
+        arguments: { query: 'browser', includeNext: false },
+      },
+    });
+    const capabilityToolOutput = parseToolOutput(capabilityTool);
+    out.push(
+      capabilityTool.ok &&
+        capabilityTool.data?.ok === true &&
+        capabilityToolOutput?.ok === true &&
+        capabilityToolOutput?.next === null &&
+        capabilityToolOutput?.policy &&
+        capabilityToolOutput?.controlMode?.mode &&
+        typeof capabilityToolOutput.spokenSummary === 'string' &&
+        Array.isArray(capabilityToolOutput.recommendedStart) &&
+        capabilityToolOutput.recommendedStart.some((item) => item.tool === 'route_task') &&
+        Array.isArray(capabilityToolOutput.capabilities) &&
+        capabilityToolOutput.capabilities.some((item) => item.id === 'browser' && item.recommendedTools?.includes('read_browser_page'))
+        ? ok('realtime.local_capabilities_tool', 'Realtime local capability voice tool', `${capabilityToolOutput.spokenSummary}`)
+        : fail('realtime.local_capabilities_tool', 'Realtime local capability voice tool', `tool execute ${capabilityTool.status}`, capabilityTool.data),
+    );
+
+    try {
+      const capabilitiesCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-capabilities', '--query', 'browser'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${capabilitiesCui.stdout || ''}\n${capabilitiesCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Local Capabilities') &&
+          output.includes('Control:') &&
+          output.includes('Guardrails:') &&
+          output.includes('Recommended start tools:') &&
+          output.includes('browser') &&
+          output.includes('run_browser_workflow')
+          ? ok('realtime.local_capabilities_cui', 'Realtime local capability CUI', 'config CUI prints the local capability map')
+          : fail('realtime.local_capabilities_cui', 'Realtime local capability CUI', 'expected config CUI to print capability map details', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.local_capabilities_cui', 'Realtime local capability CUI', error instanceof Error ? error.message : String(error)));
+    }
 
     let realtimeDemoId = '';
     const existingDemos = await ctx.api('/api/demonstrations?limit=1');
