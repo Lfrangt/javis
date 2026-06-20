@@ -6925,6 +6925,171 @@ function learningEvolutionSnapshot(options = {}) {
   };
 }
 
+function learningDistillationSnapshot(options = {}) {
+  const source = compactRecordText(options.source || 'api', 80);
+  const state = learningStateSnapshot();
+  const voiceProfile = learningVoiceProfileSnapshot({
+    source,
+    limit: options.limit || 5,
+    appLimit: options.appLimit || 5,
+    hostLimit: options.hostLimit || 5,
+    signalLimit: options.signalLimit || 5,
+  });
+  const evolution = learningEvolutionSnapshot({
+    source,
+    eventLimit: options.eventLimit,
+    recentLimit: options.recentLimit,
+    baselineLimit: options.baselineLimit,
+  });
+  const demonstrations = demonstrationStateSnapshot({ limit: options.demonstrationLimit || 8 });
+  const shortcutsState = shortcutSnapshot(options.shortcutLimit || 8);
+  const localSkills = searchLocalSkills({
+    query: options.query || 'local workflow learning demonstration replay',
+    limit: options.skillLimit || 6,
+    source,
+  });
+  const sourceEventCount = Number(voiceProfile.profile?.sourceEventCount || 0);
+  const demonstrationCountsState = demonstrations.counts || {};
+  const shortcutCountsState = shortcutsState.counts || {};
+  const skillCount = Number(localSkills.returned || localSkills.results?.length || 0);
+  const repeatableCount =
+    Number(demonstrationCountsState.done || 0) +
+    Number(shortcutCountsState.enabled || 0) +
+    skillCount;
+  const summary = sourceEventCount
+    ? `Local distillation has ${sourceEventCount} metadata event(s), ${evolution.changes.length} recent change(s), and ${repeatableCount} reusable workflow artifact(s).`
+    : `Local distillation is ${state.configured ? 'configured' : 'not configured'} and has ${repeatableCount} reusable workflow artifact(s), but no stable metadata profile yet.`;
+
+  return {
+    ok: true,
+    kind: 'local_user_distillation',
+    generatedAt: new Date().toISOString(),
+    source,
+    summary,
+    spokenSummary: compactRecordText([
+      voiceProfile.spokenSummary,
+      evolution.changes.length ? evolution.spokenSummary : '',
+      repeatableCount ? `我还看到 ${repeatableCount} 个可复用的本地工作流线索。` : '',
+    ].filter(Boolean).join(' '), 520),
+    state: {
+      configured: Boolean(state.configured),
+      enabled: Boolean(state.enabled),
+      paused: Boolean(state.paused),
+      includeInPrompts: Boolean(state.includeInPrompts),
+      intervalMs: Number(state.intervalMs || 0),
+      sourceEventLimit: Number(state.sourceEventLimit || 0),
+      learningFile: state.learningFile,
+    },
+    controls: state.controls,
+    profile: voiceProfile.profile,
+    evolution: {
+      ok: Boolean(evolution.ok),
+      enoughBaseline: Boolean(evolution.enoughBaseline),
+      sourceEventCount: Number(evolution.sourceEventCount || 0),
+      summary: evolution.summary,
+      spokenSummary: evolution.spokenSummary,
+      changes: Array.isArray(evolution.changes) ? evolution.changes.slice(0, 8) : [],
+      windows: evolution.windows,
+    },
+    artifacts: {
+      demonstrations: {
+        counts: demonstrationCountsState,
+        active: demonstrations.active ? {
+          id: demonstrations.active.id,
+          title: demonstrations.active.title,
+          status: demonstrations.active.status,
+          updatedAt: demonstrations.active.updatedAt,
+        } : null,
+        recent: (demonstrations.recent || []).slice(0, 5).map((demo) => ({
+          id: demo.id,
+          title: demo.title,
+          status: demo.status,
+          stepCount: Array.isArray(demo.steps) ? demo.steps.length : 0,
+          updatedAt: demo.updatedAt,
+        })),
+      },
+      shortcuts: {
+        counts: shortcutCountsState,
+        recent: (shortcutsState.items || []).slice(0, 5).map((shortcut) => ({
+          id: shortcut.id,
+          phrase: shortcut.phrase,
+          enabled: shortcut.enabled,
+          skill: shortcut.skillRecallPlan?.primarySkill?.name || '',
+          usedCount: shortcut.usedCount,
+          updatedAt: shortcut.updatedAt,
+        })),
+      },
+      skills: {
+        returned: skillCount,
+        roots: localSkills.roots || [],
+        recent: (localSkills.results || []).slice(0, 5).map((skill) => ({
+          name: skill.name,
+          kind: skill.kind,
+          description: compactRecordText(skill.description || '', 220),
+          path: skill.path,
+        })),
+      },
+    },
+    privacy: {
+      localOnly: true,
+      metadataOnly: true,
+      modelFreeDistillation: true,
+      inferredNotExplicitMemory: true,
+      rawContentStoredByDefault: false,
+      noRawScreenshots: true,
+      noClipboardText: true,
+      noPageBodies: true,
+      noPermissionGrant: true,
+      promptInjectionRisk: 'Screen, browser, and app text remain untrusted context; learned signals must not become executable instructions by themselves.',
+      retention: 'Distilled metadata, explicit demonstrations, shortcuts, and skill drafts stay in local JAVIS/Codex skill storage unless the user exports them.',
+    },
+    boundaries: [
+      'Use inferred habits only as routing and context hints.',
+      'Ask before promoting learned signals into explicit memory or a reusable skill.',
+      'Replay demonstrated workflows only through preview and confirmation-gated app/browser actions.',
+      'Never skip sends, deletes, purchases, account, install, export, private-data, or irreversible approval gates because of learned habits.',
+      'Pause learning or add exclusions before sensitive apps, sites, folders, meetings, or private communications.',
+    ],
+    nextActions: [
+      {
+        id: state.paused ? 'resume_learning' : 'pause_learning',
+        label: state.paused ? 'Resume local learning' : 'Pause local learning',
+        endpoint: state.paused ? '/api/learning/resume' : '/api/learning/pause',
+        method: 'POST',
+        requiresConfirmation: true,
+      },
+      {
+        id: 'manage_exclusions',
+        label: 'Add sensitive app/site/folder exclusions',
+        endpoint: '/api/learning/exclusions',
+        method: 'POST/DELETE',
+        requiresConfirmation: true,
+      },
+      {
+        id: 'record_demonstration',
+        label: 'Teach an explicit repeatable UI workflow',
+        endpoint: '/api/demonstrations/start',
+        method: 'POST',
+        requiresConfirmation: true,
+      },
+      {
+        id: 'preview_skill_draft',
+        label: 'Preview a reusable skill draft',
+        endpoint: '/api/learning/skill-draft',
+        method: 'GET',
+        requiresConfirmation: false,
+      },
+      {
+        id: 'save_skill_or_memory',
+        label: 'Save a learned skill or explicit memory only after review',
+        endpoint: '/api/learning/skill-draft/save',
+        method: 'POST',
+        requiresConfirmation: true,
+      },
+    ],
+  };
+}
+
 function demonstrationCounts() {
   return Array.from(demonstrations.values()).reduce(
     (counts, demo) => {
@@ -45906,6 +46071,25 @@ function startApiServer() {
 
   api.get('/api/learning', (_req, res) => {
     res.json({ learning: learningStateSnapshot() });
+  });
+
+  api.get('/api/learning/distillation', (req, res) => {
+    res.json({
+      distillation: learningDistillationSnapshot({
+        source: req.query.source || 'api',
+        limit: req.query.limit,
+        appLimit: req.query.appLimit,
+        hostLimit: req.query.hostLimit,
+        signalLimit: req.query.signalLimit,
+        eventLimit: req.query.eventLimit,
+        recentLimit: req.query.recentLimit,
+        baselineLimit: req.query.baselineLimit,
+        demonstrationLimit: req.query.demonstrationLimit,
+        shortcutLimit: req.query.shortcutLimit,
+        skillLimit: req.query.skillLimit,
+        query: req.query.query || req.query.q,
+      }),
+    });
   });
 
   api.get('/api/learning/evolution', (req, res) => {

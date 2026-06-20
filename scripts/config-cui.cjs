@@ -335,6 +335,7 @@ async function printStatus() {
   console.log('16. Show autopilot status');
   console.log('17. Run one autopilot tick');
   console.log('18. Toggle overnight autopilot');
+  console.log('J. Show learning distillation');
   console.log('19. Refresh learning profile');
   console.log('20. Save learning as memory');
   console.log('21. Pause/resume learning');
@@ -877,6 +878,56 @@ async function showLearningEvolution() {
   const result = await request('/api/learning/evolution?source=cui');
   console.log('');
   printLearningEvolution(result.evolution || result);
+}
+
+function printLearningDistillation(distillation) {
+  const state = distillation?.state || {};
+  const profile = distillation?.profile || {};
+  const evolution = distillation?.evolution || {};
+  const artifacts = distillation?.artifacts || {};
+  const demonstrations = artifacts.demonstrations || {};
+  const shortcuts = artifacts.shortcuts || {};
+  const skills = artifacts.skills || {};
+  const privacy = distillation?.privacy || {};
+  console.log('Learning Distillation');
+  console.log('=====================');
+  console.log(distillation?.spokenSummary || distillation?.summary || 'No local distillation summary available.');
+  console.log(`State: configured=${state.configured ? 'yes' : 'no'} · enabled=${state.enabled ? 'yes' : 'no'} · paused=${state.paused ? 'yes' : 'no'} · prompts=${state.includeInPrompts ? 'on' : 'off'}`);
+  console.log(`Profile: ${profile.sourceEventCount || 0} metadata event(s) · changes ${(evolution.changes || []).length || 0} · reusable ${(demonstrations.counts?.done || 0) + (shortcuts.counts?.enabled || 0) + (skills.returned || 0)}`);
+  console.log(`Privacy: local-only=${privacy.localOnly ? 'yes' : 'no'} · metadata-only=${privacy.metadataOnly ? 'yes' : 'no'} · raw screenshots=${privacy.noRawScreenshots ? 'no' : 'unknown'} · clipboard text=${privacy.noClipboardText ? 'no' : 'unknown'} · page bodies=${privacy.noPageBodies ? 'no' : 'unknown'}`);
+  if (privacy.promptInjectionRisk) console.log(`Risk: ${compact(privacy.promptInjectionRisk, 220)}`);
+  const signals = Array.isArray(profile.signals) ? profile.signals : [];
+  if (signals.length) {
+    console.log('\nSignals:');
+    for (const signal of signals.slice(0, 6)) console.log(`- ${compact(signal, 180)}`);
+  }
+  const changes = Array.isArray(evolution.changes) ? evolution.changes : [];
+  if (changes.length) {
+    console.log('\nRecent changes:');
+    for (const change of changes.slice(0, 5)) {
+      const shift = [change.from, change.to].filter(Boolean).join(' -> ') || change.to || change.id || '-';
+      console.log(`- ${change.label || change.id || 'change'} · ${shift} · confidence ${change.confidence ?? '-'}`);
+    }
+  }
+  const demoCounts = demonstrations.counts || {};
+  const shortcutCounts = shortcuts.counts || {};
+  console.log('\nArtifacts:');
+  console.log(`- demonstrations: done ${demoCounts.done || 0} · recording ${demoCounts.recording || 0} · total ${demoCounts.total || 0}`);
+  console.log(`- shortcuts: enabled ${shortcutCounts.enabled || 0} · disabled ${shortcutCounts.disabled || 0} · total ${shortcutCounts.total || 0}`);
+  console.log(`- local skills: ${skills.returned || 0}`);
+  const nextActions = Array.isArray(distillation?.nextActions) ? distillation.nextActions : [];
+  if (nextActions.length) {
+    console.log('\nNext actions:');
+    for (const action of nextActions.slice(0, 6)) {
+      console.log(`- ${action.id || '-'} · ${action.label || '-'} · ${action.method || 'GET'} ${action.endpoint || '-'}${action.requiresConfirmation ? ' · confirm' : ''}`);
+    }
+  }
+}
+
+async function showLearningDistillation() {
+  const result = await request('/api/learning/distillation?source=cui');
+  console.log('');
+  printLearningDistillation(result.distillation || result);
 }
 
 async function toggleLearning(rl) {
@@ -2765,6 +2816,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-learning-distillation') || process.argv.includes('--learning-distillation')) {
+    await showLearningDistillation();
+    return;
+  }
+
   if (process.argv.includes('--print-browser-benchmarks') || process.argv.includes('--browser-benchmarks')) {
     await showBrowserBenchmarks();
     return;
@@ -2959,6 +3015,8 @@ async function main() {
         await runAutopilotTick(rl);
       } else if (answer === '18') {
         await toggleAutopilot(rl);
+      } else if (answer === 'j' || answer === 'learning distillation') {
+        await showLearningDistillation();
       } else if (answer === '19') {
         const result = await request('/api/learning/distill', {
           method: 'POST',

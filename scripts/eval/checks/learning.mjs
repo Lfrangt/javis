@@ -7,6 +7,10 @@ import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
+function sameStringList(left = [], right = []) {
+  return JSON.stringify(Array.from(left || [])) === JSON.stringify(Array.from(right || []));
+}
+
 export default {
   lane: 'learning',
   async run(ctx) {
@@ -70,6 +74,126 @@ export default {
       );
     } catch (error) {
       out.push(fail('learning.evolution_cui', 'Learning evolution CUI', error instanceof Error ? error.message : String(error)));
+    }
+
+    const distillation = await ctx.api('/api/learning/distillation?source=eval&recentLimit=8&baselineLimit=24&skillLimit=4');
+    const distillationData = distillation.data?.distillation;
+    const distillationPrivacy = distillationData?.privacy || {};
+    const distillationNextActions = Array.isArray(distillationData?.nextActions) ? distillationData.nextActions : [];
+    const distillationNextActionIds = new Set(distillationNextActions.map((action) => action.id));
+    const profileRecentContexts = Array.isArray(distillationData?.profile?.recentContexts)
+      ? distillationData.profile.recentContexts
+      : [];
+    out.push(
+      distillation.ok &&
+        distillationData?.ok === true &&
+        distillationData?.kind === 'local_user_distillation' &&
+        distillationData?.state?.learningFile &&
+        String(distillationData.state.learningFile).includes('Application Support/JAVIS/Runtime') &&
+        typeof distillationData.spokenSummary === 'string' &&
+        typeof distillationData.profile?.sourceEventCount === 'number' &&
+        Array.isArray(distillationData.evolution?.changes) &&
+        typeof distillationData.artifacts?.demonstrations?.counts?.total === 'number' &&
+        typeof distillationData.artifacts?.shortcuts?.counts?.total === 'number' &&
+        typeof distillationData.artifacts?.skills?.returned === 'number' &&
+        distillationPrivacy.localOnly === true &&
+        distillationPrivacy.metadataOnly === true &&
+        distillationPrivacy.modelFreeDistillation === true &&
+        distillationPrivacy.inferredNotExplicitMemory === true &&
+        distillationPrivacy.rawContentStoredByDefault === false &&
+        distillationPrivacy.noRawScreenshots === true &&
+        distillationPrivacy.noClipboardText === true &&
+        distillationPrivacy.noPageBodies === true &&
+        distillationPrivacy.noPermissionGrant === true &&
+        /untrusted/i.test(distillationPrivacy.promptInjectionRisk || '') &&
+        (distillationData.boundaries || []).some((item) => /inferred habits/i.test(item)) &&
+        (distillationData.boundaries || []).some((item) => /Never skip sends/i.test(item)) &&
+        distillationNextActionIds.has('manage_exclusions') &&
+        distillationNextActionIds.has('record_demonstration') &&
+        distillationNextActionIds.has('preview_skill_draft') &&
+        distillationNextActionIds.has('save_skill_or_memory') &&
+        distillationNextActions.some((action) => action.id === 'save_skill_or_memory' && action.requiresConfirmation === true) &&
+        profileRecentContexts.every((item) => !Object.prototype.hasOwnProperty.call(item, 'url'))
+        ? ok('learning.distillation_status', 'Local user distillation status', distillationData.summary)
+        : fail('learning.distillation_status', 'Local user distillation status', `GET /api/learning/distillation ${distillation.status}`, distillation.data),
+    );
+
+    try {
+      const learningDistillationCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-learning-distillation'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${learningDistillationCui.stdout || ''}\n${learningDistillationCui.stderr || ''}`;
+      out.push(
+        output.includes('Learning Distillation') &&
+          output.includes('Privacy:') &&
+          output.includes('metadata-only=yes') &&
+          output.includes('Risk:') &&
+          output.includes('Artifacts:') &&
+          output.includes('Next actions:')
+          ? ok('learning.distillation_cui', 'Learning distillation CUI', 'config CUI prints local distillation status, privacy, artifacts, and next actions')
+          : fail('learning.distillation_cui', 'Learning distillation CUI', 'expected config CUI to print local distillation details', { output: output.slice(0, 2000) }),
+      );
+    } catch (error) {
+      out.push(fail('learning.distillation_cui', 'Learning distillation CUI', error instanceof Error ? error.message : String(error)));
+    }
+
+    const originalControls = {
+      paused: Boolean(controls.paused),
+      includeInPrompts: Boolean(controls.includeInPrompts),
+      excludedApps: Array.isArray(controls.excludedApps) ? controls.excludedApps : [],
+      excludedHosts: Array.isArray(controls.excludedHosts) ? controls.excludedHosts : [],
+      excludedFolders: Array.isArray(controls.excludedFolders) ? controls.excludedFolders : [],
+    };
+    const testControls = {
+      ...originalControls,
+      excludedApps: Array.from(new Set([...originalControls.excludedApps, 'EvalPrivateApp'])),
+      excludedHosts: Array.from(new Set([...originalControls.excludedHosts, 'eval-private.example.com'])),
+      excludedFolders: Array.from(new Set([...originalControls.excludedFolders, '~/EvalPrivateFolder'])),
+    };
+    let appliedControls = null;
+    let restoredControls = null;
+    try {
+      const applied = await ctx.api('/api/learning/settings', {
+        method: 'PUT',
+        body: { ...testControls, source: 'eval_control_roundtrip' },
+      });
+      appliedControls = applied.data?.learning?.controls;
+      const restored = await ctx.api('/api/learning/settings', {
+        method: 'PUT',
+        body: { ...originalControls, source: 'eval_control_restore' },
+      });
+      restoredControls = restored.data?.learning?.controls;
+      out.push(
+        applied.ok &&
+          restored.ok &&
+          appliedControls?.excludedApps?.includes('EvalPrivateApp') &&
+          appliedControls?.excludedHosts?.includes('eval-private.example.com') &&
+          appliedControls?.excludedFolders?.includes('~/EvalPrivateFolder') &&
+          restoredControls?.paused === originalControls.paused &&
+          restoredControls?.includeInPrompts === originalControls.includeInPrompts &&
+          sameStringList(restoredControls?.excludedApps, originalControls.excludedApps) &&
+          sameStringList(restoredControls?.excludedHosts, originalControls.excludedHosts) &&
+          sameStringList(restoredControls?.excludedFolders, originalControls.excludedFolders)
+          ? ok('learning.control_roundtrip', 'Learning control roundtrip', 'pause/prompt flags and app/site/folder exclusions can be updated and restored')
+          : fail('learning.control_roundtrip', 'Learning control roundtrip', 'learning controls did not apply or restore cleanly', { applied: applied.data, restored: restored.data, originalControls }),
+      );
+    } finally {
+      if (
+        !restoredControls ||
+        restoredControls.paused !== originalControls.paused ||
+        restoredControls.includeInPrompts !== originalControls.includeInPrompts ||
+        !sameStringList(restoredControls.excludedApps, originalControls.excludedApps) ||
+        !sameStringList(restoredControls.excludedHosts, originalControls.excludedHosts) ||
+        !sameStringList(restoredControls.excludedFolders, originalControls.excludedFolders)
+      ) {
+        await ctx.api('/api/learning/settings', {
+          method: 'PUT',
+          body: { ...originalControls, source: 'eval_control_restore_finally' },
+        });
+      }
     }
 
     const draft = await ctx.api('/api/learning/skill-draft?source=eval&force=true&routeLimit=2&workflowLimit=2');
