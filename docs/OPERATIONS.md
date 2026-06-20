@@ -110,6 +110,21 @@ Routine maintenance lives in the terminal CUI instead of the desktop pet:
 npm run config
 ```
 
+Use option `I. Show permission matrix`, or:
+
+```bash
+npm run config -- --print-permissions
+```
+
+This prints the current local permission and tool readiness matrix in one place:
+macOS Microphone, Screen Recording, Accessibility, Full Disk Access guidance,
+notifications, screen privacy, local execution, trusted local mode, action
+policy, allowed write roots, Codex, Claude Code, generic CLI policy, browser
+reading/control, Chrome DevTools bridge, Mac app control, resident LaunchAgent,
+and the tap/capture hotkeys. The matrix is read-only. It does not grant macOS
+privacy permissions or change `.env`; use the numbered CUI actions below when a
+row tells you what to open or toggle.
+
 Use option `1. Set OpenAI API key` to paste the key locally with hidden input. It writes `OPENAI_API_KEY` to `.env` and can restart the resident service immediately. Do not paste API keys into chat or logs.
 
 Use option `M. Open Microphone settings` when doctor reports microphone permission denied or voice cannot start. macOS still requires a human toggle in System Settings.

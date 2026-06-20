@@ -148,6 +148,44 @@ function getEnvValue(key) {
   return line ? line.slice(key.length + 1).trim() : '';
 }
 
+function commandName(commandLine) {
+  const text = String(commandLine || '').trim();
+  if (!text || text === '*') return text;
+  return text.split(/\s+/)[0].replace(/^["']|["']$/g, '');
+}
+
+function commandPath(commandLine) {
+  const name = commandName(commandLine);
+  if (!name || name === '*') return '';
+  try {
+    return execFileSync('/usr/bin/which', [name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function firstConfigItem(...sources) {
+  const ids = sources.filter(Boolean);
+  return (items) => ids.map((id) => items.find((item) => item.id === id)).find(Boolean) || null;
+}
+
+function statusGlyph(status) {
+  if (status === 'ready') return 'ready';
+  if (status === 'blocked') return 'blocked';
+  if (status === 'warning' || status === 'limited') return 'check';
+  if (status === 'manual') return 'manual';
+  return status || 'unknown';
+}
+
+function printPermissionRows(title, rows) {
+  console.log(`\n${title}:`);
+  for (const row of rows) {
+    const detail = row.detail ? ` · ${compact(row.detail, 180)}` : '';
+    console.log(`- ${statusGlyph(row.status)} ${row.label}${detail}`);
+    if (row.next) console.log(`  next=${compact(row.next, 180)}`);
+  }
+}
+
 async function hiddenQuestion(rl, prompt) {
   process.stdout.write(prompt);
   try {
@@ -320,6 +358,7 @@ async function printStatus() {
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('L. Show local capability map');
+  console.log('I. Show permission matrix');
   console.log('S. Show routing speed policy');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
@@ -696,6 +735,207 @@ async function showLocalCapabilities(options = {}) {
   const result = await request(`/api/capabilities?${params.toString()}`);
   console.log('');
   printLocalCapabilities(result);
+}
+
+async function showPermissionMatrix() {
+  const [status, configResult, capabilitiesResult] = await Promise.all([
+    request('/api/status'),
+    request('/api/config/check'),
+    request('/api/capabilities?includeNext=false').catch(() => ({ capabilities: null })),
+  ]);
+  const config = configResult.config || {};
+  const items = Array.isArray(config.items) ? config.items : [];
+  const item = (...ids) => firstConfigItem(...ids)(items);
+  const policy = status.actionPolicy?.effective || status.actionPolicy || {};
+  const allow = policy.allow || {};
+  const control = status.actionPolicy?.controlMode || {};
+  const capabilities = capabilitiesResult.capabilities || {};
+  const capabilityRows = Array.isArray(capabilities.capabilities) ? capabilities.capabilities : [];
+  const capability = (id) => capabilityRows.find((row) => row.id === id) || null;
+  const codePolicy = allow.code_agent || {};
+  const cliPolicy = allow.cli_command || {};
+  const codexCommand = getEnvValue('JAVIS_CODEX_CMD') || 'codex exec';
+  const claudeCommand = getEnvValue('JAVIS_CLAUDE_CMD') || 'claude -p';
+  const codexPath = commandPath(codexCommand);
+  const claudePath = commandPath(claudeCommand);
+  const chromeApps = [
+    '/Applications/Google Chrome.app',
+    path.join(os.homedir(), 'Applications', 'Google Chrome.app'),
+    '/Applications/Arc.app',
+    '/Applications/Comet.app',
+    '/Applications/Brave Browser.app',
+    '/Applications/Microsoft Edge.app',
+  ].filter((candidate) => fs.existsSync(candidate));
+  const writeRoots = allow.write_file?.allowedRoots || allow.create_directory?.allowedRoots || [];
+  const browserControl = item('browser_control_policy');
+  const browserRead = item('browser_page_policy');
+  const accessibility = item('accessibility_permission');
+  const screen = item('screen_permission');
+  const microphone = item('microphone_permission');
+  const notifications = item('notifications');
+  const localExecution = item('local_execution');
+  const actionPolicy = item('action_policy');
+  const controlMode = item('control_mode');
+  const screenPrivacy = item('screen_privacy_preset');
+
+  console.log('JAVIS Permission Matrix');
+  console.log('=======================');
+  console.log(config.summary || status.readiness?.summary || 'Permission state loaded from the resident API.');
+  console.log(`Overall: config=${config.overall || '-'} · readiness=${status.readiness?.overall || '-'} · local=${status.api?.localExecutionEnabled ? 'on' : 'off'} · trusted=${status.api?.trustedLocalMode ? 'yes' : 'no'}`);
+  console.log('Note: macOS privacy panes still require your manual toggle. JAVIS can open the pane and verify evidence after you grant it.');
+
+  printPermissionRows('macOS privacy', [
+    {
+      label: 'Microphone',
+      status: microphone?.status || 'unknown',
+      detail: microphone?.summary,
+      next: microphone?.next || 'Menu M opens Microphone settings.',
+    },
+    {
+      label: 'Screen Recording',
+      status: screen?.status || 'unknown',
+      detail: screen?.summary,
+      next: screen?.next || 'Menu 3 opens Screen Recording settings.',
+    },
+    {
+      label: 'Accessibility',
+      status: accessibility?.status || 'unknown',
+      detail: accessibility?.summary,
+      next: accessibility?.next || 'Menu 4 opens Accessibility settings.',
+    },
+    {
+      label: 'Full Disk Access',
+      status: 'manual',
+      detail: writeRoots.length ? `JAVIS file policy can use ${writeRoots.length} root(s): ${writeRoots.slice(0, 3).join(', ')}` : 'macOS Full Disk Access cannot be granted programmatically.',
+      next: 'Menu 5 opens Full Disk Access settings; add Terminal/Codex/Electron if protected folders fail.',
+    },
+    {
+      label: 'Notifications',
+      status: notifications?.status || 'unknown',
+      detail: notifications?.summary,
+      next: notifications?.next || '',
+    },
+    {
+      label: 'Screen privacy preset',
+      status: screenPrivacy?.status || 'unknown',
+      detail: screenPrivacy?.summary,
+      next: screenPrivacy?.next || 'Menu 34/35 reviews or reapplies screen privacy.',
+    },
+  ]);
+
+  printPermissionRows('local autonomy', [
+    {
+      label: 'Local execution',
+      status: localExecution?.status || (status.api?.localExecutionEnabled ? 'ready' : 'blocked'),
+      detail: localExecution?.summary || `JAVIS_ENABLE_LOCAL_EXEC=${status.api?.localExecutionEnabled ? 'true' : 'false'}`,
+      next: localExecution?.next || 'Menu 8 toggles local execution.',
+    },
+    {
+      label: 'Trusted local mode',
+      status: status.api?.trustedLocalMode ? 'ready' : 'warning',
+      detail: `JAVIS_TRUSTED_LOCAL_MODE=${status.api?.trustedLocalMode ? 'true' : 'false'}`,
+      next: status.api?.trustedLocalMode ? '' : 'Menu 10 enables trusted local mode after confirmation.',
+    },
+    {
+      label: 'Control mode',
+      status: controlMode?.status || 'unknown',
+      detail: controlMode?.summary || `${control.mode || '-'} · auto L${control.effective?.maxAutoRiskLevel ?? policy.maxAutoRiskLevel ?? '-'} · approval L${control.effective?.requireApprovalAtRiskLevel ?? policy.requireApprovalAtRiskLevel ?? '-'}`,
+      next: controlMode?.next || 'Menu 11 changes runtime control posture.',
+    },
+    {
+      label: 'Action policy',
+      status: actionPolicy?.status || 'unknown',
+      detail: actionPolicy?.summary || `dryRun=${policy.dryRun ? 'yes' : 'no'} · auto L${policy.maxAutoRiskLevel ?? '-'} · approval L${policy.requireApprovalAtRiskLevel ?? '-'}`,
+      next: actionPolicy?.next || 'Menu 9 toggles Level 3 auto-run.',
+    },
+    {
+      label: 'File write roots',
+      status: writeRoots.length ? 'ready' : 'warning',
+      detail: writeRoots.join(', ') || 'No write roots reported by action policy.',
+      next: writeRoots.length ? '' : 'Set JAVIS_ALLOWED_WRITE_ROOTS or enable trusted local mode.',
+    },
+  ]);
+
+  printPermissionRows('workers and CLI tools', [
+    {
+      label: `Codex (${codexCommand})`,
+      status: codexPath && capability('codex')?.status !== 'blocked' ? 'ready' : 'blocked',
+      detail: codexPath ? `found ${codexPath}` : 'command not found in PATH',
+      next: codexPath ? '' : 'Install/login Codex CLI or set JAVIS_CODEX_CMD.',
+    },
+    {
+      label: `Claude Code (${claudeCommand})`,
+      status: claudePath && capability('claude')?.status !== 'blocked' ? 'ready' : 'blocked',
+      detail: claudePath ? `found ${claudePath}` : 'command not found in PATH',
+      next: claudePath ? '' : 'Install/login Claude Code CLI or set JAVIS_CLAUDE_CMD.',
+    },
+    {
+      label: 'Code-agent policy',
+      status: codePolicy.enabled ? 'ready' : 'blocked',
+      detail: `allowed=${Array.isArray(codePolicy.allowedCommands) ? codePolicy.allowedCommands.join(', ') : '-'} · timeout=${formatInterval(codePolicy.maxTimeoutMs || 0)}`,
+      next: codePolicy.enabled ? '' : 'Enable allow.code_agent in action policy.',
+    },
+    {
+      label: 'Generic CLI policy',
+      status: cliPolicy.enabled ? 'ready' : 'blocked',
+      detail: `allowed=${Array.isArray(cliPolicy.allowedCommands) ? cliPolicy.allowedCommands.join(', ') : '-'} · timeout=${formatInterval(cliPolicy.maxTimeoutMs || 0)}`,
+      next: cliPolicy.enabled ? '' : 'Enable allow.cli_command in action policy.',
+    },
+  ]);
+
+  printPermissionRows('browser and app control', [
+    {
+      label: 'Browser page reading',
+      status: browserRead?.status || capability('browser')?.status || 'unknown',
+      detail: browserRead?.summary || capability('browser')?.summary || '',
+      next: browserRead?.next || 'Menu 31 shows browser activity; G runs browser workflow benchmarks.',
+    },
+    {
+      label: 'Browser guarded control',
+      status: browserControl?.status || capability('browser')?.status || 'unknown',
+      detail: browserControl?.summary || `installed browsers=${chromeApps.length ? chromeApps.map((appPath) => path.basename(appPath, '.app')).join(', ') : 'none detected in /Applications'}`,
+      next: browserControl?.next || 'Use browser workflow previews first; submits/sends still require confirmation.',
+    },
+    {
+      label: 'Chrome DevTools bridge',
+      status: chromeApps.length ? 'ready' : 'warning',
+      detail: `JAVIS_CHROME_DEBUG_PORT=${getEnvValue('JAVIS_CHROME_DEBUG_PORT') || process.env.JAVIS_CHROME_DEBUG_PORT || '9222'}`,
+      next: chromeApps.length ? 'Optional bridge; Apple Events path may be enough.' : 'Install a supported browser or use the existing browser menu to inspect bridge readiness.',
+    },
+    {
+      label: 'Mac app Accessibility actions',
+      status: capability('app')?.status || accessibility?.status || 'unknown',
+      detail: capability('app')?.summary || accessibility?.summary || '',
+      next: capability('app')?.nextAction || 'Menu U/Y runs app and productivity previews.',
+    },
+  ]);
+
+  printPermissionRows('resident and shortcuts', [
+    {
+      label: 'LaunchAgent',
+      status: item('launch_agent')?.status || 'unknown',
+      detail: item('launch_agent')?.summary || LAUNCH_AGENT_LABEL,
+      next: item('launch_agent')?.next || 'Use npm run resident:restart if the resident is stale.',
+    },
+    {
+      label: 'Tap summon hotkey',
+      status: item('summon_hotkey')?.status || (status.window?.summonHotkeyRegistered ? 'ready' : 'warning'),
+      detail: item('summon_hotkey')?.summary || `${status.window?.summonHotkey || '-'} · registered=${status.window?.summonHotkeyRegistered ? 'yes' : 'no'}`,
+      next: item('summon_hotkey')?.next || 'Set JAVIS_SUMMON_HOTKEY or JAVIS_TAP_HOTKEY.',
+    },
+    {
+      label: 'Capture hotkey',
+      status: item('capture_hotkey')?.status || (status.window?.captureHotkeyRegistered ? 'ready' : 'warning'),
+      detail: item('capture_hotkey')?.summary || `${status.window?.captureHotkey || '-'} · registered=${status.window?.captureHotkeyRegistered ? 'yes' : 'no'}`,
+      next: item('capture_hotkey')?.next || '',
+    },
+  ]);
+
+  console.log('\nUseful commands:');
+  console.log('- npm run config -- --print-permissions');
+  console.log('- npm run config -- --print-capabilities --include-next');
+  console.log('- npm run doctor -- --allow-blocked');
+  console.log('- npm run eval -- --only=health,control,parallel,collaboration');
 }
 
 function printRoutingSpeedPolicy(result) {
@@ -2937,6 +3177,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-permissions') || process.argv.includes('--permissions')) {
+    await showPermissionMatrix();
+    return;
+  }
+
   if (process.argv.includes('--print-routing-speed-policy') || process.argv.includes('--routing-speed-policy')) {
     const messageIndex = process.argv.findIndex((item) => item === '--message');
     const laneIndex = process.argv.findIndex((item) => item === '--lane');
@@ -3121,6 +3366,8 @@ async function main() {
         await showWorkHandoff();
       } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {
         await showLocalCapabilities({ includeNext: true });
+      } else if (answer === 'i' || answer === 'permissions' || answer === 'permission matrix') {
+        await showPermissionMatrix();
       } else if (answer === 's' || answer === 'speed' || answer === 'speed policy' || answer === 'routing speed') {
         await showRoutingSpeedPolicy();
       } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {
