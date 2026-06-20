@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 
 import { ok, warn, fail } from '../_client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 export default {
   lane: 'file',
@@ -50,6 +54,58 @@ export default {
         ? ok('file.plan', 'Organization preview', `${plan.data.counts.steps || 0} planned step(s), ${plan.data.counts.blocked || 0} blocked`)
         : warn('file.plan', 'Organization preview', `preview ${plan.status} ${plan.error || plan.data?.error || ''}`),
     );
+
+    const benchmarks = await ctx.api('/api/files/benchmarks?source=eval_file_benchmarks', {
+      timeoutMs: 30000,
+    });
+    const benchmarkData = benchmarks.data?.benchmarks || {};
+    const benchmarkCases = Array.isArray(benchmarkData.cases) ? benchmarkData.cases : [];
+    const requiredBenchmarkCases = [
+      'list_fixture',
+      'search_fixture',
+      'organize_preview_fixture',
+      'rename_preview_fixture',
+      'semantic_convert_preview_fixture',
+      'copy_convert_preview_fixture',
+      'apply_gate_fixture',
+    ];
+    const hasRequiredCases = requiredBenchmarkCases.every((id) => benchmarkCases.some((item) => item.id === id && item.ok));
+    out.push(
+      benchmarks.ok &&
+        benchmarkData.ok === true &&
+        benchmarkData.previewOnly === true &&
+        benchmarkData.modelCalls === false &&
+        benchmarkData.mutatesUserFiles === false &&
+        benchmarkData.counts?.pass === benchmarkData.counts?.total &&
+        benchmarkData.safety?.fixtureOnly === true &&
+        benchmarkData.safety?.cleanupOk === true &&
+        benchmarkData.safety?.confirmRequiredForApply === true &&
+        hasRequiredCases
+        ? ok('file.benchmarks', 'File workflow benchmarks', `${benchmarkData.summary || 'benchmarks passed'} · no user-file mutation`)
+        : fail('file.benchmarks', 'File workflow benchmarks', `GET /api/files/benchmarks ${benchmarks.status}`, benchmarkData || benchmarks.data),
+    );
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-file-benchmarks'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        /File Workflow Benchmarks/.test(stdout) &&
+          /preview-only=yes/.test(stdout) &&
+          /apply gate=yes/.test(stdout)
+          ? ok('file.benchmarks_cui', 'File benchmark CUI', 'config CUI prints file benchmark evidence')
+          : fail('file.benchmarks_cui', 'File benchmark CUI', 'CUI output missing benchmark markers', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('file.benchmarks_cui', 'File benchmark CUI', error instanceof Error ? error.message : String(error)));
+    }
 
     const fixtureDir = path.join(process.cwd(), '.javis-eval-file-workflow');
     fs.rmSync(fixtureDir, { recursive: true, force: true });

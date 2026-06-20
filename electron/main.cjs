@@ -15333,6 +15333,354 @@ function normalizeFileWorkflowIntent(value) {
   return 'list';
 }
 
+function fileBenchmarkSecretLeaked(value, secrets = []) {
+  const text = JSON.stringify(value || {});
+  return secrets.some((secret) => secret && text.includes(secret));
+}
+
+function fileBenchmarkCaseResult({ id, label, intent, ok, result, assertions = {}, secrets = [] }) {
+  const leakedSecrets = fileBenchmarkSecretLeaked(result, secrets);
+  const finalOk = Boolean(ok && !leakedSecrets);
+  const workflow = result?.workflow || {};
+  const routing = result?.routing || {};
+  const plan = result?.plan || {};
+  return {
+    id,
+    label,
+    intent,
+    ok: finalOk,
+    status: finalOk ? 'pass' : 'fail',
+    previewOnly: result?.preview === true || result?.confirmed === false || (!result?.executed && !result?.queued),
+    executed: Boolean(result?.executed),
+    queued: Boolean(result?.queued),
+    modelCall: false,
+    fileMutation: false,
+    workflowId: workflow.id || '',
+    workflowStatus: workflow.status || '',
+    routingId: routing.id || '',
+    routingStatus: routing.status || '',
+    assertions: {
+      ...assertions,
+      leakedSecrets,
+    },
+    summary: compactRecordText(result?.output || result?.summary || plan.summary || workflow.result || '', 260),
+  };
+}
+
+async function fileWorkflowBenchmarkSnapshot(options = {}) {
+  const source = String(options.source || 'file_benchmark').slice(0, 80);
+  const sourcePrefix = source.startsWith('eval_') ? source : `${source}`;
+  const fixtureRoot = path.join(process.cwd(), `.javis-file-benchmarks-${Date.now()}-${crypto.randomUUID().slice(0, 8)}`);
+  const secrets = ['sk-file-bench-secret-do-not-return', 'file-bench-password-secret'];
+  const cases = [];
+  let cleanupOk = true;
+
+  try {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    fs.mkdirSync(fixtureRoot, { recursive: true });
+    fs.writeFileSync(
+      path.join(fixtureRoot, 'Alpha Draft.txt'),
+      [
+        'JAVIS benchmark alpha fixture.',
+        'Action: preview semantic conversion without returning raw content.',
+        'Private fixture token: sk-file-bench-secret-do-not-return.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    fs.writeFileSync(
+      path.join(fixtureRoot, 'Beta Draft.txt'),
+      [
+        'JAVIS benchmark beta fixture.',
+        'Action: preview copy conversion and apply gate only.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    fs.writeFileSync(path.join(fixtureRoot, 'Meeting Notes.md'), '# Notes\n\nJAVIS benchmark notes fixture.\n', 'utf8');
+    fs.writeFileSync(path.join(fixtureRoot, 'Table.csv'), 'name,value\nalpha,1\nbeta,2\n', 'utf8');
+
+    const list = await runFileWorkflow({
+      intent: 'list',
+      mode: 'quick',
+      path: fixtureRoot,
+      maxEntries: 20,
+      instruction: 'List benchmark fixture files.',
+      source: `${sourcePrefix}_list`,
+      scope: 'eval:file:benchmark:list',
+      parallelGroup: 'file:benchmark',
+    });
+    cases.push(fileBenchmarkCaseResult({
+      id: 'list_fixture',
+      label: 'Directory list fixture',
+      intent: 'list',
+      result: { ...list, preview: true, executed: false },
+      secrets,
+      assertions: {
+        entries: Number(list.data?.entries?.length || 0),
+        workflowDone: list.workflow?.status === 'done',
+        noQueue: list.queued === false,
+      },
+      ok: list.ok === true &&
+        list.queued === false &&
+        Number(list.data?.entries?.length || 0) >= 4 &&
+        list.workflow?.status === 'done',
+    }));
+
+    const search = await runFileWorkflow({
+      intent: 'search',
+      mode: 'quick',
+      path: fixtureRoot,
+      query: 'JAVIS benchmark',
+      maxResults: 8,
+      instruction: 'Search benchmark fixture files.',
+      source: `${sourcePrefix}_search`,
+      scope: 'eval:file:benchmark:search',
+      parallelGroup: 'file:benchmark',
+    });
+    cases.push(fileBenchmarkCaseResult({
+      id: 'search_fixture',
+      label: 'File search fixture',
+      intent: 'search',
+      result: { ...search, preview: true, executed: false },
+      secrets,
+      assertions: {
+        results: Number(search.data?.results?.length || 0),
+        contentMatches: (search.data?.results || []).filter((item) => item.match === 'content').length,
+        noQueue: search.queued === false,
+      },
+      ok: search.ok === true &&
+        search.queued === false &&
+        Number(search.data?.results?.length || 0) >= 3,
+    }));
+
+    const organize = await runFileWorkflow({
+      intent: 'organize',
+      mode: 'quick',
+      path: fixtureRoot,
+      maxEntries: 20,
+      maxMoves: 6,
+      instruction: 'Preview organizing benchmark fixture files by type.',
+      source: `${sourcePrefix}_organize`,
+      scope: 'eval:file:benchmark:organize',
+      parallelGroup: 'file:benchmark',
+    });
+    cases.push(fileBenchmarkCaseResult({
+      id: 'organize_preview_fixture',
+      label: 'Organization preview fixture',
+      intent: 'organize',
+      result: { ...organize, preview: true, executed: false },
+      secrets,
+      assertions: {
+        steps: Number(organize.plan?.counts?.steps || 0),
+        blocked: Number(organize.plan?.counts?.blocked || 0),
+        workflowStatus: organize.workflow?.status || '',
+      },
+      ok: Number(organize.plan?.counts?.steps || 0) >= 4 &&
+        Array.isArray(organize.plan?.steps) &&
+        organize.plan.steps.some((step) => step.action === 'create_directory') &&
+        organize.plan.steps.some((step) => step.action === 'move_file') &&
+        organize.queued === false,
+    }));
+
+    const rename = await runFileWorkflow({
+      intent: 'rename',
+      mode: 'quick',
+      path: fixtureRoot,
+      extensions: ['.txt'],
+      nameIncludes: 'Alpha',
+      prefix: 'bench-',
+      caseStyle: 'kebab',
+      maxFiles: 1,
+      instruction: 'Preview renaming one benchmark fixture file.',
+      source: `${sourcePrefix}_rename`,
+      scope: 'eval:file:benchmark:rename',
+      parallelGroup: 'file:benchmark',
+    });
+    const renameStep = Array.isArray(rename.plan?.steps) ? rename.plan.steps[0] : null;
+    cases.push(fileBenchmarkCaseResult({
+      id: 'rename_preview_fixture',
+      label: 'Batch rename preview fixture',
+      intent: 'rename',
+      result: { ...rename, preview: true, executed: false },
+      secrets,
+      assertions: {
+        steps: Number(rename.plan?.counts?.steps || 0),
+        action: renameStep?.action || '',
+        destination: path.basename(renameStep?.plan?.args?.destinationPath || ''),
+      },
+      ok: rename.plan?.planIntent === 'rename' &&
+        Number(rename.plan?.counts?.steps || 0) === 1 &&
+        renameStep?.action === 'move_file' &&
+        path.basename(renameStep?.plan?.args?.destinationPath || '') === 'bench-alpha-draft.txt',
+    }));
+
+    const convert = await runFileWorkflow({
+      intent: 'convert',
+      mode: 'quick',
+      path: fixtureRoot,
+      extensions: ['.txt'],
+      nameIncludes: 'Alpha',
+      targetExtension: '.md',
+      maxFiles: 1,
+      instruction: 'Preview semantic conversion of one benchmark fixture file.',
+      source: `${sourcePrefix}_convert`,
+      scope: 'eval:file:benchmark:convert',
+      parallelGroup: 'file:benchmark',
+    });
+    const convertStep = Array.isArray(convert.plan?.steps) ? convert.plan.steps[0] : null;
+    cases.push(fileBenchmarkCaseResult({
+      id: 'semantic_convert_preview_fixture',
+      label: 'Semantic convert preview fixture',
+      intent: 'convert',
+      result: { ...convert, preview: true, executed: false },
+      secrets,
+      assertions: {
+        steps: Number(convert.plan?.counts?.steps || 0),
+        conversionMode: convert.plan?.conversionMode || '',
+        action: convertStep?.action || '',
+        contentRedacted: convertStep?.plan?.metadata?.contentRedacted === true,
+      },
+      ok: convert.plan?.planIntent === 'convert' &&
+        convert.plan?.conversionMode === 'semantic' &&
+        convertStep?.action === 'write_file' &&
+        convertStep?.plan?.metadata?.contentRedacted === true &&
+        !String(convertStep?.plan?.args?.content || '').includes('JAVIS benchmark alpha'),
+    }));
+
+    const copyConvert = await runFileWorkflow({
+      intent: 'convert',
+      mode: 'quick',
+      path: fixtureRoot,
+      extensions: ['.txt'],
+      nameIncludes: 'Beta',
+      targetExtension: '.copy',
+      conversionMode: 'copy',
+      maxFiles: 1,
+      instruction: 'Preview copy conversion of one benchmark fixture file.',
+      source: `${sourcePrefix}_copy_convert`,
+      scope: 'eval:file:benchmark:copy_convert',
+      parallelGroup: 'file:benchmark',
+    });
+    const copyConvertStep = Array.isArray(copyConvert.plan?.steps) ? copyConvert.plan.steps[0] : null;
+    cases.push(fileBenchmarkCaseResult({
+      id: 'copy_convert_preview_fixture',
+      label: 'Copy-convert preview fixture',
+      intent: 'convert',
+      result: { ...copyConvert, preview: true, executed: false },
+      secrets,
+      assertions: {
+        steps: Number(copyConvert.plan?.counts?.steps || 0),
+        conversionMode: copyConvert.plan?.conversionMode || '',
+        action: copyConvertStep?.action || '',
+        destination: path.basename(copyConvertStep?.plan?.args?.destinationPath || ''),
+      },
+      ok: copyConvert.plan?.planIntent === 'convert' &&
+        copyConvert.plan?.conversionMode === 'copy' &&
+        copyConvertStep?.action === 'copy_file' &&
+        path.basename(copyConvertStep?.plan?.args?.destinationPath || '') === 'Beta Draft.copy',
+    }));
+
+    const applyGate = await applyFilePlan({
+      path: fixtureRoot,
+      intent: 'rename',
+      extensions: ['.txt'],
+      nameIncludes: 'Beta',
+      prefix: 'bench-',
+      caseStyle: 'kebab',
+      maxFiles: 1,
+      confirm: false,
+      source: `${sourcePrefix}_apply_gate`,
+    });
+    cases.push(fileBenchmarkCaseResult({
+      id: 'apply_gate_fixture',
+      label: 'Apply confirmation gate fixture',
+      intent: 'apply_gate',
+      result: { ...applyGate, preview: true, executed: false },
+      secrets,
+      assertions: {
+        steps: Number(applyGate.plan?.counts?.steps || 0),
+        confirmed: applyGate.confirmed === false,
+        betaStillExists: fs.existsSync(path.join(fixtureRoot, 'Beta Draft.txt')),
+        destinationAbsent: !fs.existsSync(path.join(fixtureRoot, 'bench-beta-draft.txt')),
+      },
+      ok: applyGate.confirmed === false &&
+        fs.existsSync(path.join(fixtureRoot, 'Beta Draft.txt')) &&
+        !fs.existsSync(path.join(fixtureRoot, 'bench-beta-draft.txt')),
+    }));
+  } catch (error) {
+    cases.push(fileBenchmarkCaseResult({
+      id: 'file_benchmark_runtime',
+      label: 'File benchmark runtime',
+      intent: 'runtime',
+      result: {
+        preview: true,
+        executed: false,
+        output: error instanceof Error ? error.message : String(error),
+      },
+      secrets,
+      ok: false,
+      assertions: {
+        error: error instanceof Error ? error.message : String(error),
+      },
+    }));
+  } finally {
+    try {
+      fs.rmSync(fixtureRoot, { recursive: true, force: true });
+      cleanupOk = !fs.existsSync(fixtureRoot);
+    } catch {
+      cleanupOk = false;
+    }
+  }
+
+  const counts = {
+    total: cases.length,
+    pass: cases.filter((item) => item.ok).length,
+    fail: cases.filter((item) => !item.ok).length,
+    previewOnly: cases.filter((item) => item.previewOnly).length,
+    executed: cases.filter((item) => item.executed).length,
+    queued: cases.filter((item) => item.queued).length,
+    planned: cases.filter((item) => Number(item.assertions?.steps || 0) > 0).length,
+    blocked: cases.filter((item) => ['blocked', 'approval_required'].includes(String(item.workflowStatus || ''))).length,
+  };
+  const snapshot = {
+    ok: counts.fail === 0 && cleanupOk,
+    generatedAt: new Date().toISOString(),
+    source,
+    manualOnly: true,
+    previewOnly: true,
+    startsApps: false,
+    modelCalls: false,
+    mutatesUserFiles: false,
+    fixtureRoot,
+    summary: `${counts.pass}/${counts.total} file benchmark case(s) passed.`,
+    counts,
+    cases,
+    nextAction: counts.fail || !cleanupOk
+      ? 'Fix failing file benchmark cases before broadening file automation.'
+      : 'Use these preview-only file benchmarks before adding richer app-specific file workflows.',
+    safety: {
+      fixtureOnly: true,
+      cleanupOk,
+      noUserFileMutation: true,
+      noModelCalls: true,
+      noSecretEcho: cases.every((item) => item.assertions?.leakedSecrets === false),
+      confirmRequiredForApply: cases.find((item) => item.id === 'apply_gate_fixture')?.assertions?.confirmed === true,
+    },
+  };
+  appendAudit('file_benchmark.completed', {
+    source,
+    ok: snapshot.ok,
+    total: counts.total,
+    pass: counts.pass,
+    fail: counts.fail,
+    cleanupOk,
+    noUserFileMutation: true,
+    noModelCalls: true,
+  });
+  return snapshot;
+}
+
 function normalizeWorkflowMode(value, fallback = 'quick') {
   const mode = String(value || '').trim();
   if (['quick', 'background', 'codex', 'claude'].includes(mode)) return mode;
@@ -24372,7 +24720,9 @@ function isInternalRoutingRecord(record) {
     || source === 'eval_restore'
     || source.startsWith('eval_')
     || source.includes('browser_benchmark')
-    || source.includes('browser_benchmarks');
+    || source.includes('browser_benchmarks')
+    || source.includes('file_benchmark')
+    || source.includes('file_benchmarks');
 }
 
 function isInternalJob(job) {
@@ -25136,7 +25486,9 @@ function isInternalWorkflow(workflow) {
     source === 'eval_restore' ||
     source.startsWith('eval_') ||
     source.includes('browser_benchmark') ||
-    source.includes('browser_benchmarks')
+    source.includes('browser_benchmarks') ||
+    source.includes('file_benchmark') ||
+    source.includes('file_benchmarks')
   ) return true;
   if (/(test|smoke|verification|diagnostic|internal)/.test(source)) return true;
   if (workflow.id) {
@@ -34538,6 +34890,17 @@ function startApiServer() {
         return;
       }
       jsonError(res, 400, 'Action failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/files/benchmarks', async (req, res) => {
+    try {
+      const benchmarks = await fileWorkflowBenchmarkSnapshot({
+        source: req.query.source || 'api_file_benchmarks',
+      });
+      res.json({ benchmarks });
+    } catch (error) {
+      jsonError(res, 500, 'File benchmarks failed', error instanceof Error ? error.message : String(error));
     }
   });
 

@@ -100,6 +100,7 @@ Renderer
 - Guarded UI action lane: Level 3 `AXPress` and value-setting actions through policy, approvals, role allowlists, and expected target checks.
 - File workflow lane: policy-guarded local file/folder list, search, summarize, Q&A, folder organization, batch rename, and text conversion planning routed through quick or background lanes.
 - File organization lane: deterministic by-type folder, batch rename, semantic text-conversion, and copy-convert plans with per-step policy preview, content redaction for generated write plans, explicit apply confirmation, the same approval/local-execution gates before any move/copy/create/write action, and post-apply destination/source verification evidence in workflow history.
+- File benchmark lane: preview-only fixture checks for list, search, organization, rename, semantic conversion redaction, copy-convert, and apply-confirmation gates through `/api/files/benchmarks` and the CUI. It creates and deletes a temporary project fixture, does not call models, does not start apps, and does not mutate user files.
 - Workflow history lane: user-level workflow records linked to jobs, targets, status, and results.
 - Work briefing lane: deterministic status summary over readiness, jobs, workflows, approvals, memories, blockers, proactive workflow follow-ups, and suggested next actions.
 - Work progress lane: deterministic spoken-style progress over active collaboration claims, active jobs, recent job results, active/blocked workflows, latest completions, and next actions.
