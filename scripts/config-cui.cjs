@@ -312,6 +312,7 @@ async function printStatus() {
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
   console.log('R. Run renderer Realtime dogfood (starts mic)');
+  console.log('O. Show Realtime live drill pack');
   console.log('B. Show Realtime dogfood brief');
   console.log('E. Show Realtime dogfood acceptance');
   console.log('A. Save Realtime dogfood archive');
@@ -2205,6 +2206,64 @@ function printRendererDogfood(result) {
   }
 }
 
+function printRealtimeDogfoodPack(result) {
+  const pack = result?.pack || result || {};
+  const readiness = pack.readiness || {};
+  const prompts = pack.prompts || {};
+  const next = prompts.next || {};
+  const commands = pack.commands || {};
+  const safety = pack.safety || {};
+  console.log('JAVIS Realtime Live Drill Pack');
+  console.log('===============================');
+  console.log(`Status: ${pack.status || 'pending'} · ready=${pack.readyToStart ? 'yes' : 'no'} · accepted=${pack.accepted ? 'yes' : 'no'}`);
+  console.log(`Manual only=yes · starts microphone=${pack.startsMicrophone ? 'yes' : 'no'} · mic confirmation=${pack.requiresMicConfirmation ? 'required' : 'no'}`);
+  console.log(`Renderer: ${readiness.rendererReady ? 'ready' : 'not-ready'} · provider=${readiness.providerReady ? 'ready' : 'not-ready'} · evidence=${readiness.evidenceStatus || '-'} / ${readiness.evidencePhase || '-'}`);
+  console.log(`Acceptance: ${Number(readiness.acceptancePassed || 0)}/${Number(readiness.acceptanceGates || 0)} gate(s) pass`);
+  if (next.copyText || next.prompt) {
+    console.log(`\nNext prompt: ${next.copyText || next.prompt}`);
+  }
+  if (Array.isArray(next.followUpPrompts) && next.followUpPrompts.length) {
+    console.log(`Follow-up: ${next.followUpPrompts.join(' | ')}`);
+  }
+  const blockers = Array.isArray(pack.blockers) ? pack.blockers : [];
+  if (blockers.length) {
+    console.log('\nBlockers:');
+    for (const blocker of blockers.slice(0, 5)) {
+      console.log(`- ${blocker.label || blocker.id}: ${compact(blocker.nextAction || blocker.detail || '', 240)}`);
+    }
+  }
+  console.log('\nCommands:');
+  console.log(`- pack: ${commands.pack || 'npm run config -- --print-realtime-dogfood-pack'}`);
+  console.log(`- preflight: ${commands.preflight || 'npm run dogfood:realtime-renderer'}`);
+  console.log(`- start: ${commands.start || 'npm run dogfood:realtime-renderer -- --execute --confirm-mic'}`);
+  console.log(`- monitor: ${commands.monitor || 'npm run config -> V. Watch Realtime voice evidence'}`);
+  console.log(`- archive: ${commands.saveArchive || 'npm run config -- --save-realtime-dogfood-archive'}`);
+  console.log(`- acceptance: ${commands.acceptance || 'npm run dogfood:realtime-acceptance'}`);
+  const steps = Array.isArray(pack.operatorSteps) ? pack.operatorSteps : [];
+  if (steps.length) {
+    console.log('\nOperator steps:');
+    for (const step of steps) {
+      const mic = step.startsMicrophone ? 'starts mic' : 'no mic';
+      const confirm = step.requiresMicConfirmation ? ' · confirm mic' : '';
+      console.log(`- ${step.id || '-'} · ${mic}${confirm}: ${compact(step.command || step.prompt || step.endpoint || step.nextAction || '', 220)}`);
+    }
+  }
+  const gaps = Array.isArray(pack.acceptance?.gaps) ? pack.acceptance.gaps : [];
+  if (gaps.length) {
+    console.log('\nNext acceptance gaps:');
+    for (const gap of gaps.slice(0, 6)) {
+      console.log(`- ${gap.group || '-'}/${gap.id || '-'}: ${compact(gap.label || gap.nextAction || '', 220)}`);
+    }
+  }
+  console.log('\nSafety:');
+  console.log(`- preflight starts mic: ${safety.preflightStartsMicrophone ? 'yes' : 'no'}`);
+  console.log(`- pack starts mic: ${safety.packStartsMicrophone ? 'yes' : 'no'}`);
+  console.log(`- execute requires confirm mic: ${safety.executeRequiresConfirmMic ? 'yes' : 'no'}`);
+  console.log(`- autopilot eligible: ${safety.autopilotEligible ? 'yes' : 'no'}`);
+  console.log(`- raw audio stored: ${safety.archiveStoresRawAudio ? 'yes' : 'no'}`);
+  if (pack.nextAction) console.log(`\nNext action: ${compact(pack.nextAction, 320)}`);
+}
+
 async function startRendererRealtimeDogfoodFromCui(rl) {
   console.log('\nPreviewing renderer Realtime dogfood trigger...');
   const preview = await request('/api/realtime/dogfood/renderer/start', {
@@ -2378,6 +2437,11 @@ async function showRealtimeDogfoodBrief() {
   printRealtimeDogfoodBrief(result);
 }
 
+async function showRealtimeDogfoodPack() {
+  const result = await request('/api/realtime/dogfood/pack');
+  printRealtimeDogfoodPack(result);
+}
+
 async function showRealtimeDogfoodArchive(options = {}) {
   const result = await request('/api/realtime/dogfood/archive', {
     method: options.save ? 'POST' : 'GET',
@@ -2503,6 +2567,11 @@ async function main() {
 
   if (process.argv.includes('--print-realtime-dogfood-brief') || process.argv.includes('--realtime-dogfood-brief')) {
     await showRealtimeDogfoodBrief();
+    return;
+  }
+
+  if (process.argv.includes('--print-realtime-dogfood-pack') || process.argv.includes('--realtime-dogfood-pack')) {
+    await showRealtimeDogfoodPack();
     return;
   }
 
@@ -2741,6 +2810,8 @@ async function main() {
         await startRealtimeDogfoodDrillFromCui(rl);
       } else if (answer === 'r' || answer === 'renderer dogfood' || answer === 'realtime renderer') {
         await startRendererRealtimeDogfoodFromCui(rl);
+      } else if (answer === 'o' || answer === 'pack' || answer === 'drill pack' || answer === 'live drill pack') {
+        await showRealtimeDogfoodPack();
       } else if (answer === 'b' || answer === 'brief' || answer === 'dogfood brief') {
         await showRealtimeDogfoodBrief();
       } else if (answer === 'e' || answer === 'acceptance' || answer === 'dogfood acceptance') {

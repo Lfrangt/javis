@@ -30258,6 +30258,209 @@ function realtimeRendererDogfoodSnapshot() {
   };
 }
 
+function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
+  const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
+  const promptLimit = Math.max(1, Math.min(24, Number(options.promptLimit || 20)));
+  const sessionLimit = Math.max(1, Math.min(10, Number(options.sessionLimit || 6)));
+  const auditLimit = Math.max(1, Math.min(50, Number(options.auditLimit || 12)));
+  const brief = realtimeDogfoodBriefSnapshot({ evidence, promptLimit, sessionLimit });
+  const prompt = brief.nextPrompt || realtimeDogfoodNextPromptSnapshot({ evidence });
+  const preflight = realtimeRendererDogfoodPreflight({ evidence, prompt });
+  const archive = realtimeDogfoodArchiveSnapshot({
+    evidence,
+    promptLimit,
+    sessionLimit,
+    auditLimit,
+    source: 'live_drill_pack_preview',
+  });
+  const acceptance = realtimeDogfoodAcceptanceSnapshot({
+    archive,
+    source: 'live_drill_pack',
+  });
+  const blockers = Array.isArray(preflight.blockers) ? preflight.blockers : [];
+  const gaps = Array.isArray(acceptance.gaps) ? acceptance.gaps : [];
+  const operatorSteps = [
+    {
+      id: 'open_monitor',
+      label: 'Open evidence monitor',
+      command: 'npm run config -> V. Watch Realtime voice evidence',
+      endpoint: '/api/realtime/evidence',
+      startsMicrophone: false,
+      nextAction: 'Keep the evidence monitor visible before starting the live voice path.',
+    },
+    {
+      id: 'preview_renderer',
+      label: 'Preview renderer readiness',
+      command: 'npm run dogfood:realtime-renderer',
+      endpoint: '/api/realtime/dogfood/renderer',
+      startsMicrophone: false,
+      nextAction: 'Confirm renderer, provider, and next prompt are ready.',
+    },
+    {
+      id: 'start_live_voice',
+      label: 'Start renderer WebRTC voice',
+      command: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
+      endpoint: '/api/realtime/dogfood/renderer/start',
+      startsMicrophone: true,
+      requiresMicConfirmation: true,
+      nextAction: 'Run only while the user is present and wants microphone capture.',
+    },
+    {
+      id: 'speak_prompt',
+      label: 'Speak or send the next dogfood prompt',
+      prompt: prompt.copyText || prompt.prompt || '',
+      followUpPrompts: Array.isArray(prompt.followUpPrompts) ? prompt.followUpPrompts : [],
+      startsMicrophone: false,
+      nextAction: 'Use the live voice session to prove the next pending evidence gate.',
+    },
+    {
+      id: 'track_session',
+      label: 'Track operator drill progress',
+      command: 'npm run config -- --print-realtime-dogfood-session',
+      endpoint: '/api/realtime/dogfood/session',
+      startsMicrophone: false,
+      nextAction: 'Use session start/mark/end only for the local operator record.',
+    },
+    {
+      id: 'save_archive',
+      label: 'Save local evidence archive',
+      command: 'npm run config -- --save-realtime-dogfood-archive',
+      endpoint: '/api/realtime/dogfood/archive',
+      startsMicrophone: false,
+      nextAction: 'Save after the real voice drill has produced evidence.',
+    },
+    {
+      id: 'check_acceptance',
+      label: 'Check acceptance gates',
+      command: 'npm run dogfood:realtime-acceptance',
+      endpoint: '/api/realtime/dogfood/acceptance',
+      startsMicrophone: false,
+      nextAction: 'Treat the drill as accepted only when all gates pass.',
+    },
+  ];
+  const commands = {
+    pack: 'npm run config -- --print-realtime-dogfood-pack',
+    preflight: 'npm run dogfood:realtime-renderer',
+    start: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
+    startRequireAcceptance: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+    monitor: 'npm run config -> V. Watch Realtime voice evidence',
+    monitorOnce: 'npm run config -- --print-realtime-evidence',
+    brief: 'npm run config -- --print-realtime-dogfood-brief',
+    prompt: 'npm run config -- --print-realtime-dogfood-prompt',
+    copyPrompt: 'npm run config -- --copy-realtime-dogfood-prompt',
+    session: 'npm run config -- --print-realtime-dogfood-session',
+    startSession: 'npm run config -- --start-realtime-dogfood-session',
+    saveArchive: 'npm run config -- --save-realtime-dogfood-archive',
+    acceptance: 'npm run dogfood:realtime-acceptance',
+    acceptanceOnly: 'npm run dogfood:realtime-renderer -- --acceptance-only --no-save-archive',
+  };
+  return {
+    ok: true,
+    kind: 'realtime_live_drill_pack',
+    generatedAt: new Date().toISOString(),
+    manualOnly: true,
+    startsMicrophone: false,
+    currentActionStartsMicrophone: false,
+    triggerStartsMicrophone: true,
+    requiresMicConfirmation: true,
+    requiresUserPresence: true,
+    autoEligible: false,
+    autopilotEligible: false,
+    status: preflight.readyToStart ? 'ready' : 'blocked',
+    accepted: Boolean(acceptance.accepted),
+    readyToStart: Boolean(preflight.readyToStart),
+    readiness: {
+      rendererPreflightStatus: preflight.status || 'blocked',
+      rendererReady: Boolean(preflight.rendererAvailable),
+      providerReady: Boolean(preflight.providerReady),
+      nextPromptReady: Boolean(prompt.copyText || prompt.prompt),
+      evidenceStatus: evidence.status || 'pending',
+      evidencePhase: evidence.phase || '',
+      acceptanceStatus: acceptance.status || 'pending',
+      acceptancePassed: Number(acceptance.counts?.passed || 0),
+      acceptanceGates: Number(acceptance.counts?.gates || 0),
+      activeOperatorSessions: Number(brief.counts?.sessionsActive || 0),
+    },
+    blockers,
+    commands,
+    api: {
+      pack: { method: 'GET', path: '/api/realtime/dogfood/pack' },
+      preflight: { method: 'GET', path: '/api/realtime/dogfood/renderer' },
+      start: {
+        method: 'POST',
+        path: '/api/realtime/dogfood/renderer/start',
+        body: {
+          execute: true,
+          confirmMic: true,
+          prepareProgress: true,
+          prepareWhenLive: true,
+          durationMs: 45000,
+          promptDelayMs: 35000,
+        },
+      },
+      monitor: { method: 'GET', path: '/api/realtime/evidence' },
+      brief: { method: 'GET', path: '/api/realtime/dogfood/brief' },
+      prompt: { method: 'GET', path: '/api/realtime/dogfood/prompt' },
+      session: { method: 'GET', path: '/api/realtime/dogfood/session' },
+      archive: { method: 'POST', path: '/api/realtime/dogfood/archive', body: { source: 'live_drill_pack' } },
+      acceptance: { method: 'GET', path: '/api/realtime/dogfood/acceptance' },
+    },
+    prompts: {
+      next: {
+        stepId: prompt.step?.id || '',
+        promptType: prompt.promptType || '',
+        prompt: prompt.prompt || '',
+        copyText: prompt.copyText || prompt.prompt || '',
+        followUpPrompts: Array.isArray(prompt.followUpPrompts) ? prompt.followUpPrompts.slice(0, 5) : [],
+      },
+      script: Array.isArray(brief.prompts) ? brief.prompts.slice(0, promptLimit) : [],
+    },
+    operatorSteps,
+    brief: {
+      summary: compactRecordText(brief.summary || brief.brief || '', 500),
+      gapSummary: brief.gapSummary || null,
+      currentStep: brief.currentStep || null,
+      counts: brief.counts || {},
+      evidenceTools: Array.isArray(brief.evidenceTools) ? brief.evidenceTools : [],
+    },
+    acceptance: {
+      accepted: Boolean(acceptance.accepted),
+      status: acceptance.status || 'pending',
+      summary: compactRecordText(acceptance.summary || '', 500),
+      counts: acceptance.counts || {},
+      nextGap: acceptance.nextGap || null,
+      gaps: gaps.slice(0, 10).map((gap) => ({
+        id: gap.id || '',
+        group: gap.group || '',
+        label: gap.label || '',
+        nextAction: compactRecordText(gap.nextAction || '', 260),
+      })),
+    },
+    archive: {
+      previewPath: archive.file?.path || '',
+      saved: false,
+      command: commands.saveArchive,
+      endpoint: '/api/realtime/dogfood/archive',
+      summary: compactRecordText(archive.archiveSummary || archive.summary || '', 500),
+    },
+    safety: {
+      preflightStartsMicrophone: false,
+      packStartsMicrophone: false,
+      executeRequiresConfirmMic: true,
+      microphoneOnlyAfterExplicitConfirmation: true,
+      archiveStoresRawAudio: false,
+      archiveIncludesScreenImage: false,
+      actionPolicyBypassed: false,
+      autopilotEligible: false,
+      unattendedStartBlocked: true,
+      desktopPetDiagnostics: false,
+    },
+    nextAction: preflight.readyToStart
+      ? 'Open the monitor, then run the mic-confirmed renderer trigger while the user is present.'
+      : blockers[0]?.nextAction || 'Resolve the first Realtime live drill blocker before starting microphone capture.',
+  };
+}
+
 function normalizeRendererDogfoodPrompts(value, fallback = '') {
   const raw = Array.isArray(value) ? value : String(value || '').split(/\n|;;/);
   const prompts = raw
@@ -42457,6 +42660,20 @@ function startApiServer() {
       res.json({ brief: realtimeDogfoodBriefSnapshot({ promptLimit: req.query.promptLimit }) });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood brief failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/pack', (req, res) => {
+    try {
+      res.json({
+        pack: realtimeDogfoodLiveDrillPackSnapshot({
+          promptLimit: req.query.promptLimit,
+          sessionLimit: req.query.sessionLimit,
+          auditLimit: req.query.auditLimit,
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood live drill pack failed', error instanceof Error ? error.message : String(error));
     }
   });
 

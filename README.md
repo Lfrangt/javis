@@ -25,6 +25,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime voice dogfood-session tools, so the live voice model can inspect, start, mark, and end the same operator drill record while CUI/API evidence proves it did not start microphone capture.
 - Realtime dogfood session auto-sync, so evidence-proven drill steps are persisted as sticky progress even after the live voice session disconnects.
 - Realtime dogfood archive export from CUI/API/voice tools, saving the current brief, evidence, session tracker, and related audit trail as a local JSON packet without starting microphone capture or storing raw audio.
+- Realtime live drill pack from CUI/API, bundling renderer preflight, the mic-confirmed start command, monitor, prompt, session tracker, archive, and acceptance checks into one read-only operator packet.
 - Renderer Realtime dogfood preflight and trigger for opt-in live WebRTC verification: `npm run dogfood:realtime-renderer` previews provider/renderer/prompt readiness without starting mic; `npm run dogfood:realtime-renderer -- --execute --confirm-mic` starts the renderer voice path only after explicit mic confirmation, sends dogfood prompts through the live data channel, and saves local evidence.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Screen privacy presets for password managers, account/login pages, banking/payment hosts, sensitive system windows, and a notification-strip region mask, with preview/apply APIs and CUI visibility.
@@ -212,6 +213,7 @@ Local Express service on 127.0.0.1:3417
   /api/realtime/dogfood/prompt -> next manual live-voice dogfood prompt
   /api/realtime/dogfood/prompt/copy -> copy the next dogfood prompt, with dry-run support
   /api/realtime/dogfood/session -> manual operator session tracker for real live-voice dogfood
+  /api/realtime/dogfood/pack -> read-only live drill operator pack with start, monitor, archive, acceptance, and safety gates
   /api/realtime/dogfood/archive -> preview or save a local dogfood evidence archive
   /api/realtime/dogfood/archives -> list saved local dogfood evidence archives
   /api/realtime/dogfood/renderer -> read-only renderer/WebRTC dogfood preflight

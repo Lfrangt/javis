@@ -1795,6 +1795,75 @@ export default {
         : fail('realtime.renderer_dogfood_preflight', 'Renderer dogfood preflight', 'expected read-only renderer preflight and preview confirmation gate', { snapshot: rendererPreflight.data, preview: rendererPreview.data }),
     );
 
+    const liveDrillPack = await ctx.api('/api/realtime/dogfood/pack');
+    const liveDrillPackData = liveDrillPack.data?.pack || {};
+    const startStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'start_live_voice') || {};
+    const archiveStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'save_archive') || {};
+    const acceptanceStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'check_acceptance') || {};
+    out.push(
+      liveDrillPack.ok &&
+        liveDrillPackData?.kind === 'realtime_live_drill_pack' &&
+        liveDrillPackData?.manualOnly === true &&
+        liveDrillPackData?.startsMicrophone === false &&
+        liveDrillPackData?.currentActionStartsMicrophone === false &&
+        liveDrillPackData?.triggerStartsMicrophone === true &&
+        liveDrillPackData?.requiresMicConfirmation === true &&
+        liveDrillPackData?.requiresUserPresence === true &&
+        liveDrillPackData?.autoEligible === false &&
+        liveDrillPackData?.autopilotEligible === false &&
+        ['ready', 'blocked'].includes(liveDrillPackData.status) &&
+        liveDrillPackData?.commands?.start?.includes('--execute --confirm-mic') &&
+        liveDrillPackData?.commands?.monitor?.includes('Watch Realtime voice evidence') &&
+        liveDrillPackData?.commands?.saveArchive?.includes('--save-realtime-dogfood-archive') &&
+        liveDrillPackData?.commands?.acceptance?.includes('dogfood:realtime-acceptance') &&
+        liveDrillPackData?.api?.start?.path === '/api/realtime/dogfood/renderer/start' &&
+        liveDrillPackData?.api?.start?.body?.confirmMic === true &&
+        liveDrillPackData?.api?.monitor?.path === '/api/realtime/evidence' &&
+        typeof liveDrillPackData?.prompts?.next?.copyText === 'string' &&
+        liveDrillPackData.prompts.next.copyText.length > 0 &&
+        Array.isArray(liveDrillPackData?.operatorSteps) &&
+        liveDrillPackData.operatorSteps.length >= 6 &&
+        startStep.startsMicrophone === true &&
+        startStep.requiresMicConfirmation === true &&
+        archiveStep.startsMicrophone === false &&
+        acceptanceStep.startsMicrophone === false &&
+        liveDrillPackData?.safety?.preflightStartsMicrophone === false &&
+        liveDrillPackData?.safety?.packStartsMicrophone === false &&
+        liveDrillPackData?.safety?.executeRequiresConfirmMic === true &&
+        liveDrillPackData?.safety?.microphoneOnlyAfterExplicitConfirmation === true &&
+        liveDrillPackData?.safety?.autopilotEligible === false &&
+        liveDrillPackData?.safety?.unattendedStartBlocked === true
+        ? ok('realtime.dogfood_live_drill_pack', 'Realtime live drill pack', `${liveDrillPackData.status} · prompt=${liveDrillPackData.prompts.next.copyText}`)
+        : fail('realtime.dogfood_live_drill_pack', 'Realtime live drill pack', `GET /api/realtime/dogfood/pack ${liveDrillPack.status}`, liveDrillPack.data),
+    );
+
+    try {
+      const packCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-pack'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${packCui.stdout || ''}\n${packCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Realtime Live Drill Pack') &&
+          output.includes('starts microphone=no') &&
+          output.includes('mic confirmation=required') &&
+          output.includes('--execute --confirm-mic') &&
+          output.includes('Watch Realtime voice evidence') &&
+          output.includes('--save-realtime-dogfood-archive') &&
+          output.includes('dogfood:realtime-acceptance') &&
+          output.includes('Operator steps:') &&
+          output.includes('Safety:') &&
+          output.includes('execute requires confirm mic: yes') &&
+          output.includes('autopilot eligible: no')
+          ? ok('realtime.cui_dogfood_live_drill_pack', 'Realtime CUI live drill pack', 'config CUI prints the mic-gated live drill pack')
+          : fail('realtime.cui_dogfood_live_drill_pack', 'Realtime CUI live drill pack', 'expected CUI pack to print commands, operator steps, and safety gates', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_dogfood_live_drill_pack', 'Realtime CUI live drill pack', error instanceof Error ? error.message : String(error)));
+    }
+
     const evidence = await ctx.api('/api/realtime/evidence');
     const e = evidence.data?.evidence;
     const checklistIds = new Set((Array.isArray(e?.checklist) ? e.checklist : []).map((step) => step.id));
