@@ -40,7 +40,7 @@ Local Mac-first realtime desktop buddy.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
 - Browser workflows: summarize, extract actions, draft, ask about the current page, search/compare result pages with structured candidate links, open and review one selected result, or synthesize across multiple result pages through quick or background lanes.
-- Read-only MCP server discovery, preview-only MCP workflow planning, local MCP execution approval requests, and approved stdio `tools/list` schema inspection for Claude Desktop/Claude Code/Cursor/project JSON configs through API, CUI, and Realtime voice tools; env values and URL queries are redacted, previews never start server commands, and MCP tools are still never called.
+- Read-only MCP server discovery, preview-only MCP workflow planning, local MCP execution approval requests, approved stdio `tools/list` schema inspection, and separately approved stdio `tools/call` execution for Claude Desktop/Claude Code/Cursor/project JSON configs through API and CUI; env values and URL queries are redacted, previews never start server commands, and tool results are sanitized before storage.
 - Explicit local control modes: observe-only, ask-before-action, trusted-local, and supervised-takeover posture on top of the action policy.
 - File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
@@ -230,7 +230,8 @@ Local Express service on 127.0.0.1:3417
   /api/browser/dom      -> read visible clickable/fillable page controls
   /api/browser/dom-action -> guarded webpage element click/fill/select
   /api/mcp/servers      -> read-only local MCP server discovery with env values redacted
-  /api/mcp/workflow     -> preview which MCP server should handle a task or create a local approval request; approval can inspect stdio tool schemas, but does not call MCP tools
+  /api/mcp/workflow     -> preview which MCP server should handle a task or create a local approval request; approval can inspect stdio tool schemas
+  /api/mcp/tool-call    -> preview or create approval for one stdio MCP tools/call request with sanitized result storage
   /api/browser/workflow -> summarize, extract actions, draft, ask, act, search, compare, review one result, or research multiple result pages
   /api/cli/run          -> queue an explicit local CLI command as a background job
   /api/files/execute    -> local file tool execution

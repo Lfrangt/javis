@@ -156,7 +156,19 @@ curl -X POST http://127.0.0.1:3417/api/mcp/workflow \
   -d '{"task":"Choose the MCP server for this task, but do not execute.","execute":false}'
 ```
 
-This uses the same sanitized MCP discovery data to select candidate servers and print the next confirmed steps. It is preview-only by default: it does not start MCP server commands, does not call MCP tools, and still redacts env values plus URL query strings. Passing `execute:true` plus `requestApproval:true`, a `serverName`, and a `toolName` creates a local pending approval request. Approving a stdio MCP request can briefly start that server, send MCP `initialize`, send `notifications/initialized`, run `tools/list`, return sanitized tool schemas, and stop the process. It still does not call MCP tools; `tools/call` remains a separate future confirmation path. Realtime voice can call `plan_mcp_workflow` when the user asks which MCP/external tool bridge should handle a concrete task.
+This uses the same sanitized MCP discovery data to select candidate servers and print the next confirmed steps. It is preview-only by default: it does not start MCP server commands, does not call MCP tools, and still redacts env values plus URL query strings. Passing `execute:true` plus `requestApproval:true`, a `serverName`, and a `toolName` creates a local pending approval request. Approving a stdio MCP workflow request can briefly start that server, send MCP `initialize`, send `notifications/initialized`, run `tools/list`, return sanitized tool schemas, and stop the process. Realtime voice can call `plan_mcp_workflow` when the user asks which MCP/external tool bridge should handle a concrete task.
+
+Use option `Z. Preview MCP tool call`, or the tool-call preview command, when you want one actual MCP invocation:
+
+```bash
+npm run config -- --print-mcp-tool-call --task "读取 Pencil 状态" --server "pencil" --tool "get_guidelines" --arguments '{}'
+npm run config -- --print-mcp-tool-call --task "读取 Pencil 状态" --server "pencil" --tool "get_guidelines" --arguments '{}' --request-approval
+curl -X POST http://127.0.0.1:3417/api/mcp/tool-call \
+  -H 'Content-Type: application/json' \
+  -d '{"serverName":"pencil","toolName":"get_guidelines","toolArguments":{},"execute":true,"requestApproval":true}'
+```
+
+`/api/mcp/tool-call` previews are safe and do not start servers. Approving a stdio tool-call request starts the server, verifies the tool exists with `tools/list`, sends exactly one `tools/call`, sanitizes text/media/resource/structured results before storing them in the approval record, audits the attempt, and stops the process. If the external MCP server or backing app is unavailable, the approval result records that failure with stderr capped and env values redacted.
 
 Use option `C. Show creative workflow benchmarks`, or:
 

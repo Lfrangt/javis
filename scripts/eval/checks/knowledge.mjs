@@ -112,6 +112,35 @@ export default {
         : fail('knowledge.mcp_workflow_preview', 'MCP workflow preview', `POST /api/mcp/workflow ${mcpWorkflow.status}`, mcpWorkflow.data),
     );
 
+    const mcpToolCallPreview = await ctx.api('/api/mcp/tool-call', {
+      method: 'POST',
+      body: {
+        source: 'eval_knowledge_mcp_tool_call_preview',
+        task: 'Preview an MCP tool call without execution.',
+        serverName: 'pencil',
+        toolName: 'get_guidelines',
+        toolArguments: {},
+        execute: false,
+        limit: 20,
+      },
+      timeoutMs: 15000,
+    });
+    const mcpToolCallPreviewData = mcpToolCallPreview.data?.mcpToolCall || {};
+    out.push(
+      mcpToolCallPreview.ok &&
+        mcpToolCallPreviewData.ok === true &&
+        mcpToolCallPreviewData.previewOnly === true &&
+        mcpToolCallPreviewData.executed === false &&
+        mcpToolCallPreviewData.safety?.startsServers === false &&
+        mcpToolCallPreviewData.safety?.commandsExecuted === false &&
+        mcpToolCallPreviewData.safety?.callsMcpTools === false &&
+        mcpToolCallPreviewData.safety?.approvalCallsMcpTools === true &&
+        mcpToolCallPreviewData.safety?.toolResultSanitized === true &&
+        Array.isArray(mcpToolCallPreviewData.actionPlan)
+        ? ok('knowledge.mcp_tool_call_preview', 'MCP tool-call preview', `status=${mcpToolCallPreviewData.status || 'unknown'} · candidates=${mcpToolCallPreviewData.counts?.candidates || 0}`)
+        : fail('knowledge.mcp_tool_call_preview', 'MCP tool-call preview', `POST /api/mcp/tool-call ${mcpToolCallPreview.status}`, mcpToolCallPreview.data),
+    );
+
     const firstMcpServer = Array.isArray(mcpData.servers) ? mcpData.servers.find((server) => server?.name) : null;
     if (!firstMcpServer) {
       out.push(skip('knowledge.mcp_execution_approval_gate', 'MCP execution approval gate', 'no configured MCP server available for approval-gate creation'));
@@ -230,6 +259,71 @@ export default {
       }
     }
 
+    if (!runnableStdioServer) {
+      out.push(skip('knowledge.mcp_stdio_tool_call_adapter', 'MCP stdio tools/call adapter', 'no stdio MCP server available for live tool-call check'));
+    } else {
+      const mcpToolCallApproval = await ctx.api('/api/mcp/tool-call', {
+        method: 'POST',
+        body: {
+          source: 'eval_knowledge_mcp_tool_call_adapter',
+          task: 'Approve one MCP stdio tools/call request.',
+          serverName: runnableStdioServer.name,
+          toolName: 'get_guidelines',
+          toolArguments: {},
+          execute: true,
+          requestApproval: true,
+          limit: 20,
+        },
+        timeoutMs: 15000,
+      });
+      const approvalId = mcpToolCallApproval.data?.mcpToolCall?.approval?.id || '';
+      let approveResult = null;
+      let output = null;
+      let cleanupOk = false;
+      if (approvalId) {
+        approveResult = await ctx.api(`/api/approvals/${approvalId}/approve`, {
+          method: 'POST',
+          body: { reason: 'eval: MCP stdio tools/call adapter' },
+          timeoutMs: 30000,
+        });
+        try {
+          output = JSON.parse(approveResult.data?.output || '{}');
+        } catch {
+          output = null;
+        }
+        const removed = await ctx.api(`/api/approvals/${approvalId}`, {
+          method: 'DELETE',
+          timeoutMs: 15000,
+        });
+        cleanupOk = removed.ok === true;
+      }
+      if (output?.status === 'local_execution_disabled') {
+        out.push(skip('knowledge.mcp_stdio_tool_call_adapter', 'MCP stdio tools/call adapter', 'local execution disabled; approval remained non-executing'));
+      } else {
+        const acceptableStatus = ['tool_called', 'tool_returned_error', 'tool_call_failed'].includes(output?.status);
+        out.push(
+          mcpToolCallApproval.ok &&
+            mcpToolCallApproval.status === 202 &&
+            approveResult?.ok === true &&
+            output?.adapter === 'stdio_tools_call' &&
+            acceptableStatus &&
+            output?.safety?.startsServers === true &&
+            output?.safety?.commandsExecuted === true &&
+            output?.safety?.callsMcpTools === true &&
+            output?.safety?.listsToolSchemas === true &&
+            output?.safety?.envValuesRedacted === true &&
+            cleanupOk
+            ? ok('knowledge.mcp_stdio_tool_call_adapter', 'MCP stdio tools/call adapter', `${output.status} from ${output.serverName || runnableStdioServer.name}/${output.toolName || 'get_guidelines'}`)
+            : fail('knowledge.mcp_stdio_tool_call_adapter', 'MCP stdio tools/call adapter', `approve ${approvalId || '-'} failed`, {
+              approval: mcpToolCallApproval.data,
+              approve: approveResult?.data,
+              output,
+              cleanupOk,
+            }),
+        );
+      }
+    }
+
     try {
       const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-mcp-servers'], {
         cwd: process.cwd(),
@@ -275,6 +369,31 @@ export default {
       );
     } catch (error) {
       out.push(fail('knowledge.mcp_workflow_cui', 'MCP workflow preview CUI', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-mcp-tool-call', '--task', 'Preview one MCP call without executing', '--server', 'pencil', '--tool', 'get_guidelines', '--arguments', '{}'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        /MCP Tool Call Preview/.test(stdout) &&
+          /preview-only=yes/.test(stdout) &&
+          /starts servers=no/.test(stdout) &&
+          /calls MCP tools=no/.test(stdout) &&
+          /approval calls tool=yes/.test(stdout) &&
+          /result sanitized=yes/.test(stdout)
+          ? ok('knowledge.mcp_tool_call_cui', 'MCP tool-call preview CUI', 'config CUI prints MCP tool-call preview evidence')
+          : fail('knowledge.mcp_tool_call_cui', 'MCP tool-call preview CUI', 'CUI output missing MCP tool-call preview markers', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('knowledge.mcp_tool_call_cui', 'MCP tool-call preview CUI', error instanceof Error ? error.message : String(error)));
     }
 
     const realtime = await ctx.api('/api/realtime/config', { timeoutMs: 15000 });

@@ -21986,6 +21986,111 @@ function sanitizeMcpTool(tool = {}) {
   };
 }
 
+function normalizeMcpToolArguments(value) {
+  if (value === undefined || value === null || value === '') return {};
+  let raw = value;
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`Invalid MCP tool arguments JSON: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('MCP tool arguments must be a JSON object.');
+  }
+  const cloned = cloneJsonObject(raw, {});
+  const bytes = Buffer.byteLength(JSON.stringify(cloned), 'utf8');
+  if (bytes > 50000) throw new Error('MCP tool arguments exceed the 50000 byte local safety limit.');
+  return cloned;
+}
+
+function jsonSizeBytes(value) {
+  try {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8');
+  } catch {
+    return 0;
+  }
+}
+
+function cloneJsonWithLimit(value, maxBytes = 20000, replacement = {}) {
+  const cloned = cloneJsonObject(value, replacement);
+  if (jsonSizeBytes(cloned) <= maxBytes) return cloned;
+  return {
+    redactedLargeJson: true,
+    bytes: jsonSizeBytes(cloned),
+    summary: 'JSON payload exceeded the local display limit.',
+  };
+}
+
+function sanitizeMcpContentItem(item = {}, index = 0) {
+  const raw = item && typeof item === 'object' ? item : {};
+  const type = compactRecordText(raw.type || 'unknown', 60);
+  if (type === 'text') {
+    return {
+      type,
+      text: compactRecordText(raw.text || '', 6000),
+      truncated: String(raw.text || '').length > 6000,
+    };
+  }
+  if (type === 'image' || type === 'audio') {
+    return {
+      type,
+      mimeType: compactRecordText(raw.mimeType || '', 120),
+      dataBytes: raw.data ? Buffer.byteLength(String(raw.data), 'base64') : 0,
+      dataRedacted: Boolean(raw.data),
+    };
+  }
+  if (type === 'resource_link') {
+    return {
+      type,
+      uri: redactUrlForStorage(raw.uri || '').slice(0, 1000),
+      name: compactRecordText(raw.name || '', 180),
+      description: compactRecordText(raw.description || '', 500),
+      mimeType: compactRecordText(raw.mimeType || '', 120),
+    };
+  }
+  if (type === 'resource') {
+    const resource = raw.resource && typeof raw.resource === 'object' ? raw.resource : {};
+    return {
+      type,
+      resource: {
+        uri: redactUrlForStorage(resource.uri || '').slice(0, 1000),
+        mimeType: compactRecordText(resource.mimeType || '', 120),
+        text: compactRecordText(resource.text || '', 5000),
+        textTruncated: String(resource.text || '').length > 5000,
+        blobBytes: resource.blob ? Buffer.byteLength(String(resource.blob), 'base64') : 0,
+        blobRedacted: Boolean(resource.blob),
+      },
+    };
+  }
+  return {
+    type,
+    index,
+    payload: cloneJsonWithLimit(raw, 4000, { type }),
+  };
+}
+
+function sanitizeMcpToolCallResult(result = {}) {
+  const raw = result && typeof result === 'object' ? result : {};
+  const content = Array.isArray(raw.content)
+    ? raw.content.slice(0, 20).map((item, index) => sanitizeMcpContentItem(item, index))
+    : [];
+  const structuredContent = raw.structuredContent === undefined
+    ? undefined
+    : cloneJsonWithLimit(raw.structuredContent, 20000, {});
+  const sanitized = {
+    isError: Boolean(raw.isError),
+    content,
+    contentTruncated: Array.isArray(raw.content) && raw.content.length > content.length,
+    structuredContent,
+  };
+  if (raw._meta && typeof raw._meta === 'object') {
+    sanitized.metaKeys = Object.keys(raw._meta).sort().slice(0, 30);
+  }
+  return sanitized;
+}
+
 function mcpStdioSafety(args = {}) {
   return {
     requiresApproval: true,
@@ -21993,7 +22098,7 @@ function mcpStdioSafety(args = {}) {
     startsServers: Boolean(args.startsServers),
     serverProcessStarted: Boolean(args.serverProcessStarted),
     commandsExecuted: Boolean(args.commandsExecuted),
-    callsMcpTools: false,
+    callsMcpTools: Boolean(args.callsMcpTools),
     listsToolSchemas: Boolean(args.listsToolSchemas),
     envValuesRedacted: true,
     urlQueriesRedacted: true,
@@ -22007,7 +22112,7 @@ function mcpErrorResult(status, args = {}, extra = {}) {
     status,
     approvalConfirmed: true,
     executed: false,
-    adapter: 'stdio_tools_list',
+    adapter: compactRecordText(extra.adapter || 'stdio_tools_list', 80),
     serverName: compactRecordText(args.serverName || '', 120),
     toolName: compactRecordText(args.toolName || '', 120),
     task: compactRecordText(args.task || '', 240),
@@ -22016,7 +22121,8 @@ function mcpErrorResult(status, args = {}, extra = {}) {
       startsServers: Boolean(extra.startsServers),
       serverProcessStarted: Boolean(extra.serverProcessStarted),
       commandsExecuted: Boolean(extra.commandsExecuted),
-      listsToolSchemas: false,
+      callsMcpTools: Boolean(extra.callsMcpTools),
+      listsToolSchemas: Boolean(extra.listsToolSchemas),
       timeoutMs: args.timeoutMs,
     }),
     error: compactRecordText(extra.error || '', 1000),
@@ -22046,36 +22152,47 @@ function startMcpStdioProcess(entry, args = {}) {
   return child;
 }
 
-async function inspectMcpServerToolsFromApproval(rawArgs = {}) {
-  const args = normalizeMcpApprovalArgs(rawArgs);
+function prepareApprovedMcpStdioServer(args = {}, purpose = 'inspection') {
   if (!LOCAL_EXEC_ENABLED) {
-    return mcpErrorResult('local_execution_disabled', args, {
-      summary: 'MCP approval was confirmed, but local execution is disabled, so JAVIS did not start the server.',
-      nextAction: 'Enable local execution in the CUI before approving MCP server inspection.',
-    });
+    return {
+      error: mcpErrorResult('local_execution_disabled', args, {
+        summary: `MCP approval was confirmed, but local execution is disabled, so JAVIS did not start the server for ${purpose}.`,
+        nextAction: 'Enable local execution in the CUI before approving MCP server use.',
+      }),
+    };
   }
   const entry = mcpFindRawServer(args);
   if (!entry) {
-    return mcpErrorResult('server_not_found', args, {
-      summary: 'MCP approval was confirmed, but the selected server is no longer configured or enabled.',
-      nextAction: 'Run MCP discovery again and create a fresh approval for the selected server.',
-    });
+    return {
+      error: mcpErrorResult('server_not_found', args, {
+        summary: 'MCP approval was confirmed, but the selected server is no longer configured or enabled.',
+        nextAction: 'Run MCP discovery again and create a fresh approval for the selected server.',
+      }),
+    };
   }
   const normalized = entry.normalized;
   const transport = mcpTransportForServer(entry.server);
   if (transport !== 'stdio') {
-    return mcpErrorResult('unsupported_transport', args, {
-      summary: `MCP server ${normalized.name} uses ${transport}; this adapter currently supports stdio tools/list only.`,
-      nextAction: 'Use a stdio MCP server or add the HTTP/SSE MCP client adapter next.',
-    });
+    return {
+      error: mcpErrorResult('unsupported_transport', args, {
+        summary: `MCP server ${normalized.name} uses ${transport}; this adapter currently supports stdio only.`,
+        nextAction: 'Use a stdio MCP server or add the HTTP/SSE MCP client adapter next.',
+      }),
+    };
   }
   if (!entry.server?.command) {
-    return mcpErrorResult('missing_command', args, {
-      summary: `MCP server ${normalized.name} is stdio but has no command configured.`,
-      nextAction: 'Fix the MCP server command in its config file, then create a fresh approval.',
-    });
+    return {
+      error: mcpErrorResult('missing_command', args, {
+        summary: `MCP server ${normalized.name} is stdio but has no command configured.`,
+        nextAction: 'Fix the MCP server command in its config file, then create a fresh approval.',
+      }),
+    };
   }
+  return { entry, normalized };
+}
 
+async function withMcpStdioSession(entry, args = {}, operation) {
+  const normalized = entry.normalized || {};
   let child = null;
   let settled = false;
   const stderrChunks = [];
@@ -22206,79 +22323,106 @@ async function inspectMcpServerToolsFromApproval(rawArgs = {}) {
       },
     });
     writeMessage({ jsonrpc: '2.0', method: 'notifications/initialized' });
-
-    const tools = [];
-    let cursor = '';
-    let pageCount = 0;
-    for (let page = 0; page < 3; page += 1) {
-      const params = cursor ? { cursor } : {};
-      const result = await sendRequest('tools/list', params);
-      pageCount += 1;
-      const pageTools = Array.isArray(result.tools) ? result.tools.map(sanitizeMcpTool).filter((tool) => tool.name) : [];
-      tools.push(...pageTools);
-      cursor = compactRecordText(result.nextCursor || '', 500);
-      if (!cursor) break;
-    }
-    const requestedToolFound = args.toolName
-      ? tools.some((tool) => tool.name === args.toolName || tool.name.toLowerCase() === args.toolName.toLowerCase())
-      : false;
-    const result = {
-      ok: true,
-      status: 'tools_listed',
-      approvalConfirmed: true,
-      executed: false,
-      adapter: 'stdio_tools_list',
-      serverName: normalized.name,
-      sourceId: normalized.sourceId,
-      sourceLabel: normalized.sourceLabel,
-      transport: 'stdio',
-      command: normalized.command,
-      toolName: args.toolName,
-      requestedToolFound,
-      task: args.task,
-      summary: requestedToolFound
-        ? `MCP server ${normalized.name} listed ${tools.length} tool schema(s); requested tool ${args.toolName} exists.`
-        : `MCP server ${normalized.name} listed ${tools.length} tool schema(s); requested tool ${args.toolName || '-'} was not found in the current schema list.`,
-      initialize: {
-        protocolVersion: compactRecordText(initialize.protocolVersion || '', 80),
-        serverInfo: initialize.serverInfo && typeof initialize.serverInfo === 'object'
-          ? {
-              name: compactRecordText(initialize.serverInfo.name || '', 160),
-              version: compactRecordText(initialize.serverInfo.version || '', 80),
-            }
-          : null,
-        capabilityKeys: initialize.capabilities && typeof initialize.capabilities === 'object'
-          ? Object.keys(initialize.capabilities).sort().slice(0, 40)
-          : [],
-      },
-      counts: {
-        tools: tools.length,
-        pages: pageCount,
-        hasMore: Boolean(cursor),
-      },
-      tools,
-      stderr: compactRecordText(stderrChunks.join('\n'), 2000),
-      safety: mcpStdioSafety({
-        startsServers: true,
-        serverProcessStarted: true,
-        commandsExecuted: true,
-        listsToolSchemas: true,
-        timeoutMs: args.timeoutMs,
-      }),
-      nextAction: requestedToolFound
-        ? 'Review the returned input schema, then create a separate confirmed tools/call request before running the MCP tool.'
-        : tools.length
-          ? 'Pick one of the returned MCP tool names, review its input schema, then create a fresh confirmed call request.'
-          : 'The server returned no tools. Check the server config/logs or choose a different MCP server.',
-    };
-    appendAudit('mcp.adapter.tools_listed', {
-      serverName: normalized.name,
-      sourceId: normalized.sourceId,
-      toolName: args.toolName,
-      requestedToolFound,
-      tools: tools.length,
+    return await operation({
+      child,
+      normalized,
+      initialize,
+      sendRequest,
+      writeMessage,
+      stderrText: () => compactRecordText(stderrChunks.join('\n'), 2000),
+      rawStderrText: () => stderrChunks.join('\n'),
     });
-    return result;
+  } catch (error) {
+    if (error && typeof error === 'object') {
+      error.mcpStderr = compactRecordText(stderrChunks.join('\n'), 1000);
+    }
+    throw error;
+  } finally {
+    stopChild();
+  }
+}
+
+async function inspectMcpServerToolsFromApproval(rawArgs = {}) {
+  const args = normalizeMcpApprovalArgs(rawArgs);
+  const prepared = prepareApprovedMcpStdioServer(args, 'tools/list inspection');
+  if (prepared.error) return prepared.error;
+  const { entry, normalized } = prepared;
+
+  try {
+    return await withMcpStdioSession(entry, args, async ({ initialize, sendRequest, stderrText }) => {
+      const tools = [];
+      let cursor = '';
+      let pageCount = 0;
+      for (let page = 0; page < 3; page += 1) {
+        const params = cursor ? { cursor } : {};
+        const result = await sendRequest('tools/list', params);
+        pageCount += 1;
+        const pageTools = Array.isArray(result.tools) ? result.tools.map(sanitizeMcpTool).filter((tool) => tool.name) : [];
+        tools.push(...pageTools);
+        cursor = compactRecordText(result.nextCursor || '', 500);
+        if (!cursor) break;
+      }
+      const requestedToolFound = args.toolName
+        ? tools.some((tool) => tool.name === args.toolName || tool.name.toLowerCase() === args.toolName.toLowerCase())
+        : false;
+      const result = {
+        ok: true,
+        status: 'tools_listed',
+        approvalConfirmed: true,
+        executed: false,
+        adapter: 'stdio_tools_list',
+        serverName: normalized.name,
+        sourceId: normalized.sourceId,
+        sourceLabel: normalized.sourceLabel,
+        transport: 'stdio',
+        command: normalized.command,
+        toolName: args.toolName,
+        requestedToolFound,
+        task: args.task,
+        summary: requestedToolFound
+          ? `MCP server ${normalized.name} listed ${tools.length} tool schema(s); requested tool ${args.toolName} exists.`
+          : `MCP server ${normalized.name} listed ${tools.length} tool schema(s); requested tool ${args.toolName || '-'} was not found in the current schema list.`,
+        initialize: {
+          protocolVersion: compactRecordText(initialize.protocolVersion || '', 80),
+          serverInfo: initialize.serverInfo && typeof initialize.serverInfo === 'object'
+            ? {
+                name: compactRecordText(initialize.serverInfo.name || '', 160),
+                version: compactRecordText(initialize.serverInfo.version || '', 80),
+              }
+            : null,
+          capabilityKeys: initialize.capabilities && typeof initialize.capabilities === 'object'
+            ? Object.keys(initialize.capabilities).sort().slice(0, 40)
+            : [],
+        },
+        counts: {
+          tools: tools.length,
+          pages: pageCount,
+          hasMore: Boolean(cursor),
+        },
+        tools,
+        stderr: stderrText(),
+        safety: mcpStdioSafety({
+          startsServers: true,
+          serverProcessStarted: true,
+          commandsExecuted: true,
+          listsToolSchemas: true,
+          timeoutMs: args.timeoutMs,
+        }),
+        nextAction: requestedToolFound
+          ? 'Review the returned input schema, then create a separate confirmed tools/call request before running the MCP tool.'
+          : tools.length
+            ? 'Pick one of the returned MCP tool names, review its input schema, then create a fresh confirmed call request.'
+            : 'The server returned no tools. Check the server config/logs or choose a different MCP server.',
+      };
+      appendAudit('mcp.adapter.tools_listed', {
+        serverName: normalized.name,
+        sourceId: normalized.sourceId,
+        toolName: args.toolName,
+        requestedToolFound,
+        tools: tools.length,
+      });
+      return result;
+    });
   } catch (error) {
     appendAudit('mcp.adapter.failed', {
       serverName: normalized.name,
@@ -22287,17 +22431,154 @@ async function inspectMcpServerToolsFromApproval(rawArgs = {}) {
     });
     return mcpErrorResult('tools_list_failed', args, {
       startsServers: true,
-      serverProcessStarted: Boolean(child),
-      commandsExecuted: Boolean(child),
+      serverProcessStarted: true,
+      commandsExecuted: true,
       summary: `MCP server ${normalized.name} did not complete initialize/tools/list within the guarded adapter.`,
       error: [
         error instanceof Error ? error.message : String(error),
-        stderrChunks.length ? `stderr: ${compactRecordText(stderrChunks.join('\n'), 1000)}` : '',
+        error?.mcpStderr ? `stderr: ${error.mcpStderr}` : '',
       ].filter(Boolean).join('\n'),
       nextAction: 'Inspect the MCP server config and stderr, then retry the confirmed tools/list request.',
     });
-  } finally {
-    stopChild();
+  }
+}
+
+async function callMcpServerToolFromApproval(rawArgs = {}) {
+  const args = normalizeMcpApprovalArgs(rawArgs);
+  let toolArguments = {};
+  try {
+    toolArguments = normalizeMcpToolArguments(rawArgs.toolArguments || rawArgs.arguments || rawArgs.input || {});
+  } catch (error) {
+    return mcpErrorResult('invalid_arguments', args, {
+      adapter: 'stdio_tools_call',
+      summary: 'MCP tool call approval contained invalid JSON arguments, so JAVIS did not start the server.',
+      error: error instanceof Error ? error.message : String(error),
+      nextAction: 'Create a fresh MCP tool-call approval with JSON object arguments.',
+    });
+  }
+  const prepared = prepareApprovedMcpStdioServer(args, 'tools/call execution');
+  if (prepared.error) {
+    return {
+      ...prepared.error,
+      adapter: 'stdio_tools_call',
+      safety: {
+        ...(prepared.error.safety || {}),
+        callsMcpTools: false,
+      },
+    };
+  }
+  const { entry, normalized } = prepared;
+  let listedSchemas = false;
+  let toolCallAttempted = false;
+
+  try {
+    return await withMcpStdioSession(entry, args, async ({ initialize, sendRequest, stderrText }) => {
+      const listed = await sendRequest('tools/list', {});
+      listedSchemas = true;
+      const tools = Array.isArray(listed.tools) ? listed.tools.map(sanitizeMcpTool).filter((tool) => tool.name) : [];
+      const selectedTool = tools.find((tool) => tool.name === args.toolName || tool.name.toLowerCase() === args.toolName.toLowerCase()) || null;
+      if (!selectedTool) {
+        return mcpErrorResult('tool_not_found', args, {
+          adapter: 'stdio_tools_call',
+          startsServers: true,
+          serverProcessStarted: true,
+          commandsExecuted: true,
+          callsMcpTools: false,
+          summary: `MCP server ${normalized.name} started, but tool ${args.toolName || '-'} was not found, so no tool call was made.`,
+          nextAction: 'Run tools/list, choose an available tool name, then create a fresh confirmed MCP tool-call request.',
+        });
+      }
+
+      toolCallAttempted = true;
+      const callResult = await sendRequest('tools/call', {
+        name: selectedTool.name,
+        arguments: toolArguments,
+      });
+      const sanitizedResult = sanitizeMcpToolCallResult(callResult);
+      const argumentBytes = jsonSizeBytes(toolArguments);
+      const result = {
+        ok: true,
+        status: sanitizedResult.isError ? 'tool_returned_error' : 'tool_called',
+        approvalConfirmed: true,
+        executed: true,
+        adapter: 'stdio_tools_call',
+        serverName: normalized.name,
+        sourceId: normalized.sourceId,
+        sourceLabel: normalized.sourceLabel,
+        transport: 'stdio',
+        command: normalized.command,
+        toolName: selectedTool.name,
+        task: args.task,
+        summary: sanitizedResult.isError
+          ? `MCP tool ${normalized.name}/${selectedTool.name} ran and returned a tool-level error.`
+          : `MCP tool ${normalized.name}/${selectedTool.name} ran successfully.`,
+        initialize: {
+          protocolVersion: compactRecordText(initialize.protocolVersion || '', 80),
+          serverInfo: initialize.serverInfo && typeof initialize.serverInfo === 'object'
+            ? {
+                name: compactRecordText(initialize.serverInfo.name || '', 160),
+                version: compactRecordText(initialize.serverInfo.version || '', 80),
+              }
+            : null,
+          capabilityKeys: initialize.capabilities && typeof initialize.capabilities === 'object'
+            ? Object.keys(initialize.capabilities).sort().slice(0, 40)
+            : [],
+        },
+        tool: selectedTool,
+        toolArguments: cloneJsonWithLimit(toolArguments, 12000, {}),
+        argumentSummary: {
+          keys: Object.keys(toolArguments).sort().slice(0, 40),
+          bytes: argumentBytes,
+        },
+        result: sanitizedResult,
+        counts: {
+          listedTools: tools.length,
+          contentItems: sanitizedResult.content.length,
+        },
+        stderr: stderrText(),
+        safety: mcpStdioSafety({
+          startsServers: true,
+          serverProcessStarted: true,
+          commandsExecuted: true,
+          callsMcpTools: true,
+          listsToolSchemas: true,
+          timeoutMs: args.timeoutMs,
+        }),
+        nextAction: sanitizedResult.isError
+          ? 'Review the tool-level error and create a new confirmed call with corrected arguments if appropriate.'
+          : 'Use the sanitized MCP tool result in the current workflow; create a fresh approval before any follow-up tool call.',
+      };
+      appendAudit('mcp.adapter.tool_called', {
+        serverName: normalized.name,
+        sourceId: normalized.sourceId,
+        toolName: selectedTool.name,
+        isError: sanitizedResult.isError,
+        argumentKeys: Object.keys(toolArguments).sort().slice(0, 40),
+        contentItems: sanitizedResult.content.length,
+      });
+      return result;
+    });
+  } catch (error) {
+    appendAudit('mcp.adapter.tool_call_failed', {
+      serverName: normalized.name,
+      sourceId: normalized.sourceId,
+      toolName: args.toolName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return mcpErrorResult('tool_call_failed', args, {
+      adapter: 'stdio_tools_call',
+      startsServers: true,
+      serverProcessStarted: true,
+      commandsExecuted: true,
+      callsMcpTools: toolCallAttempted,
+      listsToolSchemas: listedSchemas,
+      summary: `MCP server ${normalized.name} did not complete tools/call within the guarded adapter.`,
+      error: [
+        error instanceof Error ? error.message : String(error),
+        error?.mcpStderr ? `stderr: ${error.mcpStderr}` : '',
+      ].filter(Boolean).join('\n'),
+      nextAction: 'Inspect the MCP server config, arguments, and stderr, then create a fresh confirmed tool-call request.',
+    });
   }
 }
 
@@ -22530,8 +22811,10 @@ function mcpWorkflowPreview(options = {}) {
   const limit = Math.max(1, Math.min(200, Number(options.limit || 80)));
   const discovery = mcpServerDiscoverySnapshot({ limit, source: options.source || 'mcp_workflow' });
   const serverKeys = new Set();
+  const dedupeBySource = Boolean(String(options.sourceId || options.mcpSourceId || '').trim());
   const servers = (Array.isArray(discovery.servers) ? discovery.servers : []).filter((server) => {
     const key = [
+      dedupeBySource ? String(server.sourceId || '').toLowerCase() : '',
       String(server.name || '').toLowerCase(),
       String(server.transport || '').toLowerCase(),
       String(server.command || '').toLowerCase(),
@@ -22709,7 +22992,218 @@ function mcpWorkflowPreview(options = {}) {
         ? `Inspect ${selected.name} tool schemas through a confirmed MCP client path, then ask before executing any tool call.`
         : hasServers
           ? 'Name the target MCP server or describe the task more concretely so JAVIS can select one.'
-          : 'Add an MCP server config first, then rerun this preview.',
+      : 'Add an MCP server config first, then rerun this preview.',
+  };
+}
+
+function mcpToolCallPreview(options = {}) {
+  const limit = Math.max(1, Math.min(200, Number(options.limit || 80)));
+  const discovery = mcpServerDiscoverySnapshot({ limit, source: options.source || 'mcp_tool_call' });
+  const serverKeys = new Set();
+  const dedupeBySource = Boolean(String(options.sourceId || options.mcpSourceId || '').trim());
+  const servers = (Array.isArray(discovery.servers) ? discovery.servers : []).filter((server) => {
+    const key = [
+      dedupeBySource ? String(server.sourceId || '').toLowerCase() : '',
+      String(server.name || '').toLowerCase(),
+      String(server.transport || '').toLowerCase(),
+      String(server.command || '').toLowerCase(),
+      String(server.urlHost || '').toLowerCase(),
+    ].join('|');
+    if (serverKeys.has(key)) return false;
+    serverKeys.add(key);
+    return true;
+  });
+  const task = compactRecordText(options.task || options.message || options.instruction || options.query || '', 500);
+  const requestedServerName = compactRecordText(options.serverName || options.server || '', 120);
+  const requestedToolName = compactRecordText(options.toolName || options.tool || '', 120);
+  const executeRequested = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const requestApproval = options.requestApproval === true || String(options.requestApproval || '').toLowerCase() === 'true';
+  let toolArguments = {};
+  let argumentError = '';
+  try {
+    toolArguments = normalizeMcpToolArguments(options.toolArguments || options.arguments || options.input || {});
+  } catch (error) {
+    argumentError = error instanceof Error ? error.message : String(error);
+  }
+  const terms = mcpWorkflowTerms({
+    ...options,
+    intent: 'tool_call',
+    task: [task, requestedToolName].filter(Boolean).join(' '),
+  });
+  const rankedServers = servers
+    .map((server) => ({ server, rank: mcpServerWorkflowScore(server, terms, options) }))
+    .filter(({ rank }) => !terms.length || rank.matches.length || requestedServerName)
+    .sort((a, b) => b.rank.score - a.rank.score || Number(b.server.enabled) - Number(a.server.enabled));
+  const fallbackServers = servers
+    .map((server) => ({ server, rank: mcpServerWorkflowScore(server, [], options) }))
+    .sort((a, b) => b.rank.score - a.rank.score || Number(b.server.enabled) - Number(a.server.enabled));
+  const ranked = rankedServers.length ? rankedServers : fallbackServers;
+  const candidateLimit = Math.max(1, Math.min(12, Number(options.candidateLimit || 6)));
+  const candidates = ranked.slice(0, candidateLimit).map(({ server, rank }) => mcpWorkflowCandidate(server, rank));
+  const selected = candidates[0] || null;
+  const hasServers = servers.length > 0;
+  const argumentBytes = jsonSizeBytes(toolArguments);
+  const canRequestApproval = executeRequested && requestApproval && selected && requestedToolName && !argumentError;
+  let approval = null;
+  if (canRequestApproval) {
+    approval = createActionApproval({
+      action: 'mcp_tool_call_request',
+      riskLevel: 4,
+      summary: `Run confirmed MCP tool call: ${selected.name}/${requestedToolName}`,
+      args: {
+        serverName: selected.name,
+        toolName: requestedToolName,
+        toolArguments,
+        task,
+        intent: 'tool_call',
+        transport: selected.transport,
+        risk: selected.risk,
+        sourceId: selected.sourceId,
+        sourceLabel: selected.sourceLabel,
+        command: selected.command,
+        urlHost: selected.urlHost,
+        source: options.source || 'mcp_tool_call',
+      },
+    }, 'mcp_tool_call_requires_confirmation');
+  }
+  const status = argumentError
+    ? 'invalid_arguments'
+    : executeRequested
+      ? approval
+        ? 'approval_required'
+        : requestApproval
+          ? selected && !requestedToolName
+            ? 'needs_tool_name'
+            : 'needs_server_selection'
+          : 'approval_required'
+      : selected
+        ? 'planned'
+        : hasServers
+          ? 'needs_server_selection'
+          : 'needs_mcp_config';
+  const summary = argumentError
+    ? `MCP tool-call arguments are invalid: ${compactRecordText(argumentError, 220)}`
+    : executeRequested
+      ? approval
+        ? `MCP tool call is waiting for approval: ${approval.summary}. No MCP server has been started yet.`
+        : requestApproval && selected && !requestedToolName
+          ? 'Choose a specific MCP tool name before creating a tool-call approval request.'
+          : 'MCP tool calls require an explicit approval request. Preview remains safe and does not start servers or call tools.'
+      : selected
+        ? `Prepared MCP tool-call preview for ${selected.name}/${requestedToolName || '-'}; no server started and no tool called.`
+        : hasServers
+          ? 'MCP servers are configured, but the task did not match a clear candidate yet.'
+          : 'No configured MCP servers were found locally.';
+  return {
+    ok: !argumentError && (!executeRequested || Boolean(approval)),
+    status,
+    intent: 'tool_call',
+    task,
+    summary,
+    spokenSummary: summary,
+    previewOnly: true,
+    executed: false,
+    executeRequested,
+    requestApproval,
+    approvalRequired: Boolean(executeRequested),
+    approval,
+    requested: {
+      serverName: requestedServerName,
+      toolName: requestedToolName,
+      terms,
+      argumentKeys: Object.keys(toolArguments).sort().slice(0, 40),
+      argumentBytes,
+    },
+    discovery: {
+      summary: discovery.summary,
+      counts: discovery.counts,
+      files: discovery.files,
+    },
+    counts: {
+      servers: boundedCount(discovery.counts?.servers, 1000),
+      uniqueServers: servers.length,
+      candidates: candidates.length,
+      enabled: boundedCount(discovery.counts?.enabled, 1000),
+    },
+    candidates,
+    selectedServer: selected,
+    toolArguments: cloneJsonWithLimit(toolArguments, 12000, {}),
+    actionPlan: [
+      {
+        id: 'discover_configured_servers',
+        label: 'Discover configured MCP servers',
+        status: 'done',
+        output: `${servers.length} unique candidate server(s) from ${discovery.counts.servers || 0} sanitized record(s).`,
+        safety: 'read-only; env values and URL queries redacted',
+      },
+      {
+        id: 'select_candidate_server',
+        label: 'Select candidate MCP server',
+        status: selected ? 'done' : hasServers ? 'needs_selection' : 'needs_config',
+        serverName: selected?.name || '',
+        output: selected
+          ? `${selected.name} matched with score ${selected.score}.`
+          : hasServers
+            ? 'Ask for a more specific task or server name.'
+            : 'Configure MCP servers in Claude Desktop, Claude Code, Cursor, or project .mcp.json.',
+      },
+      {
+        id: 'review_tool_arguments',
+        label: 'Review tool arguments',
+        status: argumentError ? 'blocked' : 'done',
+        output: argumentError
+          ? argumentError
+          : `${Object.keys(toolArguments).length} argument key(s), ${argumentBytes} byte(s).`,
+        requiresConfirmation: true,
+      },
+      {
+        id: 'execute_tool_call',
+        label: 'Execute MCP tools/call',
+        status: approval ? 'approval_required' : executeRequested ? 'needs_explicit_approval_request' : 'not_requested',
+        output: approval
+          ? `Pending approval ${approval.id} created. If approved, JAVIS will start the stdio server, verify the tool exists with tools/list, execute one tools/call, sanitize the result, and stop the process.`
+          : executeRequested
+            ? 'Not executed. Pass requestApproval:true with a selected server, toolName, and reviewed arguments to create a confirmation gate.'
+            : 'Not executed. Execution requires explicit approval.',
+        requiresConfirmation: true,
+      },
+    ],
+    safety: {
+      readOnly: true,
+      previewOnly: true,
+      startsServers: false,
+      commandsExecuted: false,
+      callsMcpTools: false,
+      envValuesRedacted: true,
+      urlQueriesRedacted: true,
+      requiresConfirmationForExecution: true,
+      approvalCallsMcpTools: true,
+      approvalStartsServer: true,
+      approvalVerifiesToolSchemaFirst: true,
+      toolResultSanitized: true,
+    },
+    blockedReason: argumentError
+      ? 'mcp_tool_arguments_invalid'
+      : executeRequested && !approval
+        ? requestApproval && selected && !requestedToolName
+          ? 'mcp_tool_name_required_for_approval'
+          : requestApproval
+            ? 'mcp_server_selection_required_for_approval'
+            : 'mcp_tool_call_requires_request_approval'
+        : '',
+    nextAction: argumentError
+      ? 'Fix toolArguments so they are a JSON object, then rerun the preview.'
+      : executeRequested
+        ? approval
+          ? `Review approval ${approval.id}; approving it will call ${selected?.name || 'the selected server'}/${requestedToolName} once.`
+          : requestApproval && selected && !requestedToolName
+            ? 'Provide toolName for the selected MCP server, then rerun with requestApproval:true.'
+            : 'Review this preview, then rerun with requestApproval:true, serverName, toolName, and toolArguments.'
+        : selected
+          ? 'Review the selected server and arguments; rerun with execute:true and requestApproval:true to create a confirmation gate.'
+          : hasServers
+            ? 'Name the target MCP server or describe the task more concretely so JAVIS can select one.'
+            : 'Add an MCP server config first, then rerun this preview.',
   };
 }
 
@@ -36588,6 +37082,10 @@ async function executeApprovedAction(approval) {
     const result = await inspectMcpServerToolsFromApproval(approval.args || {});
     return JSON.stringify(result);
   }
+  if (approval.action === 'mcp_tool_call_request') {
+    const result = await callMcpServerToolFromApproval(approval.args || {});
+    return JSON.stringify(result);
+  }
   if (approval.action === 'browser_control') {
     if (approval.args?.domAction) {
       const result = await executeBrowserDomAction({ ...approval.args, execute: true }, { approved: true });
@@ -36682,7 +37180,7 @@ async function executeApproval(approval) {
   setApproval(approval.id, { status: 'approved' });
   try {
     const result = await executeApprovedAction(approval);
-    if (approval.action === 'mcp_execution_request') {
+    if (approval.action === 'mcp_execution_request' || approval.action === 'mcp_tool_call_request') {
       let parsed = null;
       try {
         parsed = JSON.parse(result);
@@ -41842,6 +42340,39 @@ function startApiServer() {
       res.status(result.approval ? 202 : result.ok ? 200 : 409).json({ mcpWorkflow: result });
     } catch (error) {
       jsonError(res, 500, 'MCP workflow preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/mcp/tool-call', (req, res) => {
+    try {
+      let toolArguments = {};
+      if (req.query.arguments || req.query.toolArguments) {
+        toolArguments = req.query.arguments || req.query.toolArguments;
+      }
+      const result = mcpToolCallPreview({
+        task: req.query.task || req.query.query || '',
+        query: req.query.query || '',
+        serverName: req.query.serverName || req.query.server || '',
+        toolName: req.query.toolName || req.query.tool || '',
+        sourceId: req.query.sourceId || req.query.mcpSourceId || '',
+        toolArguments,
+        execute: req.query.execute || false,
+        requestApproval: req.query.requestApproval || false,
+        limit: req.query.limit || 80,
+        source: req.query.source || 'api',
+      });
+      res.status(result.approval ? 202 : result.ok ? 200 : 409).json({ mcpToolCall: result });
+    } catch (error) {
+      jsonError(res, 500, 'MCP tool-call preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/mcp/tool-call', express.json({ limit: '1mb' }), (req, res) => {
+    try {
+      const result = mcpToolCallPreview({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.approval ? 202 : result.ok ? 200 : 409).json({ mcpToolCall: result });
+    } catch (error) {
+      jsonError(res, 500, 'MCP tool-call preview failed', error instanceof Error ? error.message : String(error));
     }
   });
 

@@ -324,6 +324,7 @@ async function printStatus() {
   console.log('K. Show knowledge workflow benchmarks');
   console.log('X. Show MCP server discovery');
   console.log('W. Preview MCP workflow plan');
+  console.log('Z. Preview MCP tool call');
   console.log('C. Show creative workflow benchmarks');
   console.log('U. Show app workflow benchmarks');
   console.log('Y. Show productivity workflow benchmarks');
@@ -1273,6 +1274,60 @@ async function showMcpWorkflow(options = {}) {
   });
   console.log('');
   printMcpWorkflow(result);
+}
+
+function printMcpToolCall(result) {
+  const call = result?.mcpToolCall || result || {};
+  const counts = call.counts || {};
+  const safety = call.safety || {};
+  const requested = call.requested || {};
+  console.log('MCP Tool Call Preview');
+  console.log('=====================');
+  console.log(call.summary || 'No MCP tool-call preview summary available.');
+  console.log(`Status: ${call.status || 'unknown'} · candidates=${counts.candidates || 0} · servers=${counts.servers || 0}`);
+  console.log(`Safety: preview-only=${safety.previewOnly ? 'yes' : 'no'} · starts servers=${safety.startsServers ? 'yes' : 'no'} · calls MCP tools=${safety.callsMcpTools ? 'yes' : 'no'} · approval calls tool=${safety.approvalCallsMcpTools ? 'yes' : 'no'} · result sanitized=${safety.toolResultSanitized ? 'yes' : 'no'} · confirmation required=${safety.requiresConfirmationForExecution ? 'yes' : 'no'}`);
+  if (call.task) console.log(`Task: ${compact(call.task, 220)}`);
+  console.log(`Arguments: keys=${Array.isArray(requested.argumentKeys) ? requested.argumentKeys.join(', ') || '-' : '-'} · bytes=${requested.argumentBytes || 0}`);
+  const selected = call.selectedServer || null;
+  if (selected) {
+    const target = selected.command ? `cmd=${selected.command}` : selected.urlHost ? `host=${selected.urlHost}` : 'target=-';
+    console.log(`\nSelected: ${selected.name || '-'} · ${selected.transport || 'unknown'} · ${selected.risk || 'unknown'} · ${target}`);
+  }
+  if (call.approval) {
+    console.log(`\nApproval: ${call.approval.id || '-'} · ${call.approval.status || '-'} · ${call.approval.summary || '-'}`);
+  }
+  const steps = Array.isArray(call.actionPlan) ? call.actionPlan : [];
+  if (steps.length) {
+    console.log('\nPlan:');
+    for (const step of steps) {
+      console.log(`- ${step.id || '-'} · ${step.status || '-'} · ${compact(step.output || step.label || '', 180)}`);
+    }
+  }
+  if (call.nextAction) console.log(`\nNext: ${call.nextAction}`);
+}
+
+async function showMcpToolCall(options = {}) {
+  const task = options.task || argvValue('--task', '') || argvValue('--query', '') || 'Preview an MCP tool call without executing.';
+  const serverName = options.serverName || argvValue('--server', '') || argvValue('--server-name', '');
+  const toolName = options.toolName || argvValue('--tool', '') || argvValue('--tool-name', '');
+  const sourceId = options.sourceId || argvValue('--source-id', '') || argvValue('--mcp-source-id', '');
+  const argumentText = options.arguments || argvValue('--arguments', '') || argvValue('--args', '') || '{}';
+  const requestApproval = options.requestApproval === true || process.argv.includes('--request-approval');
+  const result = await request('/api/mcp/tool-call', {
+    method: 'POST',
+    body: {
+      source: 'cui_mcp_tool_call',
+      task,
+      serverName,
+      toolName,
+      sourceId,
+      toolArguments: argumentText,
+      execute: requestApproval,
+      requestApproval,
+    },
+  });
+  console.log('');
+  printMcpToolCall(result);
 }
 
 function printCreativeBenchmarks(result) {
@@ -2543,6 +2598,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-mcp-tool-call') || process.argv.includes('--mcp-tool-call')) {
+    await showMcpToolCall();
+    return;
+  }
+
   if (process.argv.includes('--print-creative-benchmarks') || process.argv.includes('--creative-benchmarks')) {
     await showCreativeBenchmarks();
     return;
@@ -2676,6 +2736,17 @@ async function main() {
       } else if (answer === 'w' || answer === 'mcp workflow' || answer === 'mcp preview') {
         const task = await rl.question('Task to preview MCP routing for: ');
         await showMcpWorkflow({ task });
+      } else if (answer === 'z' || answer === 'mcp tool call' || answer === 'mcp call') {
+        const task = await rl.question('Task for this MCP tool call: ');
+        const serverName = await rl.question('MCP server name: ');
+        const toolName = await rl.question('MCP tool name: ');
+        const argumentText = await rl.question('Tool arguments JSON object (default {}): ');
+        await showMcpToolCall({
+          task,
+          serverName,
+          toolName,
+          arguments: argumentText.trim() || '{}',
+        });
       } else if (answer === 'c' || answer === 'creative benchmark' || answer === 'creative benchmarks') {
         await showCreativeBenchmarks();
       } else if (answer === 'u' || answer === 'app benchmark' || answer === 'app benchmarks') {
