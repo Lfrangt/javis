@@ -1816,6 +1816,8 @@ function printRealtimeEvidence(result) {
   const handoffEvents = Array.isArray(handoffTools.recent) ? handoffTools.recent : [];
   const workNextTools = evidence.workNextTools || {};
   const workNextEvents = Array.isArray(workNextTools.recent) ? workNextTools.recent : [];
+  const delegateTools = evidence.delegateTools || {};
+  const delegateEvents = Array.isArray(delegateTools.recent) ? delegateTools.recent : [];
   const approvalTools = evidence.approvalTools || {};
   const approvalEvents = Array.isArray(approvalTools.recent) ? approvalTools.recent : [];
   const autopilotTools = evidence.autopilotTools || {};
@@ -1954,6 +1956,30 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = workNext.output ? ` · ${compact(workNext.output, 140)}` : '';
     console.log(`- ${event.name || 'get_work_next'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nDelegation tools:');
+  console.log(`- observed ${Number(delegateTools.count || 0)} recent event(s) · preview=${delegateTools.hasPreview ? 'yes' : 'no'} · confirm-gate=${delegateTools.hasConfirmationGate ? 'yes' : 'no'} · queued=${delegateTools.hasQueued ? 'yes' : 'no'} · serialized=${delegateTools.hasSerialized ? 'yes' : 'no'} · safe-preview=${delegateTools.safePreview ? 'yes' : 'no'}`);
+  console.log(`- policy=${delegateTools.policyGated ? 'yes' : 'pending'} · starts=${Number(delegateTools.startsWorkerCount || 0)} · conflicts=${Number(delegateTools.conflictCount || 0)} · worker-may-write=${delegateTools.workerMayMutateFiles ? 'yes' : 'no'}`);
+  console.log(`- next ${compact(delegateTools.nextAction || dogfood.delegateTools?.nextAction || 'Ask live voice to preview a scoped Codex/Claude/background worker delegation before confirming execution.', 220)}`);
+  for (const event of delegateEvents.slice(0, 4)) {
+    const delegate = event.delegate || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      delegate.status ? `status=${delegate.status}` : '',
+      delegate.mode ? `mode=${delegate.mode}` : '',
+      delegate.owner ? `owner=${delegate.owner}` : '',
+      delegate.scope ? `scope=${compact(delegate.scope, 80)}` : '',
+      delegate.access ? `access=${delegate.access}` : '',
+      delegate.previewOnly ? 'preview' : '',
+      delegate.requiresConfirmation ? 'confirmation' : '',
+      delegate.confirm ? 'confirmed' : '',
+      delegate.queued ? 'queued' : '',
+      delegate.serialized ? 'serialized' : '',
+      delegate.jobId ? `job=${compact(delegate.jobId, 10)}` : '',
+    ].filter(Boolean);
+    const summary = delegate.spokenSummary ? ` · ${compact(delegate.spokenSummary, 160)}` : '';
+    console.log(`- ${event.name || 'delegate_task'} · ${bits.join(' · ')}${summary}`);
   }
   console.log('\nApproval tools:');
   console.log(`- observed ${Number(approvalTools.count || 0)} recent event(s) · list=${approvalTools.hasList ? 'yes' : 'no'} · confirm gate=${approvalTools.hasConfirmationGate ? 'yes' : 'no'} · reject=${approvalTools.hasReject ? 'yes' : 'no'} · approve=${approvalTools.hasApprove ? 'yes' : 'no'}`);
@@ -2153,8 +2179,9 @@ function printRealtimeEvidence(result) {
       const shortcut = event.shortcut?.action ? ` · shortcut=${event.shortcut.action}` : '';
       const browser = event.browser?.action ? ` · browser=${event.browser.action}` : '';
       const workNext = event.workNext?.action ? ` · workNext=${event.workNext.action}` : '';
+      const delegate = event.delegate?.status ? ` · delegate=${event.delegate.status}` : '';
       const collaboration = event.collaboration?.action ? ` · collaboration=${event.collaboration.action}` : '';
-      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}${browser}${workNext}${collaboration}`);
+      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}${browser}${workNext}${delegate}${collaboration}`);
     }
   } else {
     console.log('- none yet');

@@ -22398,6 +22398,253 @@ async function routeParallelTasks(options = {}) {
   };
 }
 
+function truthyDelegateFlag(value) {
+  return value === true || String(value || '').trim().toLowerCase() === 'true';
+}
+
+function normalizeDelegateMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return ['background', 'codex', 'claude'].includes(mode) ? mode : 'background';
+}
+
+function delegateTaskScopeFor(task, options = {}) {
+  return String(options.scope || options.path || options.file || options.target || '').trim()
+    || extractOwnershipPathToken(task)
+    || 'voice delegated task';
+}
+
+function delegateTaskAccessFor({ task, mode, scope, options = {} }) {
+  const explicit = normalizeOwnershipAccess(options.access || options.ownershipAccess);
+  if (explicit) return explicit;
+  return inferParallelOwnershipAccess({
+    task,
+    title: task,
+    mode,
+    scope,
+    access: '',
+  });
+}
+
+function compactDelegateOwnership(ownership = {}) {
+  if (!ownership || typeof ownership !== 'object') return {};
+  return {
+    access: compactRecordText(ownership.access || '', 20),
+    key: compactRecordText(ownership.key || '', 220),
+    parallelSafe: ownership.parallelSafe !== false,
+    serialized: ownership.serialized === true,
+    reason: compactRecordText(ownership.reason || '', 240),
+    conflicts: Array.isArray(ownership.conflicts)
+      ? ownership.conflicts.slice(0, 5).map((conflict) => ({
+        owner: compactRecordText(conflict.owner || '', 100),
+        key: compactRecordText(conflict.key || '', 220),
+        task: compactRecordText(conflict.task || '', 180),
+        claimId: compactRecordText(conflict.claimId || '', 120),
+        source: compactRecordText(conflict.source || '', 80),
+      }))
+      : [],
+  };
+}
+
+function compactDelegateRouting(routing = {}) {
+  if (!routing || typeof routing !== 'object') return null;
+  return {
+    id: compactRecordText(routing.id || '', 120),
+    lane: compactRecordText(routing.lane || routing.decision?.lane || '', 40),
+    owner: compactRecordText(routing.owner || '', 100),
+    scope: compactRecordText(routing.scope || '', 220),
+    parallelGroup: compactRecordText(routing.parallelGroup || '', 120),
+    status: compactRecordText(routing.status || '', 40),
+    jobId: compactRecordText(routing.jobId || '', 120),
+    workflowId: compactRecordText(routing.workflowId || '', 120),
+    resultLink: compactRecordText(routing.resultLink || '', 180),
+    failureKind: compactRecordText(routing.failureKind || '', 80),
+    resultSummary: compactRecordText(routing.resultSummary || '', 260),
+  };
+}
+
+function compactDelegateJob(job = {}) {
+  if (!job || typeof job !== 'object' || !job.id) return null;
+  return {
+    id: compactRecordText(job.id || '', 120),
+    title: compactRecordText(job.title || '', 180),
+    mode: compactRecordText(job.mode || '', 40),
+    source: compactRecordText(job.source || '', 80),
+    status: compactRecordText(job.status || '', 40),
+    createdAt: Number(job.createdAt || 0),
+    updatedAt: Number(job.updatedAt || 0),
+    failureKind: compactRecordText(job.failureKind || '', 80),
+    result: compactRecordText(job.result || '', 260),
+  };
+}
+
+function compactDelegateResult(item = {}) {
+  const routing = compactDelegateRouting(item.routing || item.routeRecord || {});
+  return {
+    index: Number(item.index || 0),
+    task: compactRecordText(item.task || '', 260),
+    ok: item.ok !== false,
+    queued: Boolean(item.queued || item.job?.id),
+    output: compactRecordText(item.output || '', 420),
+    decision: item.decision
+      ? {
+        lane: compactRecordText(item.decision.lane || '', 40),
+        mode: compactRecordText(item.decision.mode || '', 40),
+        label: compactRecordText(item.decision.label || '', 80),
+        reason: compactRecordText(item.decision.reason || '', 220),
+        execute: Boolean(item.decision.execute),
+        requiresLocalExecution: Boolean(item.decision.requiresLocalExecution),
+        requiresOpenAiKey: Boolean(item.decision.requiresOpenAiKey),
+      }
+      : null,
+    routing,
+    job: compactDelegateJob(item.job || {}),
+    ownership: compactDelegateOwnership(item.ownership || {}),
+  };
+}
+
+function delegateTaskSpokenSummary(payload = {}) {
+  const owner = payload.owner || payload.mode || 'worker';
+  const scope = payload.scope || 'this task';
+  if (payload.requiresConfirmation) {
+    return `已准备把任务交给 ${owner}，范围是 ${scope}；还没有启动，需要你确认后才会执行。`;
+  }
+  if (payload.queued) {
+    return `已把任务交给 ${owner} 后台处理，范围是 ${scope}。`;
+  }
+  if (payload.status === 'blocked') {
+    return `这个委派任务没有启动：${payload.result?.ownership?.reason || payload.output || '范围被协作锁挡住了。'}`;
+  }
+  return `已预览委派方案：${owner} 负责 ${scope}；目前没有启动后台 worker。`;
+}
+
+async function delegateTaskPayload(options = {}) {
+  const task = String(options.task || options.message || options.instruction || options.title || '').trim();
+  if (!task) {
+    return {
+      ok: false,
+      status: 'missing_task',
+      output: 'No task was provided.',
+    };
+  }
+  const mode = normalizeDelegateMode(options.mode || options.lane);
+  const scope = delegateTaskScopeFor(task, options);
+  const access = delegateTaskAccessFor({ task, mode, scope, options });
+  const owner = String(options.owner || ownerForRoutingLane(mode)).trim();
+  const parallelGroup = String(options.parallelGroup || options.group || `delegate:${mode}`).trim().slice(0, 120);
+  const executeRequested = truthyDelegateFlag(options.execute);
+  const confirm = truthyDelegateFlag(options.confirm) || truthyDelegateFlag(options.confirmed);
+  const shouldExecute = executeRequested && confirm;
+  const requiresConfirmation = executeRequested && !confirm;
+  const source = String(options.source || 'voice_delegate').slice(0, 80);
+  const delegatedTask = {
+    task,
+    mode,
+    owner,
+    scope,
+    access,
+    timeoutMs: options.timeoutMs,
+    includeScreen: options.includeScreen,
+    useMemory: options.useMemory,
+    memoryLimit: options.memoryLimit,
+  };
+  const routed = await routeParallelTasks({
+    tasks: [delegatedTask],
+    execute: shouldExecute,
+    parallelGroup,
+    source,
+  });
+  const first = Array.isArray(routed.results) ? routed.results[0] || {} : {};
+  const result = compactDelegateResult(first);
+  const routingLedger = Array.isArray(routed.routingLedger)
+    ? routed.routingLedger.slice(0, 3).map((entry) => ({
+      id: compactRecordText(entry.id || '', 120),
+      lane: compactRecordText(entry.lane || '', 40),
+      owner: compactRecordText(entry.owner || '', 100),
+      status: compactRecordText(entry.status || '', 40),
+      scope: compactRecordText(entry.scope || '', 220),
+      parallelGroup: compactRecordText(entry.parallelGroup || '', 120),
+      resultLink: compactRecordText(entry.resultLink || '', 180),
+      resultSummary: compactRecordText(entry.resultSummary || '', 260),
+      blocker: compactRecordText(entry.blocker || '', 220),
+      nextAction: compactRecordText(entry.nextAction || '', 220),
+    }))
+    : [];
+  const queued = Boolean(shouldExecute && result.queued && result.job?.id);
+  const serialized = result.ownership?.serialized === true;
+  const executed = Boolean(shouldExecute && !serialized && routed.ok !== false);
+  const status = requiresConfirmation
+    ? 'confirmation_required'
+    : queued
+      ? 'queued'
+      : serialized && shouldExecute
+        ? 'blocked'
+        : shouldExecute
+          ? (result.routing?.status || (routed.ok ? 'done' : 'blocked'))
+          : 'preview';
+  const ok = requiresConfirmation ? true : shouldExecute ? routed.ok !== false && !serialized : routed.ok !== false;
+  const payload = {
+    ok,
+    status,
+    task: compactRecordText(task, 420),
+    mode,
+    owner,
+    scope,
+    access,
+    parallelGroup,
+    source,
+    executeRequested,
+    confirm,
+    requiresConfirmation,
+    previewOnly: !shouldExecute,
+    executed,
+    queued,
+    result,
+    routing: result.routing,
+    job: result.job,
+    ownership: result.ownership,
+    counts: routed.counts || {},
+    routingLedger,
+    safety: {
+      localOnly: true,
+      startsWorkers: queued,
+      startsMicrophone: false,
+      mutatesFilesDirectly: false,
+      workerMayMutateFiles: access === 'write',
+      serializesOverlappingWriteScopes: true,
+      confirmationRequiredForExecution: true,
+      usesWorkerPolicy: true,
+    },
+    output: compactRecordText(routed.output || result.output || '', 1000),
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 8000,
+      omitted: [
+        'raw job log',
+        'full routing records',
+        'full task prompt',
+      ],
+    },
+  };
+  payload.spokenSummary = delegateTaskSpokenSummary(payload);
+  payload.responseBudget.outputBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  appendAudit('task_delegate.routed', {
+    source,
+    status,
+    mode,
+    owner,
+    scope,
+    access,
+    parallelGroup,
+    executeRequested,
+    confirm,
+    requiresConfirmation,
+    queued,
+    serialized,
+    startsWorkers: queued,
+  });
+  return payload;
+}
+
 function formatFileEntries(entries = []) {
   return entries
     .slice(0, 80)
@@ -28622,6 +28869,10 @@ const REALTIME_WORK_NEXT_TOOL_NAMES = new Set([
   REALTIME_WORK_NEXT_TOOL_NAME,
   REALTIME_RUN_WORK_NEXT_TOOL_NAME,
 ]);
+const REALTIME_DELEGATE_TOOL_NAME = 'delegate_task';
+const REALTIME_DELEGATE_TOOL_NAMES = new Set([
+  REALTIME_DELEGATE_TOOL_NAME,
+]);
 const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
@@ -28768,6 +29019,50 @@ function realtimeWorkNextToolSummary(name, args = {}, result = {}) {
     browserFillManualCount: Array.isArray(browserFillRecovery.manual) ? browserFillRecovery.manual.length : 0,
     browserFillStoresSensitiveValue: false,
     output: compactRecordText(output.output || resultBody.output || '', 360),
+  };
+}
+
+function realtimeDelegateToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_DELEGATE_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const item = output.result || {};
+  const routing = item.routing || {};
+  const ownership = item.ownership || {};
+  const job = item.job || {};
+  const safety = output.safety || {};
+  return {
+    action: 'delegate',
+    ok: output.ok === true && result.ok === true,
+    status: compactRecordText(output.status || routing.status || '', 80),
+    previewOnly: output.previewOnly === true,
+    executed: output.executed === true,
+    queued: output.queued === true || Boolean(job.id),
+    executeRequested: output.executeRequested === true || args?.execute === true,
+    requiresConfirmation: output.requiresConfirmation === true,
+    confirm: output.confirm === true,
+    mode: compactRecordText(output.mode || routing.lane || args?.mode || args?.lane || '', 40),
+    owner: compactRecordText(output.owner || routing.owner || args?.owner || '', 100),
+    scope: compactRecordText(output.scope || routing.scope || args?.scope || '', 220),
+    access: compactRecordText(output.access || ownership.access || args?.access || '', 20),
+    parallelGroup: compactRecordText(output.parallelGroup || routing.parallelGroup || args?.parallelGroup || args?.group || '', 120),
+    task: compactRecordText(output.task || args?.task || args?.message || args?.instruction || '', 220),
+    jobId: String(job.id || output.jobId || '').slice(0, 120),
+    jobStatus: compactRecordText(job.status || output.jobStatus || '', 40),
+    routeId: String(routing.id || output.routeId || '').slice(0, 120),
+    routeStatus: compactRecordText(routing.status || '', 40),
+    routingResultLink: compactRecordText(routing.resultLink || '', 180),
+    serialized: ownership.serialized === true,
+    parallelSafe: ownership.parallelSafe !== false,
+    conflictCount: Array.isArray(ownership.conflicts) ? ownership.conflicts.length : 0,
+    spokenSummary: compactRecordText(output.spokenSummary || output.output || '', 420),
+    localOnly: safety.localOnly === true,
+    startsWorkers: safety.startsWorkers === true,
+    startsMicrophone: safety.startsMicrophone === true,
+    mutatesFilesDirectly: safety.mutatesFilesDirectly === true,
+    workerMayMutateFiles: safety.workerMayMutateFiles === true,
+    serializesOverlappingWriteScopes: safety.serializesOverlappingWriteScopes === true,
+    confirmationRequiredForExecution: safety.confirmationRequiredForExecution === true,
+    usesWorkerPolicy: safety.usesWorkerPolicy === true,
   };
 }
 
@@ -29376,6 +29671,7 @@ function recordRealtimeToolCall(options = {}) {
   const shortcut = realtimeShortcutToolSummary(name, options.args || {}, result);
   const handoff = realtimeHandoffToolSummary(name, options.args || {}, result);
   const workNext = realtimeWorkNextToolSummary(name, options.args || {}, result);
+  const delegate = realtimeDelegateToolSummary(name, options.args || {}, result);
   const autopilot = realtimeAutopilotToolSummary(name, options.args || {}, result);
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
@@ -29401,6 +29697,7 @@ function recordRealtimeToolCall(options = {}) {
     shortcut,
     handoff,
     workNext,
+    delegate,
     autopilot,
     attention,
     perception,
@@ -29436,6 +29733,23 @@ function recordRealtimeToolCall(options = {}) {
     workNextBrowserFillHandoff: Boolean(workNext?.browserFillHandoff),
     workNextBrowserFillSafePreparedCount: workNext?.browserFillSafePreparedCount || 0,
     workNextBrowserFillBlockedCount: workNext?.browserFillBlockedCount || 0,
+    delegateStatus: delegate?.status || '',
+    delegateMode: delegate?.mode || '',
+    delegateOwner: delegate?.owner || '',
+    delegateScope: delegate?.scope || '',
+    delegateAccess: delegate?.access || '',
+    delegatePreviewOnly: Boolean(delegate?.previewOnly),
+    delegateExecuted: Boolean(delegate?.executed),
+    delegateQueued: Boolean(delegate?.queued),
+    delegateRequiresConfirmation: Boolean(delegate?.requiresConfirmation),
+    delegateConfirm: Boolean(delegate?.confirm),
+    delegateJobId: delegate?.jobId || '',
+    delegateRouteId: delegate?.routeId || '',
+    delegateSerialized: Boolean(delegate?.serialized),
+    delegateConflictCount: delegate?.conflictCount || 0,
+    delegateStartsWorkers: Boolean(delegate?.startsWorkers),
+    delegateMutatesFilesDirectly: Boolean(delegate?.mutatesFilesDirectly),
+    delegateWorkerMayMutateFiles: Boolean(delegate?.workerMayMutateFiles),
     autopilotSummary: autopilot?.spokenSummary || '',
     autopilotSkipSummary: autopilot?.skipSummary || '',
     autopilotReason: autopilot?.reason || '',
@@ -29666,6 +29980,60 @@ function realtimeWorkNextToolEvidence(limit = 8) {
     nextAction: hasPreview
       ? 'Ask live voice to explain the single next work step, then use run_work_next only if the user explicitly says to execute it.'
       : 'Ask the live voice session: 下一步能做什么？先预览，不要执行。',
+  };
+}
+
+function realtimeDelegateToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_DELEGATE_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasPreview = recent.some((event) => (
+    event.ok &&
+    event.delegate?.previewOnly === true &&
+    event.delegate?.executeRequested === false &&
+    event.delegate?.startsWorkers === false
+  ));
+  const hasConfirmationGate = recent.some((event) => (
+    event.delegate?.requiresConfirmation === true &&
+    event.delegate?.executeRequested === true &&
+    event.delegate?.confirm === false &&
+    event.delegate?.startsWorkers === false
+  ));
+  const hasQueued = recent.some((event) => (
+    event.ok &&
+    event.delegate?.queued === true &&
+    event.delegate?.executed === true &&
+    event.delegate?.confirm === true &&
+    event.delegate?.jobId
+  ));
+  const hasSerialized = recent.some((event) => event.delegate?.serialized === true);
+  return {
+    ok: hasPreview || hasConfirmationGate || hasQueued || hasSerialized,
+    count: recent.length,
+    observedStatuses: Array.from(new Set(recent.map((event) => event.delegate?.status).filter(Boolean))),
+    hasPreview,
+    hasConfirmationGate,
+    hasQueued,
+    hasSerialized,
+    safePreview: recent.some((event) => (
+      event.delegate?.previewOnly === true &&
+      event.delegate?.startsWorkers === false &&
+      event.delegate?.mutatesFilesDirectly === false
+    )),
+    policyGated: recent.length > 0 && recent.every((event) => event.delegate?.usesWorkerPolicy !== false),
+    conflictCount: Math.max(0, ...recent.map((event) => Number(event.delegate?.conflictCount || 0))),
+    startsWorkerCount: recent.filter((event) => event.delegate?.startsWorkers === true).length,
+    workerMayMutateFiles: recent.some((event) => event.delegate?.workerMayMutateFiles === true),
+    serializesOverlappingWriteScopes: recent.length > 0 && recent.every((event) => event.delegate?.serializesOverlappingWriteScopes !== false),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasQueued
+      ? 'Watch work progress for the delegated worker, then recover or release ownership when it completes.'
+      : hasConfirmationGate
+        ? 'Ask the user to confirm execute:true for the exact delegated owner and scope before starting the worker.'
+        : hasPreview
+          ? 'Use execute:true plus confirm:true only after the user confirms this scoped Codex/Claude/background task.'
+          : 'Ask live voice to delegate one scoped Codex, Claude Code, or background task as a preview first.',
   };
 }
 
@@ -30437,6 +30805,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const blocker = evidence.blocker || null;
   const handoffTools = evidence.handoffTools || {};
   const workNextTools = evidence.workNextTools || {};
+  const delegateTools = evidence.delegateTools || {};
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
@@ -30482,6 +30851,8 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
+      '把 docs/ROADMAP.md 的只读检查委派给 Codex，先预览，不要执行。',
+      '准备执行刚才那个 Codex 委派任务，但我还没有确认。',
       '本机有哪些 MCP 或外部工具服务器可以用？',
       '这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
       '把 docs/ROADMAP.md 分给 Claude Code，先预览协作占用，不要创建。',
@@ -30520,6 +30891,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         label: 'Realtime called get_work_next',
         ok: Boolean(workNextTools.hasPreview),
         tool: REALTIME_WORK_NEXT_TOOL_NAME,
+      },
+      {
+        id: 'delegate_tool',
+        label: 'Realtime previewed a scoped delegated worker task',
+        ok: Boolean(delegateTools.hasPreview && delegateTools.hasConfirmationGate),
+        tool: REALTIME_DELEGATE_TOOL_NAME,
       },
       {
         id: 'autopilot_tool',
@@ -30588,7 +30965,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: 'draft_ui_demonstration_skill',
       },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, work-next, autopilot, attention, perception, capability, collaboration, learning, browser, and UI demonstration prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, work-next, delegate, autopilot, attention, perception, capability, collaboration, learning, browser, and UI demonstration prompts.',
   };
 }
 
@@ -30597,6 +30974,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const shortcutTools = evidence.shortcutTools || {};
   const handoffTools = evidence.handoffTools || {};
   const workNextTools = evidence.workNextTools || {};
+  const delegateTools = evidence.delegateTools || {};
   const autopilotTools = evidence.autopilotTools || {};
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
@@ -30632,7 +31010,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, workNextTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, collaborationTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, workNextTools, delegateTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, collaborationTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -30703,6 +31081,22 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       browserFillSafePreparedCount: Number(workNextTools.browserFillSafePreparedCount || 0),
       browserFillBlockedCount: Number(workNextTools.browserFillBlockedCount || 0),
       nextAction: workNextTools.nextAction || 'Ask the live voice session to preview the single next work step.',
+    },
+    delegateTools: {
+      observed: Boolean(delegateTools.ok),
+      count: Number(delegateTools.count || 0),
+      observedStatuses: Array.isArray(delegateTools.observedStatuses) ? delegateTools.observedStatuses : [],
+      hasPreview: Boolean(delegateTools.hasPreview),
+      hasConfirmationGate: Boolean(delegateTools.hasConfirmationGate),
+      hasQueued: Boolean(delegateTools.hasQueued),
+      hasSerialized: Boolean(delegateTools.hasSerialized),
+      safePreview: Boolean(delegateTools.safePreview),
+      policyGated: Boolean(delegateTools.policyGated),
+      conflictCount: Number(delegateTools.conflictCount || 0),
+      startsWorkerCount: Number(delegateTools.startsWorkerCount || 0),
+      workerMayMutateFiles: Boolean(delegateTools.workerMayMutateFiles),
+      serializesOverlappingWriteScopes: Boolean(delegateTools.serializesOverlappingWriteScopes),
+      nextAction: delegateTools.nextAction || 'Ask the live voice session to preview a scoped Codex/Claude/background worker delegation before confirming execution.',
     },
     autopilotTools: {
       observed: Boolean(autopilotTools.ok),
@@ -30845,6 +31239,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const shortcutTools = options.shortcutTools || evidence.shortcutTools || {};
   const handoffTools = options.handoffTools || evidence.handoffTools || {};
   const workNextTools = options.workNextTools || evidence.workNextTools || {};
+  const delegateTools = options.delegateTools || evidence.delegateTools || {};
   const autopilotTools = options.autopilotTools || evidence.autopilotTools || {};
   const attentionTools = options.attentionTools || evidence.attentionTools || {};
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
@@ -30941,6 +31336,27 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
         safePreview: Boolean(workNextTools.safePreview),
         hasRouteRecovery: Boolean(workNextTools.hasRouteRecovery),
         hasBrowserFillHandoff: Boolean(workNextTools.hasBrowserFillHandoff),
+      },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'delegate_worker_task',
+      label: 'Preview a scoped Codex/Claude/background delegation',
+      ok: Boolean(delegateTools.hasPreview && delegateTools.hasConfirmationGate),
+      detail: delegateTools.hasConfirmationGate
+        ? 'delegate_task previewed a scoped task and refused execution without confirm:true.'
+        : delegateTools.hasPreview
+          ? 'delegate_task previewed a scoped worker task; execution confirmation gate still needs proof.'
+          : 'No delegate_task preview has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 把 docs/ROADMAP.md 的只读检查委派给 Codex，先预览，不要执行。 Then ask to prepare execution without confirmation.',
+      evidence: {
+        tool: REALTIME_DELEGATE_TOOL_NAME,
+        count: Number(delegateTools.count || 0),
+        hasPreview: Boolean(delegateTools.hasPreview),
+        hasConfirmationGate: Boolean(delegateTools.hasConfirmationGate),
+        hasQueued: Boolean(delegateTools.hasQueued),
+        hasSerialized: Boolean(delegateTools.hasSerialized),
+        safePreview: Boolean(delegateTools.safePreview),
+        startsWorkerCount: Number(delegateTools.startsWorkerCount || 0),
       },
     }),
     realtimeDogfoodDrillStep({
@@ -31196,6 +31612,8 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '后台现在怎么样',
       '现在做到哪了？接下来做什么？',
       '下一步能做什么？先预览，不要执行。',
+      '把 docs/ROADMAP.md 的只读检查委派给 Codex，先预览，不要执行。',
+      '准备执行刚才那个 Codex 委派任务，但我还没有确认。',
       'autopilot 为什么没自己继续跑？',
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
@@ -31273,6 +31691,13 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       prompt: '下一步能做什么？先预览，不要执行。',
       copyText: '下一步能做什么？先预览，不要执行。',
       reason: 'This verifies the Realtime session calls get_work_next and keeps the next work step read-only until the user explicitly asks to run it.',
+    },
+    delegate_worker_task: {
+      promptType: 'spoken_sequence',
+      prompt: '把 docs/ROADMAP.md 的只读检查委派给 Codex，先预览，不要执行。',
+      copyText: '把 docs/ROADMAP.md 的只读检查委派给 Codex，先预览，不要执行。',
+      followUpPrompts: ['准备执行刚才那个 Codex 委派任务，但我还没有确认。'],
+      reason: 'This verifies delegate_task previews scoped worker delegation and hits the confirmation gate before starting Codex/Claude/background workers.',
     },
     ask_autopilot_status: {
       promptType: 'spoken',
@@ -31411,6 +31836,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
   const toolGates = [
     { id: 'handoff', ok: Boolean(evidence.handoffTools?.hasHandoff), label: 'work handoff', tool: REALTIME_HANDOFF_TOOL_NAME },
     { id: 'work_next', ok: Boolean(evidence.workNextTools?.hasPreview), label: 'work-next preview', tool: REALTIME_WORK_NEXT_TOOL_NAME },
+    { id: 'delegate', ok: Boolean(evidence.delegateTools?.hasPreview && evidence.delegateTools?.hasConfirmationGate), label: 'delegate task preview', tool: REALTIME_DELEGATE_TOOL_NAME },
     { id: 'autopilot', ok: Boolean(evidence.autopilotTools?.hasStatus), label: 'autopilot status', tool: REALTIME_AUTOPILOT_TOOL_NAME },
     { id: 'attention', ok: Boolean(evidence.attentionTools?.hasExplanation), label: 'attention explanation', tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
@@ -31586,6 +32012,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   const evidenceTools = [
     { id: 'handoff', label: 'work handoff', ok: Boolean(evidence.handoffTools?.hasHandoff), tool: REALTIME_HANDOFF_TOOL_NAME },
     { id: 'work_next', label: 'work-next preview', ok: Boolean(evidence.workNextTools?.hasPreview), tool: REALTIME_WORK_NEXT_TOOL_NAME },
+    { id: 'delegate', label: 'delegate task preview', ok: Boolean(evidence.delegateTools?.hasPreview && evidence.delegateTools?.hasConfirmationGate), tool: REALTIME_DELEGATE_TOOL_NAME },
     { id: 'autopilot', label: 'autopilot status', ok: Boolean(evidence.autopilotTools?.hasStatus), tool: REALTIME_AUTOPILOT_TOOL_NAME },
     { id: 'attention', label: 'attention explanation', ok: Boolean(evidence.attentionTools?.hasExplanation), tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
@@ -31845,6 +32272,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     'ask_progress',
     'ask_work_handoff',
     'ask_work_next',
+    'delegate_worker_task',
     'ask_autopilot_status',
     'ask_attention_explanation',
     'ask_perception_consent',
@@ -31868,6 +32296,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     ask_progress: 'Use the live voice prompt from /api/realtime/dogfood/prompt.',
     ask_work_handoff: 'Ask live voice to call get_work_handoff.',
     ask_work_next: 'Ask live voice to call get_work_next as a read-only preview.',
+    delegate_worker_task: 'Ask live voice to call delegate_task first as preview, then with execute:true but without confirm:true.',
     ask_autopilot_status: 'Ask live voice to call get_autopilot_status.',
     ask_attention_explanation: 'Ask live voice to call get_attention_explanation.',
     ask_perception_consent: 'Ask live voice to call get_perception_consent.',
@@ -32037,6 +32466,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'sync_latest_progress', 'live_voice', 'Sync latest work progress sequence into voice'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_progress', 'spoken_answer', 'Ask for spoken background progress'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_work_handoff', 'voice_tools', 'Ask voice for a work handoff'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'delegate_worker_task', 'voice_tools', 'Preview a scoped delegated worker task'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_autopilot_status', 'voice_tools', 'Ask why unattended autopilot stopped'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_attention_explanation', 'voice_tools', 'Ask why the pet stayed quiet or changed color'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_perception_consent', 'voice_tools', 'Ask what JAVIS can see or control'),
@@ -33669,6 +34099,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const productivityDogfoodTools = realtimeProductivityDogfoodToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
   const workNextTools = realtimeWorkNextToolEvidence(8);
+  const delegateTools = realtimeDelegateToolEvidence(8);
   const autopilotTools = realtimeAutopilotToolEvidence(8);
   const attentionTools = realtimeAttentionToolEvidence(8);
   const perceptionTools = realtimePerceptionToolEvidence(8);
@@ -33743,6 +34174,7 @@ function realtimeVoiceEvidenceSnapshot() {
     productivityDogfoodTools,
     handoffTools,
     workNextTools,
+    delegateTools,
     autopilotTools,
     attentionTools,
     perceptionTools,
@@ -43134,19 +43566,8 @@ async function executeTool(name, args) {
   }
 
   if (name === 'delegate_task') {
-    const task = String(args?.task || '').trim();
-    if (!task) return { ok: false, output: 'No task was provided.' };
-    const mode = ['codex', 'claude', 'background'].includes(args?.mode) ? args.mode : 'background';
-    const result = await routeTask({
-      message: task,
-      execute: true,
-      mode,
-      source: 'voice_delegate',
-      owner: args?.owner || ownerForRoutingLane(mode),
-      scope: args?.scope || 'voice delegated task',
-      parallelGroup: args?.parallelGroup || args?.group || mode,
-    });
-    return { ok: result.ok, output: JSON.stringify(result) };
+    const result = await delegateTaskPayload({ ...(args || {}), source: 'voice_delegate' });
+    return { ok: result.ok !== false, output: JSON.stringify(result) };
   }
 
   if (name === 'run_cli_tool') {
@@ -43330,7 +43751,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_lane_contracts when routing, ownership, scope, handoff, or worker boundaries are unclear.',
       'Use route_task when the user asks for something that might be quick or might need background/Codex/Claude work; it keeps the voice lane responsive.',
       'Only request full clipboard text when the user asks about clipboard content or it is clearly needed for the task.',
-      'Use delegate_task for code, research, long planning, or multi-step work.',
+      'Use delegate_task for code, research, long planning, or multi-step work. It previews by default; start a worker only with execute:true and confirm:true after the user confirms the exact owner, mode, and scope.',
       'Use run_cli_tool only when the user explicitly asks to run a local CLI command or a named command-line tool; it queues the command in the background.',
       'Use run_file_action for local file reading, listing, searching, writing, creating folders, copying files, or moving/renaming files.',
       'Use run_mac_action for small reversible Mac actions, or guarded Accessibility actions after plan_ui_action has identified a target. Level 3 actions may require approval or local execution enablement.',
@@ -45362,15 +45783,27 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'delegate_task',
-        description: 'Queue a slower background task for a stronger model, Codex, or Claude Code.',
+        description: 'Preview or start a scoped delegated worker task for a stronger background model, Codex, or Claude Code. Default is preview-only; execution requires execute:true plus confirm:true after the user confirms the exact owner, mode, and scope. Uses the normal worker policy and serializes overlapping write scopes.',
         parameters: {
           type: 'object',
           properties: {
             task: { type: 'string' },
+            message: { type: 'string' },
+            instruction: { type: 'string' },
             mode: { type: 'string', enum: ['background', 'codex', 'claude'] },
+            lane: { type: 'string', enum: ['background', 'codex', 'claude'] },
             scope: { type: 'string' },
+            access: { type: 'string', enum: ['read', 'write', 'read-only', 'readonly'] },
             parallelGroup: { type: 'string' },
+            group: { type: 'string' },
             owner: { type: 'string' },
+            execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            includeScreen: { type: 'boolean' },
+            useMemory: { type: 'boolean' },
+            memoryLimit: { type: 'number' },
+            timeoutMs: { type: 'number' },
           },
           required: ['task'],
           additionalProperties: false,
@@ -48172,6 +48605,15 @@ function startApiServer() {
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'Parallel task routing failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/tasks/delegate', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await delegateTaskPayload({ ...(req.body || {}), source: req.body?.source || 'api_delegate' });
+      res.status(result.ok === false ? 400 : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Delegated task routing failed', error instanceof Error ? error.message : String(error));
     }
   });
 

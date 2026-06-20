@@ -684,6 +684,110 @@ export default {
         : fail('realtime.collaboration_claim_tool_evidence', 'Realtime collaboration claim tool evidence', 'expected collaboration voice tools to appear in realtime evidence', collaborationToolEvidence),
     );
 
+    const delegateScope = `eval/realtime-delegate/${Date.now()}`;
+    const delegatePreviewTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'delegate_task',
+        arguments: {
+          task: 'Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.',
+          mode: 'codex',
+          owner: 'Eval Codex',
+          scope: delegateScope,
+          access: 'read',
+        },
+      },
+    });
+    const delegatePreviewOutput = parseToolOutput(delegatePreviewTool);
+    const delegateConfirmGateTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'delegate_task',
+        arguments: {
+          task: 'Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.',
+          mode: 'codex',
+          owner: 'Eval Codex',
+          scope: delegateScope,
+          access: 'read',
+          execute: true,
+        },
+      },
+    });
+    const delegateConfirmGateOutput = parseToolOutput(delegateConfirmGateTool);
+    out.push(
+      delegatePreviewTool.ok &&
+        delegatePreviewTool.data?.ok === true &&
+        delegatePreviewOutput?.ok === true &&
+        delegatePreviewOutput?.status === 'preview' &&
+        delegatePreviewOutput?.previewOnly === true &&
+        delegatePreviewOutput?.executed === false &&
+        delegatePreviewOutput?.queued === false &&
+        delegatePreviewOutput?.executeRequested === false &&
+        delegatePreviewOutput?.requiresConfirmation === false &&
+        delegatePreviewOutput?.mode === 'codex' &&
+        delegatePreviewOutput?.owner === 'Eval Codex' &&
+        delegatePreviewOutput?.scope === delegateScope &&
+        delegatePreviewOutput?.access === 'read' &&
+        delegatePreviewOutput?.safety?.startsWorkers === false &&
+        delegatePreviewOutput?.safety?.mutatesFilesDirectly === false &&
+        delegatePreviewOutput?.safety?.confirmationRequiredForExecution === true &&
+        delegatePreviewOutput?.safety?.usesWorkerPolicy === true &&
+        delegatePreviewOutput?.responseBudget?.compact === true &&
+        delegatePreviewOutput?.result?.queued === false &&
+        delegateConfirmGateTool.ok &&
+        delegateConfirmGateTool.data?.ok === true &&
+        delegateConfirmGateOutput?.ok === true &&
+        delegateConfirmGateOutput?.status === 'confirmation_required' &&
+        delegateConfirmGateOutput?.previewOnly === true &&
+        delegateConfirmGateOutput?.executed === false &&
+        delegateConfirmGateOutput?.queued === false &&
+        delegateConfirmGateOutput?.executeRequested === true &&
+        delegateConfirmGateOutput?.requiresConfirmation === true &&
+        delegateConfirmGateOutput?.confirm === false &&
+        delegateConfirmGateOutput?.safety?.startsWorkers === false &&
+        delegateConfirmGateOutput?.safety?.mutatesFilesDirectly === false
+        ? ok('realtime.delegate_task_tool', 'Realtime delegate task voice tool', `${delegateScope} preview + confirmation gate without starting workers`)
+        : fail('realtime.delegate_task_tool', 'Realtime delegate task voice tool', 'expected delegate_task to preview and require explicit confirmation before execution', {
+          preview: delegatePreviewTool.data,
+          previewOutput: delegatePreviewOutput,
+          confirmGate: delegateConfirmGateTool.data,
+          confirmGateOutput: delegateConfirmGateOutput,
+        }),
+    );
+
+    const delegateEvidence = await ctx.api('/api/realtime/evidence');
+    const delegateToolEvidence = delegateEvidence.data?.evidence?.delegateTools;
+    const delegateToolEvents = Array.isArray(delegateToolEvidence?.recent) ? delegateToolEvidence.recent : [];
+    out.push(
+      delegateEvidence.ok &&
+        delegateToolEvidence?.hasPreview === true &&
+        delegateToolEvidence?.hasConfirmationGate === true &&
+        delegateToolEvidence?.safePreview === true &&
+        delegateToolEvidence?.policyGated === true &&
+        delegateToolEvidence?.startsWorkerCount === 0 &&
+        delegateToolEvidence?.serializesOverlappingWriteScopes === true &&
+        delegateToolEvents.some((event) => (
+          event.name === 'delegate_task' &&
+          event.source === 'eval' &&
+          event.delegate?.status === 'preview' &&
+          event.delegate?.previewOnly === true &&
+          event.delegate?.startsWorkers === false &&
+          event.delegate?.mutatesFilesDirectly === false
+        )) &&
+        delegateToolEvents.some((event) => (
+          event.name === 'delegate_task' &&
+          event.source === 'eval' &&
+          event.delegate?.status === 'confirmation_required' &&
+          event.delegate?.requiresConfirmation === true &&
+          event.delegate?.confirm === false &&
+          event.delegate?.startsWorkers === false
+        ))
+        ? ok('realtime.delegate_task_tool_evidence', 'Realtime delegate task evidence', 'delegate_task preview and confirmation gate are visible in Realtime evidence')
+        : fail('realtime.delegate_task_tool_evidence', 'Realtime delegate task evidence', 'expected delegate_task preview and confirmation gate evidence', delegateToolEvidence),
+    );
+
     const speedPolicyTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {
@@ -1872,6 +1976,7 @@ export default {
           output.includes('Dogfood session tools:') &&
           output.includes('Handoff tool:') &&
           output.includes('Work next tool:') &&
+          output.includes('Delegation tools:') &&
           output.includes('Autopilot tool:') &&
           output.includes('Attention explanation tool:') &&
           output.includes('Perception consent tool:') &&
@@ -1893,6 +1998,7 @@ export default {
           output.includes('no-mic') &&
           output.includes('get_work_handoff') &&
           output.includes('get_work_next') &&
+          output.includes('delegate_task') &&
           output.includes('Approval tools:') &&
           output.includes('get_pending_approvals') &&
           output.includes('resolve_approval') &&
@@ -1907,8 +2013,8 @@ export default {
           output.includes('get_learning_evolution') &&
           output.includes('run_browser_workflow') &&
           output.includes('draft_ui_demonstration_skill')
-          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, work-next, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
-          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, work-next, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
+          ? ok('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'config CUI prints shortcut, dogfood-session, handoff, work-next, delegate, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence')
+          : fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', 'expected config CUI to print shortcut, dogfood-session, handoff, work-next, delegate, approval, autopilot, attention, perception, capability, learning, browser, UI demonstration, tool-call, and progress sync evidence', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('realtime.cui_tool_evidence', 'Realtime CUI tool evidence', error instanceof Error ? error.message : String(error)));
@@ -2268,6 +2374,7 @@ export default {
         Array.isArray(e.drill?.steps) &&
         e.drill.steps.some((step) => step.id === 'start_live_voice') &&
         e.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
+        e.drill.steps.some((step) => step.id === 'delegate_worker_task') &&
         e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         e.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
         e.drill.steps.some((step) => step.id === 'manage_collaboration_claim') &&
@@ -2283,6 +2390,9 @@ export default {
         e.gapSummary?.nextStep?.id === (e.drill.pending[0]?.id || 'complete') &&
         typeof e.gapSummary?.nextPrompt?.copyText === 'string' &&
         e.handoffTools?.hasHandoff === true &&
+        e.delegateTools?.hasPreview === true &&
+        e.delegateTools?.hasConfirmationGate === true &&
+        e.delegateTools?.safePreview === true &&
         e.autopilotTools?.hasStatus === true &&
         e.capabilityTools?.hasCapabilityMap === true &&
         e.collaborationTools?.hasClaimPreview === true &&
@@ -2330,6 +2440,7 @@ export default {
         Array.isArray(d.drill?.steps) &&
         d.drill.steps.some((step) => step.id === 'ask_progress') &&
         d.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
+        d.drill.steps.some((step) => step.id === 'delegate_worker_task') &&
         d.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
@@ -2347,6 +2458,9 @@ export default {
         d.gapSummary?.nextStep?.id === (d.drill.pending[0]?.id || 'complete') &&
         typeof d.gapSummary?.summary === 'string' &&
         d.handoffTools?.hasHandoff === true &&
+        d.delegateTools?.hasPreview === true &&
+        d.delegateTools?.hasConfirmationGate === true &&
+        d.delegateTools?.safePreview === true &&
         d.autopilotTools?.hasStatus === true &&
         d.attentionTools?.hasExplanation === true &&
         d.perceptionTools?.hasConsent === true &&
@@ -2375,6 +2489,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('委派')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('协作占用')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('变化')) &&
@@ -2383,6 +2498,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodGuide.expectedEvidence) &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_work_handoff') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'delegate_task') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_autopilot_status') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
@@ -2395,6 +2511,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
         Array.isArray(d.drill?.prompts) &&
         d.drill.prompts.includes('后台现在怎么样') &&
+        d.drill.prompts.some((prompt) => prompt.includes('委派')) &&
         typeof d.promptWhenReady === 'string' &&
         dogfoodRequiredSteps.every((id) => dogfoodStepIds.has(id))
         ? ok('realtime.dogfood_runbook', 'Realtime dogfood runbook', `${d.status}/${d.phase || '-'} · manual-only · ${d.nextAction || ''}`)
@@ -2410,6 +2527,7 @@ export default {
       'inject_worker_progress',
       'ask_progress',
       'ask_work_handoff',
+      'delegate_worker_task',
       'ask_autopilot_status',
       'ask_attention_explanation',
       'ask_perception_consent',
@@ -2435,6 +2553,7 @@ export default {
         drillGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('委派')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('协作占用')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
@@ -2444,6 +2563,7 @@ export default {
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillData.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        drillData.prompts.some((prompt) => prompt.includes('委派')) &&
         drillData.prompts.some((prompt) => prompt.includes('协作占用')) &&
         drillData.prompts.some((prompt) => prompt.includes('学到了')) &&
         drillData.prompts.some((prompt) => prompt.includes('当前网页')) &&
@@ -2512,12 +2632,14 @@ export default {
         dogfoodBriefData?.safety?.recordReplayRequiresConfirmation === true &&
         Array.isArray(dogfoodBriefData.prompts) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        dogfoodBriefData.prompts.some((prompt) => prompt.includes('委派')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('协作占用')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('当前网页')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodBriefData.evidenceTools) &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'capability' && item.tool === 'get_local_capabilities') &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'delegate' && item.tool === 'delegate_task') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'collaboration' && item.tool === 'plan_collaboration_claim') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'learning' && item.tool === 'get_learning_distillation') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'browser' && item.tool === 'run_browser_workflow') &&
@@ -2541,6 +2663,7 @@ export default {
           output.includes('Evidence gates:') &&
           output.includes('Gap:') &&
           output.includes('get_local_capabilities') &&
+          output.includes('delegate_task') &&
           output.includes('plan_collaboration_claim') &&
           output.includes('get_learning_distillation') &&
           output.includes('run_browser_workflow') &&
@@ -2562,6 +2685,7 @@ export default {
       'inject_worker_progress',
       'ask_progress',
       'ask_work_handoff',
+      'delegate_worker_task',
       'ask_autopilot_status',
       'ask_attention_explanation',
       'ask_perception_consent',

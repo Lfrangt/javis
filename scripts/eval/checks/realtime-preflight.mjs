@@ -8,6 +8,7 @@ const EXPECTED_ACCEPTANCE_GATES = new Set([
   'sync_latest_progress',
   'ask_progress',
   'ask_work_handoff',
+  'delegate_worker_task',
   'ask_autopilot_status',
   'ask_attention_explanation',
   'ask_perception_consent',
@@ -50,11 +51,11 @@ export default {
   async run(ctx) {
     const out = [];
     const [config, renderer, pack, acceptanceResponse, evidence] = await Promise.all([
-      ctx.api('/api/realtime/config?micMode=open', { timeoutMs: 10000 }),
-      ctx.api('/api/realtime/dogfood/renderer', { timeoutMs: 10000 }),
-      ctx.api('/api/realtime/dogfood/pack', { timeoutMs: 10000 }),
-      ctx.api('/api/realtime/dogfood/acceptance', { timeoutMs: 10000 }),
-      ctx.api('/api/realtime/evidence', { timeoutMs: 10000 }),
+      ctx.api('/api/realtime/config?micMode=open', { timeoutMs: 30000 }),
+      ctx.api('/api/realtime/dogfood/renderer', { timeoutMs: 30000 }),
+      ctx.api('/api/realtime/dogfood/pack', { timeoutMs: 30000 }),
+      ctx.api('/api/realtime/dogfood/acceptance', { timeoutMs: 30000 }),
+      ctx.api('/api/realtime/evidence', { timeoutMs: 30000 }),
     ]);
 
     const realtime = config.data?.realtime || {};

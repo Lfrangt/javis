@@ -57,6 +57,20 @@ export const REALTIME_PAYLOAD_CASES = [
     expectCompact: true,
   },
   {
+    id: 'delegate_task_preview',
+    label: 'Delegate task preview',
+    tool: 'delegate_task',
+    arguments: {
+      task: 'Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.',
+      mode: 'codex',
+      scope: 'payload/realtime-delegate-preview',
+      access: 'read',
+    },
+    maxBytes: 8000,
+    expectCompact: true,
+    forbiddenPaths: ['result.job.log', 'routingLedger.0.full'],
+  },
+  {
     id: 'realtime_evidence',
     label: 'Realtime evidence',
     tool: 'get_realtime_evidence',
