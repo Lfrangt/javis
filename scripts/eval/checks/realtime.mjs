@@ -494,10 +494,14 @@ export default {
       },
     });
     const speedPolicyToolOutput = parseToolOutput(speedPolicyTool);
+    const speedPolicyToolOutputBytes = Buffer.byteLength(speedPolicyTool.data?.output || '', 'utf8');
     out.push(
       speedPolicyTool.ok &&
         speedPolicyTool.data?.ok === true &&
         speedPolicyToolOutput?.ok === true &&
+        speedPolicyToolOutput?.responseBudget?.compact === true &&
+        speedPolicyToolOutputBytes > 0 &&
+        speedPolicyToolOutputBytes <= 12000 &&
         speedPolicyToolOutput?.manualOnly === true &&
         speedPolicyToolOutput?.startsMicrophone === false &&
         speedPolicyToolOutput?.executesActions === false &&
@@ -506,10 +510,12 @@ export default {
         speedPolicyToolOutput?.policy?.approvalGatesBypassed === false &&
         speedPolicyToolOutput?.decision?.lane === 'codex' &&
         speedPolicyToolOutput?.decision?.speedProfile?.id === 'codex_worker' &&
+        !speedPolicyToolOutput?.decision?.contextPlan &&
+        !speedPolicyToolOutput?.decision?.contract &&
         Array.isArray(speedPolicyToolOutput?.profiles) &&
         speedPolicyToolOutput.profiles.some((item) => item.id === 'fast_text' && item.model === speedPolicyToolOutput.models.fast) &&
         speedPolicyToolOutput.profiles.some((item) => item.id === 'background_model' && item.model === speedPolicyToolOutput.models.background)
-        ? ok('realtime.routing_speed_policy_tool', 'Realtime routing speed policy tool', `${speedPolicyToolOutput.decision.lane} · ${speedPolicyToolOutput.decision.speedProfile.id}`)
+        ? ok('realtime.routing_speed_policy_tool', 'Realtime routing speed policy tool', `${speedPolicyToolOutput.decision.lane} · ${speedPolicyToolOutput.decision.speedProfile.id} · ${Math.ceil(speedPolicyToolOutputBytes / 1024)}KB`)
         : fail('realtime.routing_speed_policy_tool', 'Realtime routing speed policy tool', `tool execute ${speedPolicyTool.status}`, speedPolicyTool.data),
     );
 
@@ -522,16 +528,22 @@ export default {
       },
     });
     const browserSpeedPolicyToolOutput = parseToolOutput(browserSpeedPolicyTool);
+    const browserSpeedPolicyToolOutputBytes = Buffer.byteLength(browserSpeedPolicyTool.data?.output || '', 'utf8');
     out.push(
       browserSpeedPolicyTool.ok &&
         browserSpeedPolicyTool.data?.ok === true &&
         browserSpeedPolicyToolOutput?.ok === true &&
+        browserSpeedPolicyToolOutput?.responseBudget?.compact === true &&
+        browserSpeedPolicyToolOutputBytes > 0 &&
+        browserSpeedPolicyToolOutputBytes <= 12000 &&
         browserSpeedPolicyToolOutput?.decision?.lane === 'background' &&
         browserSpeedPolicyToolOutput?.decision?.speedProfile?.id === 'browser_workflow' &&
         browserSpeedPolicyToolOutput?.decision?.toolFirst?.recommended === true &&
         Array.isArray(browserSpeedPolicyToolOutput.decision.toolFirst.firstTools) &&
-        browserSpeedPolicyToolOutput.decision.toolFirst.firstTools.some((tool) => tool === 'read_browser_page' || tool === 'run_browser_workflow')
-        ? ok('realtime.routing_speed_policy_tool_first_browser', 'Realtime browser tool-first speed policy', `${browserSpeedPolicyToolOutput.decision.lane} · ${browserSpeedPolicyToolOutput.decision.speedProfile.id}`)
+        browserSpeedPolicyToolOutput.decision.toolFirst.firstTools.some((tool) => tool === 'read_browser_page' || tool === 'run_browser_workflow') &&
+        !browserSpeedPolicyToolOutput?.decision?.contextPlan &&
+        !browserSpeedPolicyToolOutput?.decision?.contract
+        ? ok('realtime.routing_speed_policy_tool_first_browser', 'Realtime browser tool-first speed policy', `${browserSpeedPolicyToolOutput.decision.lane} · ${browserSpeedPolicyToolOutput.decision.speedProfile.id} · ${Math.ceil(browserSpeedPolicyToolOutputBytes / 1024)}KB`)
         : fail('realtime.routing_speed_policy_tool_first_browser', 'Realtime browser tool-first speed policy', `tool execute ${browserSpeedPolicyTool.status}`, browserSpeedPolicyTool.data),
     );
 

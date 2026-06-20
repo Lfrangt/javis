@@ -4580,6 +4580,147 @@ function routingSpeedPolicySnapshot(options = {}) {
   };
 }
 
+function compactRoutingSpeedProfileForVoice(profile = {}) {
+  if (!profile || typeof profile !== 'object') return null;
+  return {
+    id: compactRecordText(profile.id || '', 80),
+    lane: compactRecordText(profile.lane || '', 60),
+    label: compactRecordText(profile.label || profile.id || '', 120),
+    modelRole: compactRecordText(profile.modelRole || '', 80),
+    model: compactRecordText(profile.model || '', 140),
+    latencyClass: compactRecordText(profile.latencyClass || '', 60),
+    targetFirstResponseMs: boundedCount(profile.targetFirstResponseMs, 60000),
+    targetSpokenWords: boundedCount(profile.targetSpokenWords, 500),
+    canRunInBackground: Boolean(profile.canRunInBackground),
+    parallelEligible: Boolean(profile.parallelEligible),
+    available: profile.available === undefined ? true : Boolean(profile.available),
+    firstTools: Array.isArray(profile.firstTools)
+      ? profile.firstTools.map((tool) => compactRecordText(tool, 80)).slice(0, 6)
+      : [],
+    summary: compactRecordText(profile.summary || '', 180),
+    handoffRule: compactRecordText(profile.handoffRule || '', 180),
+  };
+}
+
+function compactRoutingToolFirstForVoice(toolFirst = {}) {
+  return {
+    recommended: toolFirst?.recommended === true,
+    profileId: compactRecordText(toolFirst?.profileId || '', 80),
+    label: compactRecordText(toolFirst?.label || '', 120),
+    modelRole: compactRecordText(toolFirst?.modelRole || '', 80),
+    firstTools: Array.isArray(toolFirst?.firstTools)
+      ? toolFirst.firstTools.map((tool) => compactRecordText(tool, 80)).slice(0, 6)
+      : [],
+    reason: compactRecordText(toolFirst?.reason || '', 180),
+    handoffRule: compactRecordText(toolFirst?.handoffRule || '', 180),
+    fallbackLane: compactRecordText(toolFirst?.fallbackLane || '', 60),
+  };
+}
+
+function compactRoutingDecisionForVoice(decision = null) {
+  if (!decision || typeof decision !== 'object') return null;
+  return {
+    lane: compactRecordText(decision.lane || '', 60),
+    mode: compactRecordText(decision.mode || '', 60),
+    label: compactRecordText(decision.label || '', 120),
+    confidence: Number(decision.confidence || 0),
+    reason: compactRecordText(decision.reason || '', 260),
+    owner: compactRecordText(decision.contract?.owner || ownerForRoutingLane(decision.lane), 80),
+    speedProfile: compactRoutingSpeedProfileForVoice(decision.speedProfile),
+    toolFirst: compactRoutingToolFirstForVoice(decision.toolFirst || { recommended: false }),
+    recommendedTools: Array.isArray(decision.contextPlan?.recommendedTools)
+      ? decision.contextPlan.recommendedTools.map((tool) => compactRecordText(tool, 80)).slice(0, 8)
+      : [],
+    contextMode: compactRecordText(decision.contextPlan?.mode || '', 80),
+    spokenPlan: compactRecordText(decision.spokenPlan || '', 280),
+  };
+}
+
+function compactRoutingSampleForVoice(sample = {}) {
+  return {
+    id: compactRecordText(sample.id || '', 80),
+    lane: compactRecordText(sample.lane || '', 60),
+    profile: compactRecordText(sample.profile || '', 80),
+    modelRole: compactRecordText(sample.modelRole || '', 80),
+    reason: compactRecordText(sample.reason || '', 180),
+    toolFirst: compactRoutingToolFirstForVoice(sample.toolFirst || { recommended: false }),
+  };
+}
+
+function routingSpeedPolicyVoicePayload(snapshot = {}, options = {}) {
+  const profiles = Array.isArray(snapshot.profiles) ? snapshot.profiles : [];
+  const samples = Array.isArray(snapshot.samples) ? snapshot.samples : [];
+  const payload = {
+    ok: snapshot.ok !== false,
+    version: boundedCount(snapshot.version || 1, 10),
+    generatedAt: snapshot.generatedAt || new Date().toISOString(),
+    source: compactRecordText(options.source || snapshot.source || 'voice', 80),
+    manualOnly: snapshot.manualOnly !== false,
+    startsMicrophone: snapshot.startsMicrophone === true,
+    executesActions: snapshot.executesActions === true,
+    summary: compactRecordText(snapshot.summary || '', 360),
+    spokenSummary: compactRecordText(snapshot.spokenSummary || snapshot.summary || '', 500),
+    models: {
+      realtime: compactRecordText(snapshot.models?.realtime || '', 120),
+      realtimeVoice: compactRecordText(snapshot.models?.realtimeVoice || '', 80),
+      fast: compactRecordText(snapshot.models?.fast || '', 120),
+      background: compactRecordText(snapshot.models?.background || '', 120),
+      vision: compactRecordText(snapshot.models?.vision || '', 120),
+      codexCommand: compactRecordText(snapshot.models?.codexCommand || '', 120),
+      claudeCommand: compactRecordText(snapshot.models?.claudeCommand || '', 120),
+    },
+    policy: {
+      defaultOrder: Array.isArray(snapshot.policy?.defaultOrder)
+        ? snapshot.policy.defaultOrder.map((item) => compactRecordText(item, 80)).slice(0, 10)
+        : [],
+      keepVoiceResponsive: snapshot.policy?.keepVoiceResponsive === true,
+      routeBeforeModelChoice: snapshot.policy?.routeBeforeModelChoice === true,
+      deterministicBeforeModel: snapshot.policy?.deterministicBeforeModel === true,
+      backgroundForDurableWork: snapshot.policy?.backgroundForDurableWork === true,
+      conflictSerialization: snapshot.policy?.conflictSerialization === true,
+      actionPolicyBypassed: snapshot.policy?.actionPolicyBypassed === true,
+      approvalGatesBypassed: snapshot.policy?.approvalGatesBypassed === true,
+      microphoneConfirmationBypassed: snapshot.policy?.microphoneConfirmationBypassed === true,
+      rules: Array.isArray(snapshot.policy?.rules)
+        ? snapshot.policy.rules.map((rule) => compactRecordText(rule, 180)).slice(0, 6)
+        : [],
+    },
+    profiles: profiles.map(compactRoutingSpeedProfileForVoice).filter(Boolean).slice(0, 10),
+    samples: samples.map(compactRoutingSampleForVoice).slice(0, 5),
+    decision: compactRoutingDecisionForVoice(snapshot.decision),
+    endpoints: {
+      policy: compactRecordText(snapshot.endpoints?.policy || '/api/routing/speed-policy', 120),
+      routePreview: compactRecordText(snapshot.endpoints?.routePreview || '/api/tasks/route', 120),
+      capabilities: compactRecordText(snapshot.endpoints?.capabilities || '/api/capabilities', 120),
+      workProgress: compactRecordText(snapshot.endpoints?.workProgress || '/api/work/progress', 120),
+    },
+    commands: {
+      print: compactRecordText(snapshot.commands?.print || 'npm run config -- --print-routing-speed-policy', 140),
+    },
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 12000,
+      omitted: [
+        'profiles.useWhen.full',
+        'profiles.avoidWhen.full',
+        'samples.message.full',
+        'samples.recommendedTools.full',
+        'decision.contract.full',
+        'decision.contextPlan.full',
+        'commands.routePreview.full',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
+  };
+}
+
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
@@ -41497,7 +41638,7 @@ async function executeTool(name, args) {
 
   if (name === 'get_routing_speed_policy') {
     const speedPolicy = routingSpeedPolicySnapshot({ ...(args || {}), source: 'voice' });
-    return { ok: true, output: JSON.stringify(speedPolicy) };
+    return { ok: true, output: JSON.stringify(routingSpeedPolicyVoicePayload(speedPolicy, { source: 'voice' })) };
   }
 
   if (name === 'get_lane_contracts') {
