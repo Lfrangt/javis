@@ -31146,6 +31146,320 @@ async function observeNow(options = {}) {
   return observation;
 }
 
+function autonomyBool(value, fallback = false) {
+  if (value === true || String(value || '').toLowerCase() === 'true') return true;
+  if (value === false || String(value || '').toLowerCase() === 'false') return false;
+  return fallback;
+}
+
+function autonomyStep({ id, label, status = 'done', ok = true, detail = '', nextAction = '', evidence = {} }) {
+  return {
+    id,
+    label,
+    status,
+    ok: Boolean(ok),
+    detail: compactRecordText(detail, 500),
+    nextAction: compactRecordText(nextAction, 300),
+    evidence,
+  };
+}
+
+function summarizeAutonomyObservation(observation = {}) {
+  const mac = observation.mac || {};
+  const frontmost = mac.frontmost || {};
+  const browser = mac.browser || {};
+  const accessibility = observation.accessibility || {};
+  const screen = observation.screen || {};
+  return {
+    ok: observation.ok === true,
+    frontmost: {
+      app: compactRecordText(frontmost.app || '', 120),
+      windowTitle: compactRecordText(frontmost.windowTitle || '', 180),
+      available: Boolean(frontmost.available),
+      error: compactRecordText(frontmost.error || '', 180),
+    },
+    browser: {
+      app: compactRecordText(browser.app || '', 120),
+      title: compactRecordText(browser.title || '', 180),
+      url: browser.url ? redactUrlForStorage(browser.url).slice(0, 400) : '',
+      available: Boolean(browser.available),
+      error: compactRecordText(browser.error || '', 180),
+    },
+    accessibility: {
+      available: Boolean(accessibility.available),
+      app: compactRecordText(accessibility.app || '', 120),
+      nodeCount: Number(accessibility.nodeCount || 0),
+      truncated: Boolean(accessibility.truncated),
+      cached: Boolean(accessibility.cached),
+      error: compactRecordText(accessibility.error || '', 180),
+    },
+    screen: {
+      available: Boolean(screen?.imageDataUrl || screen?.width || screen?.height),
+      width: Number(screen?.width || 0),
+      height: Number(screen?.height || 0),
+      ageMs: Number.isFinite(latestScreenAgeMs()) ? latestScreenAgeMs() : null,
+      privacyBlocked: Boolean(observation.screenPrivacyPolicy?.blocked),
+      privacyReason: compactRecordText(observation.screenPrivacyPolicy?.reason || '', 180),
+    },
+    pendingApprovals: Array.isArray(mac.pendingApprovals) ? mac.pendingApprovals.length : 0,
+    activeJobs: Array.isArray(mac.activeJobs) ? mac.activeJobs.length : 0,
+    errors: Array.isArray(observation.errors) ? observation.errors.map((item) => compactRecordText(item, 180)).slice(0, 6) : [],
+  };
+}
+
+function summarizeAutonomyRoute(route = {}) {
+  const decision = route.decision || {};
+  const contextPlan = route.contextPlan || decision.contextPlan || {};
+  return {
+    ok: route.ok !== false,
+    executed: Boolean(route.executed),
+    queued: Boolean(route.queued || route.job),
+    output: compactRecordText(route.output || '', 700),
+    lane: decision.lane || '',
+    mode: decision.mode || '',
+    label: decision.label || '',
+    reason: compactRecordText(decision.reason || '', 240),
+    confidence: Number(decision.confidence || 0),
+    requiresOpenAiKey: Boolean(decision.requiresOpenAiKey),
+    requiresLocalExecution: Boolean(decision.requiresLocalExecution),
+    routingId: route.routing?.id || route.routeRecord?.id || '',
+    routingStatus: route.routing?.status || route.routeRecord?.status || '',
+    jobId: route.job?.id || '',
+    jobStatus: route.job?.status || '',
+    workflowId: route.workflow?.id || route.data?.workflow?.id || '',
+    workflowStatus: route.workflow?.status || route.data?.workflow?.status || '',
+    contextPlan: {
+      mode: contextPlan.mode || '',
+      summary: compactRecordText(contextPlan.summary || '', 240),
+      recommendedTools: Array.isArray(contextPlan.recommendedTools) ? contextPlan.recommendedTools.slice(0, 10) : [],
+      skipped: Array.isArray(contextPlan.skipped) ? contextPlan.skipped.slice(0, 8) : [],
+      needs: contextPlan.needs || {},
+      privacy: contextPlan.privacy || {},
+    },
+    skillRecallPlan: normalizeSkillRecallPlan(route.skillRecallPlan),
+  };
+}
+
+function summarizeAutonomyWorkNext(next = {}) {
+  const action = next.action || null;
+  return {
+    ok: next.ok !== false,
+    executed: Boolean(next.executed),
+    output: compactRecordText(next.output || '', 700),
+    action: action
+      ? {
+          id: action.id || '',
+          label: compactRecordText(action.label || '', 120),
+          source: action.source || '',
+          executable: Boolean(action.executable),
+          autoEligible: Boolean(action.autoEligible),
+          autopilotEligible: Boolean(action.autopilotEligible),
+          riskLevel: Number(action.riskLevel || 0),
+          summary: compactRecordText(action.summary || '', 300),
+        }
+      : null,
+    nextActionCount: Array.isArray(next.briefing?.nextActions) ? next.briefing.nextActions.length : 0,
+  };
+}
+
+async function runAutonomyLoop(options = {}) {
+  const task = String(options.task || options.message || options.instruction || '').trim();
+  if (!task) throw new Error('Autonomy loop requires task, message, or instruction.');
+  const source = compactRecordText(options.source || 'api_autonomy', 80);
+  const execute = autonomyBool(options.execute, false);
+  const maxSteps = Math.max(2, Math.min(8, Number(options.maxSteps || 5)));
+  const runId = crypto.randomUUID();
+  const startedAt = Date.now();
+  const steps = [];
+  const push = (step) => {
+    if (steps.length < maxSteps) steps.push(autonomyStep(step));
+  };
+
+  const routePreview = await routeTask({
+    ...(options || {}),
+    message: task,
+    execute: false,
+    source: `${source}:route_preview`,
+  });
+  const routeSummary = summarizeAutonomyRoute(routePreview);
+  push({
+    id: 'route_preview',
+    label: 'Route task and assemble context plan',
+    ok: routePreview.ok !== false,
+    detail: `${routeSummary.label || routeSummary.lane}: ${routeSummary.reason || 'routed'}`,
+    nextAction: routeSummary.contextPlan.recommendedTools.length
+      ? `Use ${routeSummary.contextPlan.recommendedTools.slice(0, 3).join(', ')} next.`
+      : 'Choose the next safe lane action.',
+    evidence: {
+      lane: routeSummary.lane,
+      contextMode: routeSummary.contextPlan.mode,
+      recommendedTools: routeSummary.contextPlan.recommendedTools,
+      routingId: routeSummary.routingId,
+    },
+  });
+
+  let observation = null;
+  const contextPlan = routeSummary.contextPlan || {};
+  const needs = contextPlan.needs || {};
+  const shouldObserve = options.observe !== false && steps.length < maxSteps;
+  if (shouldObserve) {
+    observation = await observeNow({
+      source: `${source}:autonomy_observe`,
+      captureScreen: options.captureScreen === true ? 'always' : false,
+      includeAccessibility: options.includeAccessibility ?? Boolean(needs.accessibility || needs.app || needs.macContext || ['app', 'browser', 'screen', 'full'].includes(contextPlan.mode)),
+      includeClipboardText: false,
+      describeScreen: false,
+      useCache: options.useCache !== false,
+      maxNodes: options.maxNodes || 80,
+      maxDepth: options.maxDepth || 5,
+    });
+    const observationSummary = summarizeAutonomyObservation(observation);
+    push({
+      id: 'observe',
+      label: 'Observe current Mac context safely',
+      ok: observation.ok === true,
+      detail: [
+        observationSummary.frontmost.app ? `app=${observationSummary.frontmost.app}` : '',
+        observationSummary.browser.title ? `browser=${observationSummary.browser.title}` : '',
+        observationSummary.accessibility.available ? `AX nodes=${observationSummary.accessibility.nodeCount}` : observationSummary.accessibility.error,
+      ].filter(Boolean).join(' · ') || 'local observation completed',
+      nextAction: observationSummary.errors.length ? 'Use the error evidence to choose a safer fallback.' : 'Plan the next bounded action from current evidence.',
+      evidence: observationSummary,
+    });
+  }
+
+  const workNextPreview = steps.length < maxSteps
+    ? await workNextAction({
+        execute: false,
+        actionId: options.actionId || options.nextActionId || '',
+        source: `${source}:work_next_preview`,
+      })
+    : null;
+  const workNextSummary = workNextPreview ? summarizeAutonomyWorkNext(workNextPreview) : null;
+  if (workNextSummary) {
+    push({
+      id: 'work_next_preview',
+      label: 'Preview one workbench next action',
+      ok: workNextPreview.ok !== false,
+      detail: workNextSummary.action
+        ? `${workNextSummary.action.label || workNextSummary.action.id}: ${workNextSummary.action.summary}`
+        : workNextSummary.output || 'no work-next action available',
+      nextAction: workNextSummary.action?.executable
+        ? 'Run this step only through work-next with execute:true after explicit user intent.'
+        : 'Use the route preview or ask for the missing requirement.',
+      evidence: workNextSummary,
+    });
+  }
+
+  let execution = null;
+  if (execute && steps.length < maxSteps) {
+    execution = await routeTask({
+      ...(options || {}),
+      message: task,
+      execute: true,
+      source: `${source}:execute`,
+    });
+    const executionSummary = summarizeAutonomyRoute(execution);
+    push({
+      id: 'execute_via_policy',
+      label: 'Execute through existing routing and policy',
+      ok: execution.ok !== false,
+      status: execution.ok === false ? 'blocked' : execution.queued ? 'queued' : 'done',
+      detail: executionSummary.output || `${executionSummary.label || executionSummary.lane} ${executionSummary.jobStatus || executionSummary.routingStatus}`,
+      nextAction: executionSummary.queued
+        ? 'Watch work progress and recover failed worker jobs if needed.'
+        : 'Verify the result and continue only if evidence shows a clear next step.',
+      evidence: executionSummary,
+    });
+  }
+
+  const progress = steps.length < maxSteps
+    ? workProgressCheckIn({ source: `${source}:autonomy_verify`, includeInternal: options.includeInternal, jobLimit: 5, workflowLimit: 5 })
+    : null;
+  if (progress) {
+    push({
+      id: 'verify_progress',
+      label: 'Verify progress and recovery state',
+      ok: true,
+      detail: progress.spokenSummary || progress.output || 'progress snapshot ready',
+      nextAction: progress.recovery?.counts?.recoverable
+        ? progress.recovery.nextAction || 'Preview a recovery action before retrying.'
+        : progress.nextActions?.[0]?.summary || 'Continue with the route plan or wait for queued work.',
+      evidence: {
+        counts: progress.counts,
+        recovery: progress.recovery?.counts || {},
+        activeJobs: progress.activeJobs?.length || 0,
+        activeRoutes: progress.activeRoutes?.length || 0,
+      },
+    });
+  }
+
+  const finalStep = steps[steps.length - 1] || null;
+  const status = execute
+    ? execution?.ok === false
+      ? 'blocked'
+      : execution?.queued
+        ? 'running'
+        : 'done'
+    : 'preview';
+  const nextAction = finalStep?.nextAction || routeSummary.output || 'No next action.';
+  const output = [
+    execute ? `Autonomy loop executed through ${routeSummary.label || routeSummary.lane}.` : `Autonomy loop previewed ${routeSummary.label || routeSummary.lane}.`,
+    finalStep?.detail || '',
+    `Next: ${nextAction}`,
+  ].filter(Boolean).join('\n');
+  const result = {
+    ok: true,
+    runId,
+    generatedAt: new Date().toISOString(),
+    durationMs: Date.now() - startedAt,
+    status,
+    source,
+    task: compactRecordText(task, 800),
+    executeRequested: execute,
+    executed: Boolean(execution),
+    queued: Boolean(execution?.queued || execution?.job),
+    steps,
+    route: routeSummary,
+    observation: observation ? summarizeAutonomyObservation(observation) : null,
+    workNext: workNextSummary,
+    execution: execution ? summarizeAutonomyRoute(execution) : null,
+    progress: progress
+      ? {
+          spokenSummary: progress.spokenSummary,
+          counts: progress.counts,
+          nextActions: progress.nextActions?.slice(0, 3) || [],
+          recovery: progress.recovery,
+        }
+      : null,
+    safety: {
+      bounded: true,
+      maxSteps,
+      defaultPreview: !execute,
+      noDirectShell: true,
+      noDirectUi: true,
+      usesExistingRouting: true,
+      usesExistingActionPolicy: true,
+      approvalsPreserved: true,
+      clipboardTextIncluded: false,
+      screenCaptureDefault: false,
+    },
+    nextAction,
+    output,
+  };
+  appendAudit('autonomy.loop', {
+    runId,
+    source,
+    execute,
+    status,
+    lane: routeSummary.lane,
+    steps: steps.length,
+    queued: result.queued,
+    durationMs: result.durationMs,
+  });
+  return result;
+}
+
 function jsonError(res, status, message, details) {
   res.status(status).json({ error: message, details });
 }
@@ -37908,6 +38222,11 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(progress) };
   }
 
+  if (name === 'run_autonomy_loop') {
+    const result = await runAutonomyLoop({ ...(args || {}), source: 'voice_autonomy' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_realtime_evidence') {
     return { ok: true, output: JSON.stringify(realtimeVoiceEvidenceToolSnapshot(args || {})) };
   }
@@ -38655,6 +38974,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use save_productivity_dogfood_archive when the user asks to save, export, archive, or keep the productivity dogfood evidence. Do not pass execute:true and confirm:true unless the user explicitly asks for a live Mac run after reviewing the preview.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
+      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> observe -> preview -> verify steps by default; pass execute:true only after explicit user intent, and it still uses existing routing, action policy, approvals, and worker recovery gates.',
       'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
       'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
@@ -39372,6 +39692,34 @@ function createRealtimeSessionConfig(options = {}) {
           properties: {
             jobLimit: { type: 'number' },
             workflowLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'run_autonomy_loop',
+        description: 'Run a bounded autonomy loop for one user task: route, observe local context, preview the next workbench action, optionally execute through existing routing/policy, then verify progress/recovery. Defaults to preview-only.',
+        parameters: {
+          type: 'object',
+          properties: {
+            task: { type: 'string' },
+            message: { type: 'string' },
+            instruction: { type: 'string' },
+            execute: { type: 'boolean' },
+            mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
+            observe: { type: 'boolean' },
+            includeScreen: { type: 'boolean' },
+            captureScreen: { type: 'boolean' },
+            includeAccessibility: { type: 'boolean' },
+            useMemory: { type: 'boolean' },
+            useShortcuts: { type: 'boolean' },
+            actionId: { type: 'string' },
+            nextActionId: { type: 'string' },
+            maxSteps: { type: 'number' },
+            maxNodes: { type: 'number' },
+            maxDepth: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -40793,6 +41141,7 @@ function realtimeInstructionChecks(instructions = '') {
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
+    autonomyLoop: /run_autonomy_loop|bounded route.*observe.*preview.*verify|existing routing, action policy/i.test(text),
     approvals: /get_pending_approvals|resolve_approval|waiting for approval|approval id|confirm:true/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),
@@ -41025,6 +41374,15 @@ function startApiServer() {
       });
     } catch (error) {
       jsonError(res, 400, 'Work next failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/autonomy/run', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await runAutonomyLoop({ ...(req.body || {}), source: req.body?.source || 'api_autonomy' });
+      res.status(result.ok ? 200 : 409).json({ autonomy: result });
+    } catch (error) {
+      jsonError(res, 400, 'Autonomy loop failed', error instanceof Error ? error.message : String(error));
     }
   });
 

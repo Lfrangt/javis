@@ -8,7 +8,7 @@ way as `scripts/doctor.mjs` (`JAVIS_API_TOKEN[_FILE]`, `Runtime/api-token`,
 | Command | What it checks | Side effects |
 |---------|----------------|--------------|
 | `npm run doctor` | Resident readiness, permissions, policy, runtime state | read-only |
-| `npm run eval` | Full lane scorecard (health, Realtime, briefing, routing, parallel, learning, safety, workers, AX, ...) | read-only previews + routing records + temporary collaboration claim + temporary control-mode restore |
+| `npm run eval` | Full lane scorecard (health, Realtime, autonomy, briefing, routing, parallel, learning, safety, workers, AX, ...) | read-only previews + routing records + temporary collaboration claim + temporary control-mode restore |
 | `npm run eval -- --only=realtime,parallel,safety,workers` | Run specific lanes (`--list` to see them); `safety` includes local API token/origin regressions | preview routes for routing/parallel lanes |
 | `npm run eval -- --only=realtime-injection` | Renderer and resident Realtime progress injection regression: grouped worker context, stale skip, no forced response, runtime evidence | temporary conversation state when no live user session is active |
 | `npm run dogfood:browser-live-fill` | Opt-in live browser fill dogfood: opens a temporary local form, runs confirmed `fill_draft`, verifies matched fields, and proves no submit happened | opens/manipulates a supported browser tab |
