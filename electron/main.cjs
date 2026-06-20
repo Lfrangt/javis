@@ -220,6 +220,37 @@ const CREATIVE_APP_CATALOG = [
   },
 ];
 
+const PRODUCTIVITY_APP_CATALOG = [
+  {
+    id: 'notes',
+    name: 'Notes',
+    domain: 'notes',
+    aliases: ['notes', 'apple notes', 'note', '备忘录', '笔记'],
+    bundleNames: ['Notes.app'],
+  },
+  {
+    id: 'reminders',
+    name: 'Reminders',
+    domain: 'reminders',
+    aliases: ['reminders', 'reminder', 'todo', 'to-do', '待办', '提醒事项', '提醒'],
+    bundleNames: ['Reminders.app'],
+  },
+  {
+    id: 'calendar',
+    name: 'Calendar',
+    domain: 'calendar',
+    aliases: ['calendar', 'ical', '日历', '行程', '会议'],
+    bundleNames: ['Calendar.app'],
+  },
+  {
+    id: 'mail',
+    name: 'Mail',
+    domain: 'mail',
+    aliases: ['mail', 'apple mail', 'email', 'e-mail', '邮件', '邮箱'],
+    bundleNames: ['Mail.app'],
+  },
+];
+
 const DEFAULT_ACTION_POLICY = {
   version: 1,
   dryRun: process.env.JAVIS_ACTION_DRY_RUN === 'true',
@@ -560,7 +591,7 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'realtime',
-      tools: ['plan_context', 'observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow'],
+      tools: ['plan_context', 'observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow', 'plan_productivity_workflow', 'run_productivity_action'],
       rule: 'Observe and plan first; execute only with clear target and action-policy permission.',
     },
     toolPosture: 'Dry-run planning by default; execution goes through local action policy and approvals.',
@@ -9032,7 +9063,7 @@ function creativeAliasMatches(text, alias) {
   if (!lower || !needle) return false;
   const compactLower = lower.replace(/\s+/g, '');
   const compactNeedle = needle.replace(/\s+/g, '');
-  if (/^[a-z0-9]+$/.test(needle) && needle.length <= 3) {
+  if (/^[a-z0-9]+$/.test(needle) && needle.length <= 4) {
     return new RegExp(`(^|[^a-z0-9])${needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}($|[^a-z0-9])`, 'i').test(lower);
   }
   return lower.includes(needle) || compactLower.includes(compactNeedle);
@@ -10526,6 +10557,1058 @@ async function creativeWorkflowBenchmarkSnapshot(options = {}) {
   return snapshot;
 }
 
+function productivityWorkflowIntentFromInstruction(instruction) {
+  const text = String(instruction || '');
+  if (!text.trim()) return '';
+  const explicitApp = PRODUCTIVITY_APP_CATALOG.find((item) => creativeAppMatchesText(item, text));
+  if (explicitApp?.domain === 'notes') return 'note_capture';
+  if (explicitApp?.domain === 'reminders') return 'reminder_create';
+  if (explicitApp?.domain === 'calendar') return 'calendar_event';
+  if (explicitApp?.domain === 'mail') return 'email_draft';
+  if (/邮件|邮箱|email|e-mail|mail|draft|回复|回信|写信/i.test(text)) return 'email_draft';
+  if (/日历|会议|行程|预约|约会|calendar|meeting|event|schedule/i.test(text)) return 'calendar_event';
+  if (/提醒|待办|todo|to-do|reminder|提醒事项/i.test(text)) return 'reminder_create';
+  if (/备忘录|笔记|note|notes|记下|记录/i.test(text)) return 'note_capture';
+  return '';
+}
+
+function normalizeProductivityWorkflowIntent(value, instruction = '') {
+  const raw = String(value || '').trim().toLowerCase();
+  if (['note', 'notes', 'note_capture', 'capture_note'].includes(raw)) return 'note_capture';
+  if (['reminder', 'reminders', 'todo', 'to_do', 'reminder_create'].includes(raw)) return 'reminder_create';
+  if (['calendar', 'event', 'meeting', 'calendar_event'].includes(raw)) return 'calendar_event';
+  if (['mail', 'email', 'email_draft', 'draft_email'].includes(raw)) return 'email_draft';
+  return productivityWorkflowIntentFromInstruction(instruction) || 'productivity_app';
+}
+
+function productivityWorkflowDomain(intent) {
+  if (intent === 'note_capture') return 'notes';
+  if (intent === 'reminder_create') return 'reminders';
+  if (intent === 'calendar_event') return 'calendar';
+  if (intent === 'email_draft') return 'mail';
+  return '';
+}
+
+function productivityAppByName(value) {
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return PRODUCTIVITY_APP_CATALOG.find((item) => creativeAppMatchesText(item, text)) || {
+    id: `custom_productivity_${crypto.createHash('sha1').update(text).digest('hex').slice(0, 10)}`,
+    name: text,
+    domain: '',
+    aliases: [text],
+    bundleNames: [`${text}.app`],
+    custom: true,
+  };
+}
+
+function publicProductivityAppRecord(appInfo, flags = {}) {
+  const appPath = findApplicationBundlePath(appInfo);
+  return {
+    id: appInfo.id,
+    name: appInfo.name,
+    domain: appInfo.domain || '',
+    installed: Boolean(appPath),
+    appPath,
+    explicit: Boolean(flags.explicit),
+    requested: Boolean(flags.requested),
+    custom: Boolean(appInfo.custom),
+  };
+}
+
+function productivityAppCandidates(instruction, intent, requestedAppName = '') {
+  const requestedApp = productivityAppByName(requestedAppName);
+  const explicitHits = PRODUCTIVITY_APP_CATALOG.filter((item) => creativeAppMatchesText(item, instruction));
+  const domain = productivityWorkflowDomain(intent);
+  const domainHits = domain
+    ? PRODUCTIVITY_APP_CATALOG.filter((item) => item.domain === domain)
+    : PRODUCTIVITY_APP_CATALOG;
+  const seen = new Set();
+  return [requestedApp, ...explicitHits, ...domainHits, ...PRODUCTIVITY_APP_CATALOG]
+    .filter(Boolean)
+    .filter((item) => {
+      if (seen.has(item.id)) return false;
+      seen.add(item.id);
+      return true;
+    })
+    .map((item) => publicProductivityAppRecord(item, {
+      explicit: explicitHits.some((hit) => hit.id === item.id),
+      requested: requestedApp?.id === item.id,
+    }))
+    .sort((a, b) => {
+      if (a.requested !== b.requested) return a.requested ? -1 : 1;
+      if (a.explicit !== b.explicit) return a.explicit ? -1 : 1;
+      if (a.installed !== b.installed) return a.installed ? -1 : 1;
+      return 0;
+    });
+}
+
+function productivityWorkflowStages(intent) {
+  if (intent === 'reminder_create') {
+    return [
+      { id: 'capture', label: '确认提醒内容', summary: '确认事项、时间、列表、优先级和是否重复。' },
+      { id: 'create', label: '创建提醒', summary: '打开 Reminders 并只创建一条明确的待办。' },
+      { id: 'verify', label: '复查提醒', summary: '观察列表，确认提醒内容和时间正确。' },
+    ];
+  }
+  if (intent === 'calendar_event') {
+    return [
+      { id: 'capture', label: '确认日程信息', summary: '确认标题、日期、开始/结束时间、地点、日历和参与人。' },
+      { id: 'create', label: '创建日历事件', summary: '打开 Calendar 并创建可复查的事件草稿。' },
+      { id: 'invite', label: '邀请/通知确认', summary: '邀请、通知、发送更新都需要明确确认。' },
+      { id: 'verify', label: '复查日程', summary: '观察日历事件，确认时间和参与人。' },
+    ];
+  }
+  if (intent === 'email_draft') {
+    return [
+      { id: 'capture', label: '确认邮件 brief', summary: '确认收件人、主题、正文要点和语气。' },
+      { id: 'draft', label: '创建邮件草稿', summary: '只创建或填写草稿，不发送。' },
+      { id: 'review', label: '复查草稿', summary: '复查收件人、主题、正文和附件；发送必须人工确认。' },
+    ];
+  }
+  return [
+    { id: 'capture', label: '确认记录内容', summary: '确认标题、正文、标签/文件夹和后续用途。' },
+    { id: 'create', label: '创建笔记', summary: '打开 Notes 并创建可复查的笔记。' },
+    { id: 'organize', label: '整理归档', summary: '移动文件夹、添加标签或链接前先确认目标。' },
+    { id: 'verify', label: '复查笔记', summary: '观察笔记内容和所在位置。' },
+  ];
+}
+
+function productivityStageIdFromInstruction(instruction, intent) {
+  const text = String(instruction || '');
+  const signals = [
+    ['verify', /复查|确认是否|检查|verify|review/i],
+    ['invite', /邀请|参与人|attendee|invite|send update|通知/i],
+    ['draft', /草稿|draft|write email|写邮件|回信|回复/i],
+    ['organize', /整理|归档|文件夹|标签|tag|folder|organize/i],
+    ['create', /创建|新建|添加|加入|create|add|new/i],
+    ['capture', /确认|记录|记下|brief|capture|收集/i],
+  ];
+  const match = signals.find(([stage, pattern]) => {
+    if (stage === 'draft' && intent !== 'email_draft') return false;
+    if (stage === 'invite' && intent !== 'calendar_event') return false;
+    if (stage === 'organize' && intent !== 'note_capture') return false;
+    return pattern.test(text);
+  });
+  return match?.[0] || '';
+}
+
+function normalizeProductivityStageId(value, intent, instruction = '') {
+  const raw = String(value || '').trim().toLowerCase();
+  const aliases = {
+    note: 'capture',
+    notes: 'capture',
+    brief: 'capture',
+    collect: 'capture',
+    schedule: intent === 'calendar_event' ? 'create' : 'capture',
+    compose: intent === 'email_draft' ? 'draft' : 'create',
+    write: intent === 'email_draft' ? 'draft' : 'create',
+    email: 'draft',
+    reminder: 'create',
+    event: 'create',
+    check: 'verify',
+  };
+  const stageIds = new Set(productivityWorkflowStages(intent).map((stage) => stage.id));
+  const aliased = aliases[raw] || raw;
+  if (stageIds.has(aliased)) return aliased;
+  const inferred = productivityStageIdFromInstruction(instruction, intent);
+  if (inferred && stageIds.has(inferred)) return inferred;
+  return productivityWorkflowStages(intent)[0]?.id || 'capture';
+}
+
+function productivityStageDefinition(intent, stageId) {
+  return productivityWorkflowStages(intent).find((stage) => stage.id === stageId) || productivityWorkflowStages(intent)[0] || null;
+}
+
+function productivityAction(id, type, label, options = {}) {
+  return {
+    id,
+    type,
+    label,
+    summary: options.summary || '',
+    tool: options.tool || '',
+    riskLevel: Math.max(1, Math.min(4, Number(options.riskLevel || 2))),
+    safeToAutoRun: Boolean(options.safeToAutoRun),
+    requires: Array.isArray(options.requires) ? options.requires : [],
+    confirmationRequired: Boolean(options.confirmationRequired),
+    instruction: options.instruction || '',
+    args: options.args || {},
+    steps: options.steps || undefined,
+    forbidden: Boolean(options.forbidden),
+  };
+}
+
+function productivityStageActionPack({ intent, stageId, selectedApp, instruction }) {
+  const stage = productivityStageDefinition(intent, stageId);
+  const appName = selectedApp?.name || 'productivity app';
+  const actions = [
+    productivityAction('open_app', 'app_workflow', `打开/聚焦 ${appName}`, {
+      tool: 'run_app_workflow',
+      riskLevel: 2,
+      safeToAutoRun: true,
+      summary: '低风险：只打开或聚焦目标生产力应用。',
+      steps: [
+        { type: 'open_app', app: appName, label: `Open ${appName}` },
+        { type: 'wait', ms: 900, label: 'Wait for productivity app' },
+      ],
+    }),
+    productivityAction('observe_app', 'observe', '观察当前应用窗口', {
+      tool: 'observe_now',
+      riskLevel: 1,
+      safeToAutoRun: true,
+      summary: '读取当前 App、屏幕和 Accessibility 树，确认下一步目标。',
+      args: { captureScreen: 'auto', includeAccessibility: true, maxNodes: 160, maxDepth: 8 },
+    }),
+  ];
+
+  if (intent === 'reminder_create') {
+    actions.push(
+      productivityAction('collect_reminder', 'prompt', '补齐提醒信息', {
+        riskLevel: 1,
+        summary: '确认提醒标题、截止时间、列表、优先级和重复规则。',
+        requires: ['title', 'dueAt'],
+      }),
+      productivityAction('create_reminder', 'current_app_control', '创建一条提醒', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        requires: ['title', 'dueAt'],
+        summary: '只创建一条明确提醒；不会批量改动列表。',
+        instruction: `在 ${appName} 中创建一条提醒，先复查标题和时间，不删除、不完成任何现有提醒。`,
+      }),
+    );
+  } else if (intent === 'calendar_event') {
+    actions.push(
+      productivityAction('collect_event', 'prompt', '补齐日程信息', {
+        riskLevel: 1,
+        summary: '确认标题、日期、开始/结束时间、地点、日历和参与人。',
+        requires: ['title', 'startAt', 'endAt'],
+      }),
+      productivityAction('create_event', 'current_app_control', '创建日历事件草稿', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        requires: ['title', 'startAt', 'endAt'],
+        summary: '创建或填写一个可复查事件；邀请/通知另行确认。',
+        instruction: `在 ${appName} 中创建一个日历事件草稿，先复查标题、时间和日历，不发送邀请或更新通知。`,
+      }),
+      productivityAction('send_invite_gate', 'blocked', '邀请或发送更新需要人工确认', {
+        riskLevel: 4,
+        confirmationRequired: true,
+        forbidden: true,
+        summary: 'JAVIS 不自动发送日历邀请或更新；必须由用户明确确认并复查。',
+      }),
+    );
+  } else if (intent === 'email_draft') {
+    actions.push(
+      productivityAction('collect_email', 'prompt', '补齐邮件 brief', {
+        riskLevel: 1,
+        summary: '确认收件人、主题、正文要点、语气和附件。',
+        requires: ['recipient', 'subject', 'body'],
+      }),
+      productivityAction('draft_email', 'current_app_control', '创建邮件草稿', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        requires: ['recipient', 'subject', 'body'],
+        summary: '只创建草稿，不发送邮件。',
+        instruction: `在 ${appName} 中创建一封邮件草稿，填写收件人、主题和正文后停在复查状态，不发送。`,
+      }),
+      productivityAction('send_email_blocked', 'blocked', '发送邮件保持阻断', {
+        riskLevel: 4,
+        confirmationRequired: true,
+        forbidden: true,
+        summary: '发送邮件是高影响动作；JAVIS 只能准备草稿，不能自动发送。',
+      }),
+    );
+  } else {
+    actions.push(
+      productivityAction('collect_note', 'prompt', '补齐笔记内容', {
+        riskLevel: 1,
+        summary: '确认标题、正文、文件夹/标签和是否需要后续任务。',
+        requires: ['title', 'body'],
+      }),
+      productivityAction('create_note', 'current_app_control', '创建笔记', {
+        tool: 'control_current_app',
+        riskLevel: 3,
+        confirmationRequired: true,
+        requires: ['title', 'body'],
+        summary: '创建一条可复查笔记；不移动或删除现有笔记。',
+        instruction: `在 ${appName} 中创建一条新笔记，填写标题和正文后停下复查，不移动或删除现有笔记。`,
+      }),
+      productivityAction('capture_note_inbox', 'inbox', '先保存到本地 Inbox', {
+        tool: 'capture_inbox_item',
+        riskLevel: 1,
+        safeToAutoRun: true,
+        requires: ['body'],
+        summary: '当暂时不想操作 Notes 时，把内容保存到本地 Inbox。',
+      }),
+    );
+  }
+
+  return {
+    id: stageId,
+    label: stage?.label || stageId,
+    summary: stage?.summary || '',
+    intent,
+    app: selectedApp?.name || '',
+    riskLevel: Math.max(...actions.map((action) => action.riskLevel), 1),
+    actions,
+    safeAutoActionIds: actions.filter((action) => action.safeToAutoRun).map((action) => action.id),
+    confirmationActionIds: actions.filter((action) => action.confirmationRequired).map((action) => action.id),
+    forbiddenActionIds: actions.filter((action) => action.forbidden).map((action) => action.id),
+  };
+}
+
+function formatProductivityWorkflowOutput(result) {
+  const appLabel = result.selectedApp?.name || '未选择';
+  const installedLabel = result.selectedApp?.installed
+    ? `已检测到 ${result.selectedApp.appPath}`
+    : '未在常见位置检测到；仍可尝试用 macOS 打开应用名。';
+  const stageLines = result.stages.map((stage, index) => `${index + 1}. ${stage.label}: ${stage.summary}`);
+  const actionLines = result.actionPack?.actions?.length
+    ? result.actionPack.actions
+      .slice(0, 6)
+      .map((action, index) => `${index + 1}. L${action.riskLevel} ${action.label}${action.tool ? ` -> ${action.tool}` : ''}${action.safeToAutoRun ? ' (可自动)' : action.confirmationRequired ? ' (需确认)' : ''}${action.forbidden ? ' (阻断)' : ''}`)
+      .join('\n')
+    : '';
+  return [
+    `生产力工作流: ${result.intent} · ${appLabel}`,
+    `软件: ${installedLabel}`,
+    `阶段:\n${stageLines.join('\n')}`,
+    result.focusedStage ? `焦点阶段: ${result.focusedStage.label}` : '',
+    actionLines ? `动作包:\n${actionLines}` : '',
+    result.appRun?.output ? `本地操作:\n${result.appRun.output}` : '',
+    result.observation?.output ? `观察:\n${result.observation.output}` : '',
+    `下一步: ${result.nextActions[0] || '确认目标应用、内容和是否允许创建草稿。'}`,
+  ].filter(Boolean).join('\n');
+}
+
+async function planProductivityWorkflow(options = {}) {
+  const instruction = String(options.instruction || options.goal || options.task || '').trim();
+  if (!instruction) throw new Error('Productivity workflow requires instruction.');
+  const intent = normalizeProductivityWorkflowIntent(options.intent, instruction);
+  const candidates = productivityAppCandidates(instruction, intent, options.app || options.application || '');
+  const selectedApp =
+    candidates.find((item) => item.requested) ||
+    candidates.find((item) => item.explicit && item.installed) ||
+    candidates.find((item) => item.explicit) ||
+    candidates.find((item) => item.installed) ||
+    candidates[0] ||
+    null;
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const stages = productivityWorkflowStages(intent);
+  const focusedStageId = normalizeProductivityStageId(options.stage || options.phase || options.step, intent, instruction);
+  const focusedStage = productivityStageDefinition(intent, focusedStageId);
+  const actionPacks = stages.map((stage) => productivityStageActionPack({
+    intent,
+    stageId: stage.id,
+    selectedApp,
+    instruction,
+  }));
+  const actionPack = actionPacks.find((pack) => pack.id === focusedStageId) || actionPacks[0] || null;
+  const nextActions = [
+    selectedApp
+      ? `${focusedStage?.label || '下一阶段'}: ${actionPack?.actions?.[0]?.label || `打开/聚焦 ${selectedApp.name}`}，然后观察窗口。`
+      : '先指定要使用的生产力应用。',
+    '补齐标题、时间、正文、收件人等缺失信息。',
+    '创建笔记、提醒、日程或邮件草稿前先预览；发送、邀请、删除、批量修改保持确认门。',
+  ];
+  let appRun = null;
+  let observation = null;
+
+  if (execute && selectedApp?.name) {
+    appRun = await runAppWorkflow({
+      title: `Open productivity app · ${selectedApp.name}`,
+      instruction,
+      execute: true,
+      source: 'productivity_workflow',
+      recordWorkflow: false,
+      steps: [
+        { type: 'open_app', app: selectedApp.name, label: `Open ${selectedApp.name}` },
+        { type: 'wait', ms: Math.max(500, Math.min(5000, Number(options.waitMs || 900))), label: 'Wait for productivity app' },
+      ],
+      continueOnError: false,
+    });
+    if (appRun.ok && options.observeAfterOpen !== false) {
+      const observed = await observeNow({
+        source: 'productivity_workflow',
+        captureScreen: 'auto',
+        includeAccessibility: true,
+        screenMaxAgeMs: 8000,
+        accessibilityMaxAgeMs: 4000,
+        maxNodes: 160,
+        maxDepth: 8,
+      });
+      observation = {
+        ok: observed.ok,
+        output: formatObservationForLocalCommand(observed),
+        mac: observed.mac,
+        screen: observed.screen,
+        accessibility: observed.accessibility,
+        errors: observed.errors,
+      };
+    }
+  }
+
+  const draft = {
+    ok: Boolean(selectedApp) && (!execute || Boolean(appRun?.ok)),
+    executed: execute,
+    intent,
+    selectedApp,
+    candidates,
+    stages,
+    focusedStage,
+    actionPacks,
+    actionPack,
+    nextActions,
+    appRun,
+    observation,
+  };
+  const output = formatProductivityWorkflowOutput(draft);
+  const workflowDraft = {
+    kind: 'productivity',
+    source: options.source || 'productivity_workflow',
+    status: execute && appRun && !appRun.ok ? 'blocked' : 'done',
+    title: `Productivity workflow · ${selectedApp?.name || intent}`.slice(0, 180),
+    intent,
+    mode: execute ? 'local' : 'preview',
+    request: instruction,
+    result: output,
+    target: {
+      app: selectedApp?.name || '',
+      appId: selectedApp?.id || '',
+      appDomain: selectedApp?.domain || productivityWorkflowDomain(intent),
+      appInstalled: Boolean(selectedApp?.installed),
+      appPath: selectedApp?.appPath || '',
+      candidateCount: candidates.length,
+      stageCount: stages.length,
+      focusedStageId,
+      actionCount: actionPack?.actions?.length || 0,
+      appWorkflowId: appRun?.workflow?.id || '',
+    },
+  };
+  const workflow = options.recordWorkflow === false
+    ? {
+        id: '',
+        ...workflowDraft,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+      }
+    : createWorkflowRecord(workflowDraft);
+  const routing = options.recordRouting === false || !workflow.id
+    ? null
+    : createRoutingRecordForWorkflow({
+        workflow,
+        mode: 'local',
+        source: options.source || 'productivity_workflow',
+        owner: 'app',
+        scope: `productivity:${intent}`,
+        parallelGroup: options.parallelGroup || options.group || `productivity:${selectedApp?.domain || intent}`,
+        resultSummary: output,
+      });
+
+  return {
+    ...draft,
+    workflow,
+    routing,
+    output,
+  };
+}
+
+function productivityActionIdFromOptions(options = {}, actionPack = null) {
+  const requested = String(options.actionId || options.action || options.actionName || options.id || '').trim();
+  if (requested) return requested;
+  if (options.execute === true || String(options.execute || '').toLowerCase() === 'true') {
+    return actionPack?.safeAutoActionIds?.[0] || actionPack?.actions?.[0]?.id || '';
+  }
+  return actionPack?.actions?.[0]?.id || '';
+}
+
+function productivityActionRequiresConfirmation(action) {
+  if (!action) return false;
+  if (action.confirmationRequired) return true;
+  return Number(action.riskLevel || 0) >= 4;
+}
+
+function productivityActionConfirmationSatisfied(options = {}) {
+  return options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+}
+
+function productivityRequirementValue(requirement, options = {}) {
+  const aliases = {
+    title: ['title', 'name', 'reminderTitle', 'eventTitle', 'noteTitle'],
+    body: ['body', 'text', 'content', 'message', 'noteBody'],
+    dueAt: ['dueAt', 'due', 'date', 'time', 'deadline'],
+    startAt: ['startAt', 'start', 'date', 'time'],
+    endAt: ['endAt', 'end', 'until'],
+    recipient: ['recipient', 'to', 'email', 'mailto'],
+    subject: ['subject', 'title'],
+  }[requirement] || [requirement];
+  for (const key of aliases) {
+    const value = options[key];
+    if (value !== undefined && value !== null && String(value).trim()) return String(value).trim();
+  }
+  return '';
+}
+
+function missingProductivityRequirements(action, options = {}) {
+  return (action?.requires || []).filter((requirement) => !productivityRequirementValue(requirement, options));
+}
+
+function formatProductivityActionExecutionOutput(result) {
+  const action = result.action || {};
+  const recoveryHints = result.recoveryHints || [];
+  return [
+    `生产力动作: ${action.id || 'unknown'} · ${action.label || ''}`,
+    `状态: ${result.status}${result.executed ? ' · executed' : ' · preview'}`,
+    result.requiresConfirmation ? '需要确认: 是' : '',
+    result.missingRequirements?.length ? `缺少信息: ${result.missingRequirements.join(', ')}` : '',
+    recoveryHints.length ? `补救:\n${recoveryHints.map((hint, index) => `${index + 1}. ${hint}`).join('\n')}` : '',
+    result.result?.output ? `结果:\n${compactRecordText(result.result.output, 900)}` : '',
+    result.output && !result.result?.output ? result.output : '',
+  ].filter(Boolean).join('\n');
+}
+
+function productivityActionRecoveryHints(action, execution, plan) {
+  const hints = [];
+  const add = (hint) => {
+    const text = String(hint || '').trim();
+    if (text && !hints.includes(text)) hints.push(text);
+  };
+  if (execution?.requiresConfirmation) add(`确认目标和内容无误后，重新运行 actionId:${action?.id || ''} 并传入 confirm:true。`);
+  for (const requirement of execution?.missingRequirements || []) add(`补充缺少的信息: ${requirement}。`);
+  if (action?.type === 'blocked' || action?.forbidden) add('发送、邀请、删除或批量修改必须由用户在应用里明确复查确认。');
+  if (['current_app_control', 'app_workflow'].includes(action?.type) && !execution?.ok) add(`确认 ${plan?.selectedApp?.name || '目标应用'} 已打开并处在正确窗口。`);
+  if (!hints.length && execution?.status === 'preview') add('预览通过后，补齐信息并确认具体动作再执行。');
+  return hints.slice(0, 6);
+}
+
+async function executeProductivityAction(action, options = {}, plan = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      status: 'preview',
+      output: `${action.label}: ${action.summary || 'Prepared productivity action preview.'}`,
+    };
+  }
+
+  const missingRequirements = missingProductivityRequirements(action, options);
+  if (missingRequirements.length) {
+    return {
+      ok: false,
+      executed: false,
+      status: 'blocked',
+      missingRequirements,
+      output: `需要补充信息后才能执行: ${missingRequirements.join(', ')}`,
+    };
+  }
+
+  if (action.type === 'blocked' || action.forbidden) {
+    return {
+      ok: false,
+      executed: false,
+      status: 'blocked',
+      requiresConfirmation: true,
+      output: action.summary || `${action.label} 被安全策略阻断。`,
+    };
+  }
+
+  if (action.type === 'app_workflow') {
+    const result = await runAppWorkflow({
+      title: `productivity action · ${action.label}`,
+      instruction: options.instruction || action.summary || action.label,
+      execute: true,
+      source: 'productivity_action',
+      recordWorkflow: false,
+      steps: action.steps || [],
+      continueOnError: false,
+    });
+    return {
+      ok: result.ok,
+      executed: true,
+      status: result.ok ? 'done' : 'blocked',
+      result,
+      output: result.output,
+    };
+  }
+
+  if (action.type === 'observe') {
+    const observed = await observeNow({
+      ...(action.args || {}),
+      source: 'productivity_action',
+      captureScreen: action.args?.captureScreen ?? 'auto',
+      includeAccessibility: action.args?.includeAccessibility ?? true,
+      screenMaxAgeMs: 8000,
+      accessibilityMaxAgeMs: 4000,
+      maxNodes: action.args?.maxNodes || options.maxNodes || 160,
+      maxDepth: action.args?.maxDepth || options.maxDepth || 8,
+    });
+    const output = formatObservationForLocalCommand(observed);
+    return {
+      ok: observed.ok,
+      executed: true,
+      status: observed.ok ? 'done' : 'blocked',
+      result: {
+        ok: observed.ok,
+        output,
+        mac: observed.mac,
+        screen: observed.screen,
+        accessibility: observed.accessibility,
+        errors: observed.errors,
+      },
+      output,
+    };
+  }
+
+  if (action.type === 'current_app_control') {
+    const result = await controlCurrentApp({
+      instruction: String(options.actionInstruction || action.instruction || action.summary || action.label),
+      content: options.content ?? options.value,
+      execute: true,
+      recordWorkflow: false,
+      maxNodes: options.maxNodes || 160,
+      maxDepth: options.maxDepth || 8,
+      approvalContext: {
+        workflowId: options.workflowId || '',
+        title: `productivity action · ${action.label}`,
+        instruction: options.instruction || action.instruction || action.label,
+        source: 'productivity_action',
+      },
+    });
+    return {
+      ok: result.ok,
+      executed: Boolean(result.executed),
+      status: result.ok ? 'done' : result.approval ? 'approval_required' : 'blocked',
+      approval: result.approval,
+      result,
+      output: result.output,
+    };
+  }
+
+  if (action.type === 'inbox') {
+    const body = productivityRequirementValue('body', options);
+    if (!body) {
+      return {
+        ok: false,
+        executed: false,
+        status: 'blocked',
+        missingRequirements: ['body'],
+        output: '需要正文后才能保存到 Inbox。',
+      };
+    }
+    const item = createInboxItem({
+      title: options.title || action.label,
+      body,
+      source: 'productivity_action',
+      priority: options.priority || 2,
+      tags: ['productivity', plan.intent || 'productivity'].filter(Boolean),
+    });
+    return {
+      ok: true,
+      executed: true,
+      status: 'done',
+      result: { item, counts: inboxCounts() },
+      output: `已保存到 Inbox: ${item.title}`,
+    };
+  }
+
+  return {
+    ok: false,
+    executed: false,
+    status: 'blocked',
+    output: `${action.type} 动作需要用户补充信息或暂不支持自动执行。`,
+  };
+}
+
+async function runProductivityWorkflowAction(options = {}) {
+  const instruction = String(options.instruction || options.goal || options.task || '').trim();
+  if (!instruction) throw new Error('Productivity action requires instruction.');
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const plan = await planProductivityWorkflow({
+    instruction,
+    intent: options.intent,
+    stage: options.stage || options.phase || options.step,
+    app: options.app || options.application,
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: options.source || 'productivity_action',
+  });
+  const actionId = productivityActionIdFromOptions(options, plan.actionPack);
+  const action = (plan.actionPack?.actions || []).find((item) => item.id === actionId);
+  if (!action) throw new Error(`Productivity action not found: ${actionId || 'missing actionId'}.`);
+
+  const confirmed = productivityActionConfirmationSatisfied(options);
+  const requiresConfirmation = productivityActionRequiresConfirmation(action);
+  let execution;
+  if (requiresConfirmation && execute && !confirmed) {
+    execution = {
+      ok: false,
+      executed: false,
+      status: 'blocked',
+      requiresConfirmation: true,
+      output: `需要明确确认后才能执行: ${action.label}`,
+    };
+  } else {
+    execution = await executeProductivityAction(action, {
+      ...options,
+      execute,
+      intent: plan.intent,
+    }, plan);
+  }
+
+  const outputDraft = {
+    ok: execution.ok,
+    executed: Boolean(execution.executed),
+    status: execution.status || (execution.ok ? 'done' : 'blocked'),
+    requiresConfirmation: Boolean(requiresConfirmation && execute && !confirmed) || Boolean(execution.requiresConfirmation),
+    missingRequirements: execution.missingRequirements || [],
+    plan,
+    action,
+    result: execution.result,
+    approval: execution.approval,
+    recoveryHints: productivityActionRecoveryHints(action, execution, plan),
+    output: execution.output,
+  };
+  const output = formatProductivityActionExecutionOutput(outputDraft);
+  const workflowStatus = outputDraft.status === 'preview'
+    ? 'done'
+    : ['queued', 'running', 'done', 'failed', 'cancelled', 'blocked'].includes(outputDraft.status)
+      ? outputDraft.status
+      : 'blocked';
+  const workflowDraft = {
+    kind: 'productivity_action',
+    source: options.source || 'productivity_action',
+    status: workflowStatus,
+    title: `Productivity action · ${action.label}`.slice(0, 180),
+    intent: action.id,
+    mode: execute ? 'local' : 'preview',
+    request: instruction,
+    result: output,
+    target: {
+      app: plan.selectedApp?.name || '',
+      appId: plan.selectedApp?.id || '',
+      appDomain: plan.selectedApp?.domain || productivityWorkflowDomain(plan.intent),
+      appInstalled: Boolean(plan.selectedApp?.installed),
+      appPath: plan.selectedApp?.appPath || '',
+      stageId: plan.focusedStage?.id || '',
+      actionId: action.id,
+      actionCount: plan.actionPack?.actions?.length || 0,
+      riskLevel: action.riskLevel,
+      safeToAutoRun: action.safeToAutoRun,
+      confirmationRequired: requiresConfirmation,
+      missingRequirements: outputDraft.missingRequirements,
+      type: action.type,
+    },
+  };
+  const workflow = options.recordWorkflow === false
+    ? {
+        id: '',
+        ...workflowDraft,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        completedAt: Date.now(),
+      }
+    : createWorkflowRecord(workflowDraft);
+  const routing = options.recordRouting === false || !workflow.id
+    ? null
+    : createRoutingRecordForWorkflow({
+        workflow,
+        mode: 'local',
+        source: options.source || 'productivity_action',
+        owner: 'app',
+        scope: `productivity:${plan.intent}:${plan.focusedStage?.id || 'stage'}:${action.id}`,
+        parallelGroup: options.parallelGroup || options.group || `productivity:${plan.selectedApp?.domain || plan.intent}`,
+        resultSummary: output,
+      });
+
+  return {
+    ...outputDraft,
+    workflow,
+    routing,
+    output,
+  };
+}
+
+function productivityBenchmarkCaseResult({ id, label, intent, ok, result, assertions = {} }) {
+  const workflow = result?.workflow || {};
+  const routing = result?.routing || {};
+  const selectedApp = result?.selectedApp || result?.plan?.selectedApp || {};
+  const focusedStage = result?.focusedStage || result?.plan?.focusedStage || {};
+  const actionPack = result?.actionPack || result?.plan?.actionPack || {};
+  const action = result?.action || {};
+  return {
+    id,
+    label,
+    intent,
+    ok: Boolean(ok),
+    status: ok ? 'pass' : 'fail',
+    previewOnly: result?.executed === false || result?.status === 'preview' || result?.status === 'blocked',
+    executed: Boolean(result?.executed),
+    blocked: String(result?.status || '').includes('blocked'),
+    confirmationRequired: Boolean(result?.requiresConfirmation || action.confirmationRequired),
+    modelCall: false,
+    productivityAction: false,
+    workflowId: workflow.id || '',
+    workflowStatus: workflow.status || '',
+    routingId: routing.id || '',
+    routingStatus: routing.status || '',
+    app: selectedApp.name || '',
+    appId: selectedApp.id || '',
+    stageId: focusedStage.id || actionPack.id || '',
+    actionId: action.id || '',
+    assertions,
+    summary: compactRecordText(result?.output || actionPack.summary || action.summary || '', 260),
+  };
+}
+
+async function productivityWorkflowBenchmarkSnapshot(options = {}) {
+  const source = String(options.source || 'productivity_benchmark').slice(0, 80);
+  const sourcePrefix = source.startsWith('eval_') ? source : `${source}`;
+  const cases = [];
+
+  const notePlan = await planProductivityWorkflow({
+    instruction: '把今天的产品灵感写进 Notes，先规划新建笔记。',
+    intent: 'note_capture',
+    stage: 'create',
+    app: 'Notes',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_note_plan`,
+  });
+  cases.push(productivityBenchmarkCaseResult({
+    id: 'note_capture_plan',
+    label: 'Notes capture workflow plan',
+    intent: 'note_capture',
+    result: notePlan,
+    assertions: {
+      selectedApp: notePlan.selectedApp?.id || '',
+      stage: notePlan.focusedStage?.id || '',
+      notKeynoteMatch: !/Keynote\.app/i.test(notePlan.selectedApp?.appPath || ''),
+      createNoteGate: Boolean(notePlan.actionPack?.actions?.some((action) => action.id === 'create_note' && action.confirmationRequired)),
+      inboxFallback: Boolean(notePlan.actionPack?.actions?.some((action) => action.id === 'capture_note_inbox' && action.safeToAutoRun)),
+    },
+    ok: notePlan.ok === true &&
+      notePlan.selectedApp?.id === 'notes' &&
+      !/Keynote\.app/i.test(notePlan.selectedApp?.appPath || '') &&
+      notePlan.focusedStage?.id === 'create' &&
+      notePlan.actionPack?.actions?.some((action) => action.id === 'create_note' && action.confirmationRequired) &&
+      notePlan.actionPack?.actions?.some((action) => action.id === 'capture_note_inbox' && action.safeToAutoRun),
+  }));
+
+  const reminderPlan = await planProductivityWorkflow({
+    instruction: '明天下午提醒我复盘 JAVIS 语音 dogfood。',
+    intent: 'reminder_create',
+    stage: 'create',
+    app: 'Reminders',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_reminder_plan`,
+  });
+  cases.push(productivityBenchmarkCaseResult({
+    id: 'reminder_create_plan',
+    label: 'Reminder create workflow plan',
+    intent: 'reminder_create',
+    result: reminderPlan,
+    assertions: {
+      selectedApp: reminderPlan.selectedApp?.id || '',
+      stage: reminderPlan.focusedStage?.id || '',
+      createReminderGate: Boolean(reminderPlan.actionPack?.actions?.some((action) => action.id === 'create_reminder' && action.confirmationRequired)),
+      requirements: reminderPlan.actionPack?.actions?.find((action) => action.id === 'create_reminder')?.requires || [],
+    },
+    ok: reminderPlan.ok === true &&
+      reminderPlan.selectedApp?.id === 'reminders' &&
+      reminderPlan.focusedStage?.id === 'create' &&
+      reminderPlan.actionPack?.actions?.some((action) => action.id === 'create_reminder' && action.confirmationRequired),
+  }));
+
+  const calendarGate = await runProductivityWorkflowAction({
+    instruction: '下周一 10 点和产品设计开会，先创建 Calendar 事件草稿。',
+    intent: 'calendar_event',
+    stage: 'create',
+    app: 'Calendar',
+    actionId: 'create_event',
+    execute: true,
+    confirm: false,
+    title: 'Product design meeting',
+    startAt: 'next Monday 10:00',
+    endAt: 'next Monday 10:30',
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_calendar_gate`,
+  });
+  cases.push(productivityBenchmarkCaseResult({
+    id: 'calendar_confirmation_gate',
+    label: 'Calendar event confirmation gate',
+    intent: 'calendar_event',
+    result: calendarGate,
+    assertions: {
+      status: calendarGate.status || '',
+      requiresConfirmation: calendarGate.requiresConfirmation === true,
+      missingRequirements: calendarGate.missingRequirements || [],
+      recoveryHints: Number(calendarGate.recoveryHints?.length || 0),
+    },
+    ok: calendarGate.ok === false &&
+      calendarGate.executed === false &&
+      calendarGate.status === 'blocked' &&
+      calendarGate.requiresConfirmation === true &&
+      Number(calendarGate.recoveryHints?.length || 0) >= 1,
+  }));
+
+  const emailPlan = await planProductivityWorkflow({
+    instruction: '帮我给合作方写一封进度更新邮件草稿，不要发送。',
+    intent: 'email_draft',
+    stage: 'draft',
+    app: 'Mail',
+    execute: false,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_email_plan`,
+  });
+  cases.push(productivityBenchmarkCaseResult({
+    id: 'email_draft_plan',
+    label: 'Email draft workflow plan',
+    intent: 'email_draft',
+    result: emailPlan,
+    assertions: {
+      selectedApp: emailPlan.selectedApp?.id || '',
+      stage: emailPlan.focusedStage?.id || '',
+      draftGate: Boolean(emailPlan.actionPack?.actions?.some((action) => action.id === 'draft_email' && action.confirmationRequired)),
+      sendBlocked: Boolean(emailPlan.actionPack?.actions?.some((action) => action.id === 'send_email_blocked' && action.forbidden)),
+    },
+    ok: emailPlan.ok === true &&
+      emailPlan.selectedApp?.id === 'mail' &&
+      emailPlan.focusedStage?.id === 'draft' &&
+      emailPlan.actionPack?.actions?.some((action) => action.id === 'draft_email' && action.confirmationRequired) &&
+      emailPlan.actionPack?.actions?.some((action) => action.id === 'send_email_blocked' && action.forbidden),
+  }));
+
+  const missingEmail = await runProductivityWorkflowAction({
+    instruction: '帮我给合作方写一封进度更新邮件草稿。',
+    intent: 'email_draft',
+    stage: 'draft',
+    app: 'Mail',
+    actionId: 'draft_email',
+    execute: true,
+    confirm: true,
+    subject: 'Progress update',
+    body: 'We made progress this week.',
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_email_missing_recipient`,
+  });
+  cases.push(productivityBenchmarkCaseResult({
+    id: 'email_missing_recipient_gate',
+    label: 'Email missing recipient gate',
+    intent: 'email_draft',
+    result: missingEmail,
+    assertions: {
+      status: missingEmail.status || '',
+      missingRecipient: Array.isArray(missingEmail.missingRequirements) && missingEmail.missingRequirements.includes('recipient'),
+    },
+    ok: missingEmail.ok === false &&
+      missingEmail.executed === false &&
+      missingEmail.status === 'blocked' &&
+      Array.isArray(missingEmail.missingRequirements) &&
+      missingEmail.missingRequirements.includes('recipient'),
+  }));
+
+  const sendBlocked = await runProductivityWorkflowAction({
+    instruction: '帮我给合作方发送这封进度更新邮件。',
+    intent: 'email_draft',
+    stage: 'draft',
+    app: 'Mail',
+    actionId: 'send_email_blocked',
+    execute: true,
+    confirm: true,
+    recordWorkflow: false,
+    recordRouting: false,
+    source: `${sourcePrefix}_send_blocked`,
+  });
+  cases.push(productivityBenchmarkCaseResult({
+    id: 'email_send_blocked',
+    label: 'Email send action stays blocked',
+    intent: 'email_draft',
+    result: sendBlocked,
+    assertions: {
+      status: sendBlocked.status || '',
+      requiresConfirmation: sendBlocked.requiresConfirmation === true,
+      actionId: sendBlocked.action?.id || '',
+    },
+    ok: sendBlocked.ok === false &&
+      sendBlocked.executed === false &&
+      sendBlocked.status === 'blocked' &&
+      sendBlocked.action?.id === 'send_email_blocked',
+  }));
+
+  const counts = {
+    total: cases.length,
+    pass: cases.filter((item) => item.ok).length,
+    fail: cases.filter((item) => !item.ok).length,
+    previewOnly: cases.filter((item) => item.previewOnly).length,
+    executed: cases.filter((item) => item.executed).length,
+    blocked: cases.filter((item) => item.blocked).length,
+    confirmationRequired: cases.filter((item) => item.confirmationRequired).length,
+    notes: cases.filter((item) => item.intent === 'note_capture').length,
+    reminders: cases.filter((item) => item.intent === 'reminder_create').length,
+    calendar: cases.filter((item) => item.intent === 'calendar_event').length,
+    mail: cases.filter((item) => item.intent === 'email_draft').length,
+  };
+  const snapshot = {
+    ok: counts.fail === 0,
+    generatedAt: new Date().toISOString(),
+    source,
+    manualOnly: true,
+    previewOnly: true,
+    startsApps: false,
+    executesProductivityActions: false,
+    modelCalls: false,
+    mutatesUserFiles: false,
+    sendsMessages: false,
+    recordsWorkflowHistory: false,
+    summary: `${counts.pass}/${counts.total} productivity benchmark case(s) passed.`,
+    counts,
+    cases,
+    nextAction: counts.fail
+      ? 'Fix failing productivity benchmark cases before broadening live productivity app automation.'
+      : 'Use these preview-only productivity benchmarks before running live Notes/Calendar/Reminders/Mail dogfood.',
+    safety: {
+      planOnly: true,
+      noAppLaunch: true,
+      noUiActions: true,
+      noModelCalls: true,
+      noUserFileMutation: true,
+      noMessageSend: true,
+      noWorkflowHistory: cases.every((item) => !item.workflowId && !item.routingId),
+      calendarConfirmationGate: cases.find((item) => item.id === 'calendar_confirmation_gate')?.assertions?.requiresConfirmation === true,
+      emailRecipientGate: cases.find((item) => item.id === 'email_missing_recipient_gate')?.assertions?.missingRecipient === true,
+      emailSendBlocked: cases.find((item) => item.id === 'email_send_blocked')?.ok === true,
+      coversNotes: cases.some((item) => item.intent === 'note_capture' && item.ok),
+      coversReminders: cases.some((item) => item.intent === 'reminder_create' && item.ok),
+      coversCalendar: cases.some((item) => item.intent === 'calendar_event' && item.ok),
+      coversMail: cases.some((item) => item.intent === 'email_draft' && item.ok),
+    },
+  };
+  appendAudit('productivity_benchmark.completed', {
+    source,
+    ok: snapshot.ok,
+    total: counts.total,
+    pass: counts.pass,
+    fail: counts.fail,
+    noAppLaunch: true,
+    noUiActions: true,
+    noMessageSend: true,
+    noModelCalls: true,
+  });
+  return snapshot;
+}
+
 function appNameFromInstruction(instruction) {
   const text = String(instruction || '').trim();
   const explicit = text.match(/(?:open|launch|打开|启动)\s+([A-Za-z][A-Za-z0-9 ._-]{1,40})/i);
@@ -10539,6 +11622,7 @@ function appNameFromInstruction(instruction) {
     ['TextEdit', ['textedit', 'text edit', '文本编辑']],
     ['Obsidian', ['obsidian']],
     ['System Settings', ['system settings', '系统设置']],
+    ...PRODUCTIVITY_APP_CATALOG.map((item) => [item.name, item.aliases]),
     ...CREATIVE_APP_CATALOG.map((item) => [item.name, item.aliases]),
   ];
   const lower = text.toLowerCase();
@@ -25219,6 +26303,8 @@ function isInternalRoutingRecord(record) {
     || source.includes('browser_benchmarks')
     || source.includes('app_benchmark')
     || source.includes('app_benchmarks')
+    || source.includes('productivity_benchmark')
+    || source.includes('productivity_benchmarks')
     || source.includes('file_benchmark')
     || source.includes('file_benchmarks')
     || source.includes('creative_benchmark')
@@ -25989,6 +27075,8 @@ function isInternalWorkflow(workflow) {
     source.includes('browser_benchmarks') ||
     source.includes('app_benchmark') ||
     source.includes('app_benchmarks') ||
+    source.includes('productivity_benchmark') ||
+    source.includes('productivity_benchmarks') ||
     source.includes('file_benchmark') ||
     source.includes('file_benchmarks') ||
     source.includes('creative_benchmark') ||
@@ -31192,6 +32280,19 @@ async function executeTool(name, args) {
     return { ok: result.ok, output: JSON.stringify(result) };
   }
 
+  if (name === 'plan_productivity_workflow' || name === 'run_productivity_workflow') {
+    const execute = name === 'run_productivity_workflow'
+      ? args?.execute !== false
+      : args?.execute === true;
+    const result = await planProductivityWorkflow({ ...(args || {}), execute, source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
+  if (name === 'run_productivity_action') {
+    const result = await runProductivityWorkflowAction({ ...(args || {}), source: 'voice' });
+    return { ok: result.ok, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_recent_workflows') {
     const limit = Math.max(1, Math.min(20, Number(args?.limit || 8)));
     const workflowItems = workflowSnapshot(limit);
@@ -31884,6 +32985,9 @@ function createRealtimeSessionConfig(options = {}) {
       'Use plan_creative_workflow for video editing, short-form editing, subtitles, color, music composition, DAW, MIDI, beat-making, arranging, mixing, or other creative app work. It chooses a likely creative app, stage, and action pack without blindly editing.',
       'Use run_creative_workflow only when the user asks to start/open the creative task. It opens or focuses the selected app, observes the project window, and returns the staged action pack; saves, exports, uploads, and destructive edits still require explicit confirmation.',
       'Use run_creative_action to execute exactly one action from a creative action pack by actionId. Use execute:false for preview. Executed actions verify the screen/UI state and return recovery hints unless verify:false is passed. For confirmation-required creative actions, pass confirm:true only after the user clearly confirms that specific action.',
+      'Use plan_productivity_workflow for Notes, Reminders, Calendar, Mail, email drafts, meetings, notes, and to-dos. It chooses a productivity app and staged action pack without creating, sending, inviting, or deleting by itself.',
+      'Use run_productivity_workflow only when the user asks to start/open a productivity task. It can open/focus the selected app and return the action pack; create note/reminder/event/email-draft actions still require a specific run_productivity_action call.',
+      'Use run_productivity_action to preview or execute exactly one productivity action by actionId. Notes, reminders, calendar events, and email drafts require missing fields to be filled and confirm:true before execution. Email sending, calendar invitations, deletes, and bulk changes stay blocked or require explicit human review.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
@@ -32374,6 +33478,95 @@ function createRealtimeSessionConfig(options = {}) {
             value: { type: 'string' },
             body: { type: 'string' },
             text: { type: 'string' },
+            waitMs: { type: 'number' },
+            maxNodes: { type: 'number' },
+            maxDepth: { type: 'number' },
+            parallelGroup: { type: 'string' },
+          },
+          required: ['instruction'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'plan_productivity_workflow',
+        description: 'Plan a practical Notes, Reminders, Calendar, or Mail workflow. Chooses a likely productivity app and staged next steps without creating records, sending, inviting, deleting, or editing blindly.',
+        parameters: {
+          type: 'object',
+          properties: {
+            instruction: { type: 'string' },
+            goal: { type: 'string' },
+            intent: { type: 'string', enum: ['note_capture', 'reminder_create', 'calendar_event', 'email_draft', 'productivity_app'] },
+            stage: { type: 'string' },
+            phase: { type: 'string' },
+            step: { type: 'string' },
+            app: { type: 'string' },
+            application: { type: 'string' },
+            execute: { type: 'boolean' },
+            observeAfterOpen: { type: 'boolean' },
+            waitMs: { type: 'number' },
+            parallelGroup: { type: 'string' },
+          },
+          required: ['instruction'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'run_productivity_workflow',
+        description: 'Start a productivity workflow by opening/focusing Notes, Reminders, Calendar, or Mail, then return a staged action pack. It does not send email, send calendar invites, delete, or bulk-edit.',
+        parameters: {
+          type: 'object',
+          properties: {
+            instruction: { type: 'string' },
+            goal: { type: 'string' },
+            intent: { type: 'string', enum: ['note_capture', 'reminder_create', 'calendar_event', 'email_draft', 'productivity_app'] },
+            stage: { type: 'string' },
+            phase: { type: 'string' },
+            step: { type: 'string' },
+            app: { type: 'string' },
+            application: { type: 'string' },
+            execute: { type: 'boolean' },
+            observeAfterOpen: { type: 'boolean' },
+            waitMs: { type: 'number' },
+            parallelGroup: { type: 'string' },
+          },
+          required: ['instruction'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'run_productivity_action',
+        description: 'Preview or execute exactly one action from a productivity workflow action pack. Creating notes, reminders, calendar events, or email drafts requires required fields plus confirm:true. Sending email, inviting, deleting, and bulk changes stay blocked.',
+        parameters: {
+          type: 'object',
+          properties: {
+            instruction: { type: 'string' },
+            goal: { type: 'string' },
+            intent: { type: 'string', enum: ['note_capture', 'reminder_create', 'calendar_event', 'email_draft', 'productivity_app'] },
+            stage: { type: 'string' },
+            phase: { type: 'string' },
+            step: { type: 'string' },
+            actionId: { type: 'string' },
+            action: { type: 'string' },
+            app: { type: 'string' },
+            application: { type: 'string' },
+            execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            title: { type: 'string' },
+            body: { type: 'string' },
+            text: { type: 'string' },
+            content: { type: 'string' },
+            recipient: { type: 'string' },
+            to: { type: 'string' },
+            subject: { type: 'string' },
+            dueAt: { type: 'string' },
+            startAt: { type: 'string' },
+            endAt: { type: 'string' },
+            actionInstruction: { type: 'string' },
+            value: { type: 'string' },
             waitMs: { type: 'number' },
             maxNodes: { type: 'number' },
             maxDepth: { type: 'number' },
@@ -35091,6 +36284,35 @@ function startApiServer() {
       res.json({ benchmarks });
     } catch (error) {
       jsonError(res, 500, 'App benchmarks failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/productivity/workflow', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await planProductivityWorkflow({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : 202).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Productivity workflow failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/productivity/benchmarks', async (req, res) => {
+    try {
+      const benchmarks = await productivityWorkflowBenchmarkSnapshot({
+        source: req.query.source || 'api_productivity_benchmarks',
+      });
+      res.json({ benchmarks });
+    } catch (error) {
+      jsonError(res, 500, 'Productivity benchmarks failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/productivity/action', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await runProductivityWorkflowAction({ ...(req.body || {}), source: req.body?.source || 'api' });
+      res.status(result.ok ? 200 : result.approval ? 202 : 409).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Productivity action failed', error instanceof Error ? error.message : String(error));
     }
   });
 

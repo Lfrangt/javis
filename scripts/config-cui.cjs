@@ -307,6 +307,7 @@ async function printStatus() {
   console.log('F. Show file workflow benchmarks');
   console.log('C. Show creative workflow benchmarks');
   console.log('U. Show app workflow benchmarks');
+  console.log('Y. Show productivity workflow benchmarks');
   console.log('14. Show next work item');
   console.log('15. Run next work item');
   console.log('16. Show autopilot status');
@@ -1032,6 +1033,36 @@ async function showAppBenchmarks() {
   const result = await request('/api/app/benchmarks?source=cui_app_benchmarks');
   console.log('');
   printAppBenchmarks(result);
+}
+
+function printProductivityBenchmarks(result) {
+  const benchmarks = result?.benchmarks || result || {};
+  const counts = benchmarks.counts || {};
+  console.log('Productivity Workflow Benchmarks');
+  console.log('================================');
+  console.log(benchmarks.summary || `${counts.pass || 0}/${counts.total || 0} benchmark case(s) passed.`);
+  console.log(`Mode: preview-only=${benchmarks.previewOnly ? 'yes' : 'no'} · starts apps=${benchmarks.startsApps ? 'yes' : 'no'} · productivity actions=${benchmarks.executesProductivityActions ? 'yes' : 'no'} · sends messages=${benchmarks.sendsMessages ? 'yes' : 'no'} · model calls=${benchmarks.modelCalls ? 'yes' : 'no'}`);
+  console.log(`Counts: pass ${counts.pass || 0}/${counts.total || 0} · fail ${counts.fail || 0} · notes ${counts.notes || 0} · reminders ${counts.reminders || 0} · calendar ${counts.calendar || 0} · mail ${counts.mail || 0}`);
+  const safety = benchmarks.safety || {};
+  console.log(`Safety: plan-only=${safety.planOnly ? 'yes' : 'no'} · no app launch=${safety.noAppLaunch ? 'yes' : 'no'} · calendar gate=${safety.calendarConfirmationGate ? 'yes' : 'no'} · email recipient gate=${safety.emailRecipientGate ? 'yes' : 'no'} · email send blocked=${safety.emailSendBlocked ? 'yes' : 'no'}`);
+  const cases = Array.isArray(benchmarks.cases) ? benchmarks.cases : [];
+  if (!cases.length) {
+    console.log('\nCases: none');
+    return;
+  }
+  console.log('\nCases:');
+  for (const item of cases) {
+    const target = [item.app, item.stageId, item.actionId].filter(Boolean).join(' · ') || item.intent || '-';
+    console.log(`- ${item.ok ? 'pass' : 'fail'} ${item.label || item.id || '-'} · ${target}`);
+    if (item.summary) console.log(`  ${compact(item.summary, 180)}`);
+  }
+  if (benchmarks.nextAction) console.log(`\nNext: ${benchmarks.nextAction}`);
+}
+
+async function showProductivityBenchmarks() {
+  const result = await request('/api/productivity/benchmarks?source=cui_productivity_benchmarks');
+  console.log('');
+  printProductivityBenchmarks(result);
 }
 
 function printPerceptionConsent(result) {
@@ -1922,6 +1953,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-productivity-benchmarks') || process.argv.includes('--productivity-benchmarks')) {
+    await showProductivityBenchmarks();
+    return;
+  }
+
   if (process.argv.includes('--print-perception') || process.argv.includes('--perception')) {
     await showPerceptionConsent();
     return;
@@ -2009,6 +2045,8 @@ async function main() {
         await showCreativeBenchmarks();
       } else if (answer === 'u' || answer === 'app benchmark' || answer === 'app benchmarks') {
         await showAppBenchmarks();
+      } else if (answer === 'y' || answer === 'productivity benchmark' || answer === 'productivity benchmarks') {
+        await showProductivityBenchmarks();
       } else if (answer === '14') {
         await showWorkbenchNext();
       } else if (answer === '15') {

@@ -32,6 +32,7 @@ Electron process
   Current-app control bridge
   App workflow planner
   App workflow bridge
+  Productivity app workflow bridge
   Creative app workflow bridge
   Desktop buddy window
 
@@ -97,6 +98,7 @@ Renderer
 - App workflow planning lane: observes frontmost app/window, Accessibility tree, and latest screen metadata, then turns natural requests into previewable workflow steps.
 - App workflow lane: short multi-step Mac workflows that sequence app opens, waits, hotkeys, typed text, current-app controls, browser DOM actions, and file/Mac actions into one auditable workflow record.
 - App benchmark lane: preview-only checks for deterministic app planning, typed-text planning, current-app-control planning, explicit multi-step workflow previews, unsafe instruction rejection, and no-history/no-app-launch contracts through `/api/app/benchmarks` and the CUI.
+- Productivity app workflow lane: Notes, Reminders, Calendar, and Mail task planning with staged action packs for note capture, reminder creation, calendar event drafts, and email drafts. Creating records requires explicit fields plus confirmation; sending mail, calendar invitations, deletes, and bulk changes stay blocked or human-reviewed.
 - Creative app workflow lane: recognizes video editing and music composition requests, picks likely creative software, records stage action packs for imports, timeline edits, subtitles, MIDI sketches, mix/export previews, and executes one guarded action at a time through app workflow, observe, file workflow, UI planning, or current-app control, followed by screen/UI verification and recovery hints.
 - Creative benchmark lane: preview-only fixture checks for video-editing and music-production planning, export confirmation gates, missing asset-path gates, prompt previews, and no-history/no-app-launch contracts through `/api/creative/benchmarks` and the CUI.
 - Guarded UI action lane: Level 3 `AXPress` and value-setting actions through policy, approvals, role allowlists, and expected target checks.
