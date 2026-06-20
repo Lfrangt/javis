@@ -38,6 +38,20 @@ function promptOptions() {
   return [...repeated, ...joined].slice(0, 8);
 }
 
+async function loadPackPromptScript(ctx, limit) {
+  const response = await ctx.api(`/api/realtime/dogfood/pack?promptLimit=${encodeURIComponent(String(limit))}`, {
+    timeoutMs: 30000,
+  });
+  const script = response.data?.pack?.prompts?.script;
+  if (!response.ok || !Array.isArray(script)) {
+    throw new Error(`Prompt script load failed: ${response.status} ${response.error || JSON.stringify(response.data)?.slice(0, 500)}`);
+  }
+  return script
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .slice(0, Math.max(1, Math.min(32, Number(limit || 24))));
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -199,19 +213,6 @@ async function main() {
   const requireAcceptance = hasFlag('--require-acceptance');
   const acceptanceOnly = hasFlag('--acceptance-only');
   const ctx = makeContext();
-  const prompts = promptOptions();
-  const body = {
-    execute,
-    confirmMic,
-    prepareProgress: true,
-    prepareWhenLive: true,
-    durationMs: numberOption('--duration-ms', 45000, 5000, 120000),
-    promptDelayMs: numberOption('--prompt-delay-ms', 35000, 0, 180000),
-    betweenPromptsMs: numberOption('--between-prompts-ms', 9000, 1000, 60000),
-    stopAfterMs: numberOption('--stop-after-ms', execute ? (requireAcceptance ? 0 : 20000) : 0, 0, 300000),
-    prompts,
-    source: 'renderer_dogfood_script',
-  };
 
   if (acceptanceOnly) {
     const acceptanceReport = await loadAcceptance(ctx, {
@@ -229,6 +230,28 @@ async function main() {
     }
     return;
   }
+
+  const promptLimit = numberOption('--prompt-limit', requireAcceptance ? 32 : 24, 1, 32);
+  const explicitPrompts = promptOptions();
+  const shouldUsePromptScript = hasFlag('--prompt-script') || hasFlag('--full-prompt-script') || requireAcceptance;
+  const prompts = explicitPrompts.length
+    ? explicitPrompts
+    : shouldUsePromptScript
+      ? await loadPackPromptScript(ctx, promptLimit)
+      : [];
+  const body = {
+    execute,
+    confirmMic,
+    prepareProgress: true,
+    prepareWhenLive: true,
+    durationMs: numberOption('--duration-ms', 45000, 5000, 120000),
+    promptDelayMs: numberOption('--prompt-delay-ms', 35000, 0, 180000),
+    betweenPromptsMs: numberOption('--between-prompts-ms', 9000, 1000, 60000),
+    stopAfterMs: numberOption('--stop-after-ms', execute ? (requireAcceptance ? 0 : 20000) : 0, 0, 300000),
+    promptLimit,
+    prompts,
+    source: 'renderer_dogfood_script',
+  };
 
   if (execute && !confirmMic) {
     console.error('Refusing to start microphone. Pass --confirm-mic together with --execute.');

@@ -2988,6 +2988,7 @@ export default {
     );
 
     const rendererScriptSource = fs.readFileSync('scripts/realtime-dogfood-renderer.mjs', 'utf8');
+    const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
     out.push(
       rendererScriptSource.includes('/api/realtime/dogfood/acceptance?auditLimit=20&source=renderer_dogfood_poll') &&
         rendererScriptSource.includes('waitForAcceptance: requireAcceptance') &&
@@ -2995,6 +2996,63 @@ export default {
         rendererScriptSource.includes('Renderer Realtime dogfood acceptance passed.')
         ? ok('realtime.renderer_dogfood_acceptance_poll', 'Renderer dogfood acceptance-aware poll', 'require-acceptance keeps polling acceptance and does not auto-stop at 20s')
         : fail('realtime.renderer_dogfood_acceptance_poll', 'Renderer dogfood acceptance-aware poll', 'expected renderer script to poll acceptance and keep mic live when require-acceptance is set'),
+    );
+
+    const normalizePromptStart = mainSource.indexOf('function normalizeRendererDogfoodPrompts');
+    const normalizePromptEnd = mainSource.indexOf('\n}\n\nfunction boundedRendererDogfoodMs', normalizePromptStart);
+    const normalizePromptSource =
+      normalizePromptStart >= 0 && normalizePromptEnd >= 0
+        ? mainSource.slice(normalizePromptStart, normalizePromptEnd)
+        : '';
+    out.push(
+      rendererScriptSource.includes('loadPackPromptScript') &&
+        rendererScriptSource.includes('/api/realtime/dogfood/pack?promptLimit=') &&
+        rendererScriptSource.includes("hasFlag('--prompt-script') || hasFlag('--full-prompt-script') || requireAcceptance") &&
+        rendererScriptSource.includes('requireAcceptance ? 32 : 24') &&
+        rendererScriptSource.includes('promptLimit,') &&
+        normalizePromptSource.includes("function normalizeRendererDogfoodPrompts(value, fallback = '', limit = 32)") &&
+        normalizePromptSource.includes('.slice(0, maxPrompts)') &&
+        !normalizePromptSource.includes('.slice(0, 8);') &&
+        mainSource.includes('Math.min(32, Number(options.promptLimit || 16))') &&
+        mainSource.includes('Math.min(32, Number(options.promptLimit || 24))')
+        ? ok('realtime.renderer_dogfood_prompt_script', 'Renderer dogfood prompt script', 'require-acceptance loads the full dogfood prompt script without needing manual --prompt values')
+        : fail('realtime.renderer_dogfood_prompt_script', 'Renderer dogfood prompt script', 'expected renderer script and pack to support full prompt scripts up to 32 prompts'),
+    );
+
+    const promptScriptPack = await ctx.api('/api/realtime/dogfood/pack?promptLimit=32');
+    const promptScript = promptScriptPack.data?.pack?.prompts?.script || [];
+    const promptScriptPreview = await ctx.api('/api/realtime/dogfood/renderer/start', {
+      method: 'POST',
+      body: {
+        execute: false,
+        promptLimit: 32,
+        prompts: promptScript,
+        source: 'eval_renderer_prompt_script',
+      },
+    });
+    const previewPrompts = promptScriptPreview.data?.detail?.prompts || [];
+    const expectedPreviewPrompts = promptScript.slice(0, 32);
+    out.push(
+      promptScriptPack.ok &&
+        promptScriptPreview.ok &&
+        Array.isArray(promptScript) &&
+        Array.isArray(previewPrompts) &&
+        promptScript.length > 8 &&
+        previewPrompts.length === expectedPreviewPrompts.length &&
+        previewPrompts.length > 8 &&
+        previewPrompts.at(-1) === expectedPreviewPrompts.at(-1) &&
+        promptScriptPreview.data?.executed === false &&
+        promptScriptPreview.data?.startsMicrophone === true &&
+        promptScriptPreview.data?.requiresMicConfirmation === true
+        ? ok('realtime.renderer_dogfood_prompt_script_runtime', 'Renderer dogfood prompt script runtime', `preview preserved ${previewPrompts.length} prompt(s) without starting microphone`)
+        : fail('realtime.renderer_dogfood_prompt_script_runtime', 'Renderer dogfood prompt script runtime', 'expected renderer/start preview to preserve more than 8 prompt script items', {
+            packStatus: promptScriptPack.status,
+            previewStatus: promptScriptPreview.status,
+            scriptCount: Array.isArray(promptScript) ? promptScript.length : null,
+            previewCount: Array.isArray(previewPrompts) ? previewPrompts.length : null,
+            previewLast: Array.isArray(previewPrompts) ? previewPrompts.at(-1) : null,
+            expectedLast: expectedPreviewPrompts.at(-1),
+          }),
     );
 
     try {

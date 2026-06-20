@@ -32170,7 +32170,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   ]
     .filter(Boolean)
     .map((item) => compactRecordText(item, 220));
-  const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(20, Number(options.promptLimit || 16))));
+  const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(32, Number(options.promptLimit || 16))));
   const briefLines = [
     `Realtime dogfood: ${drill.summary || `${evidence.status || 'pending'}/${evidence.phase || '-'}`}`,
     `缺口: ${gapSummary.summary}`,
@@ -33632,7 +33632,7 @@ function realtimeRendererDogfoodSnapshot() {
 
 function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
   const evidence = options.evidence || realtimeVoiceEvidenceSnapshot();
-  const promptLimit = Math.max(1, Math.min(24, Number(options.promptLimit || 20)));
+  const promptLimit = Math.max(1, Math.min(32, Number(options.promptLimit || 24)));
   const sessionLimit = Math.max(1, Math.min(10, Number(options.sessionLimit || 6)));
   const auditLimit = Math.max(1, Math.min(50, Number(options.auditLimit || 12)));
   const brief = realtimeDogfoodBriefSnapshot({ evidence, promptLimit, sessionLimit });
@@ -33835,12 +33835,13 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
   };
 }
 
-function normalizeRendererDogfoodPrompts(value, fallback = '') {
+function normalizeRendererDogfoodPrompts(value, fallback = '', limit = 32) {
+  const maxPrompts = Math.max(1, Math.min(32, Math.round(Number(limit || 32))));
   const raw = Array.isArray(value) ? value : String(value || '').split(/\n|;;/);
   const prompts = raw
     .map((item) => compactRecordText(item, 400))
     .filter(Boolean)
-    .slice(0, 8);
+    .slice(0, maxPrompts);
   if (!prompts.length && fallback) prompts.push(compactRecordText(fallback, 400));
   return prompts;
 }
@@ -33904,13 +33905,15 @@ async function startRealtimeRendererDogfood(options = {}) {
   const confirmMic = options.confirmMic === true || String(options.confirmMic || '').toLowerCase() === 'true';
   const nextPrompt = realtimeDogfoodNextPromptSnapshot();
   const preflight = realtimeRendererDogfoodPreflight({ prompt: nextPrompt });
-  const prompts = normalizeRendererDogfoodPrompts(options.prompts || options.prompt, nextPrompt.copyText || nextPrompt.prompt);
+  const promptLimit = boundedRendererDogfoodMs(options.promptLimit, 32, 1, 32);
+  const prompts = normalizeRendererDogfoodPrompts(options.prompts || options.prompt, nextPrompt.copyText || nextPrompt.prompt, promptLimit);
   const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
   const detail = {
     action: 'start',
     runId,
     screenLive: options.screenLive !== false,
     prompts,
+    promptLimit,
     promptDelayMs: boundedRendererDogfoodMs(options.promptDelayMs, 35000, 0, 180000),
     betweenPromptsMs: boundedRendererDogfoodMs(options.betweenPromptsMs, 9000, 1000, 60000),
     stopAfterMs: boundedRendererDogfoodMs(options.stopAfterMs, 0, 0, 300000),
