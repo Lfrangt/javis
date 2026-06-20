@@ -31210,6 +31210,7 @@ function summarizeAutonomyObservation(observation = {}) {
 function summarizeAutonomyRoute(route = {}) {
   const decision = route.decision || {};
   const contextPlan = route.contextPlan || decision.contextPlan || {};
+  const learningEvidence = route.learningEvidence || route.memory?.learningEvidence || route.routing?.learningEvidence || route.routeRecord?.learningEvidence || {};
   return {
     ok: route.ok !== false,
     executed: Boolean(route.executed),
@@ -31236,6 +31237,7 @@ function summarizeAutonomyRoute(route = {}) {
       needs: contextPlan.needs || {},
       privacy: contextPlan.privacy || {},
     },
+    learningEvidence: summarizeAutonomyLearningEvidence(learningEvidence),
     skillRecallPlan: normalizeSkillRecallPlan(route.skillRecallPlan),
   };
 }
@@ -31259,6 +31261,49 @@ function summarizeAutonomyWorkNext(next = {}) {
         }
       : null,
     nextActionCount: Array.isArray(next.briefing?.nextActions) ? next.briefing.nextActions.length : 0,
+  };
+}
+
+function summarizeAutonomyLearningEvidence(evidence = {}) {
+  const normalized = normalizeLearningEvidence(evidence);
+  return {
+    enabled: Boolean(normalized.enabled),
+    paused: Boolean(normalized.paused),
+    includeInPrompts: Boolean(normalized.includeInPrompts),
+    usedInPrompt: Boolean(normalized.usedInPrompt),
+    sourceEventCount: Number(normalized.sourceEventCount || 0),
+    decisionEffect: compactRecordText(normalized.decisionEffect || '', 220),
+    disabledReason: compactRecordText(normalized.disabledReason || '', 180),
+    signals: normalizeLearningStringList(normalized.signals, 5),
+    matchedSignals: normalizeLearningStringList(normalized.matchedSignals, 5),
+    evolution: {
+      attached: Boolean(normalized.evolution?.attached),
+      enoughBaseline: Boolean(normalized.evolution?.enoughBaseline),
+      sourceEventCount: Number(normalized.evolution?.sourceEventCount || 0),
+      recentEventCount: Number(normalized.evolution?.recentEventCount || 0),
+      baselineEventCount: Number(normalized.evolution?.baselineEventCount || 0),
+      changeCount: Number(normalized.evolution?.changeCount || 0),
+      summary: compactRecordText(normalized.evolution?.summary || '', 320),
+      spokenSummary: compactRecordText(normalized.evolution?.spokenSummary || '', 320),
+      changes: Array.isArray(normalized.evolution?.changes)
+        ? normalized.evolution.changes.slice(0, 3)
+        : [],
+    },
+    exclusions: {
+      apps: Number(normalized.exclusions?.apps || 0),
+      hosts: Number(normalized.exclusions?.hosts || 0),
+      folders: Number(normalized.exclusions?.folders || 0),
+    },
+    privacy: {
+      localOnly: true,
+      metadataOnly: true,
+      inferredNotExplicitMemory: true,
+      noRawScreenshots: true,
+      noClipboardText: true,
+      noPageBodies: true,
+      noPermissionGrant: true,
+      noPolicyBypass: true,
+    },
   };
 }
 
@@ -31412,6 +31457,22 @@ async function runAutonomyLoop(options = {}) {
       routingId: routeSummary.routingId,
     },
   });
+
+  const learningSummary = routeSummary.learningEvidence || summarizeAutonomyLearningEvidence();
+  if (steps.length < maxSteps) {
+    push({
+      id: 'learning_context',
+      label: 'Attach local learning evidence',
+      ok: true,
+      detail: learningSummary.usedInPrompt
+        ? `Used local inferred profile: ${learningSummary.decisionEffect || `${learningSummary.sourceEventCount} event(s)`}`
+        : `Learning not attached: ${learningSummary.disabledReason || learningSummary.decisionEffect || 'not available'}`,
+      nextAction: learningSummary.usedInPrompt
+        ? 'Use learned signals only as soft context; keep normal approval and policy gates.'
+        : 'Continue without inferred learning context.',
+      evidence: learningSummary,
+    });
+  }
 
   let observation = null;
   const contextPlan = routeSummary.contextPlan || {};
@@ -31648,6 +31709,7 @@ async function runAutonomyLoop(options = {}) {
     observation: observation ? summarizeAutonomyObservation(observation) : null,
     workNext: workNextSummary,
     execution: execution ? summarizeAutonomyRoute(execution) : null,
+    learning: learningSummary,
     progress: progress
       ? {
           spokenSummary: progress.spokenSummary,
@@ -31682,6 +31744,14 @@ async function runAutonomyLoop(options = {}) {
         queued: Boolean(recoveryAttempt?.queued),
         perJobMaxRecoveryAttempts: MAX_RECOVERY_JOB_ATTEMPTS,
       },
+      learningContext: {
+        available: learningSummary.sourceEventCount > 0,
+        usedInPrompt: Boolean(learningSummary.usedInPrompt),
+        inferredNotExplicitMemory: true,
+        localOnly: true,
+        noPermissionGrant: true,
+        noPolicyBypass: true,
+      },
       defaultPreview: !execute,
       noDirectShell: true,
       noDirectUi: true,
@@ -31704,6 +31774,8 @@ async function runAutonomyLoop(options = {}) {
     queued: result.queued,
     recoveryCandidates: recoverySummary?.counts?.recoverable || 0,
     recoveryAttempted: Boolean(recoveryAttempt),
+    learningEffect: learningSummary.decisionEffect || '',
+    learningUsed: Boolean(learningSummary.usedInPrompt),
     durationMs: result.durationMs,
   });
   return result;
@@ -39223,7 +39295,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use save_productivity_dogfood_archive when the user asks to save, export, archive, or keep the productivity dogfood evidence. Do not pass execute:true and confirm:true unless the user explicitly asks for a live Mac run after reviewing the preview.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
-      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> observe -> preview -> verify -> recovery-scan steps by default; pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
+      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> learning_context -> observe -> preview -> verify -> recovery-scan steps by default; local learning is soft metadata context only, never permission. Pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
       'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
       'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
@@ -39948,7 +40020,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_autonomy_loop',
-        description: 'Run a bounded autonomy loop for one user task: route, observe local context, preview the next workbench action, optionally execute through existing routing/policy, verify progress, and scan failed-worker recovery. Defaults to preview-only; recovery retry requires execute:true plus retry:true.',
+        description: 'Run a bounded autonomy loop for one user task: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing routing/policy, verify progress, and scan failed-worker recovery. Defaults to preview-only; recovery retry requires execute:true plus retry:true. Learning evidence is metadata-only soft context and never grants permission.',
         parameters: {
           type: 'object',
           properties: {
@@ -41394,7 +41466,7 @@ function realtimeInstructionChecks(instructions = '') {
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
-    autonomyLoop: /run_autonomy_loop|bounded route.*observe.*preview.*verify|recovery-scan|existing routing, action policy/i.test(text),
+    autonomyLoop: /run_autonomy_loop|bounded route.*learning_context.*observe.*preview.*verify|recovery-scan|existing routing, action policy/i.test(text),
     approvals: /get_pending_approvals|resolve_approval|waiting for approval|approval id|confirm:true/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
     realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),

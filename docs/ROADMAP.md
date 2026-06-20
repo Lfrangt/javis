@@ -42,7 +42,7 @@
 - Add a voice-friendly local capability map over lane contracts, control mode, local execution, collaboration claims/handoff, and work-next so Realtime can decide whether to observe, route, delegate, use browser/file/app tools, or hand work to Codex/Claude without guessing.
 - Add deterministic spoken progress check-ins for background jobs and workflows.
 - Add unified work-next execution for one safe next action across the local workbench, including route-level recovery envelopes and autopilot eligibility evidence for trusted failed-job route recovery.
-- Add a bounded autonomy loop: current build exposes `/api/autonomy/run` and Realtime `run_autonomy_loop` for route -> observe -> work-next preview -> optional policy-gated execute -> progress verify -> recovery scan, with preview-only default behavior, explicit `execute:true` + `retry:true` recovery retry budget, and no direct shell/UI bypass.
+- Add a bounded autonomy loop: current build exposes `/api/autonomy/run` and Realtime `run_autonomy_loop` for route -> local learning evidence -> observe -> work-next preview -> optional policy-gated execute -> progress verify -> recovery scan, with preview-only default behavior, explicit `execute:true` + `retry:true` recovery retry budget, inferred learning as soft local context only, and no direct shell/UI bypass.
 - Add local work sessions for focus goals, notes/events, resume handoffs, automatic evidence capture, spoken check-ins, and end-of-session summaries.
 - Add safe local command routing before model calls for basic resident operations.
 - Persist explicit local memories for user-approved preferences, project facts, and notes.

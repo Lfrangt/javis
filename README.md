@@ -50,7 +50,7 @@ Local Mac-first realtime desktop buddy.
 - Creative app workflows: recognize video editing and music composition requests, choose a likely NLE/DAW such as Final Cut Pro, DaVinci Resolve, Premiere, iMovie, CapCut, Logic Pro, GarageBand, Ableton Live, FL Studio, or Pro Tools, return stage action packs, and execute one guarded action at a time with post-action screen/UI verification and recovery hints.
 - Productivity app dogfood archives: preview or save a four-app Notes/Reminders/Calendar/Mail draft evidence packet from API or Realtime voice tools without starting apps, sending messages, mutating user files, or recording workflow history by default.
 - Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context and recalled local skill plans.
-- Bounded autonomy loop through `/api/autonomy/run` and Realtime `run_autonomy_loop`: route, observe local context, preview the next workbench action, optionally execute through existing policy gates, verify progress, scan failed-worker recovery, and run one budgeted recovery retry only when `execute:true` and `retry:true` are both explicit.
+- Bounded autonomy loop through `/api/autonomy/run` and Realtime `run_autonomy_loop`: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing policy gates, verify progress, scan failed-worker recovery, and run one budgeted recovery retry only when `execute:true` and `retry:true` are both explicit.
 - OpenClaw-style lane contract registry and voice capability map for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, collaboration state, and risk boundaries.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
 - Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, get a CUI/API/CLI handoff summary, and avoid overlapping write races.
@@ -163,7 +163,7 @@ Local Express service on 127.0.0.1:3417
   /api/work/progress    -> spoken-style job/workflow progress check-in
   /api/work/handoff     -> voice-ready handoff over readiness, progress, sessions, collaboration, and continuations
   /api/work/next        -> preview or execute one safe next workbench action, including explicit maintenance fallback previews
-  /api/autonomy/run     -> bounded route/observe/preview/verify/recovery-scan loop for one task
+  /api/autonomy/run     -> bounded route/learning/observe/preview/verify/recovery-scan loop for one task
   /api/jobs             -> persisted background job history
   /api/jobs/recovery    -> recoverable failed-job summaries with attempts, diagnostics, child recovery jobs, and recommended next actions
   /api/workflows        -> persisted workflow history with linked jobs and results
