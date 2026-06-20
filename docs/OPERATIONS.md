@@ -211,6 +211,11 @@ failed worker. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs
 
 Use option `14. Show next work item`, or `npm run config -- --print-work-next`, to preview the current `/api/work/next` action from the CUI.
 
+Use `npm run collab -- handoff` or `GET /api/collaboration/handoff` when Codex, Claude Code,
+or a local CLI worker is sharing the repo. The handoff summarizes active owners, write scopes,
+heartbeat/release commands, conflict pairs, and the next safe coordination action; Realtime
+`get_collaboration_state` returns the same handoff alongside the raw claim ledger.
+
 Use option `15. Run next work item` to preview and then execute the current workbench action after
 typing `RUN`. This is the manual path for recovering blocked jobs or routed work, processing the top Inbox item,
 checking progress, summoning a real Realtime voice dogfood session, or delivering a completed workflow result without memorizing HTTP calls. Realtime voice actions print a small guide with the pet/hotkey start path, CUI monitor, the prompts `后台现在怎么样` and `现在做到哪了？接下来做什么？`, and the expected `get_work_handoff` evidence. Internal

@@ -105,12 +105,14 @@ function printHelp() {
 
 Usage:
   npm run collab -- status [--json] [--limit 20]
+  npm run collab -- handoff [--json] [--limit 20]
   npm run collab -- claim --scope <path-or-scope> --task <task> [--agent claude-code] [--owner "Claude Code"] [--lane claude] [--access write]
   npm run collab -- heartbeat <claim-id> [--ttl-ms 1800000]
   npm run collab -- release <claim-id> [--status done] [--result <summary>]
 
 Examples:
   npm run collab -- claim --agent claude-code --owner "Claude Code" --lane claude --scope "docs/OPERATIONS.md" --task "Update operations docs"
+  npm run collab -- handoff
   npm run collab -- heartbeat <claim-id>
   npm run collab -- release <claim-id> --status done --result "Docs updated"
 `);
@@ -144,6 +146,44 @@ async function statusCommand(opts) {
   }
   console.log('Active claims:');
   for (const claim of active) printClaimLine(claim);
+}
+
+async function handoffCommand(opts) {
+  const limit = numberOpt(opts, 20, 'limit');
+  const data = await request(`/api/collaboration/handoff?limit=${encodeURIComponent(limit)}`);
+  if (boolOpt(opts, 'json')) {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  const handoff = data.handoff || {};
+  console.log(handoff.summary || 'Collaboration handoff unavailable.');
+  if (handoff.spokenSummary && handoff.spokenSummary !== handoff.summary) {
+    console.log(handoff.spokenSummary);
+  }
+  const groups = handoff.ownerGroups || [];
+  if (groups.length) {
+    console.log('Owner groups:');
+    for (const group of groups) {
+      const scopes = (group.scopes || []).slice(0, 3).join('; ');
+      console.log(`- ${group.owner}/${group.lane}: ${group.active} active, ${group.writeScopes} write scope(s)${scopes ? ` · ${scopes}` : ''}`);
+    }
+  }
+  const actions = handoff.nextActions || [];
+  if (actions.length) {
+    console.log('Next actions:');
+    for (const action of actions.slice(0, 3)) {
+      console.log(`- ${action.label}: ${action.summary}`);
+    }
+  }
+  const scopes = handoff.activeScopes || [];
+  if (scopes.length) {
+    console.log('Active scope commands:');
+    for (const claim of scopes.slice(0, 5)) {
+      console.log(`- ${claim.owner || claim.agent}: ${claim.key || claim.scope}`);
+      console.log(`  heartbeat: ${claim.nextHeartbeatCommand}`);
+      console.log(`  release: ${claim.releaseCommand}`);
+    }
+  }
 }
 
 async function claimCommand(opts) {
@@ -215,6 +255,7 @@ async function main() {
     return;
   }
   if (command === 'status' || command === 'list') return statusCommand(opts);
+  if (command === 'handoff' || command === 'brief') return handoffCommand(opts);
   if (command === 'claim') return claimCommand(opts);
   if (command === 'heartbeat') return heartbeatCommand(positionals, opts);
   if (command === 'release' || command === 'done') return releaseCommand(positionals, opts);

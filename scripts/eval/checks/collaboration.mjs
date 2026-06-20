@@ -60,6 +60,34 @@ export default {
       return out;
     }
 
+    const handoff = await ctx.api('/api/collaboration/handoff?limit=20');
+    const handoffActive = handoff.data?.handoff?.activeScopes || [];
+    out.push(
+      handoff.ok &&
+        handoff.data?.handoff?.summary &&
+        Array.isArray(handoff.data?.handoff?.nextActions) &&
+        handoffActive.some((item) => item.key === scope || item.scope === scope)
+        ? ok('collaboration.handoff_api', 'Collaboration handoff API', handoff.data.handoff.summary)
+        : fail('collaboration.handoff_api', 'Collaboration handoff API', 'handoff did not expose active scope and next actions', handoff.data),
+    );
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [collabCli, 'handoff', '--json'], {
+        timeout: 8000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      const cliHandoff = JSON.parse(stdout);
+      const cliScopes = cliHandoff?.handoff?.activeScopes || [];
+      out.push(
+        cliHandoff?.handoff?.summary && cliScopes.some((item) => item.key === scope || item.scope === scope)
+          ? ok('collaboration.cli_handoff', 'Collaboration CLI handoff', cliHandoff.handoff.summary)
+          : fail('collaboration.cli_handoff', 'Collaboration CLI handoff', 'missing handoff summary or active scope', cliHandoff),
+      );
+    } catch (error) {
+      out.push(fail('collaboration.cli_handoff', 'Collaboration CLI handoff', error instanceof Error ? error.message : String(error)));
+    }
+
     const conflict = await ctx.api('/api/collaboration/claims', {
       method: 'POST',
       body: {
@@ -78,6 +106,39 @@ export default {
         ? ok('collaboration.conflict', 'Conflict detection', 'overlapping write claim returned 409')
         : fail('collaboration.conflict', 'Conflict detection', `expected 409 conflict, got ${conflict.status}`, conflict.data),
     );
+
+    let forcedConflictId = '';
+    const forcedConflict = await ctx.api('/api/collaboration/claims', {
+      method: 'POST',
+      body: {
+        agent: 'eval-conflict-forced',
+        owner: 'eval-conflict-forced',
+        lane: 'local',
+        scope,
+        access: 'write',
+        task: 'Forced overlap to verify collaboration handoff conflict mode',
+        ttlMs: 120000,
+        force: true,
+        source: 'eval',
+      },
+    });
+    if (forcedConflict.ok && forcedConflict.data?.claim?.id) {
+      forcedConflictId = forcedConflict.data.claim.id;
+      const conflictHandoff = await ctx.api('/api/collaboration/handoff?limit=20');
+      out.push(
+        conflictHandoff.ok &&
+          conflictHandoff.data?.handoff?.mode === 'conflict' &&
+          (conflictHandoff.data?.handoff?.conflictPairs || []).length >= 1
+          ? ok('collaboration.handoff_conflict', 'Collaboration handoff conflict mode', `${conflictHandoff.data.handoff.conflictPairs.length} conflict pair(s)`)
+          : fail('collaboration.handoff_conflict', 'Collaboration handoff conflict mode', 'forced overlap did not appear in handoff', conflictHandoff.data),
+      );
+      await ctx.api(`/api/collaboration/claims/${encodeURIComponent(forcedConflictId)}/release`, {
+        method: 'POST',
+        body: { status: 'released', source: 'eval', result: 'forced conflict eval complete' },
+      });
+    } else {
+      out.push(fail('collaboration.handoff_conflict', 'Collaboration handoff conflict mode', `forced claim ${forcedConflict.status} ${forcedConflict.error || forcedConflict.data?.error || ''}`, forcedConflict.data));
+    }
 
     const heartbeat = await ctx.api(`/api/collaboration/claims/${encodeURIComponent(claimId)}/heartbeat`, {
       method: 'POST',

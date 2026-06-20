@@ -4973,19 +4973,42 @@ function collaborationConflictsForClaim(candidate) {
     }));
 }
 
-function collaborationConflictCount(claims = activeCollaborationClaims()) {
-  let count = 0;
+function collaborationConflictPairs(claims = activeCollaborationClaims()) {
+  const pairs = [];
   for (let index = 0; index < claims.length; index += 1) {
     for (let otherIndex = index + 1; otherIndex < claims.length; otherIndex += 1) {
       const left = claims[index];
       const right = claims[otherIndex];
       if (!left.key || !right.key) continue;
       if ((left.access === 'write' || right.access === 'write') && ownershipKeysOverlap(left.key, right.key)) {
-        count += 1;
+        pairs.push({
+          id: `${left.id}:${right.id}`,
+          key: left.key.length <= right.key.length ? left.key : right.key,
+          left: {
+            id: left.id,
+            owner: left.owner,
+            agent: left.agent,
+            lane: left.lane,
+            access: left.access,
+            key: left.key,
+            task: left.task,
+            expiresAt: left.expiresAt,
+          },
+          right: {
+            id: right.id,
+            owner: right.owner,
+            agent: right.agent,
+            lane: right.lane,
+            access: right.access,
+            key: right.key,
+            task: right.task,
+            expiresAt: right.expiresAt,
+          },
+        });
       }
     }
   }
-  return count;
+  return pairs;
 }
 
 function collaborationSnapshot(limit = 50) {
@@ -4994,19 +5017,151 @@ function collaborationSnapshot(limit = 50) {
   const all = Array.from(collaborationClaims.values()).sort((a, b) => b.updatedAt - a.updatedAt);
   const active = all.filter((claim) => collaborationClaimIsActive(claim));
   const inactive = all.filter((claim) => !collaborationClaimIsActive(claim));
+  const conflictPairs = collaborationConflictPairs(active);
   return {
     counts: {
       total: all.length,
       active: active.length,
       inactive: inactive.length,
       expired: all.filter((claim) => claim.status === 'expired').length,
-      conflicts: collaborationConflictCount(active),
+      conflicts: conflictPairs.length,
     },
     active: active.slice(0, maxItems),
+    conflictPairs: conflictPairs.slice(0, Math.min(maxItems, 20)),
     recent: all.slice(0, maxItems),
     inactive: inactive.slice(0, Math.min(maxItems, 20)),
     ttlMs: COLLABORATION_CLAIM_TTL_MS,
     file: COLLABORATION_FILE,
+  };
+}
+
+function collaborationOwnerGroups(active = []) {
+  const groups = new Map();
+  for (const claim of active) {
+    const key = `${claim.owner || claim.agent}:${claim.lane}`;
+    const group = groups.get(key) || {
+      id: key,
+      owner: claim.owner || claim.agent,
+      agent: claim.agent,
+      lane: claim.lane,
+      active: 0,
+      writeScopes: 0,
+      readScopes: 0,
+      soonestExpiresAt: claim.expiresAt,
+      scopes: [],
+      tasks: [],
+      claimIds: [],
+    };
+    group.active += 1;
+    if (claim.access === 'write') group.writeScopes += 1;
+    else group.readScopes += 1;
+    group.soonestExpiresAt = Math.min(Number(group.soonestExpiresAt || claim.expiresAt), Number(claim.expiresAt || 0));
+    if (claim.key && !group.scopes.includes(claim.key)) group.scopes.push(claim.key);
+    if (claim.task && !group.tasks.includes(claim.task)) group.tasks.push(claim.task);
+    group.claimIds.push(claim.id);
+    groups.set(key, group);
+  }
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      scopes: group.scopes.slice(0, 6),
+      tasks: group.tasks.slice(0, 4),
+      claimIds: group.claimIds.slice(0, 8),
+    }))
+    .sort((a, b) => b.active - a.active || String(a.owner).localeCompare(String(b.owner)));
+}
+
+function collaborationHandoffSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(100, Number(options.limit || 20)));
+  const collaboration = collaborationSnapshot(limit);
+  const ownerGroups = collaborationOwnerGroups(collaboration.active || []);
+  const activeScopes = (collaboration.active || []).map((claim) => ({
+    id: claim.id,
+    owner: claim.owner,
+    agent: claim.agent,
+    lane: claim.lane,
+    access: claim.access,
+    key: claim.key,
+    scope: claim.scope,
+    task: claim.task,
+    updatedAt: claim.updatedAt,
+    heartbeatAt: claim.heartbeatAt,
+    expiresAt: claim.expiresAt,
+    nextHeartbeatCommand: `npm run collab -- heartbeat ${claim.id}`,
+    releaseCommand: `npm run collab -- release ${claim.id} --status done`,
+  }));
+  const mode = collaboration.counts.conflicts
+    ? 'conflict'
+    : collaboration.counts.active
+      ? 'active'
+      : 'idle';
+  const nextActions = collaboration.counts.conflicts
+    ? [
+      {
+        id: 'resolve_conflict',
+        priority: 1,
+        label: 'Resolve overlapping agent scopes',
+        summary: `${collaboration.counts.conflicts} overlapping write scope(s) need one owner or a narrower claim before parallel work continues.`,
+      },
+      {
+        id: 'inspect_claims',
+        priority: 2,
+        label: 'Inspect active claims',
+        summary: 'Run npm run collab -- handoff to see owners, scopes, heartbeat, and release commands.',
+      },
+    ]
+    : collaboration.counts.active
+      ? [
+        {
+          id: 'keep_or_release',
+          priority: 2,
+          label: 'Heartbeat or release active claims',
+          summary: 'Agents with active scopes should heartbeat while working and release with a result when done.',
+        },
+        {
+          id: 'claim_new_scope',
+          priority: 3,
+          label: 'Claim before new edits',
+          summary: 'New Codex/Claude work should claim a non-overlapping scope before editing shared files.',
+        },
+      ]
+      : [
+        {
+          id: 'ready_for_parallel_work',
+          priority: 3,
+          label: 'Ready for scoped parallel work',
+          summary: 'No active claims. Codex, Claude Code, or local workers can claim independent scopes before editing.',
+        },
+      ];
+  const firstClaim = activeScopes[0];
+  const summary = mode === 'conflict'
+    ? `Collaboration needs attention: ${collaboration.counts.active} active claim(s), ${collaboration.counts.conflicts} conflict pair(s).`
+    : mode === 'active'
+      ? `Collaboration active: ${collaboration.counts.active} claim(s) across ${ownerGroups.length} owner group(s). Next: keep heartbeat or release finished scopes.`
+      : 'Collaboration idle: no active claims, ready for scoped Codex/Claude/local work.';
+  const spokenSummary = compactRecordText([
+    summary,
+    firstClaim ? `Current owner: ${firstClaim.owner || firstClaim.agent} on ${firstClaim.key || firstClaim.scope}.` : '',
+    nextActions[0]?.summary || '',
+  ].filter(Boolean).join(' '), 420);
+
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    mode,
+    summary,
+    spokenSummary,
+    counts: collaboration.counts,
+    ownerGroups,
+    activeScopes,
+    conflictPairs: collaboration.conflictPairs || [],
+    nextActions,
+    commands: {
+      status: 'npm run collab -- status',
+      handoff: 'npm run collab -- handoff',
+      claim: 'npm run collab -- claim --scope <scope> --task <task>',
+    },
+    collaboration,
   };
 }
 
@@ -35732,7 +35887,13 @@ async function executeTool(name, args) {
   }
 
   if (name === 'get_collaboration_state') {
-    return { ok: true, output: JSON.stringify(collaborationSnapshot(args?.limit || 20)) };
+    return {
+      ok: true,
+      output: JSON.stringify({
+        collaboration: collaborationSnapshot(args?.limit || 20),
+        handoff: collaborationHandoffSnapshot({ limit: args?.limit || 20 }),
+      }),
+    };
   }
 
   if (name === 'get_work_next') {
@@ -40873,6 +41034,14 @@ function startApiServer() {
   api.get('/api/collaboration', (req, res) => {
     res.json({
       collaboration: collaborationSnapshot(req.query.limit || 50),
+      handoff: collaborationHandoffSnapshot({ limit: req.query.limit || 50 }),
+      collaborationFile: COLLABORATION_FILE,
+    });
+  });
+
+  api.get('/api/collaboration/handoff', (req, res) => {
+    res.json({
+      handoff: collaborationHandoffSnapshot({ limit: req.query.limit || 50 }),
       collaborationFile: COLLABORATION_FILE,
     });
   });
