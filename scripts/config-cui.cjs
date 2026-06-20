@@ -1134,6 +1134,7 @@ function printLearningDistillation(distillation) {
   const demonstrations = artifacts.demonstrations || {};
   const shortcuts = artifacts.shortcuts || {};
   const skills = artifacts.skills || {};
+  const habitCandidates = distillation?.habitCandidates || {};
   const privacy = distillation?.privacy || {};
   console.log('Learning Distillation');
   console.log('=====================');
@@ -1161,6 +1162,20 @@ function printLearningDistillation(distillation) {
   console.log(`- demonstrations: done ${demoCounts.done || 0} · recording ${demoCounts.recording || 0} · total ${demoCounts.total || 0}`);
   console.log(`- shortcuts: enabled ${shortcutCounts.enabled || 0} · disabled ${shortcutCounts.disabled || 0} · total ${shortcutCounts.total || 0}`);
   console.log(`- local skills: ${skills.returned || 0}`);
+  const candidates = Array.isArray(habitCandidates.candidates) ? habitCandidates.candidates : [];
+  console.log('\nHabit candidates:');
+  console.log(`Policy: read-only=${habitCandidates.policy?.readOnly ? 'yes' : 'no'} · no auto-save=${habitCandidates.policy?.noAutoSave ? 'yes' : 'no'} · confirm promotion=${habitCandidates.policy?.confirmationRequiredForPromotion ? 'yes' : 'no'}`);
+  if (!candidates.length) {
+    console.log('- none');
+  } else {
+    for (const candidate of candidates.slice(0, 6)) {
+      const action = candidate.recommendedAction || {};
+      const confirm = action.requiresConfirmation ? ' · confirm' : '';
+      console.log(`- ${candidate.kind || 'candidate'} · ${compact(candidate.label || candidate.id || '-', 120)} · confidence ${candidate.confidence ?? '-'}${confirm}`);
+      if (candidate.summary) console.log(`  ${compact(candidate.summary, 220)}`);
+      if (action.endpoint) console.log(`  next: ${action.method || 'GET'} ${action.endpoint}`);
+    }
+  }
   const nextActions = Array.isArray(distillation?.nextActions) ? distillation.nextActions : [];
   if (nextActions.length) {
     console.log('\nNext actions:');

@@ -458,6 +458,8 @@ export default {
     });
     const learningDistillationOutput = parseToolOutput(learningDistillationTool);
     const learningDistillationBytes = Buffer.byteLength(learningDistillationTool.data?.output || '', 'utf8');
+    const learningHabitCandidates = learningDistillationOutput?.habitCandidates || {};
+    const learningHabitCandidateList = Array.isArray(learningHabitCandidates.candidates) ? learningHabitCandidates.candidates : [];
     out.push(
       learningDistillationTool.ok &&
         learningDistillationTool.data?.ok === true &&
@@ -472,18 +474,35 @@ export default {
         typeof learningDistillationOutput.artifacts?.demonstrations?.counts?.total === 'number' &&
         typeof learningDistillationOutput.artifacts?.shortcuts?.counts?.total === 'number' &&
         typeof learningDistillationOutput.artifacts?.skills?.returned === 'number' &&
+        typeof learningHabitCandidates.count === 'number' &&
+        learningHabitCandidates.policy?.readOnly === true &&
+        learningHabitCandidates.policy?.inferenceOnly === true &&
+        learningHabitCandidates.policy?.noAutoSave === true &&
+        learningHabitCandidates.policy?.confirmationRequiredForPromotion === true &&
+        learningHabitCandidateList.length >= 1 &&
+        learningHabitCandidateList.every((candidate) =>
+          candidate.id &&
+          candidate.kind &&
+          candidate.label &&
+          typeof candidate.confidence === 'number' &&
+          candidate.actionId &&
+          candidate.noAutoSave === true &&
+          candidate.noPermissionGrant === true
+        ) &&
         learningDistillationOutput.privacy?.localOnly === true &&
         learningDistillationOutput.privacy?.metadataOnly === true &&
         learningDistillationOutput.privacy?.modelFreeDistillation === true &&
         learningDistillationOutput.privacy?.inferredNotExplicitMemory === true &&
+        learningDistillationOutput.privacy?.rawContentStoredByDefault === false &&
         learningDistillationOutput.privacy?.noRawScreenshots === true &&
         learningDistillationOutput.privacy?.noClipboardText === true &&
         learningDistillationOutput.privacy?.noPageBodies === true &&
         learningDistillationOutput.privacy?.noPermissionGrant === true &&
         Array.isArray(learningDistillationOutput.boundaries) &&
         learningDistillationOutput.boundaries.some((item) => /inferred habits/i.test(item)) &&
+        learningDistillationOutput.nextActions?.some((action) => action.id === 'review_habit_candidates') &&
         learningDistillationOutput.nextActions?.some((action) => action.id === 'save_skill_or_memory' && action.requiresConfirmation === true)
-        ? ok('realtime.learning_distillation_tool', 'Realtime local learning distillation tool', `${learningDistillationBytes}/9000B · ${learningDistillationOutput.spokenSummary}`)
+        ? ok('realtime.learning_distillation_tool', 'Realtime local learning distillation tool', `${learningDistillationBytes}/9000B · ${learningHabitCandidates.count} habit candidate(s) · ${learningDistillationOutput.spokenSummary}`)
         : fail('realtime.learning_distillation_tool', 'Realtime local learning distillation tool', `tool execute ${learningDistillationTool.status}`, learningDistillationTool.data),
     );
 

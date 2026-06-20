@@ -7233,6 +7233,279 @@ function pushLearningEvolutionChange(changes, options = {}) {
   });
 }
 
+function learningHabitCandidateConfidence(options = {}) {
+  const share = Math.max(0, Math.min(1, Number(options.share || 0)));
+  const count = Math.max(0, Number(options.count || 0));
+  const countScore = Math.min(0.35, Math.log10(count + 1) / 4);
+  const score = Math.max(0.18, Math.min(0.95, 0.18 + share * 0.42 + countScore + Number(options.boost || 0)));
+  return Number(score.toFixed(2));
+}
+
+function normalizeLearningRecommendedAction(action = {}) {
+  return {
+    id: compactRecordText(action.id || action.action || 'review', 80),
+    label: compactRecordText(action.label || 'Review candidate', 180),
+    endpoint: compactRecordText(action.endpoint || '', 180),
+    method: compactRecordText(action.method || 'GET', 20),
+    requiresConfirmation: action.requiresConfirmation !== false,
+    previewOnly: action.previewOnly !== false,
+    writesLocalArtifact: action.writesLocalArtifact === true,
+  };
+}
+
+function normalizeLearningHabitCandidate(candidate = {}) {
+  const kind = compactRecordText(candidate.kind || 'habit_candidate', 80);
+  const label = compactRecordText(candidate.label || 'Review reusable habit candidate', 180);
+  const rawId = candidate.id || `${kind}_${label}`;
+  const recommendedAction = normalizeLearningRecommendedAction(candidate.recommendedAction);
+  return {
+    id: skillSlug(rawId, 'habit-candidate'),
+    kind,
+    label,
+    summary: compactRecordText(candidate.summary || label, 420),
+    confidence: Number(Math.max(0, Math.min(1, Number(candidate.confidence || 0.2))).toFixed(2)),
+    source: compactRecordText(candidate.source || 'local_learning', 80),
+    evidence: Array.isArray(candidate.evidence)
+      ? candidate.evidence.map((item) => compactRecordText(item, 220)).filter(Boolean).slice(0, 6)
+      : [],
+    derivedFrom: {
+      metadataOnly: true,
+      sourceEventCount: boundedCount(candidate.derivedFrom?.sourceEventCount, 1000000),
+      artifactCount: boundedCount(candidate.derivedFrom?.artifactCount, 1000),
+      explicitUserStarted: candidate.derivedFrom?.explicitUserStarted === true,
+    },
+    recommendedAction,
+    safety: {
+      localOnly: true,
+      metadataOnly: true,
+      inferenceOnly: true,
+      doesNotExecute: true,
+      doesNotGrantPermission: true,
+      noAutoSave: true,
+      noRawScreenshots: true,
+      noClipboardText: true,
+      noPageBodies: true,
+      confirmationRequiredForSave: true,
+      ...(candidate.safety && typeof candidate.safety === 'object' ? candidate.safety : {}),
+    },
+    boundaries: Array.isArray(candidate.boundaries) && candidate.boundaries.length
+      ? candidate.boundaries.map((item) => compactRecordText(item, 180)).filter(Boolean).slice(0, 5)
+      : [
+        'Treat this as a suggestion, not a command.',
+        'Ask before saving a skill, shortcut, or explicit memory.',
+        'Normal action policy and approval gates still apply.',
+      ],
+  };
+}
+
+function learningHabitCandidateSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(12, Number(options.limit || options.candidateLimit || 6)));
+  const profile = options.profile || {};
+  const evolution = options.evolution || {};
+  const demonstrations = options.demonstrations || {};
+  const shortcutsState = options.shortcutsState || {};
+  const localSkills = options.localSkills || {};
+  const shortcutCandidates = options.shortcutCandidates || shortcutPromotionCandidates({ limit: Math.max(3, limit) });
+  const sourceEventCount = Number(profile.sourceEventCount || 0);
+  const candidates = [];
+
+  const topApp = Array.isArray(profile.topApps) ? profile.topApps[0] : null;
+  if (topApp?.name) {
+    candidates.push(normalizeLearningHabitCandidate({
+      id: `ambient_app_${topApp.name}`,
+      kind: 'ambient_app_routine',
+      label: `Teach a repeatable ${topApp.name} workflow`,
+      summary: `${topApp.name} appears frequently in local ambient metadata. If this represents a repeated workflow, record one explicit UI demonstration so JAVIS can replay it safely later.`,
+      confidence: learningHabitCandidateConfidence({ count: topApp.count, share: topApp.share }),
+      source: 'ambient_metadata',
+      evidence: [
+        `${topApp.name}: ${topApp.count || 0} metadata event(s), ${learningPercent(topApp.share)} share`,
+        sourceEventCount ? `profile source events: ${sourceEventCount}` : '',
+      ],
+      derivedFrom: { sourceEventCount },
+      recommendedAction: {
+        id: 'record_demonstration',
+        label: `Record the repeated ${topApp.name} flow`,
+        endpoint: '/api/demonstrations/start',
+        method: 'POST',
+        requiresConfirmation: true,
+        previewOnly: false,
+        writesLocalArtifact: true,
+      },
+    }));
+  }
+
+  const topHost = Array.isArray(profile.topBrowserHosts) ? profile.topBrowserHosts[0] : null;
+  if (topHost?.host) {
+    candidates.push(normalizeLearningHabitCandidate({
+      id: `ambient_browser_${topHost.host}`,
+      kind: 'ambient_browser_routine',
+      label: `Review recurring browser work on ${topHost.host}`,
+      summary: `${topHost.host} appears repeatedly in browser metadata. JAVIS should first ask what routine this represents, then use browser tools or a demonstration instead of storing page text.`,
+      confidence: learningHabitCandidateConfidence({ count: topHost.count, share: topHost.share }),
+      source: 'ambient_browser_metadata',
+      evidence: [
+        `${topHost.host}: ${topHost.count || 0} metadata event(s), ${learningPercent(topHost.share)} share`,
+        topHost.title ? `latest sanitized title: ${compactRecordText(topHost.title, 120)}` : '',
+      ],
+      derivedFrom: { sourceEventCount },
+      recommendedAction: {
+        id: 'record_browser_demonstration',
+        label: `Teach the safe browser routine for ${topHost.host}`,
+        endpoint: '/api/demonstrations/start',
+        method: 'POST',
+        requiresConfirmation: true,
+        previewOnly: false,
+        writesLocalArtifact: true,
+      },
+    }));
+  }
+
+  const changes = Array.isArray(evolution.changes) ? evolution.changes : [];
+  if (changes[0]) {
+    const change = changes[0];
+    const shift = [change.from, change.to].filter(Boolean).join(' -> ') || change.to || change.id || 'recent shift';
+    candidates.push(normalizeLearningHabitCandidate({
+      id: `evolution_${change.id || change.label || shift}`,
+      kind: 'habit_shift_review',
+      label: `Review recent habit shift: ${change.label || change.id || shift}`,
+      summary: `Recent local metadata differs from the older baseline (${shift}). Use it as a conversation prompt before changing routing, memory, or skills.`,
+      confidence: Number(change.confidence || 0.35),
+      source: 'learning_evolution',
+      evidence: [
+        change.evidence || shift,
+        `recent events: ${evolution.windows?.recent?.count || 0}; baseline events: ${evolution.windows?.baseline?.count || 0}`,
+      ],
+      derivedFrom: { sourceEventCount: Number(evolution.sourceEventCount || sourceEventCount) },
+      recommendedAction: {
+        id: 'review_learning_evolution',
+        label: 'Review the habit shift before saving anything',
+        endpoint: '/api/learning/evolution',
+        method: 'GET',
+        requiresConfirmation: false,
+        previewOnly: true,
+        writesLocalArtifact: false,
+      },
+    }));
+  }
+
+  const doneDemonstrations = Array.isArray(demonstrations.recent)
+    ? demonstrations.recent.filter((demo) => demo.status === 'done' && demo.id).slice(0, 2)
+    : [];
+  for (const demo of doneDemonstrations) {
+    candidates.push(normalizeLearningHabitCandidate({
+      id: `demonstration_skill_${demo.id}`,
+      kind: 'demonstration_to_skill',
+      label: `Promote demonstrated workflow: ${demo.title || demo.id}`,
+      summary: 'A completed explicit UI demonstration can become a reviewable local skill draft, then a saved skill after confirmation.',
+      confidence: learningHabitCandidateConfidence({ count: demo.stepCount || 1, share: 0.7, boost: 0.12 }),
+      source: 'explicit_demonstration',
+      evidence: [
+        `demonstration ${demo.id}`,
+        `${demo.stepCount || 0} captured step(s)`,
+      ],
+      derivedFrom: { artifactCount: 1, explicitUserStarted: true },
+      recommendedAction: {
+        id: 'preview_demonstration_skill',
+        label: 'Preview the skill draft for this demonstration',
+        endpoint: `/api/demonstrations/${encodeURIComponent(demo.id)}/skill-draft`,
+        method: 'GET',
+        requiresConfirmation: false,
+        previewOnly: true,
+        writesLocalArtifact: false,
+      },
+    }));
+  }
+
+  const shortcutItems = Array.isArray(shortcutCandidates.items) ? shortcutCandidates.items.slice(0, 2) : [];
+  for (const item of shortcutItems) {
+    candidates.push(normalizeLearningHabitCandidate({
+      id: `shortcut_${item.routeId || item.jobId || item.phrase}`,
+      kind: 'shortcut_phrase_candidate',
+      label: `Save shortcut phrase: ${item.phrase || item.title || 'recalled workflow'}`,
+      summary: 'A completed routed task already used a local skill plan. Save a phrase only after reviewing that exact plan.',
+      confidence: learningHabitCandidateConfidence({ count: 3, share: 0.6, boost: 0.08 }),
+      source: `completed_${item.source || 'route'}`,
+      evidence: [
+        item.routeId ? `route ${item.routeId}` : '',
+        item.jobId ? `job ${item.jobId}` : '',
+        item.taskTitle ? `task: ${compactRecordText(item.taskTitle, 120)}` : '',
+      ],
+      derivedFrom: { artifactCount: 1, explicitUserStarted: true },
+      recommendedAction: {
+        id: 'save_skill_shortcut',
+        label: 'Save this phrase as a local shortcut',
+        endpoint: '/api/shortcuts/promote',
+        method: 'POST',
+        requiresConfirmation: true,
+        previewOnly: false,
+        writesLocalArtifact: true,
+      },
+    }));
+  }
+
+  if (!candidates.length) {
+    candidates.push(normalizeLearningHabitCandidate({
+      id: 'bootstrap_teach_first_workflow',
+      kind: 'teach_first_workflow',
+      label: 'Teach the first repeatable workflow',
+      summary: 'No stable reusable habit candidate is available yet. Start with one explicit UI demonstration for a routine you repeat often.',
+      confidence: 0.18,
+      source: 'bootstrap',
+      evidence: [
+        sourceEventCount ? `${sourceEventCount} metadata event(s), but no strong repeatable candidate` : 'no stable metadata profile yet',
+        `${Number(demonstrations.counts?.done || 0)} completed demonstration(s), ${Number(shortcutsState.counts?.enabled || 0)} enabled shortcut(s), ${Number(localSkills.returned || 0)} matching skill(s)`,
+      ],
+      derivedFrom: {
+        sourceEventCount,
+        artifactCount: Number(demonstrations.counts?.done || 0) + Number(shortcutsState.counts?.enabled || 0) + Number(localSkills.returned || 0),
+      },
+      recommendedAction: {
+        id: 'record_demonstration',
+        label: 'Record one explicit routine',
+        endpoint: '/api/demonstrations/start',
+        method: 'POST',
+        requiresConfirmation: true,
+        previewOnly: false,
+        writesLocalArtifact: true,
+      },
+    }));
+  }
+
+  const limited = candidates
+    .sort((a, b) => b.confidence - a.confidence || a.kind.localeCompare(b.kind))
+    .slice(0, limit);
+  return {
+    ok: true,
+    count: limited.length,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'local_learning', 80),
+    summary: `${limited.length} reusable habit candidate(s) derived from local metadata and explicit workflow artifacts.`,
+    spokenSummary: limited.length
+      ? `我整理出 ${limited.length} 个可以沉淀的本地习惯候选；它们只是建议，保存成技能、快捷短语或记忆前仍要确认。`
+      : '暂时没有可沉淀的本地习惯候选。',
+    candidates: limited,
+    policy: {
+      readOnly: true,
+      inferenceOnly: true,
+      noAutoSave: true,
+      noPermissionGrant: true,
+      confirmationRequiredForPromotion: true,
+    },
+    privacy: {
+      localOnly: true,
+      metadataOnly: true,
+      modelFreeDistillation: true,
+      noRawScreenshots: true,
+      noClipboardText: true,
+      noPageBodies: true,
+    },
+    nextAction: limited.some((candidate) => candidate.recommendedAction?.requiresConfirmation)
+      ? 'Review one candidate with the user before saving a skill, shortcut, demonstration, or explicit memory.'
+      : 'Use candidates as routing context only until the user asks to save one.',
+  };
+}
+
 function learningEvolutionSnapshot(options = {}) {
   const eventLimit = Math.max(8, Math.min(MAX_LEARNING_SOURCE_EVENTS, Number(options.eventLimit || MAX_LEARNING_SOURCE_EVENTS)));
   const events = ambientSnapshot(eventLimit)
@@ -7346,6 +7619,7 @@ function learningDistillationSnapshot(options = {}) {
   });
   const demonstrations = demonstrationStateSnapshot({ limit: options.demonstrationLimit || 8 });
   const shortcutsState = shortcutSnapshot(options.shortcutLimit || 8);
+  const shortcutCandidates = shortcutPromotionCandidates({ limit: options.candidateLimit || 6 });
   const localSkills = searchLocalSkills({
     query: options.query || 'local workflow learning demonstration replay',
     limit: options.skillLimit || 6,
@@ -7359,9 +7633,19 @@ function learningDistillationSnapshot(options = {}) {
     Number(demonstrationCountsState.done || 0) +
     Number(shortcutCountsState.enabled || 0) +
     skillCount;
+  const habitCandidates = learningHabitCandidateSnapshot({
+    source,
+    limit: options.candidateLimit || options.habitLimit || 6,
+    profile: voiceProfile.profile,
+    evolution,
+    demonstrations,
+    shortcutsState,
+    shortcutCandidates,
+    localSkills,
+  });
   const summary = sourceEventCount
-    ? `Local distillation has ${sourceEventCount} metadata event(s), ${evolution.changes.length} recent change(s), and ${repeatableCount} reusable workflow artifact(s).`
-    : `Local distillation is ${state.configured ? 'configured' : 'not configured'} and has ${repeatableCount} reusable workflow artifact(s), but no stable metadata profile yet.`;
+    ? `Local distillation has ${sourceEventCount} metadata event(s), ${evolution.changes.length} recent change(s), ${repeatableCount} reusable workflow artifact(s), and ${habitCandidates.count} habit candidate(s).`
+    : `Local distillation is ${state.configured ? 'configured' : 'not configured'} and has ${repeatableCount} reusable workflow artifact(s) plus ${habitCandidates.count} habit candidate(s), but no stable metadata profile yet.`;
 
   return {
     ok: true,
@@ -7373,6 +7657,7 @@ function learningDistillationSnapshot(options = {}) {
       voiceProfile.spokenSummary,
       evolution.changes.length ? evolution.spokenSummary : '',
       repeatableCount ? `我还看到 ${repeatableCount} 个可复用的本地工作流线索。` : '',
+      habitCandidates.count ? habitCandidates.spokenSummary : '',
     ].filter(Boolean).join(' '), 520),
     state: {
       configured: Boolean(state.configured),
@@ -7432,7 +7717,20 @@ function learningDistillationSnapshot(options = {}) {
           path: skill.path,
         })),
       },
+      shortcutCandidates: {
+        count: Number(shortcutCandidates.count || 0),
+        recent: (shortcutCandidates.items || []).slice(0, 5).map((item) => ({
+          source: item.source,
+          routeId: item.routeId || '',
+          jobId: item.jobId || '',
+          phrase: compactRecordText(item.phrase || '', 120),
+          title: compactRecordText(item.title || '', 140),
+          skill: item.skillRecallPlan?.primarySkill?.name || '',
+          updatedAt: item.updatedAt || 0,
+        })),
+      },
     },
+    habitCandidates,
     privacy: {
       localOnly: true,
       metadataOnly: true,
@@ -7454,6 +7752,13 @@ function learningDistillationSnapshot(options = {}) {
       'Pause learning or add exclusions before sensitive apps, sites, folders, meetings, or private communications.',
     ],
     nextActions: [
+      {
+        id: 'review_habit_candidates',
+        label: 'Review reusable habit candidates',
+        endpoint: '/api/learning/distillation',
+        method: 'GET',
+        requiresConfirmation: false,
+      },
       {
         id: state.paused ? 'resume_learning' : 'pause_learning',
         label: state.paused ? 'Resume local learning' : 'Pause local learning',
@@ -7507,6 +7812,7 @@ function learningDistillationVoiceSnapshot(options = {}) {
   const demonstrations = artifacts.demonstrations || {};
   const shortcuts = artifacts.shortcuts || {};
   const skills = artifacts.skills || {};
+  const habitCandidates = full.habitCandidates || {};
   const payload = {
     ok: true,
     kind: full.kind,
@@ -7594,12 +7900,38 @@ function learningDistillationVoiceSnapshot(options = {}) {
           : [],
       },
     },
+    habitCandidates: {
+      count: Number(habitCandidates.count || 0),
+      summary: compactRecordText(habitCandidates.summary || '', 260),
+      spokenSummary: compactRecordText(habitCandidates.spokenSummary || '', 320),
+      candidates: Array.isArray(habitCandidates.candidates)
+        ? habitCandidates.candidates.slice(0, 4).map((candidate) => ({
+            id: compactRecordText(candidate.id || '', 100),
+            kind: compactRecordText(candidate.kind || '', 80),
+            label: compactRecordText(candidate.label || '', 160),
+            confidence: Number(candidate.confidence || 0),
+            source: compactRecordText(candidate.source || '', 80),
+            actionId: compactRecordText(candidate.recommendedAction?.id || '', 80),
+            actionLabel: compactRecordText(candidate.recommendedAction?.label || '', 160),
+            requiresConfirmation: candidate.recommendedAction?.requiresConfirmation !== false,
+            previewOnly: candidate.recommendedAction?.previewOnly !== false,
+            noAutoSave: candidate.safety?.noAutoSave !== false,
+            noPermissionGrant: candidate.safety?.doesNotGrantPermission !== false,
+          }))
+        : [],
+      policy: {
+        readOnly: habitCandidates.policy?.readOnly === true,
+        inferenceOnly: habitCandidates.policy?.inferenceOnly === true,
+        noAutoSave: habitCandidates.policy?.noAutoSave === true,
+        confirmationRequiredForPromotion: habitCandidates.policy?.confirmationRequiredForPromotion === true,
+      },
+    },
     privacy: {
       localOnly: full.privacy?.localOnly === true,
       metadataOnly: full.privacy?.metadataOnly === true,
       modelFreeDistillation: full.privacy?.modelFreeDistillation === true,
       inferredNotExplicitMemory: full.privacy?.inferredNotExplicitMemory === true,
-      rawContentStoredByDefault: full.privacy?.rawContentStoredByDefault === false,
+      rawContentStoredByDefault: full.privacy?.rawContentStoredByDefault === true,
       noRawScreenshots: full.privacy?.noRawScreenshots === true,
       noClipboardText: full.privacy?.noClipboardText === true,
       noPageBodies: full.privacy?.noPageBodies === true,
@@ -7608,7 +7940,7 @@ function learningDistillationVoiceSnapshot(options = {}) {
     },
     boundaries: Array.isArray(full.boundaries) ? full.boundaries.map((item) => compactRecordText(item, 180)).slice(0, 5) : [],
     nextActions: Array.isArray(full.nextActions)
-      ? full.nextActions.slice(0, 5).map((action) => ({
+      ? full.nextActions.slice(0, 6).map((action) => ({
           id: compactRecordText(action.id || '', 80),
           label: compactRecordText(action.label || '', 160),
           requiresConfirmation: Boolean(action.requiresConfirmation),
@@ -7620,6 +7952,7 @@ function learningDistillationVoiceSnapshot(options = {}) {
       omitted: [
         'learningFile',
         'local skill paths',
+        'full habit candidate evidence',
         'full recent/baseline windows',
         'ambient events',
         'raw screenshots',
@@ -29807,6 +30140,10 @@ function realtimeLearningToolSummary(name, args = {}, result = {}) {
   const baselineWindow = windows.baseline || {};
   const distillationEvolution = output.evolution || {};
   const distillationArtifacts = output.artifacts || {};
+  const distillationHabitCandidates = output.habitCandidates || {};
+  const habitCandidateList = Array.isArray(distillationHabitCandidates.candidates)
+    ? distillationHabitCandidates.candidates
+    : [];
   const changes = Array.isArray(output.changes)
     ? output.changes
     : Array.isArray(distillationEvolution.changes)
@@ -29840,6 +30177,10 @@ function realtimeLearningToolSummary(name, args = {}, result = {}) {
     demonstrationCount: boundedCount(distillationArtifacts.demonstrations?.counts?.total, 1000),
     shortcutCount: boundedCount(distillationArtifacts.shortcuts?.counts?.total, 1000),
     skillCount: boundedCount(distillationArtifacts.skills?.returned, 1000),
+    habitCandidateCount: boundedCount(distillationHabitCandidates.count ?? habitCandidateList.length, 1000),
+    habitCandidateIds: habitCandidateList.map((candidate) => compactRecordText(candidate.id || '', 100)).filter(Boolean).slice(0, 6),
+    habitCandidatesNoAutoSave: distillationHabitCandidates.policy?.noAutoSave === true || habitCandidateList.every((candidate) => candidate.noAutoSave !== false),
+    habitCandidatesRequireConfirmation: distillationHabitCandidates.policy?.confirmationRequiredForPromotion === true || habitCandidateList.some((candidate) => candidate.requiresConfirmation === true),
     excludedApps: boundedCount(controls.excludedApps, 1000),
     excludedHosts: boundedCount(controls.excludedHosts, 1000),
     excludedFolders: boundedCount(controls.excludedFolders, 1000),
@@ -30201,6 +30542,8 @@ function recordRealtimeToolCall(options = {}) {
     learningSourceEventCount: learning?.sourceEventCount || 0,
     learningSignalCount: learning?.signalCount || 0,
     learningEvolutionChangeCount: learning?.changeCount || 0,
+    learningHabitCandidateCount: learning?.habitCandidateCount || 0,
+    learningHabitCandidatesNoAutoSave: Boolean(learning?.habitCandidatesNoAutoSave),
     learningEvolutionEnoughBaseline: Boolean(learning?.enoughBaseline),
     learningLocalOnly: Boolean(learning?.localOnly),
     learningNoRawScreenshots: Boolean(learning?.noRawScreenshots),
@@ -45725,6 +46068,8 @@ function createRealtimeSessionConfig(options = {}) {
             shortcutLimit: { type: 'number' },
             recentLimit: { type: 'number' },
             baselineLimit: { type: 'number' },
+            candidateLimit: { type: 'number' },
+            habitLimit: { type: 'number' },
           },
           additionalProperties: false,
         },
@@ -47987,6 +48332,7 @@ function startApiServer() {
         demonstrationLimit: req.query.demonstrationLimit,
         shortcutLimit: req.query.shortcutLimit,
         skillLimit: req.query.skillLimit,
+        candidateLimit: req.query.candidateLimit || req.query.habitLimit,
         query: req.query.query || req.query.q,
       }),
     });

@@ -334,7 +334,10 @@ curl http://127.0.0.1:3417/api/learning/distillation
 
 This is the operator-facing local user-distillation packet: inferred habit profile, recent changes,
 explicit UI demonstrations, skill shortcuts, matching local skills, privacy boundaries, prompt-injection
-risk, and confirmation-gated next actions. It is read-only, local-first, model-free, and stores no raw
+risk, reusable habit candidates, and confirmation-gated next actions. Habit candidates turn repeated
+metadata patterns or explicit workflow artifacts into reviewable suggestions such as "record this
+workflow", "preview this demonstration skill", or "save this shortcut phrase"; they never auto-save,
+grant permission, or execute actions. It is read-only, local-first, model-free, and stores no raw
 screenshots, clipboard text, or page bodies.
 Realtime voice can call `get_learning_distillation` for the same information as a compact payload when
 the user asks what JAVIS has learned, what changed recently, or which learned workflows are reusable.

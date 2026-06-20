@@ -81,6 +81,8 @@ export default {
     const distillationPrivacy = distillationData?.privacy || {};
     const distillationNextActions = Array.isArray(distillationData?.nextActions) ? distillationData.nextActions : [];
     const distillationNextActionIds = new Set(distillationNextActions.map((action) => action.id));
+    const habitCandidates = distillationData?.habitCandidates || {};
+    const habitCandidateList = Array.isArray(habitCandidates.candidates) ? habitCandidates.candidates : [];
     const profileRecentContexts = Array.isArray(distillationData?.profile?.recentContexts)
       ? distillationData.profile.recentContexts
       : [];
@@ -95,7 +97,34 @@ export default {
         Array.isArray(distillationData.evolution?.changes) &&
         typeof distillationData.artifacts?.demonstrations?.counts?.total === 'number' &&
         typeof distillationData.artifacts?.shortcuts?.counts?.total === 'number' &&
+        typeof distillationData.artifacts?.shortcutCandidates?.count === 'number' &&
         typeof distillationData.artifacts?.skills?.returned === 'number' &&
+        habitCandidates.ok === true &&
+        habitCandidates.policy?.readOnly === true &&
+        habitCandidates.policy?.inferenceOnly === true &&
+        habitCandidates.policy?.noAutoSave === true &&
+        habitCandidates.policy?.confirmationRequiredForPromotion === true &&
+        habitCandidates.privacy?.localOnly === true &&
+        habitCandidates.privacy?.metadataOnly === true &&
+        habitCandidates.privacy?.noRawScreenshots === true &&
+        habitCandidates.privacy?.noClipboardText === true &&
+        habitCandidates.privacy?.noPageBodies === true &&
+        habitCandidateList.length >= 1 &&
+        habitCandidateList.every((candidate) =>
+          candidate.id &&
+          candidate.kind &&
+          candidate.label &&
+          typeof candidate.confidence === 'number' &&
+          candidate.recommendedAction?.id &&
+          candidate.safety?.localOnly === true &&
+          candidate.safety?.metadataOnly === true &&
+          candidate.safety?.doesNotExecute === true &&
+          candidate.safety?.doesNotGrantPermission === true &&
+          candidate.safety?.noAutoSave === true &&
+          candidate.safety?.noRawScreenshots === true &&
+          candidate.safety?.noClipboardText === true &&
+          candidate.safety?.noPageBodies === true
+        ) &&
         distillationPrivacy.localOnly === true &&
         distillationPrivacy.metadataOnly === true &&
         distillationPrivacy.modelFreeDistillation === true &&
@@ -108,6 +137,7 @@ export default {
         /untrusted/i.test(distillationPrivacy.promptInjectionRisk || '') &&
         (distillationData.boundaries || []).some((item) => /inferred habits/i.test(item)) &&
         (distillationData.boundaries || []).some((item) => /Never skip sends/i.test(item)) &&
+        distillationNextActionIds.has('review_habit_candidates') &&
         distillationNextActionIds.has('manage_exclusions') &&
         distillationNextActionIds.has('record_demonstration') &&
         distillationNextActionIds.has('preview_skill_draft') &&
@@ -132,8 +162,10 @@ export default {
           output.includes('metadata-only=yes') &&
           output.includes('Risk:') &&
           output.includes('Artifacts:') &&
+          output.includes('Habit candidates:') &&
+          output.includes('no auto-save=yes') &&
           output.includes('Next actions:')
-          ? ok('learning.distillation_cui', 'Learning distillation CUI', 'config CUI prints local distillation status, privacy, artifacts, and next actions')
+          ? ok('learning.distillation_cui', 'Learning distillation CUI', 'config CUI prints local distillation status, privacy, habit candidates, artifacts, and next actions')
           : fail('learning.distillation_cui', 'Learning distillation CUI', 'expected config CUI to print local distillation details', { output: output.slice(0, 2000) }),
       );
     } catch (error) {
