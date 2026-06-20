@@ -137,6 +137,15 @@ curl http://127.0.0.1:3417/api/knowledge/benchmarks
 
 This runs fixture-only checks for Obsidian/Markdown knowledge work: vault discovery, Markdown note search, note-create preview, `confirm:true` write gating, and one confirmed write inside a temporary fixture. It cleans the fixture, launches no apps, calls no models, records no workflow history, and does not mutate user notes.
 
+Use option `X. Show MCP server discovery`, or:
+
+```bash
+npm run config -- --print-mcp-servers
+curl http://127.0.0.1:3417/api/mcp/servers
+```
+
+This scans known local JSON configs for Claude Desktop, Claude Code, Cursor, and project `.mcp.json`. It is read-only: it does not start MCP server commands, it shows only command basenames or URL hosts, and it redacts env values plus URL query strings. Realtime voice can call `get_mcp_servers` before deciding whether a task should use Codex, Claude Code, or an MCP-backed workflow.
+
 Use option `C. Show creative workflow benchmarks`, or:
 
 ```bash

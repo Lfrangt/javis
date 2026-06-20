@@ -314,6 +314,7 @@ async function printStatus() {
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
   console.log('K. Show knowledge workflow benchmarks');
+  console.log('X. Show MCP server discovery');
   console.log('C. Show creative workflow benchmarks');
   console.log('U. Show app workflow benchmarks');
   console.log('Y. Show productivity workflow benchmarks');
@@ -1167,6 +1168,45 @@ async function showKnowledgeBenchmarks() {
   printKnowledgeBenchmarks(result);
 }
 
+function printMcpServers(result) {
+  const mcp = result?.mcp || result || {};
+  const counts = mcp.counts || {};
+  const safety = mcp.safety || {};
+  console.log('MCP Server Discovery');
+  console.log('====================');
+  console.log(mcp.summary || 'No MCP discovery summary available.');
+  console.log(`Counts: servers ${counts.servers || 0} · enabled ${counts.enabled || 0} · stdio ${counts.stdio || 0} · remote ${counts.remote || 0} · files ${counts.filesFound || 0}/${counts.filesChecked || 0} · invalid ${counts.invalidFiles || 0}`);
+  console.log(`Safety: read-only=${safety.readOnly ? 'yes' : 'no'} · starts servers=${safety.startsServers ? 'yes' : 'no'} · commands executed=${safety.commandsExecuted ? 'yes' : 'no'} · env values redacted=${safety.envValuesRedacted ? 'yes' : 'no'} · URL queries redacted=${safety.urlQueriesRedacted ? 'yes' : 'no'}`);
+  const files = Array.isArray(mcp.files) ? mcp.files : [];
+  if (files.length) {
+    console.log('\nConfig files:');
+    for (const file of files) {
+      const status = file.exists ? file.valid ? 'valid' : 'invalid' : 'missing';
+      const error = file.error ? ` · ${compact(file.error, 160)}` : '';
+      console.log(`- ${file.label || file.id || '-'} · ${status} · ${file.serverCount || 0} server(s) · ${file.path || '-'}${error}`);
+    }
+  }
+  const servers = Array.isArray(mcp.servers) ? mcp.servers : [];
+  if (!servers.length) {
+    console.log('\nServers: none');
+    if (mcp.nextAction) console.log(`\nNext: ${mcp.nextAction}`);
+    return;
+  }
+  console.log('\nServers:');
+  for (const server of servers) {
+    const target = server.command ? `cmd=${server.command}` : server.urlHost ? `host=${server.urlHost}` : 'target=-';
+    const env = Array.isArray(server.envKeys) && server.envKeys.length ? ` · env keys=${server.envKeys.join(', ')}` : '';
+    console.log(`- ${server.enabled ? 'on' : 'off'} ${server.name || '-'} · ${server.transport || 'unknown'} · ${server.risk || 'unknown'} · ${target} · source=${server.sourceLabel || server.sourceId || '-'}${env}`);
+  }
+  if (mcp.nextAction) console.log(`\nNext: ${mcp.nextAction}`);
+}
+
+async function showMcpServers() {
+  const result = await request('/api/mcp/servers?source=cui_mcp_servers');
+  console.log('');
+  printMcpServers(result);
+}
+
 function printCreativeBenchmarks(result) {
   const benchmarks = result?.benchmarks || result || {};
   const counts = benchmarks.counts || {};
@@ -1546,6 +1586,8 @@ function printRealtimeEvidence(result) {
   const perceptionEvents = Array.isArray(perceptionTools.recent) ? perceptionTools.recent : [];
   const capabilityTools = evidence.capabilityTools || {};
   const capabilityEvents = Array.isArray(capabilityTools.recent) ? capabilityTools.recent : [];
+  const mcpTools = evidence.mcpTools || {};
+  const mcpEvents = Array.isArray(mcpTools.recent) ? mcpTools.recent : [];
   const learningTools = evidence.learningTools || {};
   const learningEvents = Array.isArray(learningTools.recent) ? learningTools.recent : [];
   const browserTools = evidence.browserTools || {};
@@ -1720,6 +1762,24 @@ function printRealtimeEvidence(result) {
     ].filter(Boolean);
     const summary = capability.spokenSummary ? ` · ${compact(capability.spokenSummary, 180)}` : '';
     console.log(`- ${event.name || 'get_local_capabilities'} · ${bits.join(' · ')}${summary}`);
+  }
+  console.log('\nMCP discovery tool:');
+  console.log(`- observed ${Number(mcpTools.count || 0)} recent event(s) · discovery=${mcpTools.hasDiscovery ? 'yes' : 'no'} · servers=${mcpTools.hasServers ? 'yes' : 'no'} · privacy=${mcpTools.privacySafe ? 'safe' : 'pending'}`);
+  console.log(`- next ${compact(mcpTools.nextAction || dogfood.mcpTools?.nextAction || 'Ask live voice which MCP servers are configured locally.', 220)}`);
+  for (const event of mcpEvents.slice(0, 4)) {
+    const mcp = event.mcp || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      `servers=${Number(mcp.serverCount || 0)}`,
+      `files=${Number(mcp.filesFound || 0)}`,
+      mcp.readOnly ? 'read-only' : '',
+      mcp.envValuesRedacted ? 'env-redacted' : '',
+      mcp.startsServers ? 'starts-servers' : 'no-start',
+      mcp.commandsExecuted ? 'cmd-executed' : 'no-cmd',
+    ].filter(Boolean);
+    const names = Array.isArray(mcp.serverNames) && mcp.serverNames.length ? ` · names=${mcp.serverNames.slice(0, 4).join(',')}` : '';
+    console.log(`- ${event.name || 'get_mcp_servers'} · ${bits.join(' · ')}${names}`);
   }
   console.log('\nLocal learning tool:');
   console.log(`- observed ${Number(learningTools.count || 0)} recent event(s) · profile=${learningTools.hasLearningProfile ? 'yes' : 'no'} · evolution=${learningTools.hasLearningEvolution ? 'yes' : 'no'} · privacy=${learningTools.privacySafe ? 'safe' : 'pending'}`);
@@ -2405,6 +2465,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-mcp-servers') || process.argv.includes('--mcp-servers')) {
+    await showMcpServers();
+    return;
+  }
+
   if (process.argv.includes('--print-creative-benchmarks') || process.argv.includes('--creative-benchmarks')) {
     await showCreativeBenchmarks();
     return;
@@ -2533,6 +2598,8 @@ async function main() {
         await showFileBenchmarks();
       } else if (answer === 'k' || answer === 'knowledge benchmark' || answer === 'knowledge benchmarks') {
         await showKnowledgeBenchmarks();
+      } else if (answer === 'x' || answer === 'mcp' || answer === 'mcp servers') {
+        await showMcpServers();
       } else if (answer === 'c' || answer === 'creative benchmark' || answer === 'creative benchmarks') {
         await showCreativeBenchmarks();
       } else if (answer === 'u' || answer === 'app benchmark' || answer === 'app benchmarks') {

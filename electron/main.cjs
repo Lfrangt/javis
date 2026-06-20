@@ -60,6 +60,14 @@ const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
 const USER_SKILLS_DIR = process.env.JAVIS_USER_SKILLS_DIR || path.join(os.homedir(), '.agents', 'skills');
+const MCP_CONFIG_SOURCES = [
+  { id: 'project_mcp', label: 'Project .mcp.json', path: path.join(process.cwd(), '.mcp.json') },
+  { id: 'project_cursor_mcp', label: 'Project Cursor MCP', path: path.join(process.cwd(), '.cursor', 'mcp.json') },
+  { id: 'user_cursor_mcp', label: 'User Cursor MCP', path: path.join(os.homedir(), '.cursor', 'mcp.json') },
+  { id: 'claude_desktop', label: 'Claude Desktop', path: path.join(os.homedir(), 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json') },
+  { id: 'claude_config', label: 'Claude config', path: path.join(os.homedir(), '.config', 'Claude', 'claude_desktop_config.json') },
+  { id: 'claude_json', label: 'Claude Code user config', path: path.join(os.homedir(), '.claude.json') },
+];
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const LAUNCH_AGENT_FILE = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 const RESIDENT_OUT_LOG = path.join(process.cwd(), 'logs', 'resident.out.log');
@@ -669,11 +677,11 @@ const LANE_CONTRACTS = [
     ],
     handoff: {
       defaultLane: 'file',
-      tools: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'run_file_action'],
-      rule: 'Search notes read-only; write Markdown only after explicit confirm:true and normal file-policy checks.',
+      tools: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers', 'run_file_action'],
+      rule: 'Search notes and discover MCP servers read-only; write Markdown only after explicit confirm:true and normal file-policy checks.',
     },
-    toolPosture: 'Local Markdown only; previews plans before writing and keeps Obsidian app launches separate.',
-    riskBoundary: 'Search is read-only. Note writes are Level 3 file writes scoped by allowed roots, control mode, and confirmation.',
+    toolPosture: 'Local Markdown plus read-only MCP config discovery; previews plans before writing and keeps Obsidian app launches separate.',
+    riskBoundary: 'Search and MCP discovery are read-only. Note writes are Level 3 file writes scoped by allowed roots, control mode, and confirmation.',
     progressStyle: 'knowledge workflow record with vault/note evidence',
   },
   {
@@ -4103,7 +4111,7 @@ function capabilityToolHintsForContract(contract = {}) {
     local: ['get_control_mode', 'get_setup_guide', 'run_cli_tool', 'run_mac_action', 'run_file_action'],
     browser: ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow', 'control_browser_dom'],
     file: ['run_file_workflow', 'plan_file_organization', 'plan_file_batch', 'apply_file_plan', 'run_file_action'],
-    knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow'],
+    knowledge: ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers'],
     app: ['observe_now', 'read_accessibility_tree', 'plan_ui_action', 'control_current_app', 'run_app_workflow', 'get_productivity_dogfood_archive', 'save_productivity_dogfood_archive'],
   };
   return Array.from(new Set([...base, ...(extras[contract.id] || [])])).slice(0, 12);
@@ -19412,7 +19420,7 @@ function contextPlanRecommendedTools(needs) {
   if (needs.browserActivity) tools.push('get_browser_activity');
   if (needs.browserPage) tools.push('read_browser_page', 'run_browser_workflow');
   if (needs.browserDom) tools.push('read_browser_dom');
-  if (needs.knowledge) tools.push('get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow');
+  if (needs.knowledge) tools.push('get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers');
   if (needs.files) tools.push('run_file_workflow');
   if (needs.memory) tools.push('search_memory');
   if (needs.localSkills) tools.push('search_local_skills');
@@ -21780,6 +21788,170 @@ function knowledgeCommonVaultRoots() {
     path.join(os.homedir(), 'Library', 'Mobile Documents', 'iCloud~md~obsidian', 'Documents'),
     process.cwd(),
   ];
+}
+
+function redactedUrlHost(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    return parsed.host;
+  } catch {
+    return compactRecordText(raw.replace(/[?#].*$/, ''), 120);
+  }
+}
+
+function mcpCommandName(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  return path.basename(raw.split(/\s+/)[0] || raw).slice(0, 120);
+}
+
+function mcpConfigServerMap(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return null;
+  if (config.mcpServers && typeof config.mcpServers === 'object' && !Array.isArray(config.mcpServers)) {
+    return config.mcpServers;
+  }
+  if (config.servers && typeof config.servers === 'object' && !Array.isArray(config.servers)) {
+    return config.servers;
+  }
+  if (config.global?.mcpServers && typeof config.global.mcpServers === 'object' && !Array.isArray(config.global.mcpServers)) {
+    return config.global.mcpServers;
+  }
+  if (config.projects && typeof config.projects === 'object' && !Array.isArray(config.projects)) {
+    const merged = {};
+    for (const projectConfig of Object.values(config.projects)) {
+      if (projectConfig?.mcpServers && typeof projectConfig.mcpServers === 'object' && !Array.isArray(projectConfig.mcpServers)) {
+        Object.assign(merged, projectConfig.mcpServers);
+      }
+    }
+    return Object.keys(merged).length ? merged : null;
+  }
+  return null;
+}
+
+function mcpTransportForServer(server = {}) {
+  const type = String(server.type || server.transport || '').trim().toLowerCase();
+  if (type) return type;
+  if (server.command) return 'stdio';
+  if (server.url) {
+    const url = String(server.url || '').trim();
+    if (/\/sse($|[?#/])/i.test(url) || String(server.transportType || '').toLowerCase() === 'sse') return 'sse';
+    return 'http';
+  }
+  return 'unknown';
+}
+
+function normalizeMcpServer(name, server, source = {}) {
+  const record = server && typeof server === 'object' && !Array.isArray(server) ? server : {};
+  const env = record.env && typeof record.env === 'object' && !Array.isArray(record.env) ? record.env : {};
+  const args = Array.isArray(record.args) ? record.args : [];
+  const transport = mcpTransportForServer(record);
+  const enabled = record.disabled !== true && record.enabled !== false;
+  const urlHost = redactedUrlHost(record.url || record.endpoint || '');
+  const command = mcpCommandName(record.command || '');
+  return {
+    id: `${source.id || 'config'}:${String(name || '').slice(0, 120)}`,
+    name: compactRecordText(name, 120),
+    sourceId: source.id || '',
+    sourceLabel: source.label || '',
+    sourcePath: source.path || '',
+    enabled,
+    transport,
+    command,
+    argsCount: args.length,
+    urlHost,
+    envKeys: Object.keys(env).sort().slice(0, 40),
+    hasEnv: Object.keys(env).length > 0,
+    risk: command ? 'local_process' : urlHost ? 'network' : 'unknown',
+    redacted: true,
+  };
+}
+
+function mcpServerDiscoverySnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(200, Number(options.limit || 80)));
+  const generatedAt = new Date().toISOString();
+  const files = [];
+  const servers = [];
+
+  for (const source of MCP_CONFIG_SOURCES) {
+    const sourcePath = source.path;
+    const file = {
+      id: source.id,
+      label: source.label,
+      path: sourcePath,
+      exists: false,
+      valid: false,
+      serverCount: 0,
+      error: '',
+    };
+    try {
+      const stats = fs.existsSync(sourcePath) ? fs.statSync(sourcePath) : null;
+      file.exists = Boolean(stats?.isFile());
+      if (!file.exists) {
+        files.push(file);
+        continue;
+      }
+      const json = JSON.parse(fs.readFileSync(sourcePath, 'utf8'));
+      const serverMap = mcpConfigServerMap(json);
+      file.valid = Boolean(serverMap);
+      if (!serverMap) {
+        file.error = 'No mcpServers object found.';
+        files.push(file);
+        continue;
+      }
+      const entries = Object.entries(serverMap);
+      file.serverCount = entries.length;
+      for (const [name, server] of entries) {
+        if (servers.length >= limit) break;
+        servers.push(normalizeMcpServer(name, server, source));
+      }
+    } catch (error) {
+      file.exists = fs.existsSync(sourcePath);
+      file.valid = false;
+      file.error = compactRecordText(error instanceof Error ? error.message : String(error), 220);
+    }
+    files.push(file);
+  }
+
+  const foundFiles = files.filter((file) => file.exists);
+  const invalidFiles = foundFiles.filter((file) => !file.valid);
+  const enabledServers = servers.filter((server) => server.enabled);
+  const remoteServers = servers.filter((server) => ['http', 'sse'].includes(server.transport) || server.urlHost);
+  const stdioServers = servers.filter((server) => server.transport === 'stdio' || server.command);
+  const summary = servers.length
+    ? `${servers.length} MCP server(s) discovered from ${foundFiles.length} local config file(s); env values redacted and no server commands executed.`
+    : foundFiles.length
+      ? `No MCP servers found in ${foundFiles.length} local config file(s); no server commands executed.`
+      : `No MCP config files found in ${files.length} checked location(s).`;
+
+  return {
+    ok: true,
+    generatedAt,
+    summary,
+    counts: {
+      filesChecked: files.length,
+      filesFound: foundFiles.length,
+      invalidFiles: invalidFiles.length,
+      servers: servers.length,
+      enabled: enabledServers.length,
+      disabled: Math.max(0, servers.length - enabledServers.length),
+      stdio: stdioServers.length,
+      remote: remoteServers.length,
+    },
+    safety: {
+      readOnly: true,
+      startsServers: false,
+      commandsExecuted: false,
+      envValuesRedacted: true,
+      urlQueriesRedacted: true,
+    },
+    files,
+    servers,
+    nextAction: servers.length
+      ? 'Use get_mcp_servers before deciding whether a Codex/Claude/MCP-backed workflow is available; start or call servers only through a separately confirmed action path.'
+      : 'Configure MCP servers in Claude Desktop, Cursor, or project .mcp.json if JAVIS should discover them.',
+  };
 }
 
 function normalizeKnowledgeIntent(value, instruction = '') {
@@ -25036,6 +25208,7 @@ const REALTIME_AUTOPILOT_TOOL_NAME = 'get_autopilot_status';
 const REALTIME_ATTENTION_TOOL_NAME = 'get_attention_explanation';
 const REALTIME_PERCEPTION_TOOL_NAME = 'get_perception_consent';
 const REALTIME_CAPABILITY_TOOL_NAME = 'get_local_capabilities';
+const REALTIME_MCP_TOOL_NAME = 'get_mcp_servers';
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
 const REALTIME_LEARNING_EVOLUTION_TOOL_NAME = 'get_learning_evolution';
 const REALTIME_LEARNING_TOOL_NAMES = new Set([
@@ -25238,6 +25411,32 @@ function realtimeCapabilityToolSummary(name, args = {}, result = {}) {
     guardrailCount: Array.isArray(output.guardrails) ? output.guardrails.length : 0,
     hasCapabilityMap: Boolean(capabilities.length || output.summary || output.spokenSummary),
     nextOutput: compactRecordText(output.next?.output || '', 260),
+  };
+}
+
+function realtimeMcpToolSummary(name, args = {}, result = {}) {
+  if (name !== REALTIME_MCP_TOOL_NAME) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const servers = Array.isArray(output.servers) ? output.servers : [];
+  const counts = output.counts || {};
+  return {
+    summary: compactRecordText(output.summary || '', 420),
+    source: compactRecordText(output.source || args?.source || '', 80),
+    filesChecked: boundedCount(counts.filesChecked, 1000),
+    filesFound: boundedCount(counts.filesFound, 1000),
+    invalidFiles: boundedCount(counts.invalidFiles, 1000),
+    serverCount: boundedCount(counts.servers ?? servers.length, 1000),
+    enabledCount: boundedCount(counts.enabled, 1000),
+    stdioCount: boundedCount(counts.stdio, 1000),
+    remoteCount: boundedCount(counts.remote, 1000),
+    serverNames: servers.map((server) => compactRecordText(server?.name || '', 80)).filter(Boolean).slice(0, 12),
+    transports: Array.from(new Set(servers.map((server) => compactRecordText(server?.transport || '', 40)).filter(Boolean))).slice(0, 8),
+    envValuesRedacted: output.safety?.envValuesRedacted === true,
+    startsServers: output.safety?.startsServers === true,
+    commandsExecuted: output.safety?.commandsExecuted === true,
+    readOnly: output.safety?.readOnly === true,
+    urlQueriesRedacted: output.safety?.urlQueriesRedacted === true,
+    nextAction: compactRecordText(output.nextAction || '', 240),
   };
 }
 
@@ -25491,6 +25690,7 @@ function recordRealtimeToolCall(options = {}) {
   const attention = realtimeAttentionToolSummary(name, options.args || {}, result);
   const perception = realtimePerceptionToolSummary(name, options.args || {}, result);
   const capability = realtimeCapabilityToolSummary(name, options.args || {}, result);
+  const mcp = realtimeMcpToolSummary(name, options.args || {}, result);
   const learning = realtimeLearningToolSummary(name, options.args || {}, result);
   const browser = realtimeBrowserToolSummary(name, options.args || {}, result);
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
@@ -25512,6 +25712,7 @@ function recordRealtimeToolCall(options = {}) {
     attention,
     perception,
     capability,
+    mcp,
     learning,
     browser,
     demonstration,
@@ -25553,6 +25754,13 @@ function recordRealtimeToolCall(options = {}) {
     capabilityReadyCount: capability?.readyCount || 0,
     capabilityLocalExecutionEnabled: Boolean(capability?.localExecutionEnabled),
     capabilityControlMode: capability?.controlMode || '',
+    mcpSummary: mcp?.summary || '',
+    mcpServerCount: mcp?.serverCount || 0,
+    mcpFilesFound: mcp?.filesFound || 0,
+    mcpEnvValuesRedacted: Boolean(mcp?.envValuesRedacted),
+    mcpStartsServers: Boolean(mcp?.startsServers),
+    mcpCommandsExecuted: Boolean(mcp?.commandsExecuted),
+    mcpReadOnly: Boolean(mcp?.readOnly),
     learningAction: learning?.action || '',
     learningSummary: learning?.spokenSummary || '',
     learningSourceEventCount: learning?.sourceEventCount || 0,
@@ -25778,6 +25986,36 @@ function realtimeCapabilityToolEvidence(limit = 8) {
     nextAction: hasCapabilityMap
       ? 'Ask live voice which local capability or tool should handle the current task and confirm it answers from the capability map.'
       : 'Ask the live voice session: 你现在能做什么？这个任务应该用哪个工具？',
+  };
+}
+
+function realtimeMcpToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => event.name === REALTIME_MCP_TOOL_NAME)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const hasDiscovery = recent.some((event) => (
+    event.ok &&
+    event.mcp?.readOnly === true &&
+    event.mcp?.envValuesRedacted === true &&
+    event.mcp?.startsServers === false &&
+    event.mcp?.commandsExecuted === false
+  ));
+  return {
+    ok: hasDiscovery,
+    count: recent.length,
+    hasDiscovery,
+    hasServers: recent.some((event) => Number(event.mcp?.serverCount || 0) > 0),
+    privacySafe: recent.length > 0 && recent.every((event) => (
+      event.mcp?.readOnly === true &&
+      event.mcp?.envValuesRedacted === true &&
+      event.mcp?.startsServers === false &&
+      event.mcp?.commandsExecuted === false
+    )),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasDiscovery
+      ? 'Ask live voice which discovered MCP servers are available before deciding whether a Codex, Claude Code, or MCP-backed workflow should be used.'
+      : 'Ask the live voice session: 本机有哪些 MCP 或外部工具服务器可以用？',
   };
 }
 
@@ -26190,6 +26428,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
+  const mcpTools = evidence.mcpTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
@@ -26227,6 +26466,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
+      '本机有哪些 MCP 或外部工具服务器可以用？',
       '你最近学到了我什么使用习惯？',
       '最近我的使用习惯有什么变化？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
@@ -26280,6 +26520,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: REALTIME_CAPABILITY_TOOL_NAME,
       },
       {
+        id: 'mcp_tool',
+        label: 'Realtime called get_mcp_servers',
+        ok: Boolean(mcpTools.hasDiscovery),
+        tool: REALTIME_MCP_TOOL_NAME,
+      },
+      {
         id: 'learning_tool',
         label: 'Realtime called get_learning_profile',
         ok: Boolean(learningTools.hasLearningProfile),
@@ -26322,6 +26568,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const attentionTools = evidence.attentionTools || {};
   const perceptionTools = evidence.perceptionTools || {};
   const capabilityTools = evidence.capabilityTools || {};
+  const mcpTools = evidence.mcpTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
@@ -26350,7 +26597,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -26435,6 +26682,14 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       hasLocalExecutionState: Boolean(capabilityTools.hasLocalExecutionState),
       nextAction: capabilityTools.nextAction || 'Ask the live voice session what JAVIS can do and which local tool should handle this task.',
     },
+    mcpTools: {
+      observed: Boolean(mcpTools.ok),
+      count: Number(mcpTools.count || 0),
+      hasDiscovery: Boolean(mcpTools.hasDiscovery),
+      hasServers: Boolean(mcpTools.hasServers),
+      privacySafe: Boolean(mcpTools.privacySafe),
+      nextAction: mcpTools.nextAction || 'Ask the live voice session which MCP servers are configured locally.',
+    },
     learningTools: {
       observed: Boolean(learningTools.ok),
       count: Number(learningTools.count || 0),
@@ -26513,6 +26768,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const attentionTools = options.attentionTools || evidence.attentionTools || {};
   const perceptionTools = options.perceptionTools || evidence.perceptionTools || {};
   const capabilityTools = options.capabilityTools || evidence.capabilityTools || {};
+  const mcpTools = options.mcpTools || evidence.mcpTools || {};
   const learningTools = options.learningTools || evidence.learningTools || {};
   const browserTools = options.browserTools || evidence.browserTools || {};
   const productivityDogfoodTools = options.productivityDogfoodTools || evidence.productivityDogfoodTools || {};
@@ -26621,6 +26877,14 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       detail: capabilityTools.hasCapabilityMap ? 'get_local_capabilities was observed in recent Realtime tool evidence.' : 'No get_local_capabilities call has been observed in recent Realtime tool evidence.',
       nextAction: 'Ask: 你现在能做什么？这个任务应该用哪个工具？',
       evidence: { tool: REALTIME_CAPABILITY_TOOL_NAME, count: Number(capabilityTools.count || 0) },
+    }),
+    realtimeDogfoodDrillStep({
+      id: 'ask_mcp_servers',
+      label: 'Ask which MCP servers are configured locally',
+      ok: Boolean(mcpTools.hasDiscovery),
+      detail: mcpTools.hasDiscovery ? 'get_mcp_servers was observed in recent Realtime tool evidence without starting MCP servers.' : 'No get_mcp_servers call has been observed in recent Realtime tool evidence.',
+      nextAction: 'Ask: 本机有哪些 MCP 或外部工具服务器可以用？',
+      evidence: { tool: REALTIME_MCP_TOOL_NAME, count: Number(mcpTools.count || 0), privacySafe: Boolean(mcpTools.privacySafe) },
     }),
     realtimeDogfoodDrillStep({
       id: 'ask_learning_profile',
@@ -26849,6 +27113,12 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       copyText: '你现在能做什么？这个任务应该用哪个工具？',
       reason: 'This verifies the Realtime session calls get_local_capabilities before choosing how to act.',
     },
+    ask_mcp_servers: {
+      promptType: 'spoken',
+      prompt: '本机有哪些 MCP 或外部工具服务器可以用？',
+      copyText: '本机有哪些 MCP 或外部工具服务器可以用？',
+      reason: 'This verifies the Realtime session calls get_mcp_servers and keeps MCP discovery read-only.',
+    },
     ask_learning_profile: {
       promptType: 'spoken',
       prompt: '你最近学到了我什么使用习惯？',
@@ -26946,6 +27216,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
     { id: 'attention', ok: Boolean(evidence.attentionTools?.hasExplanation), label: 'attention explanation', tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', ok: Boolean(evidence.perceptionTools?.hasConsent), label: 'perception consent', tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), label: 'local capability map', tool: REALTIME_CAPABILITY_TOOL_NAME },
+    { id: 'mcp', ok: Boolean(evidence.mcpTools?.hasDiscovery), label: 'MCP server discovery', tool: REALTIME_MCP_TOOL_NAME },
     { id: 'learning', ok: Boolean(evidence.learningTools?.hasLearningProfile), label: 'local learning profile', tool: REALTIME_LEARNING_TOOL_NAME },
     { id: 'browser', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), label: 'browser read/workflow', tool: 'run_browser_workflow' },
     {
@@ -27119,6 +27390,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'attention', label: 'attention explanation', ok: Boolean(evidence.attentionTools?.hasExplanation), tool: REALTIME_ATTENTION_TOOL_NAME },
     { id: 'perception', label: 'perception consent', ok: Boolean(evidence.perceptionTools?.hasConsent), tool: REALTIME_PERCEPTION_TOOL_NAME },
     { id: 'capability', label: 'local capability map', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), tool: REALTIME_CAPABILITY_TOOL_NAME },
+    { id: 'mcp', label: 'MCP server discovery', ok: Boolean(evidence.mcpTools?.hasDiscovery), tool: REALTIME_MCP_TOOL_NAME },
     { id: 'learning', label: 'local learning profile', ok: Boolean(evidence.learningTools?.hasLearningProfile), tool: REALTIME_LEARNING_TOOL_NAME },
     { id: 'browser', label: 'browser read/workflow', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), tool: 'run_browser_workflow' },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
@@ -28491,6 +28763,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const attentionTools = realtimeAttentionToolEvidence(8);
   const perceptionTools = realtimePerceptionToolEvidence(8);
   const capabilityTools = realtimeCapabilityToolEvidence(8);
+  const mcpTools = realtimeMcpToolEvidence(8);
   const learningTools = realtimeLearningToolEvidence(8);
   const browserTools = realtimeBrowserToolEvidence(8);
   const demonstrationTools = realtimeDemonstrationToolEvidence(8);
@@ -28561,6 +28834,7 @@ function realtimeVoiceEvidenceSnapshot() {
     attentionTools,
     perceptionTools,
     capabilityTools,
+    mcpTools,
     learningTools,
     browserTools,
     demonstrationTools,
@@ -28714,6 +28988,13 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         hasRecommendedTools: Boolean(evidence.capabilityTools?.hasRecommendedTools),
         hasLocalExecutionState: Boolean(evidence.capabilityTools?.hasLocalExecutionState),
         nextAction: evidence.capabilityTools?.nextAction || '',
+      },
+      mcp: {
+        observed: Boolean(evidence.mcpTools?.hasDiscovery),
+        count: Number(evidence.mcpTools?.count || 0),
+        hasServers: Boolean(evidence.mcpTools?.hasServers),
+        privacySafe: Boolean(evidence.mcpTools?.privacySafe),
+        nextAction: evidence.mcpTools?.nextAction || '',
       },
       learning: {
         observed: Boolean(evidence.learningTools?.hasLearningProfile),
@@ -36358,6 +36639,11 @@ async function executeTool(name, args) {
     }
   }
 
+  if (name === 'get_mcp_servers') {
+    const result = mcpServerDiscoverySnapshot({ ...(args || {}), source: 'voice' });
+    return { ok: true, output: JSON.stringify(result) };
+  }
+
   if (name === 'plan_file_organization') {
     const result = await planFileOrganization(args || {});
     return { ok: result.ok, output: JSON.stringify(result) };
@@ -36590,6 +36876,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_browser_workflow for webpage summarization, action extraction, drafting, page-specific questions, safe form-fill drafts, web search, search-result review, or multi-page research. Use intent:fill_draft to prepare browser field fills from current DOM and supplied fields; it previews by default and requires execute:true plus confirm:true before filling. Use intent:research when the user asks you to look something up, inspect multiple sources, or synthesize web evidence; use background/Codex/Claude mode for longer work.',
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, semantic text-conversion previews, or non-destructive copy-convert previews.',
       'Use get_knowledge_vaults when the user asks what Obsidian/Markdown vaults JAVIS can see. Use search_knowledge_notes for read-only search over an allowed Markdown vault. Use run_knowledge_workflow for Obsidian-style Markdown note creation, append, daily note, or search workflows. Note writes require execute:true plus confirm:true and still go through file policy.',
+      'Use get_mcp_servers when the user asks which MCP servers, Claude/Cursor tool servers, or external tool bridges are configured locally. It is read-only: it scans known JSON config files, redacts env values and URL queries, and never starts MCP server commands.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
       'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
@@ -38239,6 +38526,18 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'get_mcp_servers',
+        description: 'Discover locally configured MCP servers from known JSON config files for Claude Desktop, Claude Code, Cursor, and project .mcp.json. Read-only: does not start server commands, redacts env values, and returns only sanitized command names or URL hosts.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'plan_file_organization',
         description: 'Create a policy-aware preview plan to organize a local folder by file type. Does not execute file moves.',
         parameters: {
@@ -38540,6 +38839,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_knowledge_vaults',
   'search_knowledge_notes',
   'run_knowledge_workflow',
+  'get_mcp_servers',
   'route_task',
   'route_parallel_tasks',
   'delegate_task',
@@ -38573,6 +38873,7 @@ function realtimeInstructionChecks(instructions = '') {
     autopilotStatus: /get_autopilot_status|autopilot did|unattended work|can continue by itself|autopilot is waiting/i.test(text),
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
     knowledgeWorkflows: /get_knowledge_vaults|search_knowledge_notes|run_knowledge_workflow|Obsidian\/Markdown vaults|knowledge workflow/i.test(text),
+    mcpDiscovery: /get_mcp_servers|MCP servers|Claude\/Cursor tool servers|external tool bridges/i.test(text),
     skillShortcuts: /get_skill_shortcuts|get_skill_shortcut_candidates|save_skill_shortcut|forget_skill_shortcut|Skill shortcuts/i.test(text),
     demonstrations: /get_ui_demonstrations|start_ui_demonstration|capture_ui_demonstration_step|finish_ui_demonstration|plan_ui_demonstration_replay|run_ui_demonstration_replay|draft_ui_demonstration_skill|save_ui_demonstration_skill|search_local_skills|UI demonstrations/i.test(text),
     backgroundRouting: /route_task|delegate_task|background/i.test(text),
@@ -40624,6 +40925,14 @@ function startApiServer() {
       res.json({ benchmarks });
     } catch (error) {
       jsonError(res, 500, 'Knowledge benchmarks failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/mcp/servers', (req, res) => {
+    try {
+      res.json({ mcp: mcpServerDiscoverySnapshot({ limit: req.query.limit || 80, source: req.query.source || 'api' }) });
+    } catch (error) {
+      jsonError(res, 500, 'MCP server discovery failed', error instanceof Error ? error.message : String(error));
     }
   });
 

@@ -40,6 +40,7 @@ Local Mac-first realtime desktop buddy.
 - Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
 - Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
 - Browser workflows: summarize, extract actions, draft, ask about the current page, search/compare result pages with structured candidate links, open and review one selected result, or synthesize across multiple result pages through quick or background lanes.
+- Read-only MCP server discovery for local Claude Desktop/Claude Code/Cursor/project JSON configs through API, CUI, and Realtime voice tools; env values and URL queries are redacted and server commands are never started during discovery.
 - Explicit local control modes: observe-only, ask-before-action, trusted-local, and supervised-takeover posture on top of the action policy.
 - File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
 - Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
@@ -228,6 +229,7 @@ Local Express service on 127.0.0.1:3417
   /api/browser/javascript -> browser JavaScript bridge status
   /api/browser/dom      -> read visible clickable/fillable page controls
   /api/browser/dom-action -> guarded webpage element click/fill/select
+  /api/mcp/servers      -> read-only local MCP server discovery with env values redacted
   /api/browser/workflow -> summarize, extract actions, draft, ask, act, search, compare, review one result, or research multiple result pages
   /api/cli/run          -> queue an explicit local CLI command as a background job
   /api/files/execute    -> local file tool execution

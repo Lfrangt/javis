@@ -66,9 +66,49 @@ export default {
       out.push(fail('knowledge.benchmarks_cui', 'Knowledge benchmark CUI', error instanceof Error ? error.message : String(error)));
     }
 
+    const mcp = await ctx.api('/api/mcp/servers?source=eval_knowledge_mcp', { timeoutMs: 15000 });
+    const mcpData = mcp.data?.mcp || {};
+    out.push(
+      mcp.ok &&
+        mcpData.ok === true &&
+        mcpData.safety?.readOnly === true &&
+        mcpData.safety?.startsServers === false &&
+        mcpData.safety?.commandsExecuted === false &&
+        mcpData.safety?.envValuesRedacted === true &&
+        mcpData.safety?.urlQueriesRedacted === true &&
+        typeof mcpData.counts?.filesChecked === 'number' &&
+        Array.isArray(mcpData.files) &&
+        Array.isArray(mcpData.servers)
+        ? ok('knowledge.mcp_discovery', 'MCP server discovery', `${mcpData.counts.servers || 0} server(s), ${mcpData.counts.filesFound || 0}/${mcpData.counts.filesChecked || 0} config file(s) found`)
+        : fail('knowledge.mcp_discovery', 'MCP server discovery', `GET /api/mcp/servers ${mcp.status}`, mcp.data),
+    );
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-mcp-servers'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        /MCP Server Discovery/.test(stdout) &&
+          /read-only=yes/.test(stdout) &&
+          /starts servers=no/.test(stdout) &&
+          /env values redacted=yes/.test(stdout)
+          ? ok('knowledge.mcp_cui', 'MCP discovery CUI', 'config CUI prints read-only MCP discovery evidence')
+          : fail('knowledge.mcp_cui', 'MCP discovery CUI', 'CUI output missing MCP discovery markers', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('knowledge.mcp_cui', 'MCP discovery CUI', error instanceof Error ? error.message : String(error)));
+    }
+
     const realtime = await ctx.api('/api/realtime/config', { timeoutMs: 15000 });
     const toolNames = realtime.data?.realtime?.toolNames || [];
-    const requiredTools = ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow'];
+    const requiredTools = ['get_knowledge_vaults', 'search_knowledge_notes', 'run_knowledge_workflow', 'get_mcp_servers'];
     const hasTools = requiredTools.every((name) => toolNames.includes(name));
     out.push(
       realtime.ok && hasTools

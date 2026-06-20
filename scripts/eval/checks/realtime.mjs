@@ -38,6 +38,7 @@ const REQUIRED_TOOLS = [
   'get_local_capabilities',
   'get_learning_profile',
   'get_learning_evolution',
+  'get_mcp_servers',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -514,6 +515,48 @@ export default {
         ))
         ? ok('realtime.local_capabilities_tool_evidence', 'Realtime local capability voice tool evidence', 'get_local_capabilities is visible in Realtime evidence')
         : fail('realtime.local_capabilities_tool_evidence', 'Realtime local capability voice tool evidence', 'expected get_local_capabilities to appear in realtime evidence', capabilityToolEvidence),
+    );
+
+    const mcpTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_mcp_servers',
+        arguments: { limit: 20 },
+      },
+    });
+    const mcpToolOutput = parseToolOutput(mcpTool);
+    out.push(
+      mcpTool.ok &&
+        mcpTool.data?.ok === true &&
+        mcpToolOutput?.ok === true &&
+        mcpToolOutput.safety?.readOnly === true &&
+        mcpToolOutput.safety?.startsServers === false &&
+        mcpToolOutput.safety?.commandsExecuted === false &&
+        mcpToolOutput.safety?.envValuesRedacted === true &&
+        typeof mcpToolOutput.counts?.servers === 'number' &&
+        Array.isArray(mcpToolOutput.servers)
+        ? ok('realtime.mcp_discovery_tool', 'Realtime MCP discovery voice tool', `${mcpToolOutput.counts.servers || 0} server(s), ${mcpToolOutput.counts.filesFound || 0}/${mcpToolOutput.counts.filesChecked || 0} config file(s) found`)
+        : fail('realtime.mcp_discovery_tool', 'Realtime MCP discovery voice tool', `tool execute ${mcpTool.status}`, mcpTool.data),
+    );
+
+    const mcpEvidence = await ctx.api('/api/realtime/evidence');
+    const mcpToolEvidence = mcpEvidence.data?.evidence?.mcpTools;
+    const mcpToolEvents = Array.isArray(mcpToolEvidence?.recent) ? mcpToolEvidence.recent : [];
+    out.push(
+      mcpEvidence.ok &&
+        mcpToolEvidence?.hasDiscovery === true &&
+        mcpToolEvidence?.privacySafe === true &&
+        mcpToolEvents.some((event) => (
+          event.name === 'get_mcp_servers' &&
+          event.source === 'eval' &&
+          event.mcp?.readOnly === true &&
+          event.mcp?.envValuesRedacted === true &&
+          event.mcp?.startsServers === false &&
+          event.mcp?.commandsExecuted === false
+        ))
+        ? ok('realtime.mcp_discovery_tool_evidence', 'Realtime MCP discovery evidence', 'get_mcp_servers is visible in privacy-safe Realtime evidence')
+        : fail('realtime.mcp_discovery_tool_evidence', 'Realtime MCP discovery evidence', 'expected get_mcp_servers to appear in realtime evidence', mcpToolEvidence),
     );
 
     try {
