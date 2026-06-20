@@ -150,12 +150,13 @@ Use option `W. Preview MCP workflow plan`, or:
 
 ```bash
 npm run config -- --print-mcp-workflow --task "这个任务应该用哪个 MCP 服务器？先不要执行"
+npm run config -- --print-mcp-workflow --task "准备调用这个 MCP 工具" --server "pencil" --tool "list_tools" --request-approval
 curl -X POST http://127.0.0.1:3417/api/mcp/workflow \
   -H 'Content-Type: application/json' \
   -d '{"task":"Choose the MCP server for this task, but do not execute.","execute":false}'
 ```
 
-This uses the same sanitized MCP discovery data to select candidate servers and print the next confirmed steps. It is preview-only: it does not start MCP server commands, does not call MCP tools, and still redacts env values plus URL query strings. Realtime voice can call `plan_mcp_workflow` when the user asks which MCP/external tool bridge should handle a concrete task.
+This uses the same sanitized MCP discovery data to select candidate servers and print the next confirmed steps. It is preview-only by default: it does not start MCP server commands, does not call MCP tools, and still redacts env values plus URL query strings. Passing `execute:true` plus `requestApproval:true`, a `serverName`, and a `toolName` creates a local pending approval request only; approving that record confirms intent but still does not start MCP servers until the MCP client adapter is implemented. Realtime voice can call `plan_mcp_workflow` when the user asks which MCP/external tool bridge should handle a concrete task.
 
 Use option `C. Show creative workflow benchmarks`, or:
 

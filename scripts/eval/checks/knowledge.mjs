@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { ok, fail } from '../_client.mjs';
+import { ok, fail, skip } from '../_client.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -111,6 +111,54 @@ export default {
         ? ok('knowledge.mcp_workflow_preview', 'MCP workflow preview', `${mcpWorkflowData.counts.candidates || 0} candidate(s), status=${mcpWorkflowData.status || 'unknown'}`)
         : fail('knowledge.mcp_workflow_preview', 'MCP workflow preview', `POST /api/mcp/workflow ${mcpWorkflow.status}`, mcpWorkflow.data),
     );
+
+    const firstMcpServer = Array.isArray(mcpData.servers) ? mcpData.servers.find((server) => server?.name) : null;
+    if (!firstMcpServer) {
+      out.push(skip('knowledge.mcp_execution_approval_gate', 'MCP execution approval gate', 'no configured MCP server available for approval-gate creation'));
+    } else {
+      const mcpApproval = await ctx.api('/api/mcp/workflow', {
+        method: 'POST',
+        body: {
+          source: 'eval_knowledge_mcp_approval',
+          task: 'Prepare a confirmed MCP tool request without starting the server.',
+          serverName: firstMcpServer.name,
+          toolName: 'list_tools',
+          execute: true,
+          requestApproval: true,
+          limit: 20,
+        },
+        timeoutMs: 15000,
+      });
+      const mcpApprovalData = mcpApproval.data?.mcpWorkflow || {};
+      const approvalId = mcpApprovalData.approval?.id || '';
+      let cleanupOk = false;
+      if (approvalId) {
+        await ctx.api(`/api/approvals/${approvalId}/reject`, {
+          method: 'POST',
+          body: { reason: 'eval cleanup: MCP approval gate verified without execution' },
+          timeoutMs: 15000,
+        });
+        const removed = await ctx.api(`/api/approvals/${approvalId}`, {
+          method: 'DELETE',
+          timeoutMs: 15000,
+        });
+        cleanupOk = removed.ok === true;
+      }
+      out.push(
+        mcpApproval.ok &&
+          mcpApproval.status === 202 &&
+          mcpApprovalData.ok === true &&
+          mcpApprovalData.status === 'approval_required' &&
+          mcpApprovalData.approvalRequired === true &&
+          mcpApprovalData.approval?.status === 'pending' &&
+          mcpApprovalData.safety?.startsServers === false &&
+          mcpApprovalData.safety?.callsMcpTools === false &&
+          mcpApprovalData.safety?.approvalCreatesNoToolCall === true &&
+          cleanupOk
+          ? ok('knowledge.mcp_execution_approval_gate', 'MCP execution approval gate', `created and cleaned approval ${approvalId}`)
+          : fail('knowledge.mcp_execution_approval_gate', 'MCP execution approval gate', `POST /api/mcp/workflow ${mcpApproval.status}`, { response: mcpApproval.data, cleanupOk }),
+      );
+    }
 
     try {
       const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-mcp-servers'], {

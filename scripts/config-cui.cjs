@@ -1231,6 +1231,9 @@ function printMcpWorkflow(result) {
     const target = selected.command ? `cmd=${selected.command}` : selected.urlHost ? `host=${selected.urlHost}` : 'target=-';
     console.log(`\nSelected: ${selected.name || '-'} · ${selected.transport || 'unknown'} · ${selected.risk || 'unknown'} · ${target}`);
   }
+  if (workflow.approval) {
+    console.log(`\nApproval: ${workflow.approval.id || '-'} · ${workflow.approval.status || '-'} · ${workflow.approval.summary || '-'}`);
+  }
   const candidates = Array.isArray(workflow.candidates) ? workflow.candidates : [];
   if (candidates.length) {
     console.log('\nCandidates:');
@@ -1254,6 +1257,7 @@ async function showMcpWorkflow(options = {}) {
   const task = options.task || argvValue('--task', '') || argvValue('--query', '') || 'Choose an MCP server for this task without executing.';
   const serverName = options.serverName || argvValue('--server', '') || argvValue('--server-name', '');
   const toolName = options.toolName || argvValue('--tool', '') || argvValue('--tool-name', '');
+  const requestApproval = options.requestApproval === true || process.argv.includes('--request-approval');
   const result = await request('/api/mcp/workflow', {
     method: 'POST',
     body: {
@@ -1261,7 +1265,8 @@ async function showMcpWorkflow(options = {}) {
       task,
       serverName,
       toolName,
-      execute: false,
+      execute: requestApproval,
+      requestApproval,
     },
   });
   console.log('');

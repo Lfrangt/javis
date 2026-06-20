@@ -22105,6 +22105,7 @@ function mcpWorkflowPreview(options = {}) {
   const requestedServerName = compactRecordText(options.serverName || options.server || '', 120);
   const requestedToolName = compactRecordText(options.toolName || options.tool || '', 120);
   const executeRequested = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const requestApproval = options.requestApproval === true || String(options.requestApproval || '').toLowerCase() === 'true';
   const confirm = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
   const terms = mcpWorkflowTerms(options);
   const rankedServers = servers
@@ -22119,15 +22120,43 @@ function mcpWorkflowPreview(options = {}) {
   const candidates = ranked.slice(0, candidateLimit).map(({ server, rank }) => mcpWorkflowCandidate(server, rank));
   const selected = candidates[0] || null;
   const hasServers = servers.length > 0;
+  const canRequestApproval = executeRequested && requestApproval && selected && requestedToolName;
+  let approval = null;
+  if (canRequestApproval) {
+    approval = createActionApproval({
+      action: 'mcp_execution_request',
+      riskLevel: 4,
+      summary: `Prepare confirmed MCP tool call: ${selected.name}/${requestedToolName}`,
+      args: {
+        serverName: selected.name,
+        toolName: requestedToolName,
+        task,
+        intent,
+        transport: selected.transport,
+        risk: selected.risk,
+        source: options.source || 'mcp_workflow',
+      },
+    }, 'mcp_execution_requires_confirmation');
+  }
   const status = executeRequested
-    ? 'blocked'
+    ? approval
+      ? 'approval_required'
+      : requestApproval
+        ? selected && !requestedToolName
+          ? 'needs_tool_name'
+          : 'needs_server_selection'
+        : 'approval_required'
     : selected
       ? 'planned'
       : hasServers
         ? 'needs_server_selection'
         : 'needs_mcp_config';
   const summary = executeRequested
-    ? 'MCP execution is not enabled from this preview path. Review the plan, then use a confirmed MCP execution path when implemented.'
+    ? approval
+      ? `MCP execution request is waiting for approval: ${approval.summary}. No MCP server has been started.`
+      : requestApproval && selected && !requestedToolName
+        ? 'Choose a specific MCP tool name before creating an execution approval request.'
+        : 'MCP execution requires an explicit approval request. Preview remains safe and does not start servers or call tools.'
     : selected
       ? `Use ${selected.name} as the first MCP candidate; preview only, no server started and no MCP tool called.`
       : hasServers
@@ -22162,15 +22191,17 @@ function mcpWorkflowPreview(options = {}) {
     {
       id: 'execute_tool_call',
       label: 'Execute an MCP tool call',
-      status: executeRequested ? 'blocked' : 'not_requested',
-      output: executeRequested
-        ? 'Blocked here because this endpoint is preview-only and never calls MCP tools.'
+      status: approval ? 'approval_required' : executeRequested ? 'needs_explicit_approval_request' : 'not_requested',
+      output: approval
+        ? `Pending approval ${approval.id} created. Approval records intent only; this build still does not start MCP servers or call MCP tools.`
+        : executeRequested
+          ? 'Not executed. Pass requestApproval:true with a selected server and toolName to create a local confirmation gate.'
         : 'Not executed. Execution will require an explicit task, selected server, reviewed tool schema, and confirmation.',
       requiresConfirmation: true,
     },
   ];
   return {
-    ok: !executeRequested,
+    ok: !executeRequested || Boolean(approval),
     status,
     intent,
     task,
@@ -22179,7 +22210,10 @@ function mcpWorkflowPreview(options = {}) {
     previewOnly: true,
     executed: false,
     executeRequested,
+    requestApproval,
     confirm,
+    approvalRequired: Boolean(executeRequested),
+    approval,
     requested: {
       serverName: requestedServerName,
       toolName: requestedToolName,
@@ -22208,10 +22242,21 @@ function mcpWorkflowPreview(options = {}) {
       envValuesRedacted: true,
       urlQueriesRedacted: true,
       requiresConfirmationForExecution: true,
+      approvalCreatesNoToolCall: true,
     },
-    blockedReason: executeRequested ? 'mcp_execution_not_enabled_on_preview_path' : '',
+    blockedReason: executeRequested && !approval
+      ? requestApproval && selected && !requestedToolName
+        ? 'mcp_tool_name_required_for_approval'
+        : requestApproval
+          ? 'mcp_server_selection_required_for_approval'
+          : 'mcp_execution_requires_request_approval'
+      : '',
     nextAction: executeRequested
-      ? 'Review this preview, then use a future confirmed MCP execution endpoint instead of this preview path.'
+      ? approval
+        ? `Review approval ${approval.id}; approving it records confirmed intent and keeps MCP execution blocked until the client adapter exists.`
+        : requestApproval && selected && !requestedToolName
+          ? 'Provide toolName for the selected MCP server, then rerun with requestApproval:true.'
+          : 'Review this preview, then rerun with requestApproval:true, serverName, and toolName to create a local confirmation gate.'
       : selected
         ? `Inspect ${selected.name} tool schemas through a confirmed MCP client path, then ask before executing any tool call.`
         : hasServers
@@ -25710,7 +25755,12 @@ function realtimeMcpToolSummary(name, args = {}, result = {}) {
       previewOnly: output.previewOnly === true || output.safety?.previewOnly === true,
       executed: output.executed === true,
       executeRequested: output.executeRequested === true || args?.execute === true,
+      requestApproval: output.requestApproval === true || args?.requestApproval === true,
+      approvalRequired: output.approvalRequired === true,
+      approvalId: compactRecordText(output.approval?.id || '', 120),
+      approvalStatus: compactRecordText(output.approval?.status || '', 40),
       requiresConfirmationForExecution: output.safety?.requiresConfirmationForExecution === true,
+      approvalCreatesNoToolCall: output.safety?.approvalCreatesNoToolCall === true,
       callsMcpTools: output.safety?.callsMcpTools === true,
       startsServers: output.safety?.startsServers === true,
       commandsExecuted: output.safety?.commandsExecuted === true,
@@ -26315,11 +26365,21 @@ function realtimeMcpToolEvidence(limit = 8) {
     event.mcp?.commandsExecuted === false &&
     event.mcp?.requiresConfirmationForExecution === true
   ));
+  const hasApprovalRequest = recent.some((event) => (
+    event.name === REALTIME_MCP_WORKFLOW_TOOL_NAME &&
+    event.ok &&
+    event.mcp?.requestApproval === true &&
+    event.mcp?.approvalId &&
+    event.mcp?.approvalCreatesNoToolCall === true &&
+    event.mcp?.startsServers === false &&
+    event.mcp?.callsMcpTools === false
+  ));
   return {
     ok: hasDiscovery || hasWorkflowPreview,
     count: recent.length,
     hasDiscovery,
     hasWorkflowPreview,
+    hasApprovalRequest,
     hasServers: recent.some((event) => Number(event.mcp?.serverCount || 0) > 0 || Number(event.mcp?.candidateCount || 0) > 0),
     privacySafe: recent.length > 0 && recent.every((event) => (
       event.mcp?.readOnly === true &&
@@ -36076,6 +36136,27 @@ async function executeLocalAction(args = {}, options = {}) {
 }
 
 async function executeApprovedAction(approval) {
+  if (approval.action === 'mcp_execution_request') {
+    const args = approval.args || {};
+    return JSON.stringify({
+      ok: true,
+      status: 'adapter_pending',
+      approvalConfirmed: true,
+      executed: false,
+      serverName: compactRecordText(args.serverName || '', 120),
+      toolName: compactRecordText(args.toolName || '', 120),
+      task: compactRecordText(args.task || '', 240),
+      summary: 'MCP execution request approved and recorded. This build still does not start MCP servers or call MCP tools until the MCP client adapter is implemented.',
+      safety: {
+        startsServers: false,
+        commandsExecuted: false,
+        callsMcpTools: false,
+        envValuesRedacted: true,
+        requiresMcpClientAdapter: true,
+      },
+      nextAction: 'Implement the confirmed MCP client adapter for this approved request, then run it through the same approval record.',
+    });
+  }
   if (approval.action === 'browser_control') {
     if (approval.args?.domAction) {
       const result = await executeBrowserDomAction({ ...approval.args, execute: true }, { approved: true });
@@ -36170,6 +36251,10 @@ async function executeApproval(approval) {
   setApproval(approval.id, { status: 'approved' });
   try {
     const result = await executeApprovedAction(approval);
+    if (approval.action === 'mcp_execution_request') {
+      setApproval(approval.id, { status: 'approved', result });
+      return { ok: true, output: result, approval: approvals.get(approval.id), continuation: null };
+    }
     const continuation = await continueAppWorkflowAfterApproval(approval, result);
     const output = continuation?.output
       ? [result, continuation.output].filter(Boolean).join('\n')
@@ -37208,7 +37293,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use run_file_workflow for local file or folder listing, search, summarization, file-specific questions, safe folder organization planning, batch rename previews, semantic text-conversion previews, or non-destructive copy-convert previews.',
       'Use get_knowledge_vaults when the user asks what Obsidian/Markdown vaults JAVIS can see. Use search_knowledge_notes for read-only search over an allowed Markdown vault. Use run_knowledge_workflow for Obsidian-style Markdown note creation, append, daily note, or search workflows. Note writes require execute:true plus confirm:true and still go through file policy.',
       'Use get_mcp_servers when the user asks which MCP servers, Claude/Cursor tool servers, or external tool bridges are configured locally. It is read-only: it scans known JSON config files, redacts env values and URL queries, and never starts MCP server commands.',
-      'Use plan_mcp_workflow when the user asks which MCP server or external tool bridge should handle a concrete task, or when preparing an MCP-backed workflow. It is preview-only: it selects candidates and shows confirmed next steps, but never starts MCP servers or calls MCP tools.',
+      'Use plan_mcp_workflow when the user asks which MCP server or external tool bridge should handle a concrete task, or when preparing an MCP-backed workflow. It is preview-only by default: it selects candidates and shows confirmed next steps, but never starts MCP servers or calls MCP tools. Only pass requestApproval:true when the user explicitly asks to prepare a confirmed MCP execution request.',
       'Use plan_file_organization when the user asks to organize a local folder; it creates a preview plan and never moves files by itself.',
       'Use plan_file_batch when the user asks for batch file rename or convert planning; it creates a preview plan and never moves, copies, or writes files by itself. Use conversionMode:semantic for supported text format conversions and conversionMode:copy for extension-only copy-convert.',
       'Use apply_file_plan only after the user explicitly confirms a specific file plan; it still goes through policy, approval, and local-execution gates.',
@@ -38885,6 +38970,7 @@ function createRealtimeSessionConfig(options = {}) {
             limit: { type: 'number' },
             candidateLimit: { type: 'number' },
             execute: { type: 'boolean' },
+            requestApproval: { type: 'boolean' },
             confirm: { type: 'boolean' },
           },
           additionalProperties: false,
@@ -41303,7 +41389,7 @@ function startApiServer() {
         limit: req.query.limit || 80,
         source: req.query.source || 'api',
       });
-      res.status(result.ok ? 200 : 409).json({ mcpWorkflow: result });
+      res.status(result.approval ? 202 : result.ok ? 200 : 409).json({ mcpWorkflow: result });
     } catch (error) {
       jsonError(res, 500, 'MCP workflow preview failed', error instanceof Error ? error.message : String(error));
     }
@@ -41312,7 +41398,7 @@ function startApiServer() {
   api.post('/api/mcp/workflow', (req, res) => {
     try {
       const result = mcpWorkflowPreview({ ...(req.body || {}), source: req.body?.source || 'api' });
-      res.status(result.ok ? 200 : 409).json({ mcpWorkflow: result });
+      res.status(result.approval ? 202 : result.ok ? 200 : 409).json({ mcpWorkflow: result });
     } catch (error) {
       jsonError(res, 500, 'MCP workflow preview failed', error instanceof Error ? error.message : String(error));
     }
