@@ -1187,6 +1187,7 @@ export default {
       body: { source: 'eval', name: 'get_autopilot_status', arguments: { workflowLimit: 6, jobLimit: 6 } },
     });
     const autopilotStatusOutput = parseToolOutput(autopilotStatusTool);
+    const autopilotStatusOutputBytes = Buffer.byteLength(autopilotStatusTool.data?.output || '', 'utf8');
     const autopilotDogfoodCandidate = Array.isArray(autopilotStatusOutput?.candidates)
       ? autopilotStatusOutput.candidates.find((candidate) => candidate.dogfoodActionPlan)
       : null;
@@ -1194,6 +1195,9 @@ export default {
       autopilotStatusTool.ok &&
         autopilotStatusTool.data?.ok === true &&
         autopilotStatusOutput?.ok === true &&
+        autopilotStatusOutput?.responseBudget?.compact === true &&
+        autopilotStatusOutputBytes > 0 &&
+        autopilotStatusOutputBytes <= 20000 &&
         typeof autopilotStatusOutput.spokenSummary === 'string' &&
         typeof autopilotStatusOutput.skipSummary === 'string' &&
         typeof autopilotStatusOutput.nextWait === 'string' &&
@@ -1210,9 +1214,10 @@ export default {
           autopilotStatusOutput.waitingFor.some((item) => item.id === 'realtime_dogfood_prepare')
         )) &&
         autopilotStatusOutput.decisionPreview &&
+        !Array.isArray(autopilotStatusOutput.decisionPreview.candidates) &&
         Array.isArray(autopilotStatusOutput.candidates) &&
         autopilotStatusOutput.candidates.every((candidate) => candidate.id && candidate.decision && typeof candidate.decision.reason === 'string')
-        ? ok('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `${autopilotStatusOutput.canActNow ? 'ready' : 'waiting'} · ${autopilotStatusOutput.reason || autopilotStatusOutput.nextWait} · ${autopilotStatusOutput.candidateCounts.autoExecutable} auto/${autopilotStatusOutput.candidateCounts.total}`)
+        ? ok('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `${autopilotStatusOutput.canActNow ? 'ready' : 'waiting'} · ${autopilotStatusOutput.reason || autopilotStatusOutput.nextWait} · ${autopilotStatusOutput.candidateCounts.autoExecutable} auto/${autopilotStatusOutput.candidateCounts.total} · ${Math.ceil(autopilotStatusOutputBytes / 1024)}KB`)
         : fail('realtime.autopilot_status_tool', 'Realtime autopilot status tool', `tool execute ${autopilotStatusTool.status}`, autopilotStatusTool.data),
     );
 

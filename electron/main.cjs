@@ -27021,6 +27021,193 @@ function autopilotVoiceStatusSnapshot(options = {}) {
   };
 }
 
+function compactAutopilotActionForVoice(action = null) {
+  if (!action || typeof action !== 'object') return null;
+  const dogfoodActionPlan = action.dogfoodActionPlan?.firstPreviewable ||
+    action.dogfoodActionPlan?.firstManual ||
+    action.dogfoodActionPlan?.previewableCount !== undefined ||
+    action.dogfoodActionPlan?.manualCount !== undefined
+    ? {
+      version: Number(action.dogfoodActionPlan.version || 0),
+      scope: compactRecordText(action.dogfoodActionPlan.scope || '', 80),
+      status: compactRecordText(action.dogfoodActionPlan.status || '', 80),
+      accepted: Boolean(action.dogfoodActionPlan.accepted),
+      primary: action.dogfoodActionPlan.primary
+        ? {
+          id: compactRecordText(action.dogfoodActionPlan.primary.id || '', 120),
+          label: compactRecordText(action.dogfoodActionPlan.primary.label || action.dogfoodActionPlan.primary.id || '', 140),
+          startsMicrophone: Boolean(action.dogfoodActionPlan.primary.startsMicrophone),
+          requiresMicConfirmation: Boolean(action.dogfoodActionPlan.primary.requiresMicConfirmation),
+          requiresLiveVoice: Boolean(action.dogfoodActionPlan.primary.requiresLiveVoice),
+          requiresUserPresence: Boolean(action.dogfoodActionPlan.primary.requiresUserPresence),
+        }
+        : null,
+      previewableCount: boundedCount(action.dogfoodActionPlan.previewableCount, 100),
+      manualCount: boundedCount(action.dogfoodActionPlan.manualCount, 100),
+      firstPreviewable: action.dogfoodActionPlan.firstPreviewable
+        ? {
+          id: compactRecordText(action.dogfoodActionPlan.firstPreviewable.id || '', 120),
+          label: compactRecordText(action.dogfoodActionPlan.firstPreviewable.label || action.dogfoodActionPlan.firstPreviewable.id || '', 140),
+          command: compactRecordText(action.dogfoodActionPlan.firstPreviewable.command || '', 180),
+          endpoint: compactRecordText(action.dogfoodActionPlan.firstPreviewable.endpoint || '', 140),
+          startsMicrophone: Boolean(action.dogfoodActionPlan.firstPreviewable.startsMicrophone),
+        }
+        : null,
+      firstManual: action.dogfoodActionPlan.firstManual
+        ? {
+          id: compactRecordText(action.dogfoodActionPlan.firstManual.id || '', 120),
+          label: compactRecordText(action.dogfoodActionPlan.firstManual.label || action.dogfoodActionPlan.firstManual.id || '', 140),
+          startsMicrophone: Boolean(action.dogfoodActionPlan.firstManual.startsMicrophone),
+          requiresMicConfirmation: Boolean(action.dogfoodActionPlan.firstManual.requiresMicConfirmation),
+          requiresLiveVoice: Boolean(action.dogfoodActionPlan.firstManual.requiresLiveVoice),
+        }
+        : null,
+      spokenSummary: compactRecordText(action.dogfoodActionPlan.spokenSummary || '', 260),
+    }
+    : summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan);
+  return {
+    index: boundedCount(action.index, 1000),
+    id: compactRecordText(action.id || '', 160),
+    label: compactRecordText(action.label || action.id || '', 140),
+    source: compactRecordText(action.source || '', 80),
+    priority: boundedCount(action.priority, 1000),
+    summary: compactRecordText(action.summary || '', 220),
+    executable: Boolean(action.executable),
+    autoEligible: Boolean(action.autoEligible),
+    autopilotEligible: action.autopilotEligible !== false,
+    manualOnly: Boolean(action.manualOnly),
+    requiresUserPresence: Boolean(action.requiresUserPresence),
+    riskLevel: boundedCount(action.riskLevel, 4),
+    recoveryType: compactRecordText(action.recoveryType || '', 80),
+    trustedAutoEligible: Boolean(action.trustedAutoEligible),
+    recoveryAttempts: boundedCount(action.recoveryAttempts, 1000),
+    maxRecoveryAttempts: boundedCount(action.maxRecoveryAttempts, 1000),
+    routeRecoveryType: compactRecordText(action.routeRecoveryType || '', 80),
+    routeRecoveryLabel: compactRecordText(action.routeRecoveryLabel || '', 140),
+    workflowAction: compactRecordText(action.workflowAction || '', 80),
+    phase: compactRecordText(action.phase || '', 80),
+    dogfoodActionPlan,
+    decision: action.decision
+      ? {
+        executable: Boolean(action.decision.executable),
+        reason: compactRecordText(action.decision.reason || '', 120),
+        detail: compactRecordText(action.decision.detail || '', 220),
+      }
+      : null,
+  };
+}
+
+function compactAutopilotWaitingForVoice(item = null) {
+  if (!item || typeof item !== 'object') return null;
+  return {
+    id: compactRecordText(item.id || '', 120),
+    label: compactRecordText(item.label || item.id || '', 140),
+    summary: compactRecordText(item.summary || '', 240),
+    status: compactRecordText(item.status || '', 60),
+    actionId: compactRecordText(item.actionId || '', 160),
+    actionSource: compactRecordText(item.actionSource || '', 80),
+    waitMs: boundedCount(item.waitMs, 12 * 60 * 60 * 1000),
+    waitLabel: compactRecordText(item.waitLabel || '', 40),
+  };
+}
+
+function compactAutopilotMaintenanceForVoice(maintenance = null) {
+  if (!maintenance || typeof maintenance !== 'object') return null;
+  return {
+    lastSnapshotAt: boundedCount(maintenance.lastSnapshotAt, 4102444800000),
+    runCount: boundedCount(maintenance.runCount, 1000000),
+    lastWorkflowId: compactRecordText(maintenance.lastWorkflowId || '', 120),
+    lastSummary: compactRecordText(maintenance.lastSummary || '', 260),
+    minIntervalMs: boundedCount(maintenance.minIntervalMs, 24 * 60 * 60 * 1000),
+    ageMs: boundedCount(maintenance.ageMs, 24 * 60 * 60 * 1000),
+    due: Boolean(maintenance.due),
+  };
+}
+
+function autopilotStatusVoicePayload(status = {}, options = {}) {
+  const candidates = Array.isArray(status.candidates) ? status.candidates : [];
+  const waitingFor = Array.isArray(status.waitingFor) ? status.waitingFor : [];
+  const preview = status.decisionPreview || {};
+  const payload = {
+    ok: status.ok !== false,
+    generatedAt: status.generatedAt || new Date().toISOString(),
+    source: compactRecordText(options.source || preview.source || 'voice', 80),
+    enabled: Boolean(status.enabled),
+    running: Boolean(status.running),
+    busy: Boolean(status.busy),
+    tickCount: boundedCount(status.tickCount, 1000000),
+    executedCount: boundedCount(status.executedCount, 1000000),
+    skippedCount: boundedCount(status.skippedCount, 1000000),
+    lastTickAt: boundedCount(status.lastTickAt, 4102444800000),
+    lastExecutedAt: boundedCount(status.lastExecutedAt, 4102444800000),
+    lastResult: compactRecordText(status.lastResult || '', 260),
+    lastError: compactRecordText(status.lastError || '', 260),
+    maintenance: compactAutopilotMaintenanceForVoice(status.maintenance),
+    canActNow: Boolean(status.canActNow),
+    reason: compactRecordText(status.reason || '', 120),
+    nextWait: compactRecordText(status.nextWait || '', 260),
+    spokenSummary: compactRecordText(status.spokenSummary || '', 420),
+    skipSummary: compactRecordText(status.skipSummary || '', 420),
+    candidateCounts: status.candidateCounts || null,
+    waitingFor: waitingFor.slice(0, 6).map(compactAutopilotWaitingForVoice).filter(Boolean),
+    selectedAction: compactAutopilotActionForVoice(status.selectedAction),
+    firstAction: compactAutopilotActionForVoice(status.firstAction),
+    candidates: candidates.slice(0, 6).map(compactAutopilotActionForVoice).filter(Boolean),
+    lastDecision: status.lastDecision
+      ? {
+        generatedAt: compactRecordText(status.lastDecision.generatedAt || '', 80),
+        source: compactRecordText(status.lastDecision.source || '', 80),
+        outcome: compactRecordText(status.lastDecision.outcome || '', 80),
+        reason: compactRecordText(status.lastDecision.reason || '', 120),
+        nextWait: compactRecordText(status.lastDecision.nextWait || '', 260),
+        skipSummary: compactRecordText(status.lastDecision.skipSummary || '', 320),
+        candidateCounts: status.lastDecision.candidateCounts || null,
+      }
+      : null,
+    decisionPreview: {
+      generatedAt: compactRecordText(preview.generatedAt || '', 80),
+      source: compactRecordText(preview.source || '', 80),
+      execute: Boolean(preview.execute),
+      outcome: compactRecordText(preview.outcome || '', 80),
+      reason: compactRecordText(preview.reason || '', 120),
+      resultSummary: compactRecordText(preview.resultSummary || '', 260),
+      enabled: Boolean(preview.enabled),
+      conversationActive: Boolean(preview.conversationActive),
+      activeJobs: boundedCount(preview.activeJobs, 100000),
+      nextActionCount: boundedCount(preview.nextActionCount, 1000),
+      selectedAction: compactAutopilotActionForVoice(preview.selectedAction),
+      firstAction: compactAutopilotActionForVoice(preview.firstAction),
+      candidateCounts: preview.candidateCounts || null,
+      waitingFor: Array.isArray(preview.waitingFor)
+        ? preview.waitingFor.slice(0, 4).map(compactAutopilotWaitingForVoice).filter(Boolean)
+        : [],
+      skipSummary: compactRecordText(preview.skipSummary || '', 320),
+      maintenance: compactAutopilotMaintenanceForVoice(preview.maintenance),
+      nextWait: compactRecordText(preview.nextWait || '', 260),
+    },
+    nextAction: compactRecordText(status.nextAction || '', 320),
+    responseBudget: {
+      compact: true,
+      maxTargetBytes: 20000,
+      omitted: [
+        'decisionPreview.candidates.full',
+        'lastDecision.candidates.full',
+        'candidate.decision.full',
+        'maintenance.full_history',
+        'raw workflow/job records',
+      ],
+    },
+  };
+  const bytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return {
+    ...payload,
+    responseBudget: {
+      ...payload.responseBudget,
+      outputBytes: bytes,
+    },
+  };
+}
+
 async function autopilotTick(options = {}) {
   const source = String(options.source || 'api').slice(0, 80);
   const execute = options.execute !== false;
@@ -41288,7 +41475,8 @@ async function executeTool(name, args) {
   }
 
   if (name === 'get_autopilot_status') {
-    return { ok: true, output: JSON.stringify(autopilotVoiceStatusSnapshot({ ...(args || {}), source: 'voice' })) };
+    const status = autopilotVoiceStatusSnapshot({ ...(args || {}), source: 'voice' });
+    return { ok: true, output: JSON.stringify(autopilotStatusVoicePayload(status, { source: 'voice' })) };
   }
 
   if (name === 'get_work_handoff') {

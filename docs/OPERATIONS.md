@@ -272,6 +272,7 @@ smoke/verification workflows are not offered as deliverable results.
 
 Use option `16. Show autopilot status`, or `npm run config -- --print-autopilot`, to see the resident overnight loop, last tick, last result,
 the current decision preview, candidate auto-run counts, explicit waiting conditions, and the next workbench action without opening a separate UI.
+Realtime `get_autopilot_status` returns the same decision in a compact voice payload with response-size metadata; use the CUI/API status when you need the full decision preview and candidate detail.
 
 Use option `17. Run one autopilot tick` to preview and then manually advance the resident loop once.
 It calls `/api/autopilot/tick` and requires typing `RUN` before executing.
