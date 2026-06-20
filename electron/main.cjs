@@ -2861,6 +2861,19 @@ function screenPrivacyPresetList(options = {}) {
   };
 }
 
+function recommendedScreenPrivacyPresetStatus() {
+  const list = screenPrivacyPresetList();
+  const preset = list.presets.find((item) => item.id === list.recommended)
+    || list.presets.find((item) => item.recommended)
+    || null;
+  return {
+    ok: Boolean(preset),
+    recommended: list.recommended,
+    preset,
+    applied: Boolean(preset?.applied),
+  };
+}
+
 function screenPrivacyPresetPreview(id, options = {}) {
   const preset = screenPrivacyPresetById(id);
   if (!preset) throw new Error(`Unknown screen privacy preset: ${id || 'missing'}.`);
@@ -28549,6 +28562,23 @@ async function runSetupAction(action) {
     return { ok: true, action: normalized, output, path: ACTION_POLICY_FILE };
   }
 
+  if (normalized === 'apply_screen_privacy_sensitive_defaults') {
+    const result = applyScreenPrivacyPreset('sensitive_defaults', { source: 'setup_action' });
+    appendAudit('setup_action.completed', {
+      action: normalized,
+      preset: result.preset?.id || 'sensitive_defaults',
+      rules: result.preset?.ruleCount || 0,
+    });
+    return {
+      ok: true,
+      action: normalized,
+      output: result.output,
+      preset: result.preset,
+      counts: result.counts,
+      privacy: result.privacy,
+    };
+  }
+
   if (normalized === 'install_resident_agent') {
     const status = await installResidentAgent();
     const output = `Installed login-start resident agent at ${status.plistPath}. It will start on next login; the current manual JAVIS process keeps running now.`;
@@ -28615,6 +28645,13 @@ function setupActionForCheck(item) {
       action: 'open_action_policy',
       label: 'Open action policy',
       reason: 'The local action policy controls automation risk.',
+    };
+  }
+  if (id === 'screen_privacy_preset') {
+    return {
+      action: 'apply_screen_privacy_sensitive_defaults',
+      label: 'Apply privacy preset',
+      reason: 'Recommended local screen privacy defaults can be applied automatically.',
     };
   }
   if (id === 'runtime_storage') {
@@ -32015,6 +32052,7 @@ function readinessSnapshot(options = {}) {
       : null;
   const microphoneStatus = mediaAccessStatus('microphone');
   const screenStatus = mediaAccessStatus('screen');
+  const privacyPresetStatus = recommendedScreenPrivacyPresetStatus();
   const pendingApprovals = pendingApprovalSnapshot(20);
   const writeFileRoots = actionPolicy.allow?.write_file?.allowedRoots || [];
   const writeFileLimited = writeFileRoots.length > 0 && !writeFileRoots.includes('*');
@@ -32100,6 +32138,19 @@ function readinessSnapshot(options = {}) {
         : screenStatus === 'denied' || screenStatus === 'restricted'
           ? 'Allow screen recording for JAVIS/Electron in System Settings > Privacy & Security > Screen & System Audio Recording.'
           : 'Start screen sharing from voice/CUI controls and approve the macOS prompt.',
+    ),
+    readinessItem(
+      'screen_privacy_preset',
+      'Screen privacy preset',
+      privacyPresetStatus.applied ? 'ready' : 'warning',
+      privacyPresetStatus.preset
+        ? privacyPresetStatus.applied
+          ? `Recommended screen privacy preset applied: ${privacyPresetStatus.preset.label}.`
+          : `Recommended screen privacy preset is not applied: ${privacyPresetStatus.preset.label} (${privacyPresetStatus.preset.appliedCount}/${privacyPresetStatus.preset.ruleCount} rules).`
+        : 'No recommended screen privacy preset is configured.',
+      privacyPresetStatus.applied
+        ? ''
+        : 'Apply the recommended sensitive defaults before relying on always-on screen context.',
     ),
     readinessItem(
       'accessibility_permission',

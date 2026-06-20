@@ -40,6 +40,10 @@ export default {
       method: 'POST',
       body: { source: 'eval_screen_privacy_preset_apply' },
     });
+    const setupPresetApply = await ctx.api('/api/setup/actions', {
+      method: 'POST',
+      body: { action: 'apply_screen_privacy_sensitive_defaults' },
+    });
     const passwordCheck = await ctx.api('/api/screen/privacy/check', {
       method: 'POST',
       body: {
@@ -91,6 +95,10 @@ export default {
         presetApply.ok &&
         presetApply.data?.applied === true &&
         presetApply.data?.privacy?.enforcement?.regionRendererMask === true &&
+        setupPresetApply.ok &&
+        setupPresetApply.data?.action === 'apply_screen_privacy_sensitive_defaults' &&
+        setupPresetApply.data?.privacy?.enforcement?.regionRendererMask === true &&
+        setupPresetApply.data?.config?.items?.some((item) => item.id === 'screen_privacy_preset') &&
         passwordCheck.ok &&
         passwordCheck.data?.policy?.blocked === true &&
         passwordCheck.data?.policy?.reason?.includes('preset_sensitive_defaults_app_passwords') &&
@@ -109,6 +117,7 @@ export default {
           presetPreview: presetPreview.data,
           presetDryRun: presetDryRun.data,
           presetApply: presetApply.data,
+          setupPresetApply: setupPresetApply.data,
           passwordCheck: passwordCheck.data,
           accountHostCheck: accountHostCheck.data,
           paymentWindowCheck: paymentWindowCheck.data,
@@ -242,14 +251,22 @@ export default {
         timeout: 10000,
         maxBuffer: 1024 * 1024,
       });
-      const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      const preset = await execFileAsync('node', ['scripts/config-cui.cjs', '--preview-screen-privacy-preset'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cui.stdout || ''}\n${cui.stderr || ''}\n${preset.stdout || ''}\n${preset.stderr || ''}`;
       out.push(
         output.includes('Screen Privacy') &&
           output.includes('Mode:') &&
           output.includes('Enforcement:') &&
           output.includes('Presets:') &&
-          output.includes('sensitive_defaults')
-          ? ok('screen.privacy_cui', 'Screen privacy CUI', 'config CUI prints screen privacy mode, rules, enforcement, and presets')
+          output.includes('sensitive_defaults') &&
+          output.includes('would add') &&
+          output.includes('Sample checks:')
+          ? ok('screen.privacy_cui', 'Screen privacy CUI', 'config CUI prints screen privacy mode/rules and previews the recommended preset')
           : fail('screen.privacy_cui', 'Screen privacy CUI', 'expected --print-screen-privacy to print mode/rules/enforcement', { output: output.slice(0, 2000) }),
       );
     } catch (error) {

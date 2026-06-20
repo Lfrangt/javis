@@ -440,6 +440,11 @@ curl -X POST http://127.0.0.1:3417/api/screen/privacy/presets/sensitive_defaults
   -H 'Content-Type: application/json' \
   -d '{"source":"operator"}'
 npm run config -- --print-screen-privacy
+npm run config -- --preview-screen-privacy-preset
+npm run config -- --apply-screen-privacy-preset
+curl -X POST http://127.0.0.1:3417/api/setup/actions \
+  -H 'Content-Type: application/json' \
+  -d '{"action":"apply_screen_privacy_sensitive_defaults"}'
 curl -X POST http://127.0.0.1:3417/api/screen/capture-now \
   -H 'Content-Type: application/json' \
   -d '{"includeImage":false}'

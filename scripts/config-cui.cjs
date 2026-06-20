@@ -331,7 +331,8 @@ async function printStatus() {
   console.log('31. Show attention policy');
   console.log('32. Show perception consent');
   console.log('33. Show screen privacy');
-  console.log('34. Quit');
+  console.log('34. Apply recommended screen privacy');
+  console.log('35. Quit');
 }
 
 async function setupAction(action) {
@@ -1222,6 +1223,37 @@ async function showScreenPrivacy() {
   const result = await request('/api/screen/privacy');
   console.log('');
   printScreenPrivacy(result);
+}
+
+function printScreenPrivacyPresetPreview(preview) {
+  const preset = preview?.preset || {};
+  const counts = preview?.counts || {};
+  console.log(`${preset.label || preset.id || 'Screen privacy preset'}: ${preset.ruleCount || counts.presetRules || 0} rule(s).`);
+  console.log(`Existing: ${counts.existing || 0} · would add ${counts.wouldAdd || 0} · update ${counts.wouldUpdate || 0} · next enabled ${counts.nextEnabled || 0}`);
+  if (preset.description) console.log(compact(preset.description, 220));
+  if (preview?.samples?.appPasswordManager?.blocked && preview?.samples?.browserLogin?.blocked && preview?.samples?.safeFinder?.allowed) {
+    console.log('Sample checks: password/account contexts blocked; normal Finder context allowed.');
+  }
+}
+
+async function applyRecommendedScreenPrivacy(rl, options = {}) {
+  const previewResult = await request('/api/screen/privacy/presets/sensitive_defaults');
+  const preview = previewResult.preview || previewResult;
+  console.log('');
+  printScreenPrivacyPresetPreview(preview);
+  if (options.dryRun) return;
+  if (rl) {
+    const answer = (await rl.question('Type APPLY to save this preset: ')).trim();
+    if (answer !== 'APPLY') {
+      console.log('\nNo change made.');
+      return;
+    }
+  }
+  const result = await request('/api/screen/privacy/presets/sensitive_defaults/apply', {
+    method: 'POST',
+    body: { source: 'cui' },
+  });
+  console.log(`\n${result.output || 'Applied screen privacy preset.'}`);
 }
 
 function printShortcutCandidate(candidate, index) {
@@ -2186,6 +2218,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--preview-screen-privacy-preset')) {
+    await applyRecommendedScreenPrivacy(null, { dryRun: true });
+    return;
+  }
+
+  if (process.argv.includes('--apply-screen-privacy-preset')) {
+    await applyRecommendedScreenPrivacy(null);
+    return;
+  }
+
   if (process.argv.includes('--print-inbox-triage') || process.argv.includes('--inbox-triage')) {
     await showInboxTriage();
     return;
@@ -2319,7 +2361,9 @@ async function main() {
         await showPerceptionConsent();
       } else if (answer === '33') {
         await showScreenPrivacy();
-      } else if (answer === '34' || answer === 'q' || answer === 'quit' || answer === 'exit') {
+      } else if (answer === '34') {
+        await applyRecommendedScreenPrivacy(rl);
+      } else if (answer === '35' || answer === 'q' || answer === 'quit' || answer === 'exit') {
         break;
       } else {
         console.log('\nUnknown choice.');
