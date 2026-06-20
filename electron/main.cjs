@@ -30033,6 +30033,224 @@ function realtimeDogfoodAcceptanceStepGate(stepById, id, group, fallbackLabel = 
   });
 }
 
+function realtimeDogfoodPlanAction({
+  id,
+  label,
+  group = '',
+  summary = '',
+  nextAction = '',
+  command = '',
+  endpoint = '',
+  prompt = '',
+  startsMicrophone = false,
+  requiresMicConfirmation = false,
+  requiresUserPresence = false,
+  requiresLiveVoice = false,
+  writesLocalJson = false,
+  readOnly = false,
+  canPreview = false,
+}) {
+  return {
+    id: compactRecordText(id || label || 'dogfood_action', 120),
+    label: compactRecordText(label || id || 'Dogfood action', 160),
+    group: compactRecordText(group || '', 80),
+    summary: compactRecordText(summary || nextAction || '', 300),
+    nextAction: compactRecordText(nextAction || '', 300),
+    command: compactRecordText(command || '', 240),
+    endpoint: compactRecordText(endpoint || '', 180),
+    prompt: compactRecordText(prompt || '', 420),
+    startsMicrophone: Boolean(startsMicrophone),
+    requiresMicConfirmation: Boolean(requiresMicConfirmation),
+    requiresUserPresence: Boolean(requiresUserPresence),
+    requiresLiveVoice: Boolean(requiresLiveVoice),
+    writesLocalJson: Boolean(writesLocalJson),
+    readOnly: Boolean(readOnly),
+    canPreview: Boolean(canPreview),
+  };
+}
+
+function realtimeDogfoodActionForGate(gate = {}) {
+  const id = String(gate.id || '');
+  const prompt = gate.evidence?.prompt || '';
+  const label = gate.label || id || 'Dogfood gate';
+  const group = gate.group || '';
+  const nextAction = gate.nextAction || '';
+  const liveVoiceGates = new Set([
+    'start_live_voice',
+    'inject_worker_progress',
+    'sync_latest_progress',
+    'ask_progress',
+    'ask_work_handoff',
+    'ask_autopilot_status',
+    'ask_attention_explanation',
+    'ask_perception_consent',
+    'ask_local_capabilities',
+    'plan_mcp_tool_call',
+    'review_and_resolve_approval',
+    'ask_learning_profile',
+    'ask_browser_workflow',
+    'teach_ui_demonstration',
+    'list_shortcuts',
+    'save_shortcut_with_confirmation',
+    'route_recalled_shortcut',
+    'forget_shortcut',
+  ]);
+  const commandById = {
+    open_monitor: 'npm run config -- --print-realtime-evidence',
+    start_live_voice: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
+    inject_worker_progress: 'POST /api/realtime/dogfood/start { execute:true, prepareWhenLive:true }',
+    sync_latest_progress: 'Keep the renderer voice data channel live while work progress changes.',
+    ask_progress: 'Use the live voice prompt from /api/realtime/dogfood/prompt.',
+    ask_work_handoff: 'Ask live voice to call get_work_handoff.',
+    ask_autopilot_status: 'Ask live voice to call get_autopilot_status.',
+    ask_attention_explanation: 'Ask live voice to call get_attention_explanation.',
+    ask_perception_consent: 'Ask live voice to call get_perception_consent.',
+    ask_local_capabilities: 'Ask live voice to call get_local_capabilities.',
+    plan_mcp_tool_call: 'Ask live voice to call plan_mcp_tool_call in preview/approval mode.',
+    review_and_resolve_approval: 'Ask live voice to call get_pending_approvals, then resolve_approval only for one confirmed id.',
+    ask_learning_profile: 'Ask live voice to call get_learning_profile and get_learning_evolution.',
+    ask_browser_workflow: 'Ask live voice to call read_browser_page or run_browser_workflow preview-first.',
+    save_productivity_dogfood_archive: 'Ask live voice to call save_productivity_dogfood_archive preview-safe.',
+    teach_ui_demonstration: 'Ask live voice to run the UI demonstration Record & Replay flow.',
+    list_shortcuts: 'Ask live voice to call get_skill_shortcuts.',
+    save_shortcut_with_confirmation: 'Ask live voice to call save_skill_shortcut after explicit confirmation.',
+    route_recalled_shortcut: 'Use the saved shortcut phrase and verify route_task recalled it.',
+    forget_shortcut: 'Ask live voice to call forget_skill_shortcut after explicit confirmation.',
+    archive_saved: 'npm run config -- --save-realtime-dogfood-archive',
+  };
+  const endpointById = {
+    open_monitor: '/api/realtime/evidence',
+    start_live_voice: '/api/realtime/dogfood/renderer/start',
+    inject_worker_progress: '/api/realtime/dogfood/start',
+    save_productivity_dogfood_archive: '/api/tools/execute save_productivity_dogfood_archive',
+    archive_saved: '/api/realtime/dogfood/archive',
+  };
+  const startsMicrophone = id === 'start_live_voice';
+  const requiresLiveVoice = liveVoiceGates.has(id);
+  const writesLocalJson = id === 'archive_saved' || id === 'save_productivity_dogfood_archive';
+  const readOnly = id === 'open_monitor';
+  return realtimeDogfoodPlanAction({
+    id,
+    label,
+    group,
+    summary: gate.detail || nextAction || label,
+    nextAction,
+    command: commandById[id] || '',
+    endpoint: endpointById[id] || '',
+    prompt,
+    startsMicrophone,
+    requiresMicConfirmation: startsMicrophone,
+    requiresUserPresence: startsMicrophone || requiresLiveVoice || id === 'archive_saved',
+    requiresLiveVoice,
+    writesLocalJson,
+    readOnly,
+    canPreview: readOnly || id === 'archive_saved' || id === 'save_productivity_dogfood_archive',
+  });
+}
+
+function realtimeDogfoodAcceptanceActionPlan({ accepted = false, nextGap = null, gaps = [], gates = [], preflight = null } = {}) {
+  const gapActions = (Array.isArray(gaps) ? gaps : [])
+    .map((gate) => realtimeDogfoodActionForGate(gate))
+    .filter((action) => action.id)
+    .slice(0, 8);
+  const prepActions = [
+    realtimeDogfoodPlanAction({
+      id: 'read_evidence_snapshot',
+      label: 'Read current Realtime evidence',
+      group: 'operator',
+      summary: 'Refresh the read-only evidence snapshot before asking the user to do anything.',
+      nextAction: 'Read /api/realtime/evidence or the one-shot CUI evidence output.',
+      command: 'npm run config -- --print-realtime-evidence',
+      endpoint: '/api/realtime/evidence',
+      readOnly: true,
+      canPreview: true,
+    }),
+    realtimeDogfoodPlanAction({
+      id: 'preview_renderer_readiness',
+      label: 'Preview renderer readiness',
+      group: 'live_voice',
+      summary: preflight?.status === 'ready'
+        ? 'Renderer and provider are ready for a user-confirmed live voice start.'
+        : preflight?.nextAction || 'Check renderer/provider/prompt readiness without starting microphone capture.',
+      nextAction: preflight?.nextAction || 'Run the renderer preflight and resolve the first blocker.',
+      command: 'npm run dogfood:realtime-renderer',
+      endpoint: '/api/realtime/dogfood/renderer',
+      readOnly: true,
+      canPreview: true,
+    }),
+  ];
+  const primary = accepted
+    ? realtimeDogfoodPlanAction({
+        id: 'archive_accepted_run',
+        label: 'Archive accepted run',
+        group: 'audit_trail',
+        summary: 'All required Realtime dogfood gates are passing.',
+        nextAction: 'Save or keep the accepted local evidence archive.',
+        command: 'npm run config -- --save-realtime-dogfood-archive',
+        endpoint: '/api/realtime/dogfood/archive',
+        writesLocalJson: true,
+        canPreview: true,
+      })
+    : nextGap
+      ? realtimeDogfoodActionForGate(nextGap)
+      : null;
+  const nextActions = [
+    ...prepActions,
+    ...(primary ? [primary] : []),
+    ...gapActions.filter((action) => action.id !== primary?.id),
+  ].slice(0, 8);
+  const previewable = nextActions.filter((action) => action.canPreview && !action.startsMicrophone);
+  const manual = nextActions.filter((action) => action.requiresUserPresence || action.requiresMicConfirmation || action.requiresLiveVoice);
+  const blockers = (Array.isArray(gaps) ? gaps : []).slice(0, 5).map((gate) => ({
+    id: compactRecordText(gate.id || '', 120),
+    group: compactRecordText(gate.group || '', 80),
+    label: compactRecordText(gate.label || gate.id || 'Gap', 160),
+    nextAction: compactRecordText(gate.nextAction || '', 260),
+  }));
+  const status = accepted
+    ? 'accepted'
+    : primary?.startsMicrophone || primary?.requiresLiveVoice
+      ? 'waiting_for_user'
+      : previewable.length
+        ? 'can_prepare'
+        : 'pending';
+  const boundaries = [
+    'Do not start microphone capture unless the user is present and confirmMic:true is explicit.',
+    'Use read-only evidence, renderer preflight, local archive preview/save, or Realtime tools; do not bypass action policy.',
+    'Local JSON archives are audit evidence only; they do not prove live voice acceptance unless every required gate passes.',
+    'Approval, MCP tools/call, shortcut save/forget, UI replay, send, delete, account, purchase, install, and export actions keep their existing confirmation gates.',
+  ];
+  const spokenSummary = accepted
+    ? 'Realtime dogfood is accepted; save or keep the local evidence archive.'
+    : primary
+      ? `${primary.label}: ${primary.nextAction || primary.summary || 'continue the next missing gate'}`
+      : 'Realtime dogfood still needs evidence before it can be accepted.';
+  return {
+    version: 1,
+    status,
+    accepted: Boolean(accepted),
+    primary,
+    nextActions,
+    previewable,
+    manual,
+    blockers,
+    counts: {
+      gates: Array.isArray(gates) ? gates.length : 0,
+      gaps: Array.isArray(gaps) ? gaps.length : 0,
+      previewable: previewable.length,
+      manual: manual.length,
+    },
+    askUserOnlyFor: [
+      'starting or continuing live microphone/WebRTC voice',
+      'credentials, login, account, payment, private, send, delete, install, export, or irreversible actions',
+      'approving one exact local approval id or MCP tool call',
+      'confirming a UI demonstration replay or shortcut save/forget',
+    ],
+    boundaries,
+    spokenSummary: compactRecordText(spokenSummary, 320),
+  };
+}
+
 function realtimeDogfoodAcceptanceSnapshot(options = {}) {
   const archive = options.archive || realtimeDogfoodArchiveSnapshot({
     promptLimit: options.promptLimit || 20,
@@ -30100,6 +30318,13 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
   const summary = accepted
     ? `Realtime dogfood accepted: ${passed.length}/${requiredGates.length} required gate(s) passed.`
     : `Realtime dogfood not accepted yet: ${passed.length}/${requiredGates.length} required gate(s) passed; next gap ${nextGap?.id || 'unknown'}.`;
+  const actionPlan = realtimeDogfoodAcceptanceActionPlan({
+    accepted,
+    nextGap,
+    gaps,
+    gates: requiredGates,
+    preflight: options.preflight || null,
+  });
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
@@ -30120,6 +30345,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     gates,
     gaps,
     nextGap,
+    actionPlan,
     nextAction: nextGap?.nextAction || 'Archive and ship the accepted Realtime dogfood run.',
     archive: {
       id: archive.id || '',
@@ -30934,6 +31160,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
   const acceptance = realtimeDogfoodAcceptanceSnapshot({
     archive,
     source: 'live_drill_pack',
+    preflight,
   });
   const blockers = Array.isArray(preflight.blockers) ? preflight.blockers : [];
   const gaps = Array.isArray(acceptance.gaps) ? acceptance.gaps : [];
@@ -31094,6 +31321,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
         nextAction: compactRecordText(gap.nextAction || '', 260),
       })),
     },
+    actionPlan: acceptance.actionPlan || null,
     archive: {
       previewPath: archive.file?.path || '',
       saved: false,
@@ -40477,7 +40705,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
       'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
       'Use get_realtime_evidence when the user asks whether live voice is connected, why Realtime voice is stuck, whether WebRTC progress reached voice, or how to finish the voice dogfood drill. It is read-only and should explain the current blocker and next action.',
-      'Use get_realtime_dogfood_acceptance when the user asks whether the Realtime dogfood run passed, what gates are missing, whether the live voice drill can be accepted, or whether it is ready to archive. It is read-only and never starts microphone capture.',
+      'Use get_realtime_dogfood_acceptance when the user asks whether the Realtime dogfood run passed, what gates are missing, whether the live voice drill can be accepted, or whether it is ready to archive. It returns actionPlan with previewable preparation steps, manual/live-voice steps, blockers, ask-user-only boundaries, and a spoken summary. Read actionPlan before asking the user to do anything. It is read-only and never starts microphone capture.',
       'Use save_realtime_dogfood_archive only when the user asks to save, export, archive, or keep the current Realtime dogfood evidence. It writes a local JSON evidence packet and never starts microphone capture.',
       'Use get_realtime_dogfood_session when the user asks about the dogfood session tracker, current drill record, next prompt, or which operator steps are recorded.',
       'Use start_realtime_dogfood_session only when the user asks to start tracking a real voice dogfood drill. It creates a local dogfood session tracker but does not start microphone capture.',
@@ -41244,7 +41472,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'get_realtime_dogfood_acceptance',
-        description: 'Get a read-only acceptance report for the Realtime dogfood drill: required pass/gap gates, next missing evidence, archive status, and safety posture. Does not start microphone capture.',
+        description: 'Get a read-only acceptance report for the Realtime dogfood drill: required pass/gap gates, next missing evidence, archive status, safety posture, and actionPlan separating previewable preparation from manual/live-voice steps. Does not start microphone capture.',
         parameters: {
           type: 'object',
           properties: {
@@ -42667,7 +42895,7 @@ function realtimeInstructionChecks(instructions = '') {
     autonomyLoop: /run_autonomy_loop|bounded route.*learning_context.*observe.*preview.*verify|recovery-scan|agencyPlan|existing routing, action policy/i.test(text),
     approvals: /get_pending_approvals|resolve_approval|waiting for approval|approval id|confirm:true/i.test(text),
     realtimeEvidence: /get_realtime_evidence|live voice is connected|WebRTC progress reached voice|voice dogfood drill/i.test(text),
-    realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive/i.test(text),
+    realtimeAcceptance: /get_realtime_dogfood_acceptance|dogfood run passed|acceptance report|gates are missing|ready to archive|actionPlan.*previewable/i.test(text),
     realtimeArchive: /save_realtime_dogfood_archive|Realtime dogfood evidence.*local JSON|save, export, archive/i.test(text),
     productivityDogfoodArchive: /get_productivity_dogfood_archive|save_productivity_dogfood_archive|Notes, Reminders, Calendar, or Mail draft automation|productivity dogfood evidence/i.test(text),
     realtimeDogfoodSession: /get_realtime_dogfood_session|start_realtime_dogfood_session|mark_realtime_dogfood_step|end_realtime_dogfood_session|dogfood session tracker/i.test(text),

@@ -1871,6 +1871,13 @@ export default {
         liveDrillPackData?.api?.start?.path === '/api/realtime/dogfood/renderer/start' &&
         liveDrillPackData?.api?.start?.body?.confirmMic === true &&
         liveDrillPackData?.api?.monitor?.path === '/api/realtime/evidence' &&
+        liveDrillPackData?.actionPlan?.version === 1 &&
+        ['waiting_for_user', 'can_prepare', 'accepted', 'pending'].includes(liveDrillPackData.actionPlan.status) &&
+        Array.isArray(liveDrillPackData.actionPlan.previewable) &&
+        liveDrillPackData.actionPlan.previewable.some((action) => action.readOnly === true && action.startsMicrophone === false) &&
+        Array.isArray(liveDrillPackData.actionPlan.manual) &&
+        liveDrillPackData.actionPlan.manual.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
+        liveDrillPackData.actionPlan.boundaries?.some((item) => /confirmMic:true|microphone capture/i.test(item)) &&
         typeof liveDrillPackData?.prompts?.next?.copyText === 'string' &&
         liveDrillPackData.prompts.next.copyText.length > 0 &&
         Array.isArray(liveDrillPackData?.operatorSteps) &&
@@ -2242,6 +2249,15 @@ export default {
         acceptanceData?.status === 'pending' &&
         acceptanceData?.counts?.gates >= 18 &&
         acceptanceData?.counts?.gaps >= 1 &&
+        acceptanceData?.actionPlan?.version === 1 &&
+        ['waiting_for_user', 'can_prepare', 'pending'].includes(acceptanceData.actionPlan.status) &&
+        acceptanceData.actionPlan.primary?.id &&
+        Array.isArray(acceptanceData.actionPlan.nextActions) &&
+        acceptanceData.actionPlan.nextActions.length >= 2 &&
+        acceptanceData.actionPlan.previewable?.some((action) => action.readOnly === true && action.startsMicrophone === false) &&
+        acceptanceData.actionPlan.manual?.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
+        acceptanceData.actionPlan.askUserOnlyFor?.some((item) => /microphone|WebRTC|approval/i.test(item)) &&
+        acceptanceData.actionPlan.boundaries?.some((item) => /confirmMic:true|action policy/i.test(item)) &&
         requiredAcceptanceGates.every((id) => acceptanceGateIds.has(id)) &&
         ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'computer_tools', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
         acceptanceData?.nextGap?.id &&
@@ -2313,8 +2329,10 @@ export default {
         acceptanceToolOutput?.acceptance?.manualOnly === true &&
         acceptanceToolOutput?.acceptance?.startsMicrophone === false &&
         acceptanceToolOutput?.acceptance?.counts?.gates >= 18 &&
-        Array.isArray(acceptanceToolOutput?.acceptance?.gates)
-        ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.acceptance.counts.passed}/${acceptanceToolOutput.acceptance.counts.gates} gate(s) pass`)
+        Array.isArray(acceptanceToolOutput?.acceptance?.gates) &&
+        acceptanceToolOutput?.acceptance?.actionPlan?.version === 1 &&
+        acceptanceToolOutput.acceptance.actionPlan.boundaries?.some((item) => /microphone|confirmMic/i.test(item))
+        ? ok('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `${acceptanceToolOutput.acceptance.counts.passed}/${acceptanceToolOutput.acceptance.counts.gates} gate(s) pass · plan=${acceptanceToolOutput.acceptance.actionPlan.status}`)
         : fail('realtime.dogfood_acceptance_tool', 'Realtime dogfood acceptance voice tool', `tool execute ${acceptanceTool.status}`, acceptanceTool.data),
     );
 
