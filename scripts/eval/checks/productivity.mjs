@@ -1,9 +1,23 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
 import { ok, fail } from '../_client.mjs';
 
 const execFileAsync = promisify(execFile);
+
+function parseJson(stdout) {
+  try {
+    return JSON.parse(stdout);
+  } catch {
+    const start = stdout.indexOf('{');
+    const end = stdout.lastIndexOf('}');
+    if (start >= 0 && end > start) return JSON.parse(stdout.slice(start, end + 1));
+    throw new Error('stdout did not contain JSON');
+  }
+}
 
 export default {
   lane: 'productivity',
@@ -73,6 +87,55 @@ export default {
       );
     } catch (error) {
       out.push(fail('productivity.benchmarks_cui', 'Productivity benchmark CUI', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const archiveDir = fs.mkdtempSync(path.join(os.tmpdir(), 'javis-productivity-dogfood-archives-'));
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/productivity-dogfood.mjs', '--suite', '--save-archive', '--json'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          JAVIS_PRODUCTIVITY_DOGFOOD_ARCHIVE_DIR: archiveDir,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 45000,
+        maxBuffer: 1024 * 1024,
+      });
+      const archive = parseJson(stdout);
+      const apps = new Set((archive.cases || []).map((item) => item.app));
+      const archiveOnDisk = archive.saved === true && archive.archiveFile && fs.existsSync(archive.archiveFile);
+      let saved = null;
+      if (archiveOnDisk) {
+        saved = JSON.parse(fs.readFileSync(archive.archiveFile, 'utf8'));
+      }
+      const hasAllApps = ['Notes', 'Reminders', 'Calendar', 'Mail'].every((app) => apps.has(app));
+      out.push(
+        archive.ok === true &&
+          archive.suite === true &&
+          archive.execute === false &&
+          archive.confirm === false &&
+          archive.counts?.total === 4 &&
+          archive.counts?.pass === 4 &&
+          hasAllApps &&
+          archive.safety?.previewOnly === true &&
+          archive.safety?.startsApps === false &&
+          archive.safety?.executesProductivityActions === false &&
+          archive.safety?.sendsMessages === false &&
+          archive.safety?.mutatesUserFiles === false &&
+          archiveOnDisk &&
+          saved?.id === archive.id &&
+          Array.isArray(saved?.cases) &&
+          saved.cases.length === 4
+          ? ok('productivity.live_dogfood_archive', 'Productivity live dogfood archive', `preview suite archived ${archive.counts.pass}/${archive.counts.total} cases`)
+          : fail('productivity.live_dogfood_archive', 'Productivity live dogfood archive', 'suite archive missing safety or coverage markers', {
+              archive,
+              archiveOnDisk,
+              hasAllApps,
+            }),
+      );
+    } catch (error) {
+      out.push(fail('productivity.live_dogfood_archive', 'Productivity live dogfood archive', error instanceof Error ? error.message : String(error)));
     }
 
     const realtime = await ctx.api('/api/realtime/config', { timeoutMs: 15000 });
