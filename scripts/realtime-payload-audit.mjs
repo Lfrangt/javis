@@ -73,6 +73,22 @@ export const REALTIME_PAYLOAD_CASES = [
     expectCompact: true,
   },
   {
+    id: 'collaboration_claim_preview',
+    label: 'Collaboration claim preview',
+    tool: 'plan_collaboration_claim',
+    arguments: {
+      owner: 'Payload Claude Code',
+      agent: 'claude-code',
+      lane: 'claude',
+      access: 'write',
+      scope: 'payload/realtime-collaboration-preview',
+      task: 'Preview Realtime collaboration claim payload',
+    },
+    maxBytes: 7000,
+    expectCompact: true,
+    forbiddenPaths: ['collaboration.file', 'handoff.commands.release'],
+  },
+  {
     id: 'learning_distillation',
     label: 'Learning distillation',
     tool: 'get_learning_distillation',

@@ -39,6 +39,9 @@ const REQUIRED_TOOLS = [
   'get_pending_approvals',
   'resolve_approval',
   'get_collaboration_state',
+  'plan_collaboration_claim',
+  'heartbeat_collaboration_claim',
+  'release_collaboration_claim',
   'get_local_capabilities',
   'get_learning_profile',
   'get_learning_evolution',
@@ -550,6 +553,135 @@ export default {
         capabilityApiOutput.guardrails.some((item) => /confirmation/i.test(item))
         ? ok('realtime.local_capabilities_api', 'Realtime local capability API', `${capabilityApiOutput.capabilities.length} matched capability row(s), collab ${capabilityApiOutput.collaboration.handoff.mode}`)
         : fail('realtime.local_capabilities_api', 'Realtime local capability API', `GET /api/capabilities ${capabilityApi.status}`, capabilityApi.data),
+    );
+
+    const collaborationScope = `eval/realtime-collaboration/${Date.now()}`;
+    const collaborationStateTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_collaboration_state',
+        arguments: { limit: 8 },
+      },
+    });
+    const collaborationStateOutput = parseToolOutput(collaborationStateTool);
+    const collaborationPreviewTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'plan_collaboration_claim',
+        arguments: {
+          owner: 'Eval Claude Code',
+          agent: 'claude-code',
+          lane: 'claude',
+          access: 'write',
+          scope: collaborationScope,
+          task: 'Eval preview Realtime collaboration claim',
+        },
+      },
+    });
+    const collaborationPreviewOutput = parseToolOutput(collaborationPreviewTool);
+    const collaborationCreateTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'plan_collaboration_claim',
+        arguments: {
+          owner: 'Eval Claude Code',
+          agent: 'claude-code',
+          lane: 'claude',
+          access: 'write',
+          scope: collaborationScope,
+          task: 'Eval confirmed Realtime collaboration claim',
+          confirm: true,
+        },
+      },
+    });
+    const collaborationCreateOutput = parseToolOutput(collaborationCreateTool);
+    const collaborationClaimId = collaborationCreateOutput?.claim?.id || '';
+    let collaborationHeartbeatOutput = null;
+    let collaborationReleaseOutput = null;
+    if (collaborationClaimId) {
+      const collaborationHeartbeatTool = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          name: 'heartbeat_collaboration_claim',
+          arguments: {
+            id: collaborationClaimId,
+            confirm: true,
+          },
+        },
+      });
+      collaborationHeartbeatOutput = parseToolOutput(collaborationHeartbeatTool);
+      const collaborationReleaseTool = await ctx.api('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'eval',
+          name: 'release_collaboration_claim',
+          arguments: {
+            id: collaborationClaimId,
+            status: 'done',
+            result: 'Eval Realtime collaboration claim flow complete.',
+            confirm: true,
+          },
+        },
+      });
+      collaborationReleaseOutput = parseToolOutput(collaborationReleaseTool);
+    }
+    out.push(
+      collaborationStateTool.ok &&
+        collaborationStateTool.data?.ok === true &&
+        collaborationStateOutput?.handoff?.mode &&
+        collaborationPreviewTool.ok &&
+        collaborationPreviewTool.data?.ok === true &&
+        collaborationPreviewOutput?.previewOnly === true &&
+        collaborationPreviewOutput?.executed === false &&
+        collaborationPreviewOutput?.requiresConfirmation === true &&
+        collaborationPreviewOutput?.confirm === false &&
+        collaborationPreviewOutput?.safety?.startsWorkers === false &&
+        collaborationPreviewOutput?.safety?.mutatesFiles === false &&
+        collaborationPreviewOutput?.responseBudget?.compact === true &&
+        collaborationCreateTool.ok &&
+        collaborationCreateTool.data?.ok === true &&
+        collaborationCreateOutput?.executed === true &&
+        collaborationCreateOutput?.confirm === true &&
+        collaborationCreateOutput?.claim?.id &&
+        collaborationCreateOutput?.claim?.scope === collaborationScope &&
+        collaborationHeartbeatOutput?.executed === true &&
+        collaborationHeartbeatOutput?.confirm === true &&
+        collaborationReleaseOutput?.executed === true &&
+        collaborationReleaseOutput?.claim?.status === 'done' &&
+        collaborationReleaseOutput?.safety?.startsWorkers === false &&
+        collaborationReleaseOutput?.safety?.mutatesFiles === false
+        ? ok('realtime.collaboration_claim_tools', 'Realtime collaboration claim tools', `${collaborationScope} preview/create/heartbeat/release`)
+        : fail('realtime.collaboration_claim_tools', 'Realtime collaboration claim tools', 'expected voice tools to preview, confirm, heartbeat, and release a collaboration claim safely', {
+          state: collaborationStateTool.data,
+          preview: collaborationPreviewTool.data,
+          create: collaborationCreateTool.data,
+          heartbeat: collaborationHeartbeatOutput,
+          release: collaborationReleaseOutput,
+        }),
+    );
+
+    const collaborationEvidence = await ctx.api('/api/realtime/evidence');
+    const collaborationToolEvidence = collaborationEvidence.data?.evidence?.collaborationTools;
+    const collaborationToolEvents = Array.isArray(collaborationToolEvidence?.recent) ? collaborationToolEvidence.recent : [];
+    out.push(
+      collaborationEvidence.ok &&
+        collaborationToolEvidence?.hasState === true &&
+        collaborationToolEvidence?.hasClaimPreview === true &&
+        collaborationToolEvidence?.hasClaimCreate === true &&
+        collaborationToolEvidence?.hasHeartbeat === true &&
+        collaborationToolEvidence?.hasRelease === true &&
+        collaborationToolEvidence?.hasConfirmationGate === true &&
+        collaborationToolEvidence?.safeControl === true &&
+        collaborationToolEvents.some((event) => event.name === 'plan_collaboration_claim' && event.source === 'eval' && event.collaboration?.previewOnly === true && event.collaboration?.confirm === false) &&
+        collaborationToolEvents.some((event) => event.name === 'plan_collaboration_claim' && event.source === 'eval' && event.collaboration?.executed === true && event.collaboration?.claimId === collaborationClaimId) &&
+        collaborationToolEvents.some((event) => event.name === 'heartbeat_collaboration_claim' && event.source === 'eval' && event.collaboration?.executed === true && event.collaboration?.confirm === true) &&
+        collaborationToolEvents.some((event) => event.name === 'release_collaboration_claim' && event.source === 'eval' && event.collaboration?.executed === true && event.collaboration?.confirm === true)
+        ? ok('realtime.collaboration_claim_tool_evidence', 'Realtime collaboration claim tool evidence', `actions=${(collaborationToolEvidence.observedActions || []).join(', ')}`)
+        : fail('realtime.collaboration_claim_tool_evidence', 'Realtime collaboration claim tool evidence', 'expected collaboration voice tools to appear in realtime evidence', collaborationToolEvidence),
     );
 
     const speedPolicyTool = await ctx.api('/api/tools/execute', {
@@ -1744,6 +1876,7 @@ export default {
           output.includes('Attention explanation tool:') &&
           output.includes('Perception consent tool:') &&
           output.includes('Local capability tool:') &&
+          output.includes('Collaboration tools:') &&
           output.includes('Local learning tool:') &&
           output.includes('Browser tools:') &&
           output.includes('UI demonstration tools:') &&
@@ -1763,6 +1896,9 @@ export default {
           output.includes('Approval tools:') &&
           output.includes('get_pending_approvals') &&
           output.includes('resolve_approval') &&
+          output.includes('plan_collaboration_claim') &&
+          output.includes('heartbeat_collaboration_claim') &&
+          output.includes('release_collaboration_claim') &&
           output.includes('get_autopilot_status') &&
           output.includes('get_attention_explanation') &&
           output.includes('get_perception_consent') &&
@@ -2134,6 +2270,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'ask_work_handoff') &&
         e.drill.steps.some((step) => step.id === 'ask_autopilot_status') &&
         e.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
+        e.drill.steps.some((step) => step.id === 'manage_collaboration_claim') &&
         e.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         e.drill.steps.some((step) => step.id === 'ask_learning_evolution') &&
         e.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
@@ -2148,6 +2285,11 @@ export default {
         e.handoffTools?.hasHandoff === true &&
         e.autopilotTools?.hasStatus === true &&
         e.capabilityTools?.hasCapabilityMap === true &&
+        e.collaborationTools?.hasClaimPreview === true &&
+        e.collaborationTools?.hasClaimCreate === true &&
+        e.collaborationTools?.hasHeartbeat === true &&
+        e.collaborationTools?.hasRelease === true &&
+        e.collaborationTools?.safeControl === true &&
         e.learningTools?.hasLearningProfile === true &&
         e.learningTools?.hasLearningEvolution === true &&
         e.browserTools?.hasWorkflow === true &&
@@ -2192,6 +2334,7 @@ export default {
         d.drill.steps.some((step) => step.id === 'ask_attention_explanation') &&
         d.drill.steps.some((step) => step.id === 'ask_perception_consent') &&
         d.drill.steps.some((step) => step.id === 'ask_local_capabilities') &&
+        d.drill.steps.some((step) => step.id === 'manage_collaboration_claim') &&
         d.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         d.drill.steps.some((step) => step.id === 'ask_learning_evolution') &&
         d.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
@@ -2209,6 +2352,11 @@ export default {
         d.perceptionTools?.hasConsent === true &&
         d.capabilityTools?.hasCapabilityMap === true &&
         d.capabilityTools?.hasRecommendedTools === true &&
+        d.collaborationTools?.hasClaimPreview === true &&
+        d.collaborationTools?.hasClaimCreate === true &&
+        d.collaborationTools?.hasHeartbeat === true &&
+        d.collaborationTools?.hasRelease === true &&
+        d.collaborationTools?.safeControl === true &&
         d.learningTools?.hasLearningProfile === true &&
         d.learningTools?.hasLearningEvolution === true &&
         d.learningTools?.privacySafe === true &&
@@ -2227,6 +2375,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('协作占用')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('变化')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
@@ -2238,6 +2387,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_attention_explanation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_perception_consent') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_local_capabilities') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'plan_collaboration_claim') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_distillation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_evolution') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'run_browser_workflow') &&
@@ -2264,6 +2414,7 @@ export default {
       'ask_attention_explanation',
       'ask_perception_consent',
       'ask_local_capabilities',
+      'manage_collaboration_claim',
       'ask_learning_profile',
       'ask_browser_workflow',
       'save_productivity_dogfood_archive',
@@ -2284,6 +2435,7 @@ export default {
         drillGuide.prompts.some((prompt) => prompt.includes('现在做到哪了')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('协作占用')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
@@ -2292,6 +2444,7 @@ export default {
         drillData.prompts.some((prompt) => prompt.includes('为什么你现在是绿色')) &&
         drillData.prompts.some((prompt) => prompt.includes('能看到什么')) &&
         drillData.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        drillData.prompts.some((prompt) => prompt.includes('协作占用')) &&
         drillData.prompts.some((prompt) => prompt.includes('学到了')) &&
         drillData.prompts.some((prompt) => prompt.includes('当前网页')) &&
         drillData.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
@@ -2359,11 +2512,13 @@ export default {
         dogfoodBriefData?.safety?.recordReplayRequiresConfirmation === true &&
         Array.isArray(dogfoodBriefData.prompts) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('能做什么')) &&
+        dogfoodBriefData.prompts.some((prompt) => prompt.includes('协作占用')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('当前网页')) &&
         dogfoodBriefData.prompts.some((prompt) => prompt.includes('开始记录')) &&
         Array.isArray(dogfoodBriefData.evidenceTools) &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'capability' && item.tool === 'get_local_capabilities') &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'collaboration' && item.tool === 'plan_collaboration_claim') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'learning' && item.tool === 'get_learning_distillation') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'browser' && item.tool === 'run_browser_workflow') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'demonstration' && item.tool === 'draft_ui_demonstration_skill')
@@ -2386,6 +2541,7 @@ export default {
           output.includes('Evidence gates:') &&
           output.includes('Gap:') &&
           output.includes('get_local_capabilities') &&
+          output.includes('plan_collaboration_claim') &&
           output.includes('get_learning_distillation') &&
           output.includes('run_browser_workflow') &&
           output.includes('开始记录') &&
@@ -2410,6 +2566,7 @@ export default {
       'ask_attention_explanation',
       'ask_perception_consent',
       'ask_local_capabilities',
+      'manage_collaboration_claim',
       'ask_learning_profile',
       'ask_browser_workflow',
       'save_productivity_dogfood_archive',

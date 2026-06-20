@@ -14,6 +14,7 @@ const EXPECTED_ACCEPTANCE_GATES = new Set([
   'ask_local_capabilities',
   'plan_mcp_tool_call',
   'review_and_resolve_approval',
+  'manage_collaboration_claim',
   'ask_learning_profile',
   'ask_browser_workflow',
   'save_productivity_dogfood_archive',

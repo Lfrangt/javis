@@ -16,7 +16,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime tool manifest budget in `/api/realtime/config` and the `realtime` eval lane, so startup cost from tool count/schema size stays visible while JAVIS grows more capable.
 - Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
 - Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
-- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, compact work-next preview/run, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
+- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, compact work-next preview/run, collaboration claim control, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
 - Realtime voice self-diagnostics through `get_realtime_evidence`, so voice can explain whether WebRTC/live progress is connected, what is blocked, and the next dogfood step.
 - Realtime attention explanations through `get_attention_explanation`, so voice can briefly explain pet color, quiet/notify decisions, cooldown, and recent attention history without opening a desktop dashboard.
 - Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, perception-consent, UI-demonstration Record & Replay, and shortcut list/save/recall/forget flows from CUI/API.
@@ -60,6 +60,7 @@ Local Mac-first realtime desktop buddy.
 - Routing speed policy from API/CUI/Realtime voice, explaining when to answer inline, use the fast model, queue background work, hand code to Codex/Claude, or use browser/file/app tools first with explicit first-tool recommendations; the Realtime tool returns a compact voice payload while API/CUI keep the full profile/sample table.
 - Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
 - Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, get a CUI/API/CLI handoff summary, and avoid overlapping write races.
+- Realtime collaboration claim tools (`plan_collaboration_claim`, `heartbeat_collaboration_claim`, `release_collaboration_claim`) so live voice can preview, confirm, refresh, and release Claude Code/Codex ownership records through the same local ledger without starting workers or mutating files.
 - No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
 - Fast lane for lightweight Q&A.
 - Deep lane for slower background tasks with persisted logs, cancellation, and recalled skill-plan context when routing found a matching local workflow.

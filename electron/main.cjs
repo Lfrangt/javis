@@ -6097,6 +6097,231 @@ function releaseCollaborationClaim(id, options = {}) {
   };
 }
 
+function compactCollaborationClaimForVoice(claim = {}) {
+  if (!claim || typeof claim !== 'object') return null;
+  return {
+    id: String(claim.id || '').slice(0, 120),
+    owner: compactRecordText(claim.owner || claim.agent || '', 100),
+    agent: compactRecordText(claim.agent || '', 100),
+    lane: compactRecordText(claim.lane || '', 40),
+    access: compactRecordText(claim.access || '', 20),
+    scope: compactRecordText(claim.scope || claim.key || '', 220),
+    key: compactRecordText(claim.key || claim.scope || '', 220),
+    task: compactRecordText(claim.task || '', 220),
+    status: compactRecordText(claim.status || '', 40),
+    expiresAt: boundedCount(claim.expiresAt, 4102444800000),
+    ttlMs: boundedCount(claim.ttlMs, 86400000),
+  };
+}
+
+function compactCollaborationConflictForVoice(conflict = {}) {
+  if (!conflict || typeof conflict !== 'object') return null;
+  return {
+    id: String(conflict.id || '').slice(0, 120),
+    owner: compactRecordText(conflict.owner || conflict.agent || '', 100),
+    lane: compactRecordText(conflict.lane || '', 40),
+    access: compactRecordText(conflict.access || '', 20),
+    scope: compactRecordText(conflict.scope || conflict.key || '', 220),
+    key: compactRecordText(conflict.key || conflict.scope || '', 220),
+    task: compactRecordText(conflict.task || '', 180),
+    expiresAt: boundedCount(conflict.expiresAt, 4102444800000),
+  };
+}
+
+function collaborationVoiceResponseBudget(payload) {
+  return {
+    compact: true,
+    maxTargetBytes: 6000,
+    outputBytes: Buffer.byteLength(JSON.stringify(payload || {}), 'utf8'),
+    omitted: [
+      'full collaboration file path',
+      'inactive claim history',
+      'raw claim commands',
+      'full conflict pair objects',
+    ],
+  };
+}
+
+function collaborationVoicePayload(result = {}, options = {}) {
+  const action = compactRecordText(options.action || '', 40);
+  const confirm = options.confirm === true || String(options.confirm || '').toLowerCase() === 'true';
+  const conflicts = Array.isArray(result.conflicts) ? result.conflicts : [];
+  const snapshot = result.collaboration || collaborationSnapshot(8);
+  const handoff = collaborationHandoffSnapshot({ limit: 8 });
+  const claim = result.claim || null;
+  const previewOnly = options.previewOnly === true;
+  const executed = !previewOnly && result.ok === true;
+  const requiresConfirmation = Boolean(options.requiresConfirmation);
+  const payload = {
+    ok: previewOnly ? Boolean(claim) : result.ok !== false,
+    action,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'voice', 80),
+    previewOnly,
+    executed,
+    requiresConfirmation,
+    confirm,
+    conflictCount: conflicts.length,
+    claimAllowed: conflicts.length === 0 || result.ok === true,
+    claim: compactCollaborationClaimForVoice(claim),
+    conflicts: conflicts.slice(0, 5).map(compactCollaborationConflictForVoice).filter(Boolean),
+    counts: {
+      active: boundedCount(snapshot.counts?.active, 1000),
+      conflicts: boundedCount(snapshot.counts?.conflicts, 1000),
+      total: boundedCount(snapshot.counts?.total, 100000),
+    },
+    handoff: {
+      mode: compactRecordText(handoff.mode || '', 40),
+      summary: compactRecordText(handoff.summary || '', 320),
+      spokenSummary: compactRecordText(handoff.spokenSummary || '', 420),
+      nextActions: Array.isArray(handoff.nextActions)
+        ? handoff.nextActions.slice(0, 3).map((item) => ({
+          id: compactRecordText(item.id || '', 80),
+          label: compactRecordText(item.label || '', 120),
+          summary: compactRecordText(item.summary || '', 220),
+        }))
+        : [],
+    },
+    safety: {
+      localOnly: true,
+      startsWorkers: false,
+      startsMicrophone: false,
+      mutatesFiles: false,
+      recordsOwnershipOnly: executed,
+      serializesOverlappingWriteScopes: true,
+      confirmationRequiredForMutation: true,
+    },
+    nextAction: compactRecordText(
+      result.nextAction ||
+      (requiresConfirmation && !confirm
+        ? 'Read the preview aloud, then ask the user to confirm before changing collaboration ownership.'
+        : conflicts.length
+          ? 'Narrow the scope, choose one owner, or pass force:true only after an explicit conflict-resolution decision.'
+          : 'Tell the owner to heartbeat while working and release the claim with a result when done.'),
+      260,
+    ),
+    output: compactRecordText(result.output || '', 360),
+  };
+  payload.spokenSummary = compactRecordText([
+    action === 'claim' && previewOnly
+      ? `可以把 ${payload.claim?.scope || payload.claim?.key || '这个范围'} 分给 ${payload.claim?.owner || '指定 agent'}，${payload.conflictCount ? `但有 ${payload.conflictCount} 个冲突。` : '没有发现冲突。'}`
+      : '',
+    action === 'claim' && executed
+      ? `已经记录 ${payload.claim?.owner || 'agent'} 对 ${payload.claim?.scope || payload.claim?.key || '该范围'} 的协作占用。`
+      : '',
+    action === 'heartbeat' && executed ? `已经刷新 ${payload.claim?.owner || 'agent'} 的协作占用。` : '',
+    action === 'release' && executed ? `已经释放 ${payload.claim?.owner || 'agent'} 的协作占用，状态是 ${payload.claim?.status || 'done'}。` : '',
+    requiresConfirmation && !confirm ? '这只是预览，还没有改变本地协作账本。' : '',
+    payload.handoff.spokenSummary,
+  ].filter(Boolean).join(' '), 520);
+  payload.responseBudget = collaborationVoiceResponseBudget(payload);
+  payload.responseBudget.outputBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+  return payload;
+}
+
+function previewCollaborationClaim(options = {}) {
+  const now = Date.now();
+  const ttlMs = Math.max(
+    60000,
+    Math.min(86400000, Number(options.ttlMs || options.expiresInMs || COLLABORATION_CLAIM_TTL_MS)),
+  );
+  const candidate = normalizeCollaborationClaim({
+    ...options,
+    id: options.id || crypto.randomUUID(),
+    status: 'active',
+    createdAt: options.createdAt || now,
+    updatedAt: now,
+    heartbeatAt: now,
+    expiresAt: options.expiresAt || now + ttlMs,
+    ttlMs,
+    source: options.source || 'voice_preview',
+  });
+  if (!candidate) throw new Error('Missing collaboration scope, key, path, or task.');
+  expireCollaborationClaims(now);
+  const conflicts = collaborationConflictsForClaim(candidate);
+  return {
+    ok: true,
+    claim: candidate,
+    conflicts,
+    collaboration: collaborationSnapshot(20),
+    output: conflicts.length
+      ? `Collaboration claim preview: ${candidate.key} would overlap ${conflicts[0].owner || conflicts[0].agent}.`
+      : `Collaboration claim preview: ${candidate.owner} can claim ${candidate.access}:${candidate.key}.`,
+  };
+}
+
+function planCollaborationClaimFromVoice(options = {}) {
+  const confirm = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  if (!confirm) {
+    const preview = previewCollaborationClaim({ ...options, source: options.source || 'voice_preview' });
+    return collaborationVoicePayload(preview, {
+      action: 'claim',
+      source: options.source || 'voice',
+      previewOnly: true,
+      requiresConfirmation: true,
+      confirm,
+    });
+  }
+  const result = claimCollaborationScope({ ...options, source: options.source || 'voice' });
+  return collaborationVoicePayload(result, {
+    action: 'claim',
+    source: options.source || 'voice',
+    previewOnly: false,
+    requiresConfirmation: true,
+    confirm,
+  });
+}
+
+function heartbeatCollaborationClaimFromVoice(id, options = {}) {
+  const confirm = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  if (!confirm) {
+    const existing = collaborationClaims.get(String(id || options.id || '').trim());
+    const result = existing
+      ? { ok: true, claim: existing, conflicts: [], collaboration: collaborationSnapshot(20), output: `Collaboration heartbeat preview: ${existing.owner} ${existing.key}.` }
+      : { ok: false, status: 404, claim: null, conflicts: [], collaboration: collaborationSnapshot(20), output: 'Collaboration claim not found.' };
+    return collaborationVoicePayload(result, {
+      action: 'heartbeat',
+      source: options.source || 'voice',
+      previewOnly: true,
+      requiresConfirmation: true,
+      confirm,
+    });
+  }
+  const result = heartbeatCollaborationClaim(id, { ...options, source: options.source || 'voice' });
+  return collaborationVoicePayload(result, {
+    action: 'heartbeat',
+    source: options.source || 'voice',
+    previewOnly: false,
+    requiresConfirmation: true,
+    confirm,
+  });
+}
+
+function releaseCollaborationClaimFromVoice(id, options = {}) {
+  const confirm = options.confirm === true || options.confirmed === true || String(options.confirm || options.confirmed || '').toLowerCase() === 'true';
+  if (!confirm) {
+    const existing = collaborationClaims.get(String(id || options.id || '').trim());
+    const result = existing
+      ? { ok: true, claim: existing, conflicts: [], collaboration: collaborationSnapshot(20), output: `Collaboration release preview: ${existing.owner} ${existing.key}.` }
+      : { ok: false, status: 404, claim: null, conflicts: [], collaboration: collaborationSnapshot(20), output: 'Collaboration claim not found.' };
+    return collaborationVoicePayload(result, {
+      action: 'release',
+      source: options.source || 'voice',
+      previewOnly: true,
+      requiresConfirmation: true,
+      confirm,
+    });
+  }
+  const result = releaseCollaborationClaim(id, { ...options, source: options.source || 'voice' });
+  return collaborationVoicePayload(result, {
+    action: 'release',
+    source: options.source || 'voice',
+    previewOnly: false,
+    requiresConfirmation: true,
+    confirm,
+  });
+}
+
 function loadPersistedCollaboration() {
   if (!fs.existsSync(COLLABORATION_FILE)) return;
   try {
@@ -28413,6 +28638,15 @@ const REALTIME_APPROVAL_TOOL_NAMES = new Set([
   'get_pending_approvals',
   'resolve_approval',
 ]);
+const REALTIME_COLLABORATION_PLAN_TOOL_NAME = 'plan_collaboration_claim';
+const REALTIME_COLLABORATION_HEARTBEAT_TOOL_NAME = 'heartbeat_collaboration_claim';
+const REALTIME_COLLABORATION_RELEASE_TOOL_NAME = 'release_collaboration_claim';
+const REALTIME_COLLABORATION_TOOL_NAMES = new Set([
+  'get_collaboration_state',
+  REALTIME_COLLABORATION_PLAN_TOOL_NAME,
+  REALTIME_COLLABORATION_HEARTBEAT_TOOL_NAME,
+  REALTIME_COLLABORATION_RELEASE_TOOL_NAME,
+]);
 const REALTIME_LEARNING_TOOL_NAME = 'get_learning_profile';
 const REALTIME_LEARNING_EVOLUTION_TOOL_NAME = 'get_learning_evolution';
 const REALTIME_LEARNING_DISTILLATION_TOOL_NAME = 'get_learning_distillation';
@@ -28815,6 +29049,66 @@ function realtimeApprovalToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeCollaborationToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_COLLABORATION_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  if (name === 'get_collaboration_state') {
+    const collaboration = output.collaboration || {};
+    const handoff = output.handoff || {};
+    return {
+      action: 'state',
+      ok: result.ok === true,
+      readOnly: true,
+      previewOnly: false,
+      executed: false,
+      requiresConfirmation: false,
+      confirm: false,
+      activeCount: boundedCount(collaboration.counts?.active ?? handoff.counts?.active, 1000),
+      conflictCount: boundedCount(collaboration.counts?.conflicts ?? handoff.counts?.conflicts, 1000),
+      totalCount: boundedCount(collaboration.counts?.total ?? handoff.counts?.total, 100000),
+      handoffMode: compactRecordText(handoff.mode || '', 40),
+      spokenSummary: compactRecordText(handoff.spokenSummary || handoff.summary || '', 420),
+      localOnly: true,
+      startsWorkers: false,
+      startsMicrophone: false,
+      mutatesFiles: false,
+      serializesOverlappingWriteScopes: true,
+    };
+  }
+  const claim = output.claim || {};
+  const safety = output.safety || {};
+  return {
+    action: compactRecordText(output.action || '', 40),
+    ok: output.ok === true && result.ok === true,
+    readOnly: output.previewOnly === true,
+    previewOnly: output.previewOnly === true,
+    executed: output.executed === true,
+    requiresConfirmation: output.requiresConfirmation === true,
+    confirm: output.confirm === true,
+    claimAllowed: output.claimAllowed === true,
+    claimId: String(claim.id || args?.id || args?.claimId || '').slice(0, 120),
+    owner: compactRecordText(claim.owner || args?.owner || args?.agent || '', 100),
+    agent: compactRecordText(claim.agent || args?.agent || '', 100),
+    lane: compactRecordText(claim.lane || args?.lane || '', 40),
+    access: compactRecordText(claim.access || args?.access || '', 20),
+    scope: compactRecordText(claim.scope || claim.key || args?.scope || args?.key || '', 220),
+    task: compactRecordText(claim.task || args?.task || '', 220),
+    status: compactRecordText(claim.status || '', 40),
+    conflictCount: boundedCount(output.conflictCount, 1000),
+    activeCount: boundedCount(output.counts?.active, 1000),
+    totalCount: boundedCount(output.counts?.total, 100000),
+    handoffMode: compactRecordText(output.handoff?.mode || '', 40),
+    spokenSummary: compactRecordText(output.spokenSummary || output.output || '', 420),
+    localOnly: safety.localOnly === true,
+    startsWorkers: safety.startsWorkers === true,
+    startsMicrophone: safety.startsMicrophone === true,
+    mutatesFiles: safety.mutatesFiles === true,
+    recordsOwnershipOnly: safety.recordsOwnershipOnly === true,
+    serializesOverlappingWriteScopes: safety.serializesOverlappingWriteScopes === true,
+    confirmationRequiredForMutation: safety.confirmationRequiredForMutation === true,
+  };
+}
+
 function realtimeLearningToolSummary(name, args = {}, result = {}) {
   if (!REALTIME_LEARNING_TOOL_NAMES.has(name)) return null;
   const output = realtimeToolOutputObject(result) || {};
@@ -29088,6 +29382,7 @@ function recordRealtimeToolCall(options = {}) {
   const capability = realtimeCapabilityToolSummary(name, options.args || {}, result);
   const mcp = realtimeMcpToolSummary(name, options.args || {}, result);
   const approval = realtimeApprovalToolSummary(name, options.args || {}, result);
+  const collaboration = realtimeCollaborationToolSummary(name, options.args || {}, result);
   const learning = realtimeLearningToolSummary(name, options.args || {}, result);
   const browser = realtimeBrowserToolSummary(name, options.args || {}, result);
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
@@ -29112,6 +29407,7 @@ function recordRealtimeToolCall(options = {}) {
     capability,
     mcp,
     approval,
+    collaboration,
     learning,
     browser,
     demonstration,
@@ -29180,6 +29476,20 @@ function recordRealtimeToolCall(options = {}) {
     approvalRequiresConfirmation: Boolean(approval?.requiresConfirmation),
     approvalReadOnly: Boolean(approval?.readOnly),
     approvalArgsSummarized: Boolean(approval?.argsSummarized),
+    collaborationAction: collaboration?.action || '',
+    collaborationClaimId: collaboration?.claimId || '',
+    collaborationOwner: collaboration?.owner || '',
+    collaborationLane: collaboration?.lane || '',
+    collaborationAccess: collaboration?.access || '',
+    collaborationScope: collaboration?.scope || '',
+    collaborationPreviewOnly: Boolean(collaboration?.previewOnly),
+    collaborationExecuted: Boolean(collaboration?.executed),
+    collaborationRequiresConfirmation: Boolean(collaboration?.requiresConfirmation),
+    collaborationConfirm: Boolean(collaboration?.confirm),
+    collaborationConflictCount: collaboration?.conflictCount || 0,
+    collaborationActiveCount: collaboration?.activeCount || 0,
+    collaborationStartsWorkers: Boolean(collaboration?.startsWorkers),
+    collaborationMutatesFiles: Boolean(collaboration?.mutatesFiles),
     learningAction: learning?.action || '',
     learningSummary: learning?.spokenSummary || '',
     learningSourceEventCount: learning?.sourceEventCount || 0,
@@ -29570,7 +29880,78 @@ function realtimeApprovalToolEvidence(limit = 8) {
       ? 'Confirm a specific pending approval id before resolving it, or reject it if the user does not want it.'
       : hasList
         ? 'Ask live voice to approve or reject one exact approval id only after reading the summary.'
-        : 'Ask live voice: 现在有哪些待审批? / what approvals are pending?',
+      : 'Ask live voice: 现在有哪些待审批? / what approvals are pending?',
+  };
+}
+
+function realtimeCollaborationToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_COLLABORATION_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.collaboration?.action).filter(Boolean));
+  const hasState = recent.some((event) => (
+    event.name === 'get_collaboration_state' &&
+    event.ok &&
+    event.collaboration?.readOnly === true &&
+    event.collaboration?.startsWorkers === false &&
+    event.collaboration?.mutatesFiles === false
+  ));
+  const hasClaimPreview = recent.some((event) => (
+    event.name === REALTIME_COLLABORATION_PLAN_TOOL_NAME &&
+    event.collaboration?.action === 'claim' &&
+    event.collaboration?.previewOnly === true &&
+    event.collaboration?.requiresConfirmation === true &&
+    event.collaboration?.confirm === false
+  ));
+  const hasClaimCreate = recent.some((event) => (
+    event.name === REALTIME_COLLABORATION_PLAN_TOOL_NAME &&
+    event.ok &&
+    event.collaboration?.action === 'claim' &&
+    event.collaboration?.executed === true &&
+    event.collaboration?.confirm === true &&
+    event.collaboration?.claimId
+  ));
+  const hasHeartbeat = recent.some((event) => (
+    event.name === REALTIME_COLLABORATION_HEARTBEAT_TOOL_NAME &&
+    event.ok &&
+    event.collaboration?.action === 'heartbeat' &&
+    event.collaboration?.executed === true &&
+    event.collaboration?.confirm === true
+  ));
+  const hasRelease = recent.some((event) => (
+    event.name === REALTIME_COLLABORATION_RELEASE_TOOL_NAME &&
+    event.ok &&
+    event.collaboration?.action === 'release' &&
+    event.collaboration?.executed === true &&
+    event.collaboration?.confirm === true
+  ));
+  return {
+    ok: hasState || hasClaimPreview || hasClaimCreate || hasHeartbeat || hasRelease,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasState,
+    hasClaimPreview,
+    hasClaimCreate,
+    hasHeartbeat,
+    hasRelease,
+    hasConfirmationGate: hasClaimPreview || recent.some((event) => event.collaboration?.requiresConfirmation === true && event.collaboration?.confirm === false),
+    conflictCount: Math.max(0, ...recent.map((event) => Number(event.collaboration?.conflictCount || 0))),
+    activeCount: Math.max(0, ...recent.map((event) => Number(event.collaboration?.activeCount || 0))),
+    localOnly: recent.length > 0 && recent.every((event) => event.collaboration?.localOnly !== false),
+    safeControl: recent.length > 0 && recent.every((event) => (
+      event.collaboration?.startsWorkers !== true &&
+      event.collaboration?.startsMicrophone !== true &&
+      event.collaboration?.mutatesFiles !== true
+    )),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasClaimCreate && hasHeartbeat && hasRelease
+      ? 'Use live voice to assign independent Codex/Claude scopes, then heartbeat and release those claims as work moves.'
+      : hasClaimPreview
+        ? 'Ask the user to confirm the exact owner and scope before creating the collaboration claim.'
+        : hasState
+          ? 'Ask live voice to preview a scoped collaboration claim before handing work to Codex or Claude Code.'
+          : 'Ask live voice who owns current agent work or to preview a scoped Claude Code/Codex claim.',
   };
 }
 
@@ -30062,6 +30443,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const capabilityTools = evidence.capabilityTools || {};
   const mcpTools = evidence.mcpTools || {};
   const approvalTools = evidence.approvalTools || {};
+  const collaborationTools = evidence.collaborationTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
@@ -30102,6 +30484,8 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '你现在能做什么？这个任务应该用哪个工具？',
       '本机有哪些 MCP 或外部工具服务器可以用？',
       '这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
+      '把 docs/ROADMAP.md 分给 Claude Code，先预览协作占用，不要创建。',
+      '确认创建这个 Claude Code 协作占用，然后刷新一次心跳，最后标记完成释放。',
       '你最近学到了我什么使用习惯？',
       '最近我的使用习惯有什么变化？',
       '把本地蒸馏状态总结一下：你学到了什么、有哪些可复用工作流、哪些动作还需要我确认？',
@@ -30168,6 +30552,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: REALTIME_MCP_TOOL_NAME,
       },
       {
+        id: 'collaboration_tool',
+        label: 'Realtime previewed and managed a Codex/Claude collaboration claim',
+        ok: Boolean(collaborationTools.hasState && collaborationTools.hasClaimPreview && collaborationTools.hasClaimCreate && collaborationTools.hasHeartbeat && collaborationTools.hasRelease),
+        tool: REALTIME_COLLABORATION_PLAN_TOOL_NAME,
+      },
+      {
         id: 'learning_tool',
         label: 'Realtime called local learning profile, evolution, and distillation tools',
         ok: Boolean(learningTools.hasLearningProfile && learningTools.hasLearningEvolution && learningTools.hasLearningDistillation),
@@ -30198,7 +30588,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: 'draft_ui_demonstration_skill',
       },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, work-next, autopilot, attention, perception, capability, learning, browser, and UI demonstration prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, work-next, autopilot, attention, perception, capability, collaboration, learning, browser, and UI demonstration prompts.',
   };
 }
 
@@ -30213,6 +30603,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const capabilityTools = evidence.capabilityTools || {};
   const mcpTools = evidence.mcpTools || {};
   const approvalTools = evidence.approvalTools || {};
+  const collaborationTools = evidence.collaborationTools || {};
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
@@ -30241,7 +30632,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, workNextTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, workNextTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, collaborationTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -30361,6 +30752,21 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       privacySafe: Boolean(approvalTools.privacySafe),
       nextAction: approvalTools.nextAction || 'Ask the live voice session which approvals are pending, then resolve one exact id only after confirmation.',
     },
+    collaborationTools: {
+      observed: Boolean(collaborationTools.ok),
+      count: Number(collaborationTools.count || 0),
+      observedActions: Array.isArray(collaborationTools.observedActions) ? collaborationTools.observedActions : [],
+      hasState: Boolean(collaborationTools.hasState),
+      hasClaimPreview: Boolean(collaborationTools.hasClaimPreview),
+      hasClaimCreate: Boolean(collaborationTools.hasClaimCreate),
+      hasHeartbeat: Boolean(collaborationTools.hasHeartbeat),
+      hasRelease: Boolean(collaborationTools.hasRelease),
+      hasConfirmationGate: Boolean(collaborationTools.hasConfirmationGate),
+      conflictCount: Number(collaborationTools.conflictCount || 0),
+      activeCount: Number(collaborationTools.activeCount || 0),
+      safeControl: Boolean(collaborationTools.safeControl),
+      nextAction: collaborationTools.nextAction || 'Ask the live voice session to preview and confirm a scoped Claude Code/Codex collaboration claim.',
+    },
     learningTools: {
       observed: Boolean(learningTools.ok),
       count: Number(learningTools.count || 0),
@@ -30445,6 +30851,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const capabilityTools = options.capabilityTools || evidence.capabilityTools || {};
   const mcpTools = options.mcpTools || evidence.mcpTools || {};
   const approvalTools = options.approvalTools || evidence.approvalTools || {};
+  const collaborationTools = options.collaborationTools || evidence.collaborationTools || {};
   const learningTools = options.learningTools || evidence.learningTools || {};
   const browserTools = options.browserTools || evidence.browserTools || {};
   const productivityDogfoodTools = options.productivityDogfoodTools || evidence.productivityDogfoodTools || {};
@@ -30623,6 +31030,30 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       },
     }),
     realtimeDogfoodDrillStep({
+      id: 'manage_collaboration_claim',
+      label: 'Preview and manage a scoped Codex/Claude collaboration claim',
+      ok: Boolean(collaborationTools.hasState && collaborationTools.hasClaimPreview && collaborationTools.hasClaimCreate && collaborationTools.hasHeartbeat && collaborationTools.hasRelease),
+      detail: collaborationTools.hasClaimCreate
+        ? 'Realtime collaboration tools read state, previewed a claim, confirmed creation, refreshed heartbeat, and released the claim.'
+        : collaborationTools.hasClaimPreview
+          ? 'Realtime previewed a collaboration claim; creation still needs explicit confirmation.'
+          : 'No complete Realtime collaboration claim control sequence has been observed.',
+      nextAction: 'Ask: 把 docs/ROADMAP.md 分给 Claude Code，先预览协作占用，不要创建。然后确认创建、刷新心跳、标记完成释放。',
+      evidence: {
+        tools: Array.from(REALTIME_COLLABORATION_TOOL_NAMES),
+        count: Number(collaborationTools.count || 0),
+        observedActions: Array.isArray(collaborationTools.observedActions) ? collaborationTools.observedActions : [],
+        hasState: Boolean(collaborationTools.hasState),
+        hasClaimPreview: Boolean(collaborationTools.hasClaimPreview),
+        hasClaimCreate: Boolean(collaborationTools.hasClaimCreate),
+        hasHeartbeat: Boolean(collaborationTools.hasHeartbeat),
+        hasRelease: Boolean(collaborationTools.hasRelease),
+        hasConfirmationGate: Boolean(collaborationTools.hasConfirmationGate),
+        safeControl: Boolean(collaborationTools.safeControl),
+        conflictCount: Number(collaborationTools.conflictCount || 0),
+      },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'ask_learning_profile',
       label: 'Ask what local habits JAVIS has inferred',
       ok: Boolean(learningTools.hasLearningProfile && learningTools.hasLearningEvolution && learningTools.hasLearningDistillation),
@@ -30769,6 +31200,8 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '为什么你现在是绿色？为什么刚才没提醒我？',
       '你现在能看到什么、能操作什么？',
       '你现在能做什么？这个任务应该用哪个工具？',
+      '把 docs/ROADMAP.md 分给 Claude Code，先预览协作占用，不要创建。',
+      '确认创建这个 Claude Code 协作占用，然后刷新一次心跳，最后标记完成释放。',
       '你最近学到了我什么使用习惯？',
       '最近我的使用习惯有什么变化？',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
@@ -30871,6 +31304,17 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       copyText: '这个任务应该用哪个 MCP 服务器？先做预演，不要执行。',
       followUpPrompts: ['本机有哪些 MCP 或外部工具服务器可以用？'],
       reason: 'This verifies the Realtime session calls get_mcp_servers or plan_mcp_workflow and keeps MCP discovery/planning read-only.',
+    },
+    manage_collaboration_claim: {
+      promptType: 'spoken_sequence',
+      prompt: '把 docs/ROADMAP.md 分给 Claude Code，先预览协作占用，不要创建。',
+      copyText: '把 docs/ROADMAP.md 分给 Claude Code，先预览协作占用，不要创建。',
+      followUpPrompts: [
+        '确认创建这个 Claude Code 协作占用',
+        '刷新这个协作占用的心跳',
+        '这个 Claude Code 协作占用完成了，标记完成并释放',
+      ],
+      reason: 'This verifies Realtime can manage scoped Codex/Claude collaboration ownership through the local ledger without starting workers or mutating files.',
     },
     ask_learning_profile: {
       promptType: 'spoken',
@@ -31149,6 +31593,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'mcp', label: 'MCP server discovery', ok: Boolean(evidence.mcpTools?.hasDiscovery), tool: REALTIME_MCP_TOOL_NAME },
     { id: 'mcp_tool_call', label: 'MCP tool-call approval preview', ok: Boolean(evidence.mcpTools?.hasToolCallPreview), tool: REALTIME_MCP_TOOL_CALL_TOOL_NAME },
     { id: 'approval', label: 'approval queue review', ok: Boolean(evidence.approvalTools?.hasList && evidence.approvalTools?.hasConfirmationGate), tool: 'get_pending_approvals' },
+    { id: 'collaboration', label: 'collaboration claim control', ok: Boolean(evidence.collaborationTools?.hasClaimPreview && evidence.collaborationTools?.hasClaimCreate && evidence.collaborationTools?.hasHeartbeat && evidence.collaborationTools?.hasRelease), tool: REALTIME_COLLABORATION_PLAN_TOOL_NAME },
     { id: 'learning', label: 'local learning distillation', ok: Boolean(evidence.learningTools?.hasLearningProfile && evidence.learningTools?.hasLearningDistillation), tool: REALTIME_LEARNING_DISTILLATION_TOOL_NAME },
     { id: 'browser', label: 'browser read/workflow', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), tool: 'run_browser_workflow' },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
@@ -31161,7 +31606,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   ]
     .filter(Boolean)
     .map((item) => compactRecordText(item, 220));
-  const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(20, Number(options.promptLimit || 12))));
+  const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(20, Number(options.promptLimit || 16))));
   const briefLines = [
     `Realtime dogfood: ${drill.summary || `${evidence.status || 'pending'}/${evidence.phase || '-'}`}`,
     `缺口: ${gapSummary.summary}`,
@@ -31598,6 +32043,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_local_capabilities', 'voice_tools', 'Ask which local capability or tool should handle the task'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'plan_mcp_tool_call', 'voice_tools', 'Prepare one MCP tools/call approval from voice'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'review_and_resolve_approval', 'voice_tools', 'Review and resolve one local approval from voice'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'manage_collaboration_claim', 'voice_tools', 'Preview and manage a scoped Codex/Claude collaboration claim'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_learning_profile', 'learning_loop', 'Ask what local habits JAVIS has inferred'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_browser_workflow', 'computer_tools', 'Ask voice to inspect the current browser page safely'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_productivity_dogfood_archive', 'computer_tools', 'Save a safe productivity dogfood archive'),
@@ -33229,6 +33675,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const capabilityTools = realtimeCapabilityToolEvidence(8);
   const mcpTools = realtimeMcpToolEvidence(8);
   const approvalTools = realtimeApprovalToolEvidence(8);
+  const collaborationTools = realtimeCollaborationToolEvidence(8);
   const learningTools = realtimeLearningToolEvidence(8);
   const browserTools = realtimeBrowserToolEvidence(8);
   const demonstrationTools = realtimeDemonstrationToolEvidence(8);
@@ -33302,6 +33749,7 @@ function realtimeVoiceEvidenceSnapshot() {
     capabilityTools,
     mcpTools,
     approvalTools,
+    collaborationTools,
     learningTools,
     browserTools,
     demonstrationTools,
@@ -42142,6 +42590,42 @@ async function executeTool(name, args) {
     };
   }
 
+  if (name === REALTIME_COLLABORATION_PLAN_TOOL_NAME) {
+    try {
+      const payload = planCollaborationClaimFromVoice({
+        ...(args || {}),
+        source: 'voice',
+      });
+      return { ok: payload.ok !== false, output: JSON.stringify(payload) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === REALTIME_COLLABORATION_HEARTBEAT_TOOL_NAME) {
+    try {
+      const payload = heartbeatCollaborationClaimFromVoice(args?.id || args?.claimId, {
+        ...(args || {}),
+        source: 'voice',
+      });
+      return { ok: payload.ok !== false, output: JSON.stringify(payload) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  if (name === REALTIME_COLLABORATION_RELEASE_TOOL_NAME) {
+    try {
+      const payload = releaseCollaborationClaimFromVoice(args?.id || args?.claimId, {
+        ...(args || {}),
+        source: 'voice',
+      });
+      return { ok: payload.ok !== false, output: JSON.stringify(payload) };
+    } catch (error) {
+      return { ok: false, output: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   if (name === 'get_work_next') {
     const result = await workNextAction({ ...(args || {}), execute: false, source: 'voice' });
     return { ok: true, output: JSON.stringify(workNextVoiceToolPayload(result, { source: 'voice' })) };
@@ -43743,6 +44227,63 @@ function createRealtimeSessionConfig(options = {}) {
           type: 'object',
           properties: {
             limit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: REALTIME_COLLABORATION_PLAN_TOOL_NAME,
+        description: 'Preview or create a local collaboration ownership claim for Codex, Claude Code, or another worker. Default is preview-only; create only after the user confirms the exact owner and scope with confirm:true. Does not start workers or mutate files.',
+        parameters: {
+          type: 'object',
+          properties: {
+            agent: { type: 'string' },
+            owner: { type: 'string' },
+            lane: { type: 'string', enum: ['codex', 'claude', 'local', 'cli', 'background', 'external'] },
+            scope: { type: 'string' },
+            key: { type: 'string' },
+            task: { type: 'string' },
+            access: { type: 'string', enum: ['read', 'write'] },
+            ttlMs: { type: 'number' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            force: { type: 'boolean' },
+          },
+          required: ['scope', 'task'],
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: REALTIME_COLLABORATION_HEARTBEAT_TOOL_NAME,
+        description: 'Preview or refresh one local collaboration claim heartbeat. Use confirm:true only after the user confirms the exact claim id. Does not start workers or mutate files.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            claimId: { type: 'string' },
+            ttlMs: { type: 'number' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: REALTIME_COLLABORATION_RELEASE_TOOL_NAME,
+        description: 'Preview or release one local collaboration claim as done, blocked, cancelled, or released. Use confirm:true only after the user confirms the exact claim id. Does not start workers or mutate files.',
+        parameters: {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            claimId: { type: 'string' },
+            status: { type: 'string', enum: ['done', 'blocked', 'cancelled', 'released'] },
+            result: { type: 'string' },
+            summary: { type: 'string' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
           },
           additionalProperties: false,
         },

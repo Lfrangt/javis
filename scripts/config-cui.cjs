@@ -1828,6 +1828,8 @@ function printRealtimeEvidence(result) {
   const capabilityEvents = Array.isArray(capabilityTools.recent) ? capabilityTools.recent : [];
   const mcpTools = evidence.mcpTools || {};
   const mcpEvents = Array.isArray(mcpTools.recent) ? mcpTools.recent : [];
+  const collaborationTools = evidence.collaborationTools || {};
+  const collaborationEvents = Array.isArray(collaborationTools.recent) ? collaborationTools.recent : [];
   const learningTools = evidence.learningTools || {};
   const learningEvents = Array.isArray(learningTools.recent) ? learningTools.recent : [];
   const browserTools = evidence.browserTools || {};
@@ -2056,6 +2058,28 @@ function printRealtimeEvidence(result) {
     const names = Array.isArray(mcp.serverNames) && mcp.serverNames.length ? ` · names=${mcp.serverNames.slice(0, 4).join(',')}` : '';
     console.log(`- ${event.name || 'get_mcp_servers'} · ${bits.join(' · ')}${names}`);
   }
+  console.log('\nCollaboration tools:');
+  console.log(`- observed ${Number(collaborationTools.count || 0)} recent event(s) · actions ${(collaborationTools.observedActions || []).join(', ') || '-'}`);
+  console.log(`- state=${collaborationTools.hasState ? 'yes' : 'no'} · preview=${collaborationTools.hasClaimPreview ? 'yes' : 'no'} · create=${collaborationTools.hasClaimCreate ? 'yes' : 'no'} · heartbeat=${collaborationTools.hasHeartbeat ? 'yes' : 'no'} · release=${collaborationTools.hasRelease ? 'yes' : 'no'}`);
+  console.log(`- confirm gate=${collaborationTools.hasConfirmationGate ? 'yes' : 'no'} · safe=${collaborationTools.safeControl ? 'yes' : 'pending'} · conflicts=${Number(collaborationTools.conflictCount || 0)} · active=${Number(collaborationTools.activeCount || 0)}`);
+  console.log(`- next ${compact(collaborationTools.nextAction || dogfood.collaborationTools?.nextAction || 'Ask live voice to preview and confirm a scoped Claude Code/Codex collaboration claim.', 220)}`);
+  for (const event of collaborationEvents.slice(0, 4)) {
+    const collaboration = event.collaboration || {};
+    const bits = [
+      event.ok ? 'ok' : 'fail',
+      event.source || '-',
+      collaboration.action || event.name || '-',
+      collaboration.previewOnly ? 'preview' : '',
+      collaboration.executed ? 'executed' : '',
+      collaboration.requiresConfirmation ? 'confirmation' : '',
+      collaboration.confirm ? 'confirmed' : '',
+      collaboration.owner ? `owner=${collaboration.owner}` : '',
+      collaboration.scope ? `scope=${compact(collaboration.scope, 80)}` : '',
+      collaboration.conflictCount ? `conflicts=${collaboration.conflictCount}` : '',
+    ].filter(Boolean);
+    const summary = collaboration.spokenSummary ? ` · ${compact(collaboration.spokenSummary, 160)}` : '';
+    console.log(`- ${event.name || 'collaboration_tool'} · ${bits.join(' · ')}${summary}`);
+  }
   console.log('\nLocal learning tool:');
   console.log(`- observed ${Number(learningTools.count || 0)} recent event(s) · profile=${learningTools.hasLearningProfile ? 'yes' : 'no'} · evolution=${learningTools.hasLearningEvolution ? 'yes' : 'no'} · privacy=${learningTools.privacySafe ? 'safe' : 'pending'}`);
   console.log(`- source events=${learningTools.hasSourceEvents ? 'yes' : 'no'} · signals=${learningTools.hasSignals ? 'yes' : 'no'} · changes=${learningTools.hasChanges ? 'yes' : 'no'}`);
@@ -2129,7 +2153,8 @@ function printRealtimeEvidence(result) {
       const shortcut = event.shortcut?.action ? ` · shortcut=${event.shortcut.action}` : '';
       const browser = event.browser?.action ? ` · browser=${event.browser.action}` : '';
       const workNext = event.workNext?.action ? ` · workNext=${event.workNext.action}` : '';
-      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}${browser}${workNext}`);
+      const collaboration = event.collaboration?.action ? ` · collaboration=${event.collaboration.action}` : '';
+      console.log(`- ${event.name || '-'} · ${event.ok ? 'ok' : 'fail'} · ${event.source || '-'} · ${Math.round(Number(event.durationMs || 0))}ms · ${resultShape.outputType || 'output'}:${resultShape.outputBytes || 0}B${shortcut}${browser}${workNext}${collaboration}`);
     }
   } else {
     console.log('- none yet');
@@ -2470,7 +2495,7 @@ function printRealtimeDogfoodBrief(result) {
   console.log('\nPrompt script:');
   const prompts = Array.isArray(brief.prompts) ? brief.prompts : [];
   if (prompts.length) {
-    prompts.slice(0, 12).forEach((item, index) => console.log(`${index + 1}. ${item}`));
+    prompts.slice(0, 16).forEach((item, index) => console.log(`${index + 1}. ${item}`));
   } else {
     console.log('- none');
   }
