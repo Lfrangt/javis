@@ -987,7 +987,8 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('  npm run voice:chat -- --no-session --no-screen --no-ui');
   console.log('\nInside the loop:');
   console.log('  Type a request and press Enter.');
-  console.log('  Type /status, /handoff, /next, or /history for read-only resident checks.');
+  console.log('  Type /status, /browser, /handoff, /next, or /history for read-only resident checks.');
+  console.log('  Type /open <url or search> to preview opening a page; start the loop with --run to execute.');
   console.log('  Type /agent <task> to preview a bounded autonomy loop without execution.');
   console.log('  Type /help to list local loop commands.');
   console.log('  Type /exit or /quit to return to the shell.');

@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /handoff, /next, /history, /agent, /help.
+                               Slash commands: /status, /browser, /open, /handoff, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
@@ -324,10 +324,16 @@ function loopSafety() {
   };
 }
 
+function loopExecuteRequested() {
+  return hasFlag('execute') || hasFlag('run');
+}
+
 function loopHelpText() {
   return [
     'Loop commands:',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
+    '  /browser  Read the current supported browser tab and page summary.',
+    '  /open     Preview opening a URL or web search; add --run to execute through policy.',
     '  /handoff  Read the voice-ready work handoff summary.',
     '  /next     Fast-read the next workbench action preview.',
     '  /history  Read recent sanitized local voice-command turns.',
@@ -338,6 +344,90 @@ function loopHelpText() {
     'Flags: --full-status, --full-next, --full-agent, or --full for full diagnostics.',
     'Type a normal request without / to route it through /api/voice/command.',
   ].join('\n');
+}
+
+function unwrapBrowserPayload(data = {}, key) {
+  if (data && typeof data === 'object' && data[key] && typeof data[key] === 'object') return data[key];
+  return data && typeof data === 'object' ? data : {};
+}
+
+function formatBrowserUrl(value) {
+  const url = String(value || '').trim();
+  if (!url) return '-';
+  try {
+    const parsed = new URL(url);
+    return `${parsed.host}${parsed.pathname === '/' ? '' : parsed.pathname}`.slice(0, 160);
+  } catch {
+    return compactText(url, 160);
+  }
+}
+
+function formatLoopBrowser(contextData = {}, pageData = {}) {
+  const context = unwrapBrowserPayload(contextData, 'context');
+  const page = unwrapBrowserPayload(pageData, 'page');
+  const available = page.available || context.available;
+  const supported = page.supported || context.supported;
+  const app = page.app || context.app || '-';
+  const title = page.title || context.title || '';
+  const url = page.url || context.url || '';
+  const text = String(page.selectedText || page.text || page.metaDescription || '').trim();
+  const headings = Array.isArray(page.headings) ? page.headings.filter(Boolean).slice(0, 3) : [];
+  const links = Array.isArray(page.links) ? page.links.filter((link) => link?.href).slice(0, 3) : [];
+  const error = page.error || context.error || '';
+  const lines = [
+    `Browser: ${available ? 'available' : 'unavailable'} · ${supported ? 'supported' : 'unsupported'} · ${app}`,
+    `Page: ${title ? compactText(title, 180) : '-'} · ${formatBrowserUrl(url)}`,
+  ];
+  if (text) lines.push(`Text: ${compactText(text, 520)}`);
+  if (headings.length) lines.push(`Headings: ${headings.map((item) => compactText(item, 80)).join(' | ')}`);
+  if (links.length) {
+    lines.push(`Links: ${links.map((link) => compactText(link.text || link.href, 80)).join(' | ')}`);
+  }
+  lines.push(`Length: ${Number(page.textLength || 0)} char(s)${page.truncated ? ' · truncated' : ''}`);
+  if (error) lines.push(`Note: ${compactText(error, 180)}`);
+  if (!available || !supported) lines.push('Next: bring Chrome, Safari, Arc, Edge, or Brave to the front, then run /browser again.');
+  return lines.join('\n');
+}
+
+function normalizeOpenTarget(transcript) {
+  const raw = String(transcript || '').replace(/^\/open\b/i, '').trim();
+  if (!raw) return null;
+  if (/^https?:\/\/\S+$/i.test(raw)) {
+    return {
+      kind: 'url',
+      label: raw,
+      transcript: `open ${raw}`,
+    };
+  }
+  if (/^[a-z0-9][a-z0-9.-]*\.[a-z]{2,}(?:[/:?#]\S*)?$/i.test(raw)) {
+    const url = `https://${raw}`;
+    return {
+      kind: 'url',
+      label: url,
+      transcript: `open ${url}`,
+    };
+  }
+  return {
+    kind: 'search',
+    label: raw,
+    transcript: `web search ${raw}`,
+  };
+}
+
+function formatLoopOpen(data = {}, target = {}, execute = false) {
+  const route = data.route || data.routePreview || {};
+  const decision = route.decision || {};
+  const rawLocalCommand = route.localCommand || decision.localCommand || data.routing?.localCommand || '';
+  const localCommand = typeof rawLocalCommand === 'string'
+    ? rawLocalCommand
+    : rawLocalCommand?.intent || rawLocalCommand?.label || '';
+  const lines = [
+    `Open: ${execute ? 'execute requested' : 'preview only'} · ${target.kind || '-'} · ${compactText(target.label || '-', 220)}`,
+    `Route: ${decision.label || data.routing?.label || route.output || '-'} · lane=${decision.lane || data.routing?.lane || '-'} · local=${localCommand || '-'}`,
+    `Result: executed=${data.executed ? 'yes' : 'no'} · queued=${route.queued || data.routing?.status === 'queued' ? 'yes' : 'no'} · ${compactText(route.output || data.output || data.spokenAck || '-', 260)}`,
+  ];
+  if (!execute) lines.push('Next: restart this loop with --run when you want the same command to actually open.');
+  return lines.join('\n');
 }
 
 function formatLoopStatus(data = {}) {
@@ -510,6 +600,62 @@ async function runLoopCommand(transcript) {
         detailLevel: full ? 'full' : 'fast',
       });
     }
+    if (command === 'browser') {
+      const [contextResponse, pageResponse] = await Promise.all([
+        request('/api/browser/context'),
+        request('/api/browser/page?maxChars=1200'),
+      ]);
+      const output = formatLoopBrowser(contextResponse.data || {}, pageResponse.data || {});
+      return {
+        ...publicLoopCommandBase(base),
+        endpoint: '/api/browser/context + /api/browser/page?maxChars=1200',
+        detailLevel: 'fast',
+        ok: Boolean(contextResponse.ok && pageResponse.ok && contextResponse.data && pageResponse.data),
+        responseStatus: contextResponse.ok ? pageResponse.status : contextResponse.status,
+        elapsedMs: Math.round(performance.now() - base.startedAt),
+        apiElapsedMs: Math.max(contextResponse.elapsedMs || 0, pageResponse.elapsedMs || 0),
+        output,
+      };
+    }
+    if (command === 'open') {
+      const target = normalizeOpenTarget(transcript);
+      if (!target) {
+        return {
+          ...publicLoopCommandBase(base),
+          ok: false,
+          elapsedMs: Math.round(performance.now() - base.startedAt),
+          output: 'Usage: /open <https://example.com | example.com | search terms>',
+        };
+      }
+      const execute = loopExecuteRequested();
+      const payload = {
+        ...buildPayload({ loop: true, transcript: target.transcript }),
+        execute,
+        includeScreen: false,
+        includeAccessibility: false,
+        speak: false,
+        confirmSpeak: false,
+        session: false,
+        sessionGoal: '',
+        sessionTitle: '',
+        source: execute ? 'local_voice_loop_open_execute' : 'local_voice_loop_open_preview',
+      };
+      const response = await request('/api/voice/command', {
+        method: 'POST',
+        body: payload,
+      });
+      return loopCommandResult(base, response, formatLoopOpen(response.data || {}, target, execute), {
+        endpoint: '/api/voice/command',
+        detailLevel: execute ? 'execute' : 'preview',
+        previewOnly: !execute,
+        target: target.label,
+        targetKind: target.kind,
+        safety: {
+          ...loopSafety(),
+          readOnly: !execute,
+        },
+      });
+    }
     if (command === 'handoff') {
       const response = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
       return loopCommandResult(base, response, formatLoopHandoff(response.data || {}), {
@@ -612,7 +758,7 @@ async function runLoop() {
       if (!json) {
         console.log(loopCommand.output);
         console.log(`Latency: ${loopCommand.elapsedMs ?? '-'}ms${loopCommand.apiElapsedMs !== undefined ? ` · api=${loopCommand.apiElapsedMs}ms` : ''}`);
-        console.log('Safety: read-only=yes · microphone=no · realtime=no · raw audio=no');
+        console.log(`Safety: read-only=${loopCommand.safety?.readOnly === false ? 'no' : 'yes'} · microphone=no · realtime=no · raw audio=no`);
         if (process.stdin.isTTY) rl.prompt();
       }
       if (!loopCommand.ok && hasFlag('stop-on-error')) break;

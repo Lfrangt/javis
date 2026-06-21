@@ -7,7 +7,7 @@
 - Realtime voice session.
 - Local macOS speech fallback with silent preflight and explicit short audible dogfood.
 - Local voice-command fallback that turns a transcript plus metadata-only Mac/UI context into route preview/queued work plus local spoken acknowledgement without starting Realtime, has user-facing `npm run voice -- "..."` and continuous `npm run voice:chat` intake commands, exposes sanitized local history in CUI/API, and is advertised from Realtime health, pet status, work-next, and compact voice handoff when provider quota/auth/network checks block live voice.
-- Terminal CUI option `VC` starts the same local no-mic continuous intake loop, while `--print-local-voice-loop` gives a scriptable quickstart for operators and tests; inside the loop, `/status`, `/handoff`, `/next`, and `/history` read compact resident state without routing a task or using Realtime.
+- Terminal CUI option `VC` starts the same local no-mic continuous intake loop, while `--print-local-voice-loop` gives a scriptable quickstart for operators and tests; inside the loop, `/status`, `/browser`, `/handoff`, `/next`, and `/history` read compact resident/browser/work state without using Realtime, while `/open <url or search>` previews URL/search actions and only executes through normal policy gates when the loop starts with `--run`.
 - Screen sharing and frame analysis.
 - Live screen context in active Realtime sessions.
 - Private screen mode with renderer-side downscale/blur before API or Realtime delivery.
