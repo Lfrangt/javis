@@ -42916,10 +42916,10 @@ function workflowBriefing(options = {}) {
     const preflightBundleAction = Array.isArray(realtimeWorkbench.actionPlan?.previewable)
       ? realtimeWorkbench.actionPlan.previewable.find((item) => item?.id === 'prepare_preflight_bundle')
       : null;
-    if (realtimeWorkbench.phase === 'needs_live_session' && preflightBundleAction?.startsMicrophone === false) {
+    if (preflightBundleAction?.startsMicrophone === false) {
       nextActions.push({
         id: 'realtime_voice:prepare_preflight_bundle',
-        priority: 3.1,
+        priority: 3,
         label: 'Prepare Realtime voice without mic',
         summary: preflightBundleAction.summary || 'Run safe no-mic Realtime dogfood preparation before asking the user to start live voice.',
         source: 'realtime_voice',
@@ -42941,6 +42941,9 @@ function workflowBriefing(options = {}) {
         requiresUserPresence: false,
         startsMicrophone: false,
         requiresMicConfirmation: false,
+        startsRecording: false,
+        startsWorkers: false,
+        executesTask: false,
         riskLevel: 1,
       });
     }
