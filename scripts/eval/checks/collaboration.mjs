@@ -1,5 +1,7 @@
 import { ok, warn, fail } from '../_client.mjs';
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import url from 'node:url';
@@ -100,6 +102,49 @@ export default {
       );
     } catch (error) {
       out.push(fail('collaboration.cli_handoff', 'Collaboration CLI handoff', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [collabCli, 'handoff', '--markdown', '--agent', 'claude-code'], {
+        timeout: 8000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      out.push(
+        stdout.includes('# JAVIS Collaboration Handoff') &&
+          stdout.includes('## Ground Rules') &&
+          stdout.includes('## Suggested Safe Scopes') &&
+          stdout.includes('npm run collab -- claim') &&
+          stdout.includes('npm run collab -- handoff --write --agent claude-code')
+          ? ok('collaboration.cli_markdown_handoff', 'Collaboration CLI markdown handoff', 'markdown packet includes rules, suggested scopes, claim commands, and save command')
+          : fail('collaboration.cli_markdown_handoff', 'Collaboration CLI markdown handoff', 'markdown packet missing expected sections', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('collaboration.cli_markdown_handoff', 'Collaboration CLI markdown handoff', error instanceof Error ? error.message : String(error)));
+    }
+
+    const handoffPath = path.join(os.tmpdir(), `javis-collab-handoff-${Date.now()}.md`);
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [collabCli, 'handoff', '--write', handoffPath, '--agent', 'claude-code'], {
+        timeout: 8000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      const saved = fs.existsSync(handoffPath) ? fs.readFileSync(handoffPath, 'utf8') : '';
+      out.push(
+        stdout.includes('Collaboration handoff saved:') &&
+          saved.includes('# JAVIS Collaboration Handoff') &&
+          saved.includes('## Active Claims') &&
+          saved.includes('## Useful Commands')
+          ? ok('collaboration.cli_write_handoff', 'Collaboration CLI saved handoff', `saved markdown packet to ${handoffPath}`)
+          : fail('collaboration.cli_write_handoff', 'Collaboration CLI saved handoff', 'saved packet missing expected content', { stdout, saved }),
+      );
+    } catch (error) {
+      out.push(fail('collaboration.cli_write_handoff', 'Collaboration CLI saved handoff', error instanceof Error ? error.message : String(error)));
+    } finally {
+      try {
+        fs.rmSync(handoffPath, { force: true });
+      } catch {}
     }
 
     try {

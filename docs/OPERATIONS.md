@@ -282,11 +282,15 @@ Use `POST /api/autonomy/run` when JAVIS should think through a task as a bounded
 
 Use CUI option `27. Show collaboration handoff`, `npm run config -- --print-collaboration-handoff`,
 `npm run config -- --print-collaboration-suggestions`, `npm run collab -- handoff`,
+`npm run collab -- handoff --markdown --agent claude-code`,
+`npm run collab -- handoff --write --agent claude-code`,
 `GET /api/collaboration/handoff`, or `GET /api/collaboration/suggestions` when Codex, Claude Code, or
 a local CLI worker is sharing the repo. The handoff summarizes active owners, write scopes,
 heartbeat/release commands, conflict pairs, suggested non-overlapping scopes with ready-to-run claim
-commands, and the next safe coordination action; Realtime `get_collaboration_state` returns the same
-handoff alongside the raw claim ledger.
+commands, and the next safe coordination action. The markdown/write variants create a pasteable or
+saved local handoff packet for an external Claude Code session, including ground rules, active claims,
+suggested scopes, claim commands, and verification commands; Realtime `get_collaboration_state`
+returns the same handoff alongside the raw claim ledger.
 
 Use option `15. Run next work item` to preview and then execute the current workbench action after
 typing `RUN`. This is the manual path for recovering blocked jobs or routed work, processing the top Inbox item,

@@ -7,6 +7,7 @@ const baseUrl = process.env.JAVIS_API_BASE || 'http://127.0.0.1:3417';
 const appSupportDir = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
 const dataDir = process.env.JAVIS_DATA_DIR || path.join(appSupportDir, 'Runtime');
 const apiTokenFile = process.env.JAVIS_API_TOKEN_FILE || path.join(dataDir, 'api-token');
+const defaultHandoffFile = path.join(dataDir, 'collaboration-handoff.md');
 
 class ApiError extends Error {
   constructor(message, status, data) {
@@ -105,7 +106,7 @@ function printHelp() {
 
 Usage:
   npm run collab -- status [--json] [--limit 20]
-  npm run collab -- handoff [--json] [--limit 20]
+  npm run collab -- handoff [--json] [--markdown] [--write [path]] [--agent claude-code] [--limit 20]
   npm run collab -- claim --scope <path-or-scope> --task <task> [--agent claude-code] [--owner "Claude Code"] [--lane claude] [--access write]
   npm run collab -- heartbeat <claim-id> [--ttl-ms 1800000]
   npm run collab -- release <claim-id> [--status done] [--result <summary>]
@@ -113,6 +114,8 @@ Usage:
 Examples:
   npm run collab -- claim --agent claude-code --owner "Claude Code" --lane claude --scope "docs/OPERATIONS.md" --task "Update operations docs"
   npm run collab -- handoff
+  npm run collab -- handoff --markdown --agent claude-code
+  npm run collab -- handoff --write --agent claude-code
   npm run collab -- heartbeat <claim-id>
   npm run collab -- release <claim-id> --status done --result "Docs updated"
 `);
@@ -127,6 +130,109 @@ function printClaimLine(claim) {
   const expires = claim.expiresAt ? ` expires=${formatTime(claim.expiresAt)}` : '';
   console.log(`- ${claim.id} ${claim.owner || claim.agent} ${claim.access}:${claim.key || claim.scope || '-'}${expires}`);
   if (claim.task) console.log(`  ${claim.task}`);
+}
+
+function markdownFence(value) {
+  const text = String(value || '').trim();
+  return text ? `\`${text.replace(/`/g, '\\`')}\`` : '`-`';
+}
+
+function markdownLine(value, fallback = '-') {
+  return String(value || fallback).replace(/\s+/g, ' ').trim();
+}
+
+function collaborationHandoffMarkdown(data, opts = {}) {
+  const handoff = data.handoff || {};
+  const agent = markdownLine(opt(opts, 'agent', 'owner') || 'claude-code');
+  const generatedAt = new Date().toISOString();
+  const counts = handoff.counts || {};
+  const lines = [
+    '# JAVIS Collaboration Handoff',
+    '',
+    `Generated: ${generatedAt}`,
+    `Target agent: ${agent}`,
+    `Mode: ${markdownLine(handoff.mode || 'unknown')} · active ${counts.active || 0} · conflicts ${counts.conflicts || 0} · total ${counts.total || 0}`,
+    '',
+    '## Current State',
+    '',
+    markdownLine(handoff.summary || 'Collaboration handoff unavailable.'),
+  ];
+  if (handoff.spokenSummary && handoff.spokenSummary !== handoff.summary) {
+    lines.push('', `Voice summary: ${markdownLine(handoff.spokenSummary)}`);
+  }
+
+  lines.push(
+    '',
+    '## Ground Rules',
+    '',
+    '- Claim a write scope before editing.',
+    '- Keep scopes narrow and non-overlapping.',
+    '- Heartbeat while working.',
+    '- Release the claim with a result when done.',
+    '- Do not force a conflicting claim unless the user explicitly resolves ownership.',
+  );
+
+  const activeScopes = Array.isArray(handoff.activeScopes) ? handoff.activeScopes : [];
+  lines.push('', '## Active Claims', '');
+  if (!activeScopes.length) {
+    lines.push('No active claims.');
+  } else {
+    for (const claim of activeScopes.slice(0, 8)) {
+      lines.push(`- ${markdownLine(claim.owner || claim.agent)} / ${markdownLine(claim.lane || 'agent')}: ${markdownFence(claim.scope || claim.key)}`);
+      if (claim.task) lines.push(`  Task: ${markdownLine(claim.task)}`);
+      if (claim.nextHeartbeatCommand) lines.push(`  Heartbeat: ${markdownFence(claim.nextHeartbeatCommand)}`);
+      if (claim.releaseCommand) lines.push(`  Release: ${markdownFence(claim.releaseCommand)}`);
+    }
+  }
+
+  const conflicts = Array.isArray(handoff.conflictPairs) ? handoff.conflictPairs : [];
+  if (conflicts.length) {
+    lines.push('', '## Conflicts', '');
+    for (const conflict of conflicts.slice(0, 8)) {
+      lines.push(`- ${markdownLine(conflict.summary || conflict.key || conflict.scope || 'Overlapping claim')}`);
+    }
+  }
+
+  const actions = Array.isArray(handoff.nextActions) ? handoff.nextActions : [];
+  lines.push('', '## Next Coordination Actions', '');
+  if (!actions.length) {
+    lines.push('- Ask for a scoped task, then claim before editing.');
+  } else {
+    for (const action of actions.slice(0, 5)) {
+      lines.push(`- ${markdownLine(action.label)}: ${markdownLine(action.summary)}`);
+    }
+  }
+
+  const suggestions = Array.isArray(handoff.suggestedScopes) ? handoff.suggestedScopes : [];
+  lines.push('', '## Suggested Safe Scopes', '');
+  if (!suggestions.length) {
+    lines.push('No suggested scopes right now.');
+  } else {
+    for (const suggestion of suggestions.slice(0, 8)) {
+      const status = suggestion.safeToClaim ? 'safe' : `blocked:${suggestion.conflictCount || 0}`;
+      lines.push(`### ${markdownLine(suggestion.label || suggestion.id)} (${status})`);
+      lines.push('');
+      lines.push(`Scope: ${markdownFence(suggestion.scope || suggestion.key)}`);
+      if (suggestion.task) lines.push(`Task: ${markdownLine(suggestion.task)}`);
+      if (suggestion.reason) lines.push(`Why: ${markdownLine(suggestion.reason)}`);
+      if (suggestion.claimCommand) lines.push(`Claim: ${markdownFence(suggestion.claimCommand)}`);
+      const validation = Array.isArray(suggestion.validation) ? suggestion.validation : [];
+      if (validation.length) lines.push(`Verify: ${validation.map((item) => markdownFence(item)).join(' && ')}`);
+      lines.push('');
+    }
+  }
+
+  lines.push(
+    '## Useful Commands',
+    '',
+    `- Status: ${markdownFence('npm run collab -- status')}`,
+    `- Handoff: ${markdownFence(`npm run collab -- handoff --agent ${agent}`)}`,
+    `- Markdown packet: ${markdownFence(`npm run collab -- handoff --markdown --agent ${agent}`)}`,
+    `- Save packet: ${markdownFence(`npm run collab -- handoff --write --agent ${agent}`)}`,
+    '',
+  );
+
+  return `${lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()}\n`;
 }
 
 async function statusCommand(opts) {
@@ -150,9 +256,27 @@ async function statusCommand(opts) {
 
 async function handoffCommand(opts) {
   const limit = numberOpt(opts, 20, 'limit');
-  const data = await request(`/api/collaboration/handoff?limit=${encodeURIComponent(limit)}`);
+  const agent = opt(opts, 'agent', 'owner');
+  const query = opt(opts, 'query', 'task');
+  const params = new URLSearchParams({ limit: String(limit) });
+  if (agent) params.set('agent', String(agent));
+  if (query) params.set('query', String(query));
+  const data = await request(`/api/collaboration/handoff?${params.toString()}`);
   if (boolOpt(opts, 'json')) {
     console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  if (boolOpt(opts, 'markdown') || opts.write !== undefined || opts.output !== undefined || opts.out !== undefined) {
+    const markdown = collaborationHandoffMarkdown(data, opts);
+    const target = opt(opts, 'write', 'output', 'out');
+    if (target !== undefined) {
+      const outputPath = target === true ? defaultHandoffFile : path.resolve(String(target));
+      fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+      fs.writeFileSync(outputPath, markdown, 'utf8');
+      console.log(`Collaboration handoff saved: ${outputPath}`);
+      return;
+    }
+    console.log(markdown.trimEnd());
     return;
   }
   const handoff = data.handoff || {};
