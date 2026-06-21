@@ -122,12 +122,14 @@ export default {
         : fail('realtime.voice_health', 'Realtime voice health', 'config snapshot did not expose provider health state'),
     );
     const localFallback = realtime.voiceHealth?.fallback || {};
+    const localFallbackBlocker = localFallback.blocker || {};
     out.push(
       localFallback.available === true &&
         localFallback.endpoint === '/api/voice/command' &&
         localFallback.lane === 'local_voice_command' &&
         typeof localFallback.summary === 'string' &&
         localFallback.summary.toLowerCase().includes('local voice-command fallback') &&
+        typeof localFallbackBlocker.active === 'boolean' &&
         localFallback.safety?.startsMicrophone === false &&
         localFallback.safety?.usesRealtime === false &&
         localFallback.safety?.storesRawAudio === false

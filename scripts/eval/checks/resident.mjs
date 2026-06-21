@@ -67,6 +67,9 @@ export default {
     const voiceFallback = p.voiceHealth?.fallback || {};
     const localVoice = p.localVoice || {};
     const petWakeHandoff = p.wake?.handoff || {};
+    const localBlocker = localVoice.blocker || {};
+    const fallbackBlocker = voiceFallback.blocker || {};
+    const wakeBlocker = petWakeHandoff.blocker || {};
     const raw = JSON.stringify(p);
     const rawBytes = Buffer.byteLength(raw, 'utf8');
     const hasForbiddenNestedKey = (value, forbidden) => {
@@ -114,6 +117,7 @@ export default {
         voiceFallback.safety?.startsMicrophone === false &&
         voiceFallback.safety?.usesRealtime === false &&
         voiceFallback.safety?.storesRawAudio === false &&
+        typeof fallbackBlocker.active === 'boolean' &&
         localVoice.available === true &&
         ['standby', 'fallback_ready'].includes(localVoice.mode) &&
         localVoice.input?.endpoint === '/api/voice/command' &&
@@ -126,6 +130,8 @@ export default {
         localVoice.privacy?.noScreenImages === true &&
         localVoice.privacy?.noClipboardText === true &&
         localVoice.privacy?.noAccessibilityNodes === true &&
+        typeof localBlocker.active === 'boolean' &&
+        (localVoice.mode === 'fallback_ready' ? localBlocker.active === true : localBlocker.active === false) &&
         localVoice.safety?.startsMicrophone === false &&
         localVoice.safety?.usesRealtime === false &&
         localVoice.safety?.storesRawAudio === false &&
@@ -137,6 +143,7 @@ export default {
         ['local_voice_fallback', 'realtime_or_local'].includes(petWakeHandoff.mode) &&
         petWakeHandoff.input?.endpoint === '/api/voice/command' &&
         String(petWakeHandoff.input?.cliCommand || '').includes('npm run voice') &&
+        (petWakeHandoff.mode === 'local_voice_fallback' ? wakeBlocker.active === true : typeof wakeBlocker.active === 'boolean') &&
         petWakeHandoff.safety?.readOnly === true &&
         petWakeHandoff.safety?.startsMicrophone === false &&
         petWakeHandoff.safety?.usesRealtime === false &&
@@ -164,6 +171,7 @@ export default {
           traffic,
           voiceFallback,
           localVoice,
+          localBlocker,
           petWakeHandoff,
         }),
     );

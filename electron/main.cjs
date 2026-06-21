@@ -23754,6 +23754,13 @@ function localVoiceStatusSnapshot(options = {}) {
   const history = voiceCommandHistorySnapshot({ limit: 1 });
   const latest = history.items[0] || null;
   const fallbackReady = voiceHealth.status !== 'ready';
+  const blocker = fallback.blocker || {
+    active: fallbackReady,
+    kind: compactRecordText(voiceHealth.kind || '', 80),
+    status: compactRecordText(voiceHealth.status || '', 80),
+    summary: compactRecordText(voiceHealth.summary || '', 220),
+    next: compactRecordText(voiceHealth.next || '', 260),
+  };
   return {
     version: 1,
     available: true,
@@ -23771,6 +23778,13 @@ function localVoiceStatusSnapshot(options = {}) {
         : 'Use npm run voice when you want no-mic intake, or start Realtime when provider health is ready.',
       220,
     ),
+    blocker: {
+      active: Boolean(blocker.active),
+      kind: compactRecordText(blocker.kind || '', 80),
+      status: compactRecordText(blocker.status || '', 80),
+      summary: compactRecordText(blocker.summary || '', 220),
+      next: compactRecordText(blocker.next || '', 260),
+    },
     input: {
       endpoint: '/api/voice/command',
       historyEndpoint: '/api/voice/history',
@@ -23831,6 +23845,7 @@ function wakeHandoffSnapshot(options = {}) {
     ),
     input: localVoice.input,
     localVoiceMode: localVoice.mode,
+    blocker: localVoice.blocker || null,
     voiceHealth: {
       status: voiceHealth.status || '',
       kind: voiceHealth.kind || '',
@@ -29290,6 +29305,7 @@ function presenceRecentObservation(event = null) {
 
 function presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation }) {
   if (readiness?.overall === 'blocked') return 'setup_blocked';
+  if (readiness?.overall === 'degraded') return 'needs_attention';
   if (conversation?.status === 'connecting') return 'connecting';
   if (conversation?.status === 'live') return 'listening';
   if (conversation?.status === 'error' && Number(conversation.ageMs || 0) < 60000) return 'voice_error';
@@ -29375,7 +29391,11 @@ function presenceStateSnapshot(options = {}) {
     mode === 'waking' ? 'Wake trigger received.' : '',
     mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
     activeRoutes.length ? `${activeRoutes.length} routed task(s) active or blocked.` : '',
-    mode === 'needs_attention' ? `${pendingApprovals.length} approval(s) need attention.` : '',
+    mode === 'needs_attention'
+      ? readiness.overall === 'degraded'
+        ? `Needs attention: ${readiness.summary}`
+        : `${pendingApprovals.length} approval(s) need attention.`
+      : '',
     mode === 'setup_blocked' ? `Setup blocked: ${readiness.summary}` : '',
     observing.available
       ? `Latest context: ${[observing.app, observing.browser.host || observing.browser.title || observing.windowTitle].filter(Boolean).join(' · ')}.`
@@ -29466,28 +29486,48 @@ function presenceStateSnapshot(options = {}) {
 }
 
 function petReadinessSnapshot() {
-  if (OPENAI_API_KEY) {
+  if (!OPENAI_API_KEY) {
     return {
-      overall: 'ready',
-      label: 'Ready',
-      summary: 'Core voice key is configured.',
-      counts: { ready: 1, warning: 0, blocked: 0, total: 1 },
-      primaryIssue: null,
+      overall: 'blocked',
+      label: 'Setup blocked',
+      summary: 'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
+      counts: { ready: 0, warning: 0, blocked: 1, total: 1 },
+      primaryIssue: readinessItem(
+        'openai_key',
+        'OpenAI key',
+        'blocked',
+        'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
+        'Add OPENAI_API_KEY to .env and restart JAVIS.',
+      ),
       generatedAt: new Date().toISOString(),
     };
   }
+
+  const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
+  if (voiceHealth.status !== 'ready') {
+    const blocked = voiceHealth.status === 'blocked';
+    return {
+      overall: blocked ? 'blocked' : 'degraded',
+      label: blocked ? 'Setup blocked' : 'Needs attention',
+      summary: voiceHealth.summary || 'Realtime voice provider needs attention.',
+      counts: { ready: 1, warning: blocked ? 0 : 1, blocked: blocked ? 1 : 0, total: 2 },
+      primaryIssue: readinessItem(
+        'realtime_voice_provider',
+        'Realtime voice provider',
+        voiceHealth.status,
+        voiceHealth.summary || 'Realtime voice provider needs attention.',
+        voiceHealth.next || 'Open the terminal CUI for Realtime provider details.',
+      ),
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
   return {
-    overall: 'blocked',
-    label: 'Setup blocked',
-    summary: 'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
-    counts: { ready: 0, warning: 0, blocked: 1, total: 1 },
-    primaryIssue: readinessItem(
-      'openai_key',
-      'OpenAI key',
-      'blocked',
-      'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
-      'Add OPENAI_API_KEY to .env and restart JAVIS.',
-    ),
+    overall: 'ready',
+    label: 'Ready',
+    summary: 'Core voice key and Realtime provider are ready.',
+    counts: { ready: 2, warning: 0, blocked: 0, total: 2 },
+    primaryIssue: null,
     generatedAt: new Date().toISOString(),
   };
 }
@@ -29532,7 +29572,11 @@ function petPresenceSnapshot(options = {}) {
     mode === 'waking' ? 'Wake trigger received.' : '',
     mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
     activeRoutes.length ? `${activeRoutes.length} routed task(s) active or blocked.` : '',
-    mode === 'needs_attention' ? `${pendingApprovals.length} approval(s) need attention.` : '',
+    mode === 'needs_attention'
+      ? readiness.overall === 'degraded'
+        ? `Needs attention: ${readiness.summary}`
+        : `${pendingApprovals.length} approval(s) need attention.`
+      : '',
     mode === 'setup_blocked' ? `Setup blocked: ${readiness.summary}` : '',
     observing.available
       ? `Latest context: ${[observing.app, observing.browser.host || observing.browser.title || observing.windowTitle].filter(Boolean).join(' · ')}.`
@@ -29677,6 +29721,15 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
         cliCommand: compactRecordText(handoff.input?.cliCommand || '', 140),
       },
       localVoiceMode: compactRecordText(handoff.localVoiceMode || '', 80),
+      blocker: handoff.blocker
+        ? {
+            active: Boolean(handoff.blocker.active),
+            kind: compactRecordText(handoff.blocker.kind || '', 80),
+            status: compactRecordText(handoff.blocker.status || '', 80),
+            summary: compactRecordText(handoff.blocker.summary || '', 160),
+            next: compactRecordText(handoff.blocker.next || '', 180),
+          }
+        : null,
       safety: {
         readOnly: handoff.safety?.readOnly !== false,
         startsMicrophone: Boolean(handoff.safety?.startsMicrophone),
@@ -30000,6 +30053,15 @@ function petStatusSnapshot() {
           dogfoodCommand: compactRecordText(fallback.dogfoodCommand || '', 160),
           summary: compactRecordText(fallback.summary || '', 180),
           next: compactRecordText(fallback.next || '', 180),
+          blocker: fallback.blocker
+            ? {
+                active: Boolean(fallback.blocker.active),
+                kind: compactRecordText(fallback.blocker.kind || '', 80),
+                status: compactRecordText(fallback.blocker.status || '', 80),
+                summary: compactRecordText(fallback.blocker.summary || '', 160),
+                next: compactRecordText(fallback.blocker.next || '', 180),
+              }
+            : null,
           safety: {
             startsMicrophone: Boolean(fallback.safety?.startsMicrophone),
             usesRealtime: Boolean(fallback.safety?.usesRealtime),
@@ -31631,7 +31693,14 @@ function classifyRealtimeProviderIssue(details = {}) {
 
 function realtimeLocalVoiceFallbackSnapshot(issue = null) {
   const blockedByQuota = issue?.kind === 'quota_or_rate_limit';
-  const providerBlocked = Boolean(issue && ['quota_or_rate_limit', 'provider_error', 'network'].includes(issue.kind));
+  const providerBlocked = Boolean(issue && ['missing_key', 'quota_or_rate_limit', 'auth_or_permission', 'provider_error', 'network'].includes(issue.kind));
+  const blocker = {
+    active: Boolean(issue),
+    kind: compactRecordText(issue?.kind || '', 80),
+    status: compactRecordText(issue?.status || '', 80),
+    summary: compactRecordText(issue?.summary || '', 220),
+    next: compactRecordText(issue?.next || '', 260),
+  };
   return {
     available: true,
     activeWhenRealtimeBlocked: providerBlocked,
@@ -31644,6 +31713,7 @@ function realtimeLocalVoiceFallbackSnapshot(issue = null) {
     next: blockedByQuota
       ? 'Use the local voice-command fallback for task routing now; add API quota later to restore live WebRTC voice.'
       : 'Use this fallback when live Realtime is unavailable or when a no-mic preview is safer.',
+    blocker,
     safety: {
       startsMicrophone: false,
       usesRealtime: false,

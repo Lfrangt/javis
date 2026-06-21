@@ -621,6 +621,9 @@ function printNextAction(next) {
     console.log(`Local fallback: ${fallback.endpoint || '/api/voice/command'} (${fallback.lane || 'local_voice_command'})`);
     if (fallback.dogfoodCommand) console.log(`Fallback command: ${fallback.dogfoodCommand}`);
     if (fallback.summary) console.log(`Fallback summary: ${compact(fallback.summary, 260)}`);
+    if (fallback.blocker?.active) {
+      console.log(`Fallback blocker: ${fallback.blocker.kind || fallback.blocker.status || 'provider'} · ${compact(fallback.blocker.summary || fallback.blocker.next || '', 260)}`);
+    }
     if (fallback.safety) {
       console.log(`Fallback safety: starts microphone=${fallback.safety.startsMicrophone ? 'yes' : 'no'}; realtime=${fallback.safety.usesRealtime ? 'yes' : 'no'}; raw audio=${fallback.safety.storesRawAudio ? 'yes' : 'no'}`);
     }
@@ -834,6 +837,7 @@ async function showWakeHandoff() {
   console.log(`Mode: ${handoff.mode || '-'} · local voice: ${handoff.localVoiceMode || '-'}`);
   if (handoff.summary) console.log(`Summary: ${compact(handoff.summary, 260)}`);
   if (handoff.next) console.log(`Next: ${compact(handoff.next, 260)}`);
+  if (handoff.blocker?.active) console.log(`Blocker: ${handoff.blocker.kind || handoff.blocker.status || 'provider'} · ${compact(handoff.blocker.summary || handoff.blocker.next || '', 260)}`);
   console.log(`Command: ${input.cliCommand || 'npm run voice -- "..."'}`);
   console.log(`Endpoint: ${input.endpoint || '/api/voice/command'}`);
   console.log(`Safety: read-only=${safety.readOnly !== false ? 'yes' : 'no'} · mic=${safety.startsMicrophone ? 'yes' : 'no'} · realtime=${safety.usesRealtime ? 'yes' : 'no'} · rawAudio=${safety.storesRawAudio ? 'yes' : 'no'}`);

@@ -90,6 +90,23 @@ type RealtimeVoiceHealth = {
   hasOpenAiKey?: boolean
   lastStatusCode?: number
   lastError?: string
+  fallback?: {
+    available?: boolean
+    activeWhenRealtimeBlocked?: boolean
+    lane?: string
+    endpoint?: string
+    summary?: string
+    next?: string
+    blocker?: LocalVoiceBlocker
+  }
+}
+
+type LocalVoiceBlocker = {
+  active: boolean
+  kind: string
+  status: string
+  summary: string
+  next: string
 }
 
 type LocalVoiceStatus = {
@@ -99,6 +116,7 @@ type LocalVoiceStatus = {
   label: string
   summary: string
   next: string
+  blocker?: LocalVoiceBlocker
   input: {
     endpoint: string
     historyEndpoint: string
@@ -212,6 +230,7 @@ type WakeHandoff = {
     historyCommand?: string
   }
   localVoiceMode: string
+  blocker?: LocalVoiceBlocker | null
   voiceHealth?: {
     status: string
     kind: string
