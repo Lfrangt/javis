@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /next, /auto, /history, /agent, /help.
+                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -354,6 +354,7 @@ function loopHelpText() {
     '  /jobs     Read active/recent jobs, worker groups, recovery hints, and next action.',
     '  /progress Alias for /jobs.',
     '  /blockers Read why JAVIS is blocked/waiting across voice, approvals, jobs, routes, and autopilot.',
+    '  /unblock  Preview how to get unstuck and what safe next step can be prepared.',
     '  /next     Fast-read the next workbench action preview.',
     '  /auto     Read autopilot/agency status and why unattended work is or is not acting.',
     '  /approvals Read pending approval/confirmation gates without resolving them.',
@@ -1236,6 +1237,31 @@ function formatLoopBlockers(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopUnblock(data = {}) {
+  const preview = data.unblock || data || {};
+  const blockers = preview.blockers || {};
+  const counts = blockers.counts || {};
+  const top = preview.topBlocker || blockers.top || null;
+  const action = preview.recommendedAction || preview.next?.action || {};
+  const lines = [
+    `Unblock preview: ${preview.status || '-'} · blockers ${counts.total ?? 0} · top=${top?.id || 'none'}`,
+  ];
+  if (top) lines.push(`Top blocker: ${top.label || top.id || '-'} · ${compactText(top.summary || '-', 220)}`);
+  if (action.id || action.label) {
+    lines.push(`Recommended: ${action.label || action.id} · source=${action.source || '-'} · executable=${action.executable ? 'yes' : 'no'} · user=${preview.requiresUser ? 'yes' : 'no'} · risk=${action.riskLevel ?? '-'}`);
+    lines.push(`Summary: ${compactText(action.summary || preview.summary || '-', 520)}`);
+  } else {
+    lines.push('Recommended: none');
+    lines.push(`Summary: ${compactText(preview.summary || '-', 520)}`);
+  }
+  if (action.localFallback?.summary) {
+    lines.push(`Fallback: ${compactText(action.localFallback.summary, 220)}`);
+  }
+  lines.push(preview.canPrepare ? 'Prepare: safe preview candidate is available through /next; not executed here.' : 'Prepare: no automatic preparation executed here.');
+  lines.push('Safety: read-only; does not execute work-next, resolve approvals, start workers, microphone, Realtime, Terminal, screen capture, or file mutation.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopAutopilot(data = {}) {
   const payload = parseToolJsonOutput(data);
   const selected = payload.selectedAction || null;
@@ -1678,6 +1704,15 @@ async function runLoopCommand(transcript) {
       const endpoint = '/api/blockers?jobLimit=5&workflowLimit=5&approvalLimit=5';
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopBlockers(response.data || {}), {
+        command,
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'unblock' || command === 'recover' || command === 'fix-blocker' || command === 'unstuck') {
+      const endpoint = '/api/unblock/preview?jobLimit=5&workflowLimit=5&approvalLimit=5';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopUnblock(response.data || {}), {
         command,
         endpoint,
         detailLevel: 'fast',

@@ -1004,7 +1004,7 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('  npm run voice:chat -- --no-session --no-screen --no-ui');
   console.log('\nInside the loop:');
   console.log('  Type a request and press Enter.');
-  console.log('  Type /status, /app, /file, /browser, /handoff, /jobs, /progress, /next, /auto, or /history for read-only resident checks.');
+  console.log('  Type /status, /app, /file, /browser, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, or /history for read-only resident checks.');
   console.log('  Type /ui <task> to preview a local app/UI workflow; start the loop with --run to execute.');
   console.log('  Type /file list|search|read ... to inspect allowed local files through policy.');
   console.log('  Type /file organize|rename|convert ... to preview file workflow plans without moving files.');

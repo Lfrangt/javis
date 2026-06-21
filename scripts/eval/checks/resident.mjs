@@ -310,6 +310,75 @@ export default {
         }),
     );
 
+    const unblockPreviewApiResponse = await ctx.api('/api/unblock/preview?jobLimit=5&workflowLimit=5&approvalLimit=5', {
+      timeoutMs: 10000,
+    });
+    const unblockPreviewApi = unblockPreviewApiResponse.data?.unblock || {};
+    out.push(
+      unblockPreviewApiResponse.ok &&
+        unblockPreviewApi.version === 1 &&
+        unblockPreviewApi.safety?.readOnly === true &&
+        unblockPreviewApi.safety?.executesWorkNext === false &&
+        unblockPreviewApi.safety?.executesActions === false &&
+        unblockPreviewApi.safety?.resolvesApprovals === false &&
+        unblockPreviewApi.safety?.startsWorkers === false &&
+        unblockPreviewApi.safety?.startsMicrophone === false &&
+        unblockPreviewApi.safety?.usesRealtime === false &&
+        unblockPreviewApi.safety?.opensTerminal === false &&
+        unblockPreviewApi.safety?.capturesScreenNow === false &&
+        unblockPreviewApi.safety?.mutatesUserFiles === false &&
+        unblockPreviewApi.next?.executed === false
+        ? ok('resident.unblock_preview_api', 'Unblock preview API', `${unblockPreviewApi.status || '-'} · action=${unblockPreviewApi.recommendedAction?.id || 'none'}`)
+        : fail('resident.unblock_preview_api', 'Unblock preview API', 'expected /api/unblock/preview to combine blockers plus work-next preview without side effects', {
+          status: unblockPreviewApiResponse.status,
+          body: unblockPreviewApiResponse.data,
+        }),
+    );
+
+    const unblockPreviewCommandResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '怎么解除这些阻塞，下一步能安全准备什么？',
+        execute: true,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_unblock_preview_local_command',
+      },
+      timeoutMs: 10000,
+    });
+    const unblockPreviewCommand = unblockPreviewCommandResponse.data || {};
+    const unblockPreviewRoute = unblockPreviewCommand.route || {};
+    const unblockPreview = unblockPreviewRoute.data?.unblockPreview || {};
+    out.push(
+      unblockPreviewCommandResponse.ok &&
+        unblockPreviewCommand.ok === true &&
+        unblockPreviewRoute.localCommand?.intent === 'unblock_preview' &&
+        unblockPreviewRoute.decision?.localCommand === 'unblock_preview' &&
+        String(unblockPreviewRoute.output || '').includes('Unblock preview:') &&
+        unblockPreview.version === 1 &&
+        unblockPreview.safety?.readOnly === true &&
+        unblockPreview.safety?.executesWorkNext === false &&
+        unblockPreview.safety?.executesActions === false &&
+        unblockPreview.safety?.resolvesApprovals === false &&
+        unblockPreview.safety?.startsWorkers === false &&
+        unblockPreview.safety?.startsMicrophone === false &&
+        unblockPreview.safety?.usesRealtime === false &&
+        unblockPreview.safety?.opensTerminal === false &&
+        unblockPreview.safety?.capturesScreenNow === false &&
+        unblockPreview.safety?.mutatesUserFiles === false &&
+        unblockPreview.next?.executed === false &&
+        unblockPreviewRoute.contextPlan?.needs?.residentState === true &&
+        unblockPreviewRoute.contextPlan?.needs?.screen === false &&
+        unblockPreviewRoute.contextPlan?.needs?.accessibility === false
+        ? ok('resident.unblock_preview_local_command', 'Unblock preview local command', `${unblockPreview.status || '-'} · action=${unblockPreview.recommendedAction?.id || 'none'}`)
+        : fail('resident.unblock_preview_local_command', 'Unblock preview local command', 'expected natural unblock/recovery question to route to read-only unblock_preview fast path', {
+          status: unblockPreviewCommandResponse.status,
+          body: unblockPreviewCommand,
+        }),
+    );
+
     const voiceStandbyPrimaryPreview = await ctx.api('/api/voice/standby', {
       method: 'POST',
       body: {
@@ -846,6 +915,17 @@ export default {
       hasBlockerStatusLoop
         ? ok('resident.local_voice_loop_blocker_status', 'Local voice loop blocker-status command', '/blockers reads voice, approvals, work, routes, and autopilot blockers without side effects')
         : fail('resident.local_voice_loop_blocker_status', 'Local voice loop blocker-status command', 'expected /blockers slash command to read /api/blockers with read-only safety copy'),
+    );
+
+    const hasUnblockPreviewLoop =
+      loopSource.includes("command === 'unblock'") &&
+      loopSource.includes('/api/unblock/preview?jobLimit=5&workflowLimit=5&approvalLimit=5') &&
+      loopSource.includes('formatLoopUnblock') &&
+      loopSource.includes('does not execute work-next, resolve approvals, start workers');
+    out.push(
+      hasUnblockPreviewLoop
+        ? ok('resident.local_voice_loop_unblock_preview', 'Local voice loop unblock preview command', '/unblock combines blockers and next action preview without side effects')
+        : fail('resident.local_voice_loop_unblock_preview', 'Local voice loop unblock preview command', 'expected /unblock slash command to read /api/unblock/preview with read-only safety copy'),
     );
 
     const petStandbyNoTerminal =

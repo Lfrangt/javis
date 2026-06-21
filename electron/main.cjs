@@ -10567,6 +10567,89 @@ function blockerStatusSnapshot(options = {}) {
   };
 }
 
+async function unblockPreviewSnapshot(options = {}) {
+  const source = compactRecordText(options.source || 'local_command', 80);
+  const blockers = blockerStatusSnapshot({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    approvalLimit: options.approvalLimit || 5,
+    source,
+  });
+  const nextRaw = await workNextAction({
+    execute: false,
+    workflowLimit: options.workflowLimit || 2,
+    jobLimit: options.jobLimit || 2,
+    source,
+  });
+  const next = compactWorkNextPayload(nextRaw);
+  const action = next.action || null;
+  const top = blockers.top || null;
+  const requiresUser = Boolean(action?.requiresUserPresence || action?.manualOnly || action?.requiresMicConfirmation);
+  const canPrepare = Boolean(action?.id && action.executable && !requiresUser && action.startsMicrophone !== true);
+  const recommendedAction = action
+    ? {
+        id: action.id,
+        label: action.label,
+        source: action.source,
+        summary: action.summary,
+        executable: Boolean(action.executable),
+        autoEligible: Boolean(action.autoEligible),
+        autopilotEligible: Boolean(action.autopilotEligible),
+        manualOnly: Boolean(action.manualOnly),
+        requiresUserPresence: Boolean(action.requiresUserPresence),
+        requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+        startsMicrophone: Boolean(action.startsMicrophone),
+        riskLevel: action.riskLevel,
+        localFallback: action.localFallback,
+      }
+    : null;
+  const status = action?.id
+    ? (top ? 'preview_ready' : 'next_ready')
+    : (top ? 'needs_manual_attention' : 'clear');
+  const spokenSummary = action?.id
+    ? [
+        top ? `当前主要阻塞是 ${top.label || top.id}: ${compactRecordText(top.summary || '', 140)}。` : '当前没有发现主要阻塞。',
+        `下一步建议是 ${action.label || action.id}。`,
+        canPrepare ? '这一步可以作为安全准备项预览，但这里不会执行。' : '这一步需要确认、用户在场或更高权限；这里只做预览。',
+      ].join(' ')
+    : (top
+        ? `当前主要阻塞是 ${top.label || top.id}: ${compactRecordText(top.summary || '', 180)}。暂时没有找到可预览的自动下一步。`
+        : '当前没有发现主要阻塞，也没有待预览的下一步动作。');
+  return {
+    version: 1,
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    source,
+    status,
+    summary: compactRecordText(spokenSummary, 520),
+    spokenSummary: compactRecordText(spokenSummary, 520),
+    blockers,
+    topBlocker: top,
+    next,
+    recommendedAction,
+    canPrepare,
+    requiresUser,
+    nextCommand: action?.id ? '/next' : '',
+    nextEndpoint: action?.id ? '/api/work/next?compact=true' : '',
+    safety: {
+      readOnly: true,
+      previewsWorkNext: true,
+      runsWorkNext: false,
+      executesWorkNext: false,
+      executesActions: false,
+      resolvesApprovals: false,
+      startsWorkers: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      opensTerminal: false,
+      capturesScreenNow: false,
+      returnsScreenImage: false,
+      readsClipboardText: false,
+      mutatesUserFiles: false,
+    },
+  };
+}
+
 async function resolveApprovalFromVoice(options = {}) {
   const id = String(options.id || options.approvalId || '').trim();
   const action = String(options.action || options.decision || '').trim().toLowerCase();
@@ -24202,6 +24285,22 @@ function naturalBlockerStatusLocalCommand(text) {
   };
 }
 
+function naturalUnblockPreviewLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  if (!raw) return null;
+  const english = /\b(unblock|recover|recovery|fix blocker|fix blockers|resolve blocker|resolve blockers|unstuck|get unstuck|what can you do next|what can you safely prepare|how can you continue|how can you proceed|how can you unblock|how to fix blocked|next safe step)\b/i.test(raw);
+  const chinese = /(怎么解卡|如何解卡|解除阻塞|解决阻塞|处理阻塞|处理卡住|怎么恢复|如何恢复|怎么让你继续|怎么让它继续|怎么继续跑|怎么继续推进|下一步怎么解|下一步怎么恢复|能自己解决什么|可以自己解决什么|能安全准备什么|可以安全准备什么|安全准备哪些|怎么把你解开|怎么让贾维斯继续|怎么让JAVIS继续)/i.test(compact);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'unblock_preview',
+    label: 'Unblock preview',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalCapabilityStatusCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24474,6 +24573,9 @@ function localCommandDecision(task) {
 
   const approvalStatusCommand = naturalApprovalStatusLocalCommand(text);
   if (approvalStatusCommand) return approvalStatusCommand;
+
+  const unblockPreviewCommand = naturalUnblockPreviewLocalCommand(text);
+  if (unblockPreviewCommand) return unblockPreviewCommand;
 
   const blockerStatusCommand = naturalBlockerStatusLocalCommand(text);
   if (blockerStatusCommand) return blockerStatusCommand;
@@ -24989,7 +25091,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -25027,7 +25129,7 @@ function buildContextPlan(message, options = {}) {
       needs.browserContext = false;
       needs.browserPage = false;
       needs.browserDom = false;
-    } else if (['blocker_status'].includes(localCommand)) {
+    } else if (['blocker_status', 'unblock_preview'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -25645,6 +25747,24 @@ function formatBlockerStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatUnblockPreviewForLocalCommand(preview = {}) {
+  const blockers = preview.blockers || {};
+  const counts = blockers.counts || {};
+  const top = preview.topBlocker || blockers.top || null;
+  const action = preview.recommendedAction || preview.next?.action || null;
+  return [
+    `Unblock preview: ${preview.status || '-'} · blockers ${counts.total ?? 0} · top=${top?.id || 'none'}`,
+    top ? `Top blocker: ${top.label || top.id || '-'} · ${compactRecordText(top.summary || '', 240)}${top.next ? ` · next ${compactRecordText(top.next, 120)}` : ''}` : 'Top blocker: none',
+    action
+      ? `Recommended: ${action.label || action.id || '-'} · source=${action.source || '-'} · executable=${action.executable ? 'yes' : 'no'} · user=${preview.requiresUser ? 'yes' : 'no'} · risk=${action.riskLevel ?? '-'}`
+      : 'Recommended: none',
+    action?.summary ? `Summary: ${compactRecordText(action.summary, 420)}` : (preview.summary ? `Summary: ${compactRecordText(preview.summary, 420)}` : ''),
+    action?.localFallback?.summary ? `Local fallback: ${compactRecordText(action.localFallback.summary, 260)}` : '',
+    preview.canPrepare ? 'Prepare: available as a safe preview candidate through /next; this command does not execute it.' : 'Prepare: no automatic preparation executed here.',
+    '边界: 这里只读解卡预览；不执行 work-next、不批准/拒绝审批、不启动 worker、不启动麦克风或 Realtime、不打开 Terminal、不主动截屏、不改用户文件。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatAutopilotStatusForLocalCommand(status = {}) {
   const selected = status.selectedAction || null;
   const first = status.firstAction || null;
@@ -25920,6 +26040,21 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatBlockerStatusForLocalCommand(blockerStatus),
         data: { blockerStatus },
+      };
+    }
+
+    if (command.intent === 'unblock_preview') {
+      const unblockPreview = await unblockPreviewSnapshot({
+        source: 'local_command',
+        jobLimit: 5,
+        workflowLimit: 5,
+        approvalLimit: 5,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatUnblockPreviewForLocalCommand(unblockPreview),
+        data: { unblockPreview },
       };
     }
 
@@ -55633,6 +55768,21 @@ function startApiServer() {
       });
     } catch (error) {
       jsonError(res, 500, 'Blocker status failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/unblock/preview', async (req, res) => {
+    try {
+      res.json({
+        unblock: await unblockPreviewSnapshot({
+          jobLimit: req.query.jobLimit,
+          workflowLimit: req.query.workflowLimit,
+          approvalLimit: req.query.approvalLimit,
+          source: 'api',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Unblock preview failed', error instanceof Error ? error.message : String(error));
     }
   });
 
