@@ -355,6 +355,7 @@ function loopHelpText() {
     '  /progress Alias for /jobs.',
     '  /next     Fast-read the next workbench action preview.',
     '  /auto     Read autopilot/agency status and why unattended work is or is not acting.',
+    '  /approvals Read pending approval/confirmation gates without resolving them.',
     '  /history  Read recent sanitized local voice-command turns.',
     '  /agent    Preview a short bounded autonomy loop for a task.',
     '  /help     Show this help.',
@@ -724,6 +725,28 @@ function parseToolJsonOutput(data = {}) {
   } catch {
     return { output: raw };
   }
+}
+
+function formatLoopApprovals(data = {}) {
+  const payload = parseToolJsonOutput(data);
+  const counts = payload.counts || {};
+  const pending = Array.isArray(payload.pending) ? payload.pending : [];
+  const approvals = Array.isArray(payload.approvals) ? payload.approvals : [];
+  const lines = [
+    `Approvals: pending ${counts.pending ?? pending.length} / total ${counts.total ?? approvals.length}`,
+  ];
+  if (pending.length) {
+    lines.push('Pending:');
+    for (const approval of pending.slice(0, 5)) {
+      const next = approval.continuation?.title ? ` · next ${compactText(approval.continuation.title, 90)}` : '';
+      lines.push(`- ${approval.id || '-'} · risk ${approval.riskLevel ?? '-'} · ${compactText(approval.summary || approval.action || '-', 180)}${next}`);
+    }
+  } else {
+    lines.push('Pending: none');
+  }
+  lines.push(`Next: ${compactText(payload.nextAction || 'Continue working; there are no pending local approvals.', 260)}`);
+  lines.push('Safety: read-only; does not approve, reject, execute actions, start microphone, use Realtime, open Terminal, or capture screen.');
+  return lines.filter(Boolean).join('\n');
 }
 
 function formatLoopDelegate(data = {}, request = {}) {
@@ -1649,6 +1672,24 @@ async function runLoopCommand(transcript) {
         },
       });
       return loopCommandResult(base, response, formatLoopAutopilot(response.data || {}), {
+        command,
+        endpoint: '/api/tools/execute',
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'approvals' || command === 'approval' || command === 'confirm' || command === 'gates') {
+      const response = await request('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'local_voice_loop_approval_status',
+          name: 'get_pending_approvals',
+          arguments: {
+            source: 'local_voice_loop',
+            limit: 5,
+          },
+        },
+      });
+      return loopCommandResult(base, response, formatLoopApprovals(response.data || {}), {
         command,
         endpoint: '/api/tools/execute',
         detailLevel: 'fast',

@@ -223,6 +223,49 @@ export default {
         }),
     );
 
+    const approvalStatusCommandResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '现在有没有需要我确认的审批，哪些动作卡住了？',
+        execute: true,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_approval_status_local_command',
+      },
+      timeoutMs: 10000,
+    });
+    const approvalStatusCommand = approvalStatusCommandResponse.data || {};
+    const approvalStatusRoute = approvalStatusCommand.route || {};
+    const approvalStatus = approvalStatusRoute.data?.approvalStatus || {};
+    out.push(
+      approvalStatusCommandResponse.ok &&
+        approvalStatusCommand.ok === true &&
+        approvalStatusRoute.localCommand?.intent === 'approval_status' &&
+        approvalStatusRoute.decision?.localCommand === 'approval_status' &&
+        String(approvalStatusRoute.output || '').includes('Approvals:') &&
+        approvalStatus.version === 1 &&
+        Array.isArray(approvalStatus.pending) &&
+        typeof approvalStatus.counts?.total === 'number' &&
+        approvalStatus.safety?.readOnly === true &&
+        approvalStatus.safety?.resolvesApprovals === false &&
+        approvalStatus.safety?.executesActions === false &&
+        approvalStatus.safety?.startsMicrophone === false &&
+        approvalStatus.safety?.usesRealtime === false &&
+        approvalStatus.safety?.opensTerminal === false &&
+        approvalStatus.safety?.capturesScreenNow === false &&
+        approvalStatus.safety?.mutatesUserFiles === false &&
+        approvalStatusRoute.contextPlan?.needs?.residentState === true &&
+        approvalStatusRoute.contextPlan?.needs?.screen === false &&
+        approvalStatusRoute.contextPlan?.needs?.accessibility === false
+        ? ok('resident.approval_status_local_command', 'Approval status local command', `${approvalStatus.count || 0} pending approval(s) · control=${approvalStatus.controlMode?.mode || '-'}`)
+        : fail('resident.approval_status_local_command', 'Approval status local command', 'expected natural approval/confirmation question to route to a read-only approval_status fast path', {
+          status: approvalStatusCommandResponse.status,
+          body: approvalStatusCommand,
+        }),
+    );
+
     const voiceStandbyPrimaryPreview = await ctx.api('/api/voice/standby', {
       method: 'POST',
       body: {
@@ -719,6 +762,17 @@ export default {
       hasPerceptionStatusLoop
         ? ok('resident.local_voice_loop_perception_status', 'Local voice loop perception-status command', '/see reads perception consent without screen capture, images, page text, or microphone')
         : fail('resident.local_voice_loop_perception_status', 'Local voice loop perception-status command', 'expected /see slash command to read /api/perception/consent with read-only safety copy'),
+    );
+
+    const hasApprovalStatusLoop =
+      loopSource.includes("command === 'approvals'") &&
+      loopSource.includes('get_pending_approvals') &&
+      loopSource.includes('formatLoopApprovals') &&
+      loopSource.includes('does not approve, reject, execute actions');
+    out.push(
+      hasApprovalStatusLoop
+        ? ok('resident.local_voice_loop_approval_status', 'Local voice loop approval-status command', '/approvals reads pending confirmation gates without resolving or executing them')
+        : fail('resident.local_voice_loop_approval_status', 'Local voice loop approval-status command', 'expected /approvals slash command to read summarized pending approvals with read-only safety copy'),
     );
 
     const petStandbyNoTerminal =

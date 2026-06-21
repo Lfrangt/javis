@@ -10234,6 +10234,60 @@ function approvalVoiceSnapshot(options = {}) {
   };
 }
 
+function approvalStatusSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(20, Number(options.limit || 5)));
+  const voice = approvalVoiceSnapshot({ ...(options || {}), limit, source: options.source || 'local_command' });
+  const control = controlModeSnapshot();
+  const policy = effectiveActionPolicySnapshot();
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    ok: voice.ok,
+    status: voice.status,
+    requestedId: voice.requestedId,
+    count: Number(voice.counts?.pending || 0),
+    counts: voice.counts,
+    pending: voice.pending,
+    approvals: voice.approvals,
+    selected: voice.selected,
+    controlMode: {
+      mode: control.mode,
+      label: control.label,
+      localExecutionEnabled: control.localExecutionEnabled,
+      trustedLocalMode: control.trustedLocalMode,
+      effectiveMaxAutoRiskLevel: control.effective?.maxAutoRiskLevel,
+      effectiveRequireApprovalAtRiskLevel: control.effective?.requireApprovalAtRiskLevel,
+      blocksActionsAtRiskLevel: control.blocksActionsAtRiskLevel,
+    },
+    policy: {
+      dryRun: policy.dryRun,
+      maxAutoRiskLevel: policy.maxAutoRiskLevel,
+      requireApprovalAtRiskLevel: policy.requireApprovalAtRiskLevel,
+      policyMaxAutoRiskLevel: policy.policyMaxAutoRiskLevel,
+      policyRequireApprovalAtRiskLevel: policy.policyRequireApprovalAtRiskLevel,
+      localExecutionEnabled: policy.localExecutionEnabled,
+      trustedLocalMode: policy.trustedLocalMode,
+    },
+    safety: {
+      readOnly: true,
+      resolvesApprovals: false,
+      executesActions: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      opensTerminal: false,
+      capturesScreenNow: false,
+      mutatesUserFiles: false,
+      argsSummarized: true,
+      rawContentRedacted: true,
+      approvalIdRequiredForResolve: true,
+      approvalRequiredForApprove: true,
+    },
+    spokenSummary: voice.spokenSummary,
+    output: voice.output,
+    nextAction: voice.nextAction,
+  };
+}
+
 async function resolveApprovalFromVoice(options = {}) {
   const id = String(options.id || options.approvalId || '').trim();
   const action = String(options.action || options.decision || '').trim().toLowerCase();
@@ -23827,6 +23881,27 @@ function naturalPerceptionStatusLocalCommand(text) {
   };
 }
 
+function naturalApprovalStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  if (!raw) return null;
+  const mentionsApproval = /\b(approval|approvals|pending approval|confirmation gate|permission gate|waiting for me|needs my approval|need my approval|approve queue|approval queue)\b/i.test(raw)
+    || /(审批|批准|待确认|需要我确认|等我确认|需要我批准|需要我同意|卡在确认|确认队列|审批队列|审批门|确认门|授权请求|权限请求|有没有要我点|有没有要同意)/i.test(compact);
+  if (!mentionsApproval) return null;
+
+  const statusSignal = /\b(status|list|pending|waiting|blocked|blocker|queue|gate|review|what|which|any|need|needs|show)\b/i.test(raw)
+    || /(有没有|哪些|哪个|状态|卡住|卡着|等我|需要我|待|队列|列表|几个|当前|现在|看一下|看看)/i.test(compact);
+  if (!statusSignal) return null;
+
+  return {
+    intent: 'approval_status',
+    label: 'Approval status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalCapabilityStatusCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24096,6 +24171,9 @@ function localCommandDecision(task) {
 
   const perceptionStatusCommand = naturalPerceptionStatusLocalCommand(text);
   if (perceptionStatusCommand) return perceptionStatusCommand;
+
+  const approvalStatusCommand = naturalApprovalStatusLocalCommand(text);
+  if (approvalStatusCommand) return approvalStatusCommand;
 
   const capabilityCommand = naturalCapabilityStatusCommand(text);
   if (capabilityCommand) return capabilityCommand;
@@ -24608,7 +24686,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -24631,6 +24709,14 @@ function buildContextPlan(message, options = {}) {
       needs.screen = false;
       needs.accessibility = false;
     } else if (['perception_status'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
+      needs.browserContext = false;
+      needs.browserPage = false;
+      needs.browserDom = false;
+    } else if (['approval_status'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -25209,6 +25295,26 @@ function formatPerceptionStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatApprovalStatusForLocalCommand(status = {}) {
+  const counts = status.counts || {};
+  const pending = Array.isArray(status.pending) ? status.pending : [];
+  const control = status.controlMode || {};
+  const policy = status.policy || {};
+  const pendingLines = pending
+    .slice(0, 3)
+    .map((approval) => {
+      const continuation = approval.continuation?.title ? ` · next ${compactRecordText(approval.continuation.title, 80)}` : '';
+      return `- ${approval.id || '-'} · risk ${approval.riskLevel ?? '-'} · ${compactRecordText(approval.summary || approval.action || '-', 180)}${continuation}`;
+    });
+  return [
+    `Approvals: pending ${counts.pending ?? status.count ?? pending.length} / total ${counts.total ?? '-'} · control=${control.label || control.mode || '-'} · localExecution=${control.localExecutionEnabled === false ? 'off' : 'on'}`,
+    pendingLines.length ? `Pending:\n${pendingLines.join('\n')}` : 'Pending: none',
+    `Policy: auto<=${policy.maxAutoRiskLevel ?? '-'} · approval>=${policy.requireApprovalAtRiskLevel ?? '-'} · dryRun=${policy.dryRun ? 'yes' : 'no'} · trusted=${policy.trustedLocalMode ? 'yes' : 'no'}`,
+    status.nextAction ? `Next: ${compactRecordText(status.nextAction, 260)}` : '',
+    '边界: 这里只读审批/确认队列；不批准、不拒绝、不执行动作、不启动麦克风或 Realtime、不打开 Terminal、不主动截屏。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatAutopilotStatusForLocalCommand(status = {}) {
   const selected = status.selectedAction || null;
   const first = status.firstAction || null;
@@ -25457,6 +25563,19 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatPerceptionStatusForLocalCommand(perceptionStatus),
         data: { perceptionStatus },
+      };
+    }
+
+    if (command.intent === 'approval_status') {
+      const approvalStatus = approvalStatusSnapshot({
+        limit: 5,
+        source: 'local_command',
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatApprovalStatusForLocalCommand(approvalStatus),
+        data: { approvalStatus },
       };
     }
 
