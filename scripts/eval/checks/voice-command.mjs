@@ -225,7 +225,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -248,6 +248,7 @@ export default {
       const browserTurn = commandTurns.find((turn) => turn.command === 'browser') || {};
       const browseTurn = commandTurns.find((turn) => turn.command === 'browse') || {};
       const openTurn = commandTurns.find((turn) => turn.command === 'open') || {};
+      const delegateTurn = commandTurns.find((turn) => turn.command === 'delegate') || {};
       const nextTurn = commandTurns.find((turn) => turn.command === 'next') || {};
       const agentTurn = commandTurns.find((turn) => turn.command === 'agent') || {};
       const sessionId = turns.find((turn) => turn.session?.sessionId)?.session?.sessionId || '';
@@ -269,13 +270,13 @@ export default {
         loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 13 &&
+          loop.turnCount === 14 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 11 &&
-          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 12 &&
+          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           statusTurn.detailLevel === 'fast' &&
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&
@@ -318,6 +319,14 @@ export default {
           openTurn.targetKind === 'url' &&
           openTurn.target === 'https://example.com' &&
           openTurn.output.includes('Open: preview only') &&
+          delegateTurn.detailLevel === 'preview' &&
+          delegateTurn.endpoint === '/api/tools/execute' &&
+          delegateTurn.previewOnly === true &&
+          delegateTurn.delegateMode === 'codex' &&
+          delegateTurn.delegateScope === 'docs/ROADMAP.md' &&
+          delegateTurn.delegateStatus === 'preview' &&
+          delegateTurn.output.includes('Delegate: preview only') &&
+          delegateTurn.output.includes('Status: preview') &&
           nextTurn.detailLevel === 'fast' &&
           nextTurn.endpoint?.includes('compact=true') &&
           agentTurn.detailLevel === 'fast' &&
@@ -360,6 +369,43 @@ export default {
       );
     } catch (error) {
       out.push(fail('voice_command.local_cli_loop', 'Local voice command loop CLI', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync('/bin/sh', [
+        '-lc',
+        "printf '/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --run --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 45000,
+        maxBuffer: 1024 * 1024,
+      });
+      const delegateLoop = parseJson(stdout);
+      const delegateTurn = Array.isArray(delegateLoop.turns) ? delegateLoop.turns.find((turn) => turn.command === 'delegate') || {} : {};
+      out.push(
+        delegateLoop.ok === true &&
+          delegateLoop.loop === true &&
+          delegateLoop.turnCount === 1 &&
+          delegateTurn.ok === true &&
+          delegateTurn.endpoint === '/api/tools/execute' &&
+          delegateTurn.detailLevel === 'execute_gate' &&
+          delegateTurn.previewOnly === true &&
+          delegateTurn.delegateMode === 'codex' &&
+          delegateTurn.delegateStatus === 'confirmation_required' &&
+          delegateTurn.safety?.readOnly === true &&
+          delegateTurn.output.includes('Status: confirmation_required') &&
+          delegateTurn.output.includes('queued=no') &&
+          delegateTurn.output.includes('executed=no')
+          ? ok('voice_command.delegate_gate', 'Local voice delegate confirmation gate', 'delegate --run reaches confirmation_required without starting a worker')
+          : fail('voice_command.delegate_gate', 'Local voice delegate confirmation gate', 'delegate --run did not stop at the confirmation gate', delegateLoop),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.delegate_gate', 'Local voice delegate confirmation gate', error instanceof Error ? error.message : String(error)));
     }
 
     try {

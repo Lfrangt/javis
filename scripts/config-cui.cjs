@@ -993,6 +993,7 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('  Type /file organize|rename|convert ... to preview file workflow plans without moving files.');
   console.log('  Type /browse [intent] <task> to preview a browser workflow over the current page.');
   console.log('  Type /open <url or search> to preview opening a page; start the loop with --run to execute.');
+  console.log('  Type /delegate, /codex, or /claude <task> to preview a scoped worker handoff.');
   console.log('  Type /agent <task> to preview a bounded autonomy loop without execution.');
   console.log('  Type /help to list local loop commands.');
   console.log('  Type /exit or /quit to return to the shell.');

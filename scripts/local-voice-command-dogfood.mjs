@@ -89,11 +89,12 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
+                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
   --agent-steps <n>           In chat mode, override fast /agent step count. Default: 4.
+  --confirm-delegate          With --run, allow /delegate, /codex, or /claude to start a worker.
   --request-timeout-ms <ms>    Bound each local API call. Default: 30000.
   --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
   --no-speech                 Disable the acknowledgement preview.
@@ -328,6 +329,10 @@ function loopExecuteRequested() {
   return hasFlag('execute') || hasFlag('run');
 }
 
+function loopDelegateConfirmRequested() {
+  return hasFlag('confirm-delegate') || hasFlag('confirm-worker') || hasFlag('confirm-agent');
+}
+
 function loopHelpText() {
   return [
     'Loop commands:',
@@ -338,6 +343,9 @@ function loopHelpText() {
     '  /browser  Read the current supported browser tab and page summary.',
     '  /browse   Preview a browser workflow over the current page; add --run to execute.',
     '  /open     Preview opening a URL or web search; add --run to execute through policy.',
+    '  /delegate Preview a scoped background/Codex/Claude handoff; --run stops at a confirmation gate.',
+    '  /codex    Shortcut for /delegate codex.',
+    '  /claude   Shortcut for /delegate claude.',
     '  /handoff  Read the voice-ready work handoff summary.',
     '  /next     Fast-read the next workbench action preview.',
     '  /history  Read recent sanitized local voice-command turns.',
@@ -345,7 +353,7 @@ function loopHelpText() {
     '  /help     Show this help.',
     '  /exit     Leave the loop.',
     '',
-    'Flags: --full-status, --full-next, --full-agent, or --full for full diagnostics.',
+    'Flags: --full-status, --full-next, --full-agent, --full, or --confirm-delegate.',
     'Type a normal request without / to route it through /api/voice/command.',
   ].join('\n');
 }
@@ -524,6 +532,101 @@ function normalizeFileConvertRequest(input, command = 'convert') {
   };
 }
 
+function normalizeDelegateModeForLoop(value) {
+  const mode = String(value || '').trim().toLowerCase().replaceAll('-', '_');
+  const aliases = {
+    code: 'codex',
+    repo: 'codex',
+    claude_code: 'claude',
+    claudecode: 'claude',
+    deep: 'background',
+    bg: 'background',
+    worker: 'background',
+  };
+  const normalized = aliases[mode] || mode;
+  return ['background', 'codex', 'claude'].includes(normalized) ? normalized : '';
+}
+
+function ownerForDelegateMode(mode) {
+  if (mode === 'codex') return 'Codex';
+  if (mode === 'claude') return 'Claude Code';
+  return 'Background';
+}
+
+function normalizeDelegateAccessForLoop(value) {
+  const access = String(value || '').trim().toLowerCase();
+  if (['read', 'write', 'exclusive'].includes(access)) return access;
+  return '';
+}
+
+function extractDelegateOption(text, names) {
+  let nextText = String(text || '').trim();
+  let value = '';
+  for (const name of names) {
+    const pattern = new RegExp(`(?:^|\\s)${name}\\s+(.+?)(?=\\s+(?:scope|path|in|owner|access|mode|lane)\\b|$)`, 'i');
+    const match = nextText.match(pattern);
+    if (match) {
+      value = String(match[1] || '').trim();
+      nextText = `${nextText.slice(0, match.index)} ${nextText.slice(match.index + match[0].length)}`.replace(/\s+/g, ' ').trim();
+      break;
+    }
+  }
+  return { text: nextText, value };
+}
+
+function extractDelegateTokenOption(text, names) {
+  let nextText = String(text || '').trim();
+  let value = '';
+  for (const name of names) {
+    const pattern = new RegExp(`(?:^|\\s)${name}\\s+(\\S+)`, 'i');
+    const match = nextText.match(pattern);
+    if (match) {
+      value = String(match[1] || '').trim();
+      nextText = `${nextText.slice(0, match.index)} ${nextText.slice(match.index + match[0].length)}`.replace(/\s+/g, ' ').trim();
+      break;
+    }
+  }
+  return { text: nextText, value };
+}
+
+function normalizeDelegateRequest(transcript, command = 'delegate') {
+  let raw = String(transcript || '').replace(new RegExp(`^/${command}\\b`, 'i'), '').trim();
+  let mode = command === 'codex' || command === 'claude' ? command : '';
+  if (command === 'delegate') {
+    const tokens = raw.split(/\s+/).filter(Boolean);
+    const requestedMode = normalizeDelegateModeForLoop(tokens[0] || '');
+    if (requestedMode) {
+      mode = requestedMode;
+      raw = raw.replace(/^\S+\s*/u, '').trim();
+    }
+  }
+  mode = mode || normalizeDelegateModeForLoop(argValue('delegate-mode', argValue('worker-mode', ''))) || 'background';
+  let extracted = extractDelegateTokenOption(raw, ['scope', 'path', 'in']);
+  raw = extracted.text;
+  const scope = extracted.value;
+  extracted = extractDelegateOption(raw, ['owner']);
+  raw = extracted.text;
+  const owner = extracted.value || ownerForDelegateMode(mode);
+  extracted = extractDelegateTokenOption(raw, ['access']);
+  raw = extracted.text;
+  const access = normalizeDelegateAccessForLoop(extracted.value);
+  const task = raw.trim();
+  if (!task) {
+    return {
+      error: `Usage: /${command} <task> or /delegate codex scope <path> <task>`,
+    };
+  }
+  return {
+    task,
+    mode,
+    owner,
+    scope,
+    access,
+    execute: loopExecuteRequested(),
+    confirm: loopDelegateConfirmRequested(),
+  };
+}
+
 function parseFileActionOutput(data = {}) {
   const raw = typeof data.output === 'string' ? data.output : '';
   if (!raw) return { raw: '' };
@@ -603,6 +706,43 @@ function formatLoopFileWorkflow(data = {}, request = {}) {
   if (routing.status || routing.lane || routing.mode) lines.push(`Route: ${routing.status || '-'} · ${routing.lane || routing.mode || '-'}`);
   lines.push(`Result: ${compactText(data.output || plan.output || plan.summary || '-', 700)}`);
   lines.push('Next: use /file read/search for evidence, or ask normally to execute a confirmed plan through policy.');
+  return lines.filter(Boolean).join('\n');
+}
+
+function parseToolJsonOutput(data = {}) {
+  const raw = typeof data.output === 'string' ? data.output : '';
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { output: raw };
+  }
+}
+
+function formatLoopDelegate(data = {}, request = {}) {
+  const payload = parseToolJsonOutput(data);
+  const routing = payload.routing || {};
+  const job = payload.job || {};
+  const ownership = payload.ownership || {};
+  const status = payload.status || (data.ok ? 'preview' : 'failed');
+  const lines = [
+    `Delegate: ${payload.previewOnly === false ? 'execution requested' : 'preview only'} · ${payload.mode || request.mode || '-'} · ${payload.owner || request.owner || '-'}`,
+    `Task: ${compactText(payload.task || request.task || '-', 240)}`,
+    `Scope: ${compactText(payload.scope || request.scope || '-', 220)} · access=${payload.access || request.access || '-'}`,
+    `Status: ${status} · confirm=${payload.confirm ? 'yes' : 'no'} · queued=${payload.queued ? 'yes' : 'no'} · executed=${payload.executed ? 'yes' : 'no'}`,
+  ];
+  if (routing.id || routing.status) {
+    lines.push(`Route: ${routing.status || '-'} · ${routing.lane || '-'}${routing.id ? ` · ${routing.id}` : ''}`);
+  }
+  if (job.id || job.status) {
+    lines.push(`Job: ${job.status || '-'}${job.id ? ` · ${job.id}` : ''}`);
+  }
+  if (ownership.key || ownership.reason) {
+    lines.push(`Ownership: ${ownership.access || '-'} · serialized=${ownership.serialized ? 'yes' : 'no'} · ${compactText(ownership.reason || ownership.key || '-', 240)}`);
+  }
+  lines.push(`Result: ${compactText(payload.spokenSummary || payload.output || data.output || '-', 520)}`);
+  if (payload.requiresConfirmation) lines.push('Next: restart this loop with --run --confirm-delegate only when you want to start the worker.');
+  if (!request.execute) lines.push('Next: restart this loop with --run to review the execution confirmation gate.');
   return lines.filter(Boolean).join('\n');
 }
 
@@ -1159,6 +1299,51 @@ async function runLoopCommand(transcript) {
         },
         output: formatLoopBrowse(response.data || {}, browseRequest, execute),
       };
+    }
+    if (command === 'delegate' || command === 'codex' || command === 'claude') {
+      const delegateRequest = normalizeDelegateRequest(transcript, command);
+      if (delegateRequest.error) {
+        return {
+          ...publicLoopCommandBase(base),
+          command,
+          ok: false,
+          elapsedMs: Math.round(performance.now() - base.startedAt),
+          output: delegateRequest.error,
+        };
+      }
+      const response = await request('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: delegateRequest.execute
+            ? delegateRequest.confirm ? 'local_voice_loop_delegate_execute_confirmed' : 'local_voice_loop_delegate_execute_gate'
+            : 'local_voice_loop_delegate_preview',
+          name: 'delegate_task',
+          arguments: {
+            task: delegateRequest.task,
+            mode: delegateRequest.mode,
+            owner: delegateRequest.owner,
+            scope: delegateRequest.scope,
+            access: delegateRequest.access,
+            execute: delegateRequest.execute,
+            confirm: delegateRequest.confirm,
+          },
+        },
+      });
+      const payload = parseToolJsonOutput(response.data || {});
+      return loopCommandResult(base, response, formatLoopDelegate(response.data || {}, delegateRequest), {
+        command,
+        endpoint: '/api/tools/execute',
+        detailLevel: delegateRequest.execute ? 'execute_gate' : 'preview',
+        previewOnly: payload.previewOnly !== false,
+        delegateMode: delegateRequest.mode,
+        delegateOwner: delegateRequest.owner,
+        delegateScope: delegateRequest.scope || payload.scope || '',
+        delegateStatus: payload.status || '',
+        safety: {
+          ...loopSafety(),
+          readOnly: payload.previewOnly !== false,
+        },
+      });
     }
     if (command === 'handoff') {
       const response = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
