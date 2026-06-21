@@ -207,6 +207,101 @@ export default {
         : fail('voice_command.natural_capabilities', 'Natural capability voice command', 'natural capability phrase did not use the local capability_status fast path', naturalCapabilities.data),
     );
 
+    const naturalBrowserReady = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '浏览器准备好了吗，默认会看哪个窗口？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_browser_readiness',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserReadyData = naturalBrowserReady.data || {};
+    out.push(
+      naturalBrowserReady.ok &&
+        naturalBrowserReadyData.ok === true &&
+        naturalBrowserReadyData.executed === false &&
+        naturalBrowserReadyData.route?.decision?.localCommand === 'browser_readiness' &&
+        naturalBrowserReadyData.route?.localCommand?.intent === 'browser_readiness' &&
+        naturalBrowserReadyData.route?.data?.readiness?.version === 1 &&
+        naturalBrowserReadyData.route?.data?.readiness?.defaultTarget?.asksWhichWindow === false &&
+        typeof naturalBrowserReadyData.route?.output === 'string' &&
+        naturalBrowserReadyData.route.output.includes('浏览器状态:') &&
+        naturalBrowserReadyData.route.output.includes('不询问窗口=yes') &&
+        naturalBrowserReadyData.safety?.startsMicrophone === false &&
+        naturalBrowserReadyData.safety?.usesRealtime === false &&
+        naturalBrowserReadyData.safety?.storesRawAudio === false &&
+        naturalBrowserReadyData.safety?.callsOpenAIImmediately === false &&
+        naturalBrowserReadyData.speech?.dryRun === true
+        ? ok('voice_command.natural_browser_readiness', 'Natural browser readiness voice command', '浏览器准备好了吗 routes to read-only browser_readiness without cloud/realtime')
+        : fail('voice_command.natural_browser_readiness', 'Natural browser readiness voice command', 'natural browser readiness phrase did not use the local browser_readiness fast path', naturalBrowserReady.data),
+    );
+
+    const naturalBrowserPage = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '读一下当前网页，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_page',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserPageData = naturalBrowserPage.data || {};
+    out.push(
+      naturalBrowserPage.ok &&
+        naturalBrowserPageData.ok === true &&
+        naturalBrowserPageData.executed === false &&
+        naturalBrowserPageData.route?.decision?.localCommand === 'browser_page' &&
+        naturalBrowserPageData.route?.localCommand?.intent === 'browser_page' &&
+        naturalBrowserPageData.route?.data?.page &&
+        typeof naturalBrowserPageData.route?.output === 'string' &&
+        naturalBrowserPageData.route.output.includes('当前网页:') &&
+        naturalBrowserPageData.route.output.includes('只读当前网页') &&
+        naturalBrowserPageData.safety?.startsMicrophone === false &&
+        naturalBrowserPageData.safety?.usesRealtime === false &&
+        naturalBrowserPageData.safety?.storesRawAudio === false &&
+        naturalBrowserPageData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_browser_page', 'Natural browser page voice command', '读当前网页 routes to read-only browser_page without cloud/realtime')
+        : fail('voice_command.natural_browser_page', 'Natural browser page voice command', 'natural browser page phrase did not use the local browser_page fast path', naturalBrowserPage.data),
+    );
+
+    const naturalBrowserDom = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '当前网页有哪些按钮和输入框？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_dom',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserDomData = naturalBrowserDom.data || {};
+    out.push(
+      naturalBrowserDom.ok &&
+        naturalBrowserDomData.ok === true &&
+        naturalBrowserDomData.executed === false &&
+        naturalBrowserDomData.route?.decision?.localCommand === 'browser_dom' &&
+        naturalBrowserDomData.route?.localCommand?.intent === 'browser_dom' &&
+        naturalBrowserDomData.route?.data?.dom &&
+        typeof naturalBrowserDomData.route?.output === 'string' &&
+        naturalBrowserDomData.route.output.includes('网页控件:') &&
+        naturalBrowserDomData.route.output.includes('这里只读可见控件') &&
+        naturalBrowserDomData.safety?.startsMicrophone === false &&
+        naturalBrowserDomData.safety?.usesRealtime === false &&
+        naturalBrowserDomData.safety?.storesRawAudio === false &&
+        naturalBrowserDomData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_browser_dom', 'Natural browser DOM voice command', '当前网页有哪些按钮 routes to read-only browser_dom without cloud/realtime')
+        : fail('voice_command.natural_browser_dom', 'Natural browser DOM voice command', 'natural browser DOM phrase did not use the local browser_dom fast path', naturalBrowserDom.data),
+    );
+
     const naturalDelegate = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

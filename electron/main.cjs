@@ -23336,6 +23336,52 @@ function naturalCapabilityStatusCommand(text) {
   };
 }
 
+function naturalBrowserLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  const mentionsBrowser = /\b(browser|webpage|web page|page|tab|url|link|website|site)\b/i.test(raw)
+    || /(浏览器|网页|页面|标签页|网址|链接|网站)/.test(compactTextNoSpace);
+  if (!mentionsBrowser) return null;
+
+  const domSignal = /\b(dom|controls?|buttons?|inputs?|forms?|clickable|fillable|field|selector|links?)\b/i.test(raw)
+    || /(控件|按钮|输入框|表单|可点|能点|可以点|能点击|可以点击|可填写|能填写|链接|选择框|下拉|selector|DOM)/i.test(compactTextNoSpace);
+  if (domSignal) {
+    return {
+      intent: 'browser_dom',
+      label: 'Browser DOM controls',
+      args: {
+        limit: 30,
+      },
+    };
+  }
+
+  const pageSignal = /\b(read|summari[sz]e|summary|extract|content|text|body|title|current page|webpage|web page|what.*page|page.*say)\b/i.test(raw)
+    || /(读|阅读|总结|概括|提取|内容|正文|标题|当前网页|当前页面|网页内容|页面内容|网页说什么|页面说什么|看一下网页|看一下页面|看当前网页|看当前页面)/.test(compactTextNoSpace);
+  if (pageSignal) {
+    return {
+      intent: 'browser_page',
+      label: 'Read browser page',
+      args: {
+        maxChars: 6000,
+      },
+    };
+  }
+
+  const readinessSignal = /^(?:browser|browser status|browser ready|browser readiness|can you see the browser|can you read the browser|current browser)$/i.test(raw)
+    || /\b(browser|page|tab).*(ready|status|available|usable|working|target|default|window)\b/i.test(raw)
+    || /(浏览器(状态|准备|就绪|能用|可用|能看|能读|目标|默认|窗口)|默认.*(浏览器|网页|页面|窗口)|能不能看浏览器|能不能读网页|当前浏览器)/.test(compactPlain);
+  if (readinessSignal) {
+    return {
+      intent: 'browser_readiness',
+      label: 'Browser readiness',
+      args: {},
+    };
+  }
+
+  return null;
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
@@ -23348,6 +23394,9 @@ function localCommandDecision(task) {
 
   const capabilityCommand = naturalCapabilityStatusCommand(text);
   if (capabilityCommand) return capabilityCommand;
+
+  const browserCommand = naturalBrowserLocalCommand(text);
+  if (browserCommand) return browserCommand;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
     || /^(状态|当前状态|系统状态|下一步|有什么待办|现在该做什么|简报)$/.test(text)) {
@@ -23858,6 +23907,14 @@ function buildContextPlan(message, options = {}) {
       needs.screen = true;
       needs.accessibility = true;
       needs.vision = localCommand === 'describe_screen';
+    } else if (['browser_readiness'].includes(localCommand)) {
+      needs.browserContext = true;
+    } else if (['browser_page'].includes(localCommand)) {
+      needs.browserContext = true;
+      needs.browserPage = true;
+    } else if (['browser_dom'].includes(localCommand)) {
+      needs.browserContext = true;
+      needs.browserDom = true;
     } else if (['browser_control', 'web_search', 'open_url'].includes(localCommand)) {
       needs.browserContext = true;
       needs.localExecution = true;
@@ -24041,6 +24098,67 @@ function formatCapabilityStatusForLocalCommand({ perception = {}, capabilities =
   ].filter(Boolean).join('\n');
 }
 
+function formatBrowserUrlForLocalCommand(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '-';
+  try {
+    const url = new URL(raw);
+    return `${url.host}${url.pathname === '/' ? '' : url.pathname}`.slice(0, 180);
+  } catch {
+    return compactRecordText(raw, 180);
+  }
+}
+
+function formatBrowserReadinessForLocalCommand(readiness = {}) {
+  const context = readiness.context || {};
+  const target = readiness.defaultTarget || {};
+  const dom = readiness.capabilities?.dom || {};
+  const bridge = readiness.bridges?.cdp?.enabled ? 'cdp ready' : readiness.bridges?.javascript?.status || 'bridge unknown';
+  const next = readiness.nextAction || (Array.isArray(readiness.nextActions) ? readiness.nextActions[0] : null) || {};
+  return [
+    `浏览器状态: ${readiness.status || '-'} · ${readiness.label || '-'}`,
+    `默认目标: ${target.mode || '-'} · app=${context.app || target.app || '-'} · source=${target.source || context.source || '-'} · 不询问窗口=${target.asksWhichWindow === false ? 'yes' : 'no'}`,
+    `当前页: ${context.available ? 'available' : 'unavailable'} · supported=${context.supported ? 'yes' : 'no'} · ${compactRecordText(context.title || context.url || context.error || '-', 180)}`,
+    `桥接: ${bridge} · DOM=${dom.status || '-'}`,
+    next.label ? `下一步: ${next.label}${next.command ? ` · ${next.command}` : ''}` : '',
+    '边界: readiness 只读；不读网页正文，不执行页面 JavaScript，不点击，不调用 OpenAI。',
+  ].filter(Boolean).join('\n');
+}
+
+function formatBrowserPageForLocalCommand(page = {}) {
+  const headings = Array.isArray(page.headings) ? page.headings.filter(Boolean).slice(0, 4) : [];
+  const links = Array.isArray(page.links) ? page.links.filter((link) => link?.href).slice(0, 4) : [];
+  const text = compactRecordText(page.selectedText || page.text || page.metaDescription || '', 900);
+  return [
+    `当前网页: ${page.available ? 'available' : 'unavailable'} · supported=${page.supported ? 'yes' : 'no'} · ${page.app || '-'}`,
+    `标题: ${compactRecordText(page.title || '-', 180)}`,
+    `URL: ${formatBrowserUrlForLocalCommand(page.url)}`,
+    text ? `正文预览: ${text}` : '',
+    headings.length ? `标题节点: ${headings.map((item) => compactRecordText(item, 90)).join(' | ')}` : '',
+    links.length ? `链接: ${links.map((link) => compactRecordText(link.text || link.href, 90)).join(' | ')}` : '',
+    `长度: ${Number(page.textLength || 0)} chars${page.truncated ? ' · truncated' : ''}`,
+    page.error ? `提示: ${compactRecordText(page.error, 220)}` : '',
+    '边界: 只读当前网页；不点击，不提交表单，不启动麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
+}
+
+function formatBrowserDomForLocalCommand(dom = {}) {
+  const elements = Array.isArray(dom.elements) ? dom.elements.slice(0, 10) : [];
+  const lines = [
+    `网页控件: ${dom.available ? 'available' : 'unavailable'} · supported=${dom.supported ? 'yes' : 'no'} · ${dom.app || '-'}`,
+    `页面: ${compactRecordText(dom.title || '-', 160)} · ${formatBrowserUrlForLocalCommand(dom.url)}`,
+    `控件: ${Number(dom.count || elements.length || 0)} found · bridge=${dom.bridge || '-'}`,
+  ];
+  for (const element of elements) {
+    const label = element.label || element.text || element.placeholder || element.name || element.href || element.selector || '-';
+    lines.push(`- ${element.id || '-'} ${element.tag || '-'}${element.type ? `:${element.type}` : ''}${element.disabled ? ' disabled' : ''} · ${compactRecordText(label, 120)} · ${compactRecordText(element.selector || '', 120)}`);
+  }
+  if (dom.error) lines.push(`提示: ${compactRecordText(dom.error, 220)}`);
+  if (!dom.available) lines.push('下一步: 先用“浏览器准备好了吗”查看默认目标和桥接恢复动作。');
+  lines.push('边界: 这里只读可见控件；真正点击/填写仍走 DOM action 的预览、重观察和确认门。');
+  return lines.filter(Boolean).join('\n');
+}
+
 async function runLocalCommand(command, options = {}) {
   appendAudit('local_command.requested', { intent: command.intent, label: command.label });
   try {
@@ -24165,6 +24283,42 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatObservationForLocalCommand(observation),
         data: { observation },
+      };
+    }
+
+    if (command.intent === 'browser_readiness') {
+      const readiness = await browserReadinessSnapshot(command.args || {});
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatBrowserReadinessForLocalCommand(readiness),
+        data: { readiness },
+      };
+    }
+
+    if (command.intent === 'browser_page') {
+      const page = await browserPageSnapshot({
+        app: command.args?.app,
+        maxChars: command.args?.maxChars || 6000,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatBrowserPageForLocalCommand(page),
+        data: { page },
+      };
+    }
+
+    if (command.intent === 'browser_dom') {
+      const dom = await browserDomSnapshot({
+        app: command.args?.app,
+        limit: command.args?.limit || 30,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatBrowserDomForLocalCommand(dom),
+        data: { dom },
       };
     }
 
@@ -25551,7 +25705,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status'].includes(localCommand.intent)) {
+      if (['app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
