@@ -51879,6 +51879,8 @@ function startApiServer() {
     const readiness = readinessSnapshot();
     const presence = presenceStateSnapshot({ readiness, limit: 5 });
     const conversation = presence.conversation || conversationStateSnapshot();
+    const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+    const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
     res.json({
       api: {
         baseUrl: API_BASE,
@@ -51902,7 +51904,8 @@ function startApiServer() {
       screenPrivacy: screenPrivacySnapshot(),
       presence,
       conversation,
-      voiceHealth: realtimeVoiceHealthSnapshot({ conversation }),
+      voiceHealth,
+      localVoice,
       progressVersion: workProgressSnapshot(),
       ambient: ambientStateSnapshot(5),
       browserActivity: browserActivitySnapshot({ limit: 5 }),

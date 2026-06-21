@@ -186,6 +186,27 @@ export default {
         : warn('resident.launchagent', 'LaunchAgent status', `GET /api/resident/status ${resident.status} ${resident.error || ''}`),
     );
 
+    const status = await ctx.api('/api/status');
+    const statusVoiceHealth = status.data?.voiceHealth || {};
+    const statusLocalVoice = status.data?.localVoice || {};
+    const realtimeReady = statusVoiceHealth.status === 'ready';
+    out.push(
+      status.ok &&
+        statusLocalVoice.available === true &&
+        statusLocalVoice.input?.endpoint === '/api/voice/command' &&
+        statusLocalVoice.safety?.startsMicrophone === false &&
+        statusLocalVoice.safety?.usesRealtime === false &&
+        statusLocalVoice.safety?.storesRawAudio === false &&
+        (realtimeReady
+          ? statusLocalVoice.mode === 'standby'
+          : statusLocalVoice.mode === 'fallback_ready' && statusLocalVoice.blocker?.active === true)
+        ? ok('resident.status_local_voice_consistency', 'Status local voice consistency', `${statusVoiceHealth.status || 'unknown'} -> ${statusLocalVoice.mode}`)
+        : fail('resident.status_local_voice_consistency', 'Status local voice consistency', 'GET /api/status must expose localVoice fallback_ready when Realtime is not ready', {
+          voiceHealth: statusVoiceHealth,
+          localVoice: statusLocalVoice,
+        }),
+    );
+
     const appSource = fs.readFileSync('src/App.tsx', 'utf8');
     const startupCheckIndex = appSource.indexOf('const startupBlock = await readRealtimeStartupBlock().catch');
     const getUserMediaIndex = appSource.indexOf('navigator.mediaDevices.getUserMedia');
