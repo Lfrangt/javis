@@ -22506,12 +22506,81 @@ function normalizeWorkflowMode(value, fallback = 'quick') {
   return fallback;
 }
 
+function naturalDelegateMode(text) {
+  const raw = String(text || '');
+  if (/\bclaude(?:\s+code)?\b|Claude\s*Code|小龙虾/i.test(raw)) return 'claude';
+  if (/\bcodex\b|代码助手|代码agent|代码代理/i.test(raw)) return 'codex';
+  if (/\b(background|deep|worker|agent|subagent)\b|后台|慢慢跑|后台跑|子任务|分工/i.test(raw)) return 'background';
+  return '';
+}
+
+function stripNaturalDelegateTask(text, mode) {
+  let task = String(text || '').trim();
+  const modePattern = mode === 'codex'
+    ? '(?:codex|代码助手|代码agent|代码代理)'
+    : mode === 'claude'
+      ? '(?:claude(?:\\s+code)?|Claude\\s*Code|小龙虾)'
+      : '(?:background|deep|worker|agent|subagent|后台|后台worker|后台agent|子任务)';
+  const patterns = [
+    new RegExp(`^(?:please\\s*)?(?:delegate|handoff|hand\\s+off|send|assign|give)\\s+(?:this\\s+)?(?:task\\s+)?(?:to\\s+)?${modePattern}\\s*(?:to\\s+)?[:：,，-]?\\s*`, 'i'),
+    new RegExp(`^(?:use|ask|let)\\s+${modePattern}\\s+(?:to\\s+)?`, 'i'),
+    new RegExp(`^(?:把|将)?(?:这个任务|这件事|它|这个)?(?:交给|丢给|派给|分配给|委派给)\\s*${modePattern}\\s*(?:去|来|帮我)?[:：,，-]?\\s*`, 'i'),
+    new RegExp(`^(?:让|叫|用)\\s*${modePattern}\\s*(?:去|来|帮我)?[:：,，-]?\\s*`, 'i'),
+    /^(?:交给|丢给|派给|分配给|委派给)\s*(?:Codex|Claude\s*Code|Claude|小龙虾|后台|worker|agent|subagent)\s*(?:去|来|帮我)?[:：,，-]?\s*/i,
+    /^(?:把|将)?(?:这个任务|这件事|它|这个)?交给后台(?:慢慢)?跑[:：,，-]?\s*/i,
+    /^(?:后台|开个后台|开一个后台|让后台|后台慢慢跑|后台跑)[:：,，-]?\s*/i,
+  ];
+  for (const pattern of patterns) {
+    const next = task.replace(pattern, '').trim();
+    if (next !== task) {
+      task = next;
+      break;
+    }
+  }
+  task = task
+    .replace(/(?:，|,)?\s*(?:先不要执行|不要执行|先预览|只预览|preview only|do not execute|don't execute)\s*$/i, '')
+    .trim();
+  return task || String(text || '').trim();
+}
+
+function naturalDelegateAccess(text, task) {
+  const combined = `${text || ''} ${task || ''}`;
+  if (/read[- ]?only|readonly|inspect|review|summari[sz]e|check|look at|give .*suggestions?|建议|看一下|检查|审查|总结|阅读|只读|不要写|不写文件|不要修改|不修改/i.test(combined)) return 'read';
+  if (/write|edit|update|change|modify|fix|implement|refactor|commit|patch|create|delete|move|rename|修复|实现|修改|改|重构|提交|写入|创建|删除|移动|重命名/i.test(combined)) return 'write';
+  return '';
+}
+
+function naturalDelegateCommand(text) {
+  const mode = naturalDelegateMode(text);
+  if (!mode) return null;
+  const hasDelegateVerb = /delegate|handoff|hand\s+off|send|assign|give|use|ask|let|交给|丢给|派给|分配给|委派给|让|叫|后台慢慢跑|后台跑|开个后台|开一个后台/i.test(text);
+  if (!hasDelegateVerb) return null;
+  const task = stripNaturalDelegateTask(text, mode);
+  if (!task || task === String(text || '').trim()) return null;
+  return {
+    intent: 'delegate_task',
+    label: 'Delegate task',
+    requiresLocalExecution: true,
+    args: {
+      task,
+      mode,
+      owner: ownerForRoutingLane(mode),
+      scope: extractOwnershipPathToken(task) || '',
+      access: naturalDelegateAccess(text, task),
+      source: 'local_voice_natural_delegate',
+    },
+  };
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
   const lower = text.toLowerCase();
   const compact = text.replace(/\s+/g, '');
   if (!text) return null;
+
+  const delegateCommand = naturalDelegateCommand(text);
+  if (delegateCommand) return delegateCommand;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
     || /^(状态|当前状态|系统状态|下一步|有什么待办|现在该做什么|简报)$/.test(text)) {
@@ -22801,7 +22870,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -23033,6 +23102,9 @@ function buildContextPlan(message, options = {}) {
     } else if (['knowledge_search'].includes(localCommand)) {
       needs.knowledge = true;
       needs.files = true;
+    } else if (['delegate_task'].includes(localCommand)) {
+      needs.delegatedWorkerContext = true;
+      needs.localExecution = true;
     } else if (['cli_command'].includes(localCommand)) {
       needs.delegatedWorkerContext = true;
       needs.localExecution = true;
@@ -23182,6 +23254,23 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: progress.output,
         data: { progress },
+      };
+    }
+
+    if (command.intent === 'delegate_task') {
+      const payload = await delegateTaskPayload({
+        ...(command.args || {}),
+        execute: options.execute === true,
+        confirm: options.confirm === true,
+        source: command.args?.source || 'local_command_delegate',
+      });
+      return {
+        ok: payload.ok !== false,
+        executed: Boolean(payload.executed),
+        queued: Boolean(payload.queued),
+        localCommand: command,
+        output: payload.spokenSummary || payload.output,
+        data: { delegate: payload },
       };
     }
 
@@ -23660,6 +23749,9 @@ function voiceCommandAck(route = {}, options = {}) {
     return output ? `这次没有完成。${output}` : '这次没有完成，我已经留下了路由记录。';
   }
   if (route.localCommand?.intent === 'work_progress' && output) {
+    return output;
+  }
+  if (route.localCommand?.intent === 'delegate_task' && output) {
     return output;
   }
   const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
@@ -24518,7 +24610,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_workflow', 'creative_workflow', 'work_progress'].includes(localCommand.intent)) {
+      if (['app_workflow', 'creative_workflow', 'delegate_task', 'work_progress'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -24560,8 +24652,8 @@ async function routeTask(options = {}) {
     });
     return finalizeRouteResult({
       ok: Boolean(result.ok),
-      executed: true,
-      queued: false,
+      executed: result.executed === undefined ? true : Boolean(result.executed),
+      queued: Boolean(result.queued),
       decision,
       localCommand: result.localCommand,
       approval: result.approval,

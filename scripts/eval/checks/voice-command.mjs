@@ -172,6 +172,74 @@ export default {
         : fail('voice_command.natural_progress', 'Natural progress voice command', 'natural progress phrase did not use the local work_progress fast path', naturalProgress.data),
     );
 
+    const naturalDelegate = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '交给 Codex 检查 docs/ROADMAP.md，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_delegate',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalDelegateData = naturalDelegate.data || {};
+    const naturalDelegatePayload = naturalDelegateData.route?.data?.delegate || {};
+    out.push(
+      naturalDelegate.ok &&
+        naturalDelegateData.ok === true &&
+        naturalDelegateData.executed === false &&
+        naturalDelegateData.route?.decision?.localCommand === 'delegate_task' &&
+        naturalDelegateData.route?.localCommand?.intent === 'delegate_task' &&
+        naturalDelegatePayload.status === 'preview' &&
+        naturalDelegatePayload.mode === 'codex' &&
+        naturalDelegatePayload.scope === 'docs/ROADMAP.md' &&
+        naturalDelegatePayload.access === 'read' &&
+        naturalDelegatePayload.previewOnly === true &&
+        naturalDelegatePayload.queued === false &&
+        naturalDelegateData.safety?.startsMicrophone === false &&
+        naturalDelegateData.safety?.usesRealtime === false &&
+        naturalDelegateData.safety?.storesRawAudio === false &&
+        naturalDelegateData.safety?.callsOpenAIImmediately === false &&
+        naturalDelegateData.speech?.dryRun === true
+        ? ok('voice_command.natural_delegate', 'Natural delegate voice command', '交给 Codex ... routes to read-only delegate_task preview without cloud/realtime')
+        : fail('voice_command.natural_delegate', 'Natural delegate voice command', 'natural delegate phrase did not use the local delegate_task preview path', naturalDelegate.data),
+    );
+
+    const naturalDelegateGate = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '交给 Codex 检查 docs/ROADMAP.md',
+        execute: true,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_delegate_gate',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalDelegateGateData = naturalDelegateGate.data || {};
+    const naturalDelegateGatePayload = naturalDelegateGateData.route?.data?.delegate || {};
+    out.push(
+      naturalDelegateGate.ok &&
+        naturalDelegateGateData.ok === true &&
+        naturalDelegateGateData.requestedExecute === true &&
+        naturalDelegateGateData.executed === false &&
+        naturalDelegateGateData.route?.decision?.localCommand === 'delegate_task' &&
+        naturalDelegateGatePayload.status === 'confirmation_required' &&
+        naturalDelegateGatePayload.requiresConfirmation === true &&
+        naturalDelegateGatePayload.previewOnly === true &&
+        naturalDelegateGatePayload.queued === false &&
+        naturalDelegateGatePayload.safety?.startsWorkers === false &&
+        naturalDelegateGateData.safety?.startsMicrophone === false &&
+        naturalDelegateGateData.safety?.usesRealtime === false &&
+        naturalDelegateGateData.safety?.storesRawAudio === false &&
+        naturalDelegateGateData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_delegate_gate', 'Natural delegate confirmation gate', 'natural delegate --run stops at confirmation_required without starting a worker')
+        : fail('voice_command.natural_delegate_gate', 'Natural delegate confirmation gate', 'natural delegate execute request did not stop at confirmation gate', naturalDelegateGate.data),
+    );
+
     try {
       const { stdout } = await execFileAsync(process.execPath, [
         'scripts/local-voice-command-dogfood.mjs',
