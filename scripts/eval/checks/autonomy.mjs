@@ -1,4 +1,9 @@
-import { ok, fail } from '../_client.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+import { ok, warn, fail } from '../_client.mjs';
+
+const execFileAsync = promisify(execFile);
 
 function stepIds(loop = {}) {
   return new Set((loop.steps || []).map((step) => step.id));
@@ -120,20 +125,23 @@ export default {
         : noMicCandidate?.decision?.reason === 'realtime_preflight_fresh' &&
           noMicCandidate?.decision?.executable === false &&
           noMicCandidate?.decision?.freshness?.fresh === true;
-    const noMicRun = await ctx.api('/api/work/next', {
-      method: 'POST',
-      body: {
-        execute: true,
-        actionId: 'realtime_voice:prepare_preflight_bundle',
-        source: 'eval_autonomy_no_mic_preflight',
-        promptLimit: 24,
-        auditLimit: 8,
-      },
-      timeoutMs: 30000,
-      retries: 0,
-    });
+    const hasNoMicSurface = Boolean(noMicAction || noMicCandidate);
+    const noMicRun = hasNoMicSurface
+      ? await ctx.api('/api/work/next', {
+          method: 'POST',
+          body: {
+            execute: true,
+            actionId: 'realtime_voice:prepare_preflight_bundle',
+            source: 'eval_autonomy_no_mic_preflight',
+            promptLimit: 24,
+            auditLimit: 8,
+          },
+          timeoutMs: 30000,
+          retries: 0,
+        })
+      : { ok: false, data: null };
     const noMicResult = noMicRun.data?.next?.result || {};
-    const autopilotAfterNoMic = await ctx.api('/api/autopilot');
+    const autopilotAfterNoMic = hasNoMicSurface ? await ctx.api('/api/autopilot') : { ok: false, data: null };
     const autopilotCandidatesAfterNoMic = autopilotAfterNoMic.data?.decisionPreview?.candidates || [];
     const noMicCandidateAfter = autopilotCandidatesAfterNoMic.find((candidate) => candidate.id === 'realtime_voice:prepare_preflight_bundle');
     const noMicFreshAfter =
@@ -141,7 +149,14 @@ export default {
       noMicCandidateAfter?.decision?.executable === false &&
       noMicCandidateAfter?.decision?.freshness?.fresh === true;
     out.push(
-      workNext.ok &&
+      !hasNoMicSurface
+        ? warn(
+            'autonomy.no_mic_realtime_preflight',
+            'Autonomy no-mic Realtime fallback',
+            `No current no-mic preflight candidate; default work-next actions are ${workNextActions.slice(0, 4).map((action) => action.id || action.label).filter(Boolean).join(', ') || 'none'}`,
+            { action: noMicAction, candidate: noMicCandidate },
+          )
+        : workNext.ok &&
         noMicAction?.autoEligible === true &&
         noMicAction?.manualOnly === false &&
         noMicAction?.startsMicrophone === false &&
@@ -159,13 +174,13 @@ export default {
         noMicResult?.next?.liveCommand?.includes('--confirm-mic') &&
         autopilotAfterNoMic.ok &&
         noMicFreshAfter
-        ? ok('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', `${noMicCandidateAfter.label} · fresh=${noMicCandidateAfter.decision.freshness.waitLabel || 'cooldown'} · archive=${noMicResult.archive.file?.path || 'saved'}`)
-        : fail('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', 'expected auto-safe no-mic preflight candidate and execution result', {
-          action: noMicAction,
-          candidate: noMicCandidate,
-          candidateAfter: noMicCandidateAfter,
-          run: noMicRun.data,
-        }),
+          ? ok('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', `${noMicCandidateAfter.label} · fresh=${noMicCandidateAfter.decision.freshness.waitLabel || 'cooldown'} · archive=${noMicResult.archive.file?.path || 'saved'}`)
+          : fail('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', 'expected auto-safe no-mic preflight candidate and execution result', {
+              action: noMicAction,
+              candidate: noMicCandidate,
+              candidateAfter: noMicCandidateAfter,
+              run: noMicRun.data,
+            }),
     );
 
     const voiceTool = await ctx.api('/api/tools/execute', {
@@ -222,6 +237,36 @@ export default {
         ? ok('autonomy.realtime_config', 'Realtime autonomy tool config', 'run_autonomy_loop is available to live voice with bounded-loop instructions')
         : fail('autonomy.realtime_config', 'Realtime autonomy tool config', 'Realtime config did not expose run_autonomy_loop or its instructions', realtime),
     );
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, [
+        'scripts/config-cui.cjs',
+        '--print-autonomy',
+        '--task',
+        '检查当前 JAVIS 状态，先不要执行。',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('JAVIS Bounded Autonomy') &&
+          stdout.includes('Mode: preview') &&
+          stdout.includes('Safety: bounded=yes') &&
+          stdout.includes('direct shell=no') &&
+          stdout.includes('policy=preserved') &&
+          stdout.includes('Run explicitly: npm run autonomy:run')
+          ? ok('autonomy.cui_cli_preview', 'Autonomy CUI/CLI preview', 'config CUI exposes preview-only bounded autonomy with policy-preserving safety summary')
+          : fail('autonomy.cui_cli_preview', 'Autonomy CUI/CLI preview', 'config CUI did not print the expected bounded autonomy preview', { stdout: stdout.slice(0, 1400) }),
+      );
+    } catch (error) {
+      out.push(fail('autonomy.cui_cli_preview', 'Autonomy CUI/CLI preview', error instanceof Error ? error.message : String(error)));
+    }
 
     return out;
   },

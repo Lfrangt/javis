@@ -218,7 +218,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/next\\n/history\\n状态\\n继续刚才那个\\n/exit\\n' | npm run voice:chat -- --json --no-speech",
+        "printf '/status\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | npm run voice:chat -- --json --no-speech",
       ], {
         cwd: process.cwd(),
         env: {
@@ -252,13 +252,13 @@ export default {
         loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 5 &&
+          loop.turnCount === 6 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 3 &&
-          ['status', 'next', 'history'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 4 &&
+          ['status', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           commandTurns.every((turn) => (
             turn.ok === true &&
             turn.previewOnly === true &&

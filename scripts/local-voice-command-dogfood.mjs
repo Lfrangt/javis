@@ -78,7 +78,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /handoff, /next, /history, /help.
+                               Slash commands: /status, /handoff, /next, /history, /agent, /help.
   --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
   --no-speech                 Disable the acknowledgement preview.
   --mode <lane>               Hint quick/background/codex/claude.
@@ -282,6 +282,7 @@ function loopHelpText() {
     '  /handoff  Read the voice-ready work handoff summary.',
     '  /next     Read the next workbench action preview.',
     '  /history  Read recent sanitized local voice-command turns.',
+    '  /agent    Preview a bounded autonomy loop for a task.',
     '  /help     Show this help.',
     '  /exit     Leave the loop.',
     '',
@@ -356,6 +357,28 @@ function formatLoopHistory(data = {}) {
   return lines.join('\n');
 }
 
+function formatAutonomyLoop(data = {}) {
+  const autonomy = data.autonomy || {};
+  const route = autonomy.route || {};
+  const agency = autonomy.agencyPlan || {};
+  const primary = agency.primary || agency.nextActions?.[0] || {};
+  const steps = Array.isArray(autonomy.steps) ? autonomy.steps : [];
+  const lines = [
+    `Agent: ${autonomy.status || 'preview'} · ${route.label || route.lane || '-'} · ${compactText(agency.spokenSummary || autonomy.nextAction || '-', 420)}`,
+  ];
+  if (route.contextPlan?.recommendedTools?.length) {
+    lines.push(`Tools: ${route.contextPlan.recommendedTools.slice(0, 5).join(', ')}`);
+  }
+  if (primary.label || primary.id) {
+    lines.push(`Primary: ${primary.label || primary.id} · source=${primary.source || '-'} · executable=${primary.executable ? 'yes' : 'no'} · user=${primary.requiresUser ? 'yes' : 'no'}`);
+  }
+  if (steps.length) {
+    lines.push(`Steps: ${steps.slice(0, 5).map((step) => step.id || step.label).filter(Boolean).join(' -> ')}`);
+  }
+  lines.push(`Safety: bounded=${autonomy.safety?.bounded ? 'yes' : 'unknown'} · direct shell=${autonomy.safety?.noDirectShell ? 'no' : 'unknown'} · direct UI=${autonomy.safety?.noDirectUi ? 'no' : 'unknown'} · policy=${autonomy.safety?.usesExistingActionPolicy ? 'preserved' : 'unknown'}`);
+  return lines.join('\n');
+}
+
 function commandOk(response, command) {
   if (!response.ok) return false;
   const data = response.data || {};
@@ -363,6 +386,7 @@ function commandOk(response, command) {
   if (command === 'handoff' && data.handoff?.ok === false) return false;
   if (command === 'next' && data.next?.ok === false) return false;
   if (command === 'history' && data.history?.ok === false) return false;
+  if (command === 'agent' && data.autonomy?.ok === false) return false;
   return true;
 }
 
@@ -408,6 +432,30 @@ async function runLoopCommand(transcript) {
     if (command === 'history') {
       const response = await request('/api/voice/history?limit=5');
       return loopCommandResult(base, response, formatLoopHistory(response.data || {}));
+    }
+    if (command === 'agent') {
+      const task = String(transcript || '').replace(/^\/agent\b/i, '').trim();
+      if (!task) {
+        return {
+          ...base,
+          ok: false,
+          output: 'Usage: /agent <task to think through>',
+        };
+      }
+      const response = await request('/api/autonomy/run', {
+        method: 'POST',
+        body: {
+          task,
+          execute: false,
+          observe: true,
+          includeAccessibility: false,
+          captureScreen: false,
+          useMemory: hasFlag('use-memory'),
+          maxSteps: 8,
+          source: 'local_voice_loop_agent_preview',
+        },
+      });
+      return loopCommandResult(base, response, formatAutonomyLoop(response.data || {}));
     }
     return {
       ...base,

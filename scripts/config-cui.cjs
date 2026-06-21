@@ -45,6 +45,41 @@ function argvValue(name, fallback = '') {
   return value;
 }
 
+function positionalText() {
+  const valueFlags = new Set([
+    '--action-id',
+    '--agent',
+    '--arguments',
+    '--id',
+    '--instruction',
+    '--job-limit',
+    '--lane',
+    '--limit',
+    '--max-steps',
+    '--message',
+    '--query',
+    '--route-id',
+    '--server',
+    '--source',
+    '--task',
+    '--tool',
+    '--voice-limit',
+    '--workflow-limit',
+  ]);
+  const parts = [];
+  const args = process.argv.slice(2);
+  for (let index = 0; index < args.length; index += 1) {
+    const item = args[index];
+    if (!item) continue;
+    if (item.startsWith('--')) {
+      if (valueFlags.has(item) && args[index + 1] && !args[index + 1].startsWith('--')) index += 1;
+      continue;
+    }
+    parts.push(item);
+  }
+  return parts.join(' ').trim();
+}
+
 function readApiToken() {
   const envToken = String(process.env.JAVIS_API_TOKEN || '').trim();
   if (envToken) return envToken;
@@ -368,6 +403,8 @@ async function printStatus() {
   console.log('H. Show spoken work handoff');
   console.log('VH. Show local voice command history');
   console.log('VC. Start local voice command loop (no mic)');
+  console.log('AG. Preview bounded autonomy loop');
+  console.log('AR. Run bounded autonomy loop');
   console.log('WH. Show wake handoff');
   console.log('L. Show local capability map');
   console.log('I. Show permission matrix');
@@ -780,6 +817,99 @@ async function runWorkbenchNext(rl) {
   if (next.output) console.log(compact(next.output, 900));
 }
 
+function autonomyTaskFromArgv(fallback = '') {
+  return argvValue('--task') || argvValue('--message') || argvValue('--instruction') || positionalText() || fallback;
+}
+
+function autonomyOptionsFromArgv(options = {}) {
+  return {
+    execute: Boolean(options.execute || process.argv.includes('--run') || process.argv.includes('--execute')),
+    retry: Boolean(options.retry || process.argv.includes('--retry') || process.argv.includes('--auto-recover')),
+    observe: !process.argv.includes('--no-observe'),
+    includeAccessibility: process.argv.includes('--include-ui') || process.argv.includes('--include-accessibility'),
+    captureScreen: process.argv.includes('--capture-screen') || process.argv.includes('--screen'),
+    useMemory: process.argv.includes('--use-memory'),
+    maxSteps: Number(argvValue('--max-steps', '8') || 8),
+    source: options.source || argvValue('--source', 'cui_cli_autonomy'),
+  };
+}
+
+function printAutonomyResult(result) {
+  const autonomy = result?.autonomy || result || {};
+  const route = autonomy.route || {};
+  const agency = autonomy.agencyPlan || {};
+  const primary = agency.primary || agency.nextActions?.[0] || null;
+  const steps = Array.isArray(autonomy.steps) ? autonomy.steps : [];
+  console.log('\nJAVIS Bounded Autonomy');
+  console.log('======================');
+  console.log(`Mode: ${autonomy.executeRequested ? 'execute' : 'preview'} · status=${autonomy.status || '-'} · queued=${autonomy.queued ? 'yes' : 'no'}`);
+  console.log(`Task: ${compact(autonomy.task || '-', 260)}`);
+  console.log(`Route: ${route.label || route.lane || '-'} · ${route.contextPlan?.mode || '-'} · ${compact(route.reason || route.output || '-', 220)}`);
+  if (route.contextPlan?.recommendedTools?.length) {
+    console.log(`Tools: ${route.contextPlan.recommendedTools.slice(0, 6).join(', ')}`);
+  }
+  console.log(`Agency: ${agency.status || '-'} · ${compact(agency.spokenSummary || autonomy.nextAction || '-', 360)}`);
+  if (primary) {
+    console.log(`Primary: ${primary.label || primary.id || '-'} · source=${primary.source || '-'} · executable=${primary.executable ? 'yes' : 'no'} · user=${primary.requiresUser ? 'yes' : 'no'}`);
+    if (primary.summary) console.log(`Primary summary: ${compact(primary.summary, 360)}`);
+  }
+  if (steps.length) {
+    console.log('\nSteps:');
+    for (const step of steps.slice(0, 8)) {
+      console.log(`- ${step.ok ? 'ok' : 'check'} ${step.label || step.id}: ${compact(step.detail || step.nextAction || '', 220)}`);
+    }
+  }
+  if (autonomy.execution) {
+    console.log(`\nExecution: ${autonomy.execution.queued ? 'queued' : autonomy.execution.executed ? 'done' : 'reviewed'} · ${compact(autonomy.execution.output || '', 360)}`);
+  }
+  if (autonomy.recovery?.candidate?.action) {
+    const candidate = autonomy.recovery.candidate;
+    console.log(`Recovery candidate: ${candidate.action.label || candidate.action.id} · job ${candidate.jobId || '-'}`);
+  }
+  console.log(`\nSafety: bounded=${autonomy.safety?.bounded ? 'yes' : 'unknown'} · direct shell=${autonomy.safety?.noDirectShell ? 'no' : 'unknown'} · direct UI=${autonomy.safety?.noDirectUi ? 'no' : 'unknown'} · policy=${autonomy.safety?.usesExistingActionPolicy ? 'preserved' : 'unknown'}`);
+  console.log(`Learning: ${autonomy.safety?.learningContext?.usedInPrompt ? 'attached' : 'not attached'} · no permission grant=${autonomy.safety?.learningContext?.noPermissionGrant ? 'yes' : 'unknown'}`);
+  if (!autonomy.executeRequested) {
+    console.log('\nRun explicitly: npm run autonomy:run -- --task "<task>"');
+  }
+  return autonomy;
+}
+
+async function showAutonomyLoop(options = {}) {
+  const task = String(options.task || autonomyTaskFromArgv('检查当前 JAVIS 状态，提出下一步怎么继续，先不要执行。')).trim();
+  const argvOptions = autonomyOptionsFromArgv(options);
+  const result = await request('/api/autonomy/run', {
+    method: 'POST',
+    body: {
+      task,
+      execute: argvOptions.execute,
+      retry: argvOptions.retry,
+      observe: argvOptions.observe,
+      includeAccessibility: argvOptions.includeAccessibility,
+      captureScreen: argvOptions.captureScreen,
+      useMemory: argvOptions.useMemory,
+      maxSteps: argvOptions.maxSteps,
+      source: argvOptions.source,
+    },
+  });
+  return printAutonomyResult(result);
+}
+
+async function runAutonomyLoopFromCui(rl) {
+  const task = (await rl.question('\nTask for bounded autonomy loop: ')).trim();
+  if (!task) {
+    console.log('\nNo task entered.');
+    return;
+  }
+  console.log('\nPreviewing bounded autonomy loop...');
+  await showAutonomyLoop({ task, source: 'cui_autonomy_preview', execute: false });
+  const answer = (await rl.question('\nRun one bounded autonomy step through normal policy gates? Type RUN to execute: ')).trim();
+  if (answer !== 'RUN') {
+    console.log('\nNo action executed.');
+    return;
+  }
+  await showAutonomyLoop({ task, source: 'cui_autonomy_execute', execute: true, retry: true });
+}
+
 function printWorkHandoff(result) {
   const handoff = result?.handoff || result || {};
   console.log('JAVIS Work Handoff');
@@ -848,6 +978,7 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('\nInside the loop:');
   console.log('  Type a request and press Enter.');
   console.log('  Type /status, /handoff, /next, or /history for read-only resident checks.');
+  console.log('  Type /agent <task> to preview a bounded autonomy loop without execution.');
   console.log('  Type /help to list local loop commands.');
   console.log('  Type /exit or /quit to return to the shell.');
   console.log('\nSafety: starts microphone=no; uses Realtime=no; stores raw audio=no; screen/UI context is metadata-only.');
@@ -3791,6 +3922,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-autonomy') || process.argv.includes('--autonomy')) {
+    await showAutonomyLoop({ execute: false });
+    return;
+  }
+
+  if (process.argv.includes('--run-autonomy') || process.argv.includes('--execute-autonomy')) {
+    await showAutonomyLoop({ execute: true, retry: process.argv.includes('--retry') || process.argv.includes('--auto-recover') });
+    return;
+  }
+
   if (process.argv.includes('--print-voice-history') || process.argv.includes('--voice-history')) {
     await showVoiceHistory();
     return;
@@ -3991,6 +4132,11 @@ async function main() {
         await showVoiceHistory();
       } else if (answer === 'vc' || answer === 'voice chat' || answer === 'local voice loop' || answer === 'local voice command loop') {
         await startLocalVoiceCommandLoopFromCui(rl);
+      } else if (answer === 'ag' || answer === 'agent' || answer === 'autonomy' || answer === 'bounded autonomy') {
+        const task = await rl.question('Task to preview with bounded autonomy: ');
+        await showAutonomyLoop({ task, source: 'cui_autonomy_preview', execute: false });
+      } else if (answer === 'ar' || answer === 'agent run' || answer === 'run autonomy' || answer === 'autonomy run') {
+        await runAutonomyLoopFromCui(rl);
       } else if (answer === 'wh' || answer === 'wake handoff' || answer === 'wake') {
         await showWakeHandoff();
       } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {
