@@ -367,6 +367,55 @@ export default {
       }));
     }
 
+    const lastVoicePreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '状态',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_cui_last_voice_route',
+      },
+      timeoutMs: 15000,
+    });
+    const lastVoiceRouteId = lastVoicePreview.data?.route?.routing?.id || '';
+    try {
+      const cuiLastRun = await execFileAsync('node', [
+        'scripts/config-cui.cjs',
+        '--run-work-next',
+        '--last-voice-route',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 20000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cuiLastRun.stdout || ''}\n${cuiLastRun.stderr || ''}`;
+      out.push(
+        lastVoicePreview.ok &&
+          lastVoiceRouteId &&
+          output.includes(`Last voice route: ${lastVoiceRouteId}`) &&
+          output.includes(`Action: route:${lastVoiceRouteId}`) &&
+          output.includes('Recovery: route_preview_execute (executable)') &&
+          output.includes('Work item executed.')
+          ? ok('briefing.cui_worknext_last_voice_route', 'CUI run latest voice route', `executed latest voice preview route ${lastVoiceRouteId}`)
+          : fail('briefing.cui_worknext_last_voice_route', 'CUI run latest voice route', 'expected CUI to execute the latest executable voice preview route', {
+            routePreview: lastVoicePreview.data,
+            output: output.slice(0, 2200),
+          }),
+      );
+    } catch (error) {
+      out.push(fail('briefing.cui_worknext_last_voice_route', 'CUI run latest voice route', error instanceof Error ? error.message : String(error), {
+        routePreview: lastVoicePreview.data,
+        routeId: lastVoiceRouteId,
+      }));
+    }
+
     const routeSeed = await ctx.api('/api/tasks/parallel', {
       method: 'POST',
       body: {

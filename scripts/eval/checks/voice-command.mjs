@@ -386,8 +386,9 @@ export default {
       out.push(
         stdout.includes('Local Voice Command History') &&
           stdout.includes('transcript-preview-only') &&
-          stdout.includes(localCliTranscript.slice(0, 8))
-          ? ok('voice_command.history_cui', 'Local voice history CUI', 'CUI prints recent sanitized voice-command history')
+          stdout.includes(localCliTranscript.slice(0, 8)) &&
+          stdout.includes('Continue: npm run work:run -- --action-id route:')
+          ? ok('voice_command.history_cui', 'Local voice history CUI', 'CUI prints recent sanitized voice-command history with route continuation command')
           : fail('voice_command.history_cui', 'Local voice history CUI', 'CUI did not print the expected local voice history summary', { stdout }),
       );
     } catch (error) {

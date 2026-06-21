@@ -142,6 +142,7 @@ When a local voice or wake command is preview-only, the response includes `route
 ```bash
 npm run work:next
 npm run work:run -- --action-id route:$ROUTE_ID
+npm run work:run -- --last-voice-route
 curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/work/next?actionId=route:$ROUTE_ID"
 curl -X POST http://127.0.0.1:3417/api/work/next \
   -H "X-JAVIS-Token: $TOKEN" \
@@ -354,7 +355,7 @@ narrower recovery job with the original task, attempts, diagnostics, and log tai
 voice can target the same path through `run_worker_recovery` when the user asks to recover a specific
 failed worker. `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS` caps those queued recovery jobs per failed parent job.
 
-Use option `14. Show next work item`, `npm run work:next`, or `npm run config -- --print-work-next`, to preview the current `/api/work/next` action from the CUI. Use `npm run work:run` to execute the current action non-interactively, or `npm run work:run -- --action-id route:<route-id>` to continue a specific routed preview through the same policy gates.
+Use option `14. Show next work item`, `npm run work:next`, or `npm run config -- --print-work-next`, to preview the current `/api/work/next` action from the CUI. Use `npm run work:run` to execute the current action non-interactively, `npm run work:run -- --action-id route:<route-id>` to continue a specific routed preview, or `npm run work:run -- --last-voice-route` to continue the latest executable preview from local voice history through the same policy gates.
 
 Use `POST /api/autonomy/run` when JAVIS should think through a task as a bounded local loop instead of a single route decision. The default is preview-only: it routes the task, exposes whether local inferred learning was attached as soft context, observes local Mac context without clipboard text or default screen capture, previews one work-next action, verifies current progress, and scans failed-worker recovery candidates. The response includes `agencyPlan` with a primary next action, fallback attempts, blockers, `askUserOnlyFor` boundaries, `selfRecoveryPlan`, and a short spoken summary; Realtime should read that before asking the user to solve a recoverable problem. `selfRecoveryPlan` keeps the posture as `ask_last`: inspect existing evidence, try an alternate browser/file/app/background lane, preview scoped Codex/Claude delegation for repo work, and retry one low-risk recoverable worker before escalating to the user. Passing `execute:true` still uses the normal task router, action policy, approval queue, workers, and recovery gates; the loop does not run shell commands or UI actions directly. Passing `retry:true` or `autoRecover:true` with `execute:true` lets the loop run one budgeted recovery action through the existing worker recovery runner, capped by `maxRecoveryAttempts` and `JAVIS_MAX_RECOVERY_JOB_ATTEMPTS`. Learning evidence is local metadata only and never grants permission or changes policy thresholds.
 

@@ -682,8 +682,47 @@ function workNextActionIdFromArgv() {
   return routeId ? `route:${routeId.replace(/^route:/, '')}` : '';
 }
 
+function wantsLastVoiceRoute() {
+  return process.argv.includes('--last-voice-route') || process.argv.includes('--last-voice');
+}
+
+async function latestExecutableVoiceRoute() {
+  const limit = Math.max(1, Math.min(50, Number(argvValue('--voice-limit', '20') || 20)));
+  const result = await request(`/api/voice/history?limit=${encodeURIComponent(limit)}`);
+  const history = result.history || {};
+  const items = Array.isArray(history.items) ? history.items : [];
+  for (const item of items) {
+    if (!item?.routeId || item.executed || item.queued) continue;
+    const actionId = `route:${item.routeId}`;
+    const preview = await request(`/api/work/next?actionId=${encodeURIComponent(actionId)}`).catch(() => null);
+    const next = preview?.next || {};
+    const recommended = next.result?.routeRecovery?.recommended || next.action?.routeRecovery?.recommended || {};
+    if (next.ok === true && next.action?.source === 'routing' && recommended.executable === true) {
+      return {
+        actionId,
+        item,
+        recommended,
+      };
+    }
+  }
+  throw new Error(`No executable preview voice route found in the last ${limit} local voice history item(s).`);
+}
+
+async function resolveWorkNextAction(options = {}) {
+  const explicit = options.actionId || workNextActionIdFromArgv();
+  if (explicit) return { actionId: explicit, source: 'explicit' };
+  if (!wantsLastVoiceRoute()) return { actionId: '', source: 'default' };
+  const latest = await latestExecutableVoiceRoute();
+  return {
+    actionId: latest.actionId,
+    source: 'last_voice_route',
+    lastVoiceRoute: latest,
+  };
+}
+
 async function runWorkbenchNextDirect(options = {}) {
-  const actionId = options.actionId || workNextActionIdFromArgv();
+  const resolved = await resolveWorkNextAction(options);
+  const actionId = resolved.actionId;
   const workflowLimit = Number(argvValue('--workflow-limit', '6') || 6);
   const jobLimit = Number(argvValue('--job-limit', '6') || 6);
   const result = await request('/api/work/next', {
@@ -699,6 +738,10 @@ async function runWorkbenchNextDirect(options = {}) {
   const next = result.next || {};
   console.log('');
   printNextAction(result);
+  if (resolved.source === 'last_voice_route' && resolved.lastVoiceRoute?.item) {
+    const item = resolved.lastVoiceRoute.item;
+    console.log(`Last voice route: ${item.routeId} · ${compact(item.transcriptPreview || '', 180)}`);
+  }
   if (actionId) console.log(`Action: ${actionId}`);
   console.log(`Work item ${next.executed ? 'executed' : 'reviewed'}.`);
   if (next.output) console.log(compact(next.output, 1200));
@@ -773,6 +816,9 @@ async function showVoiceHistory() {
     const context = item.contextSummary ? ` · ${compact(item.contextSummary, 120)}` : '';
     console.log(`${index + 1}. ${formatTime(Date.parse(item.timestamp || '') || 0)} · ${item.lane || '-'} · ${state}${ids ? ` · ${ids}` : ''}`);
     console.log(`   ${compact(item.transcriptPreview || '(no transcript preview)', 220)}${context}`);
+    if (state === 'preview' && item.routeId) {
+      console.log(`   Continue: npm run work:run -- --action-id route:${item.routeId}`);
+    }
   }
 }
 
