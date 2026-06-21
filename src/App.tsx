@@ -376,6 +376,7 @@ type ConversationState = {
 
 type PresenceMode =
   | 'standby'
+  | 'fallback_ready'
   | 'watching'
   | 'waking'
   | 'connecting'
@@ -1186,12 +1187,13 @@ const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   updatedAt: startupTime,
 }
 
-type PetMood = 'standby' | 'ready' | 'watching' | 'listening' | 'thinking' | 'attention' | 'needs-key'
+type PetMood = 'standby' | 'ready' | 'fallback' | 'watching' | 'listening' | 'thinking' | 'attention' | 'needs-key'
 
 function petMoodLabel(mood: PetMood, presence?: PresenceState, talking = false) {
   if (mood === 'needs-key') return 'Needs key'
   if (talking) return 'Hearing you'
   if (presence?.label) return presence.label
+  if (mood === 'fallback') return 'Local fallback'
   if (mood === 'attention') return 'Needs attention'
   if (mood === 'listening') return 'Listening'
   if (mood === 'thinking') return 'Working'
@@ -3444,6 +3446,7 @@ function App() {
   const mood = useMemo<PetMood>(() => {
     if (hasOpenAiKey === false) return 'needs-key'
     if (petTrafficLight?.state === 'blocked' || petTrafficLight?.state === 'attention' || petTrafficLight?.color === 'red') return 'attention'
+    if (petTrafficLight?.state === 'fallback_ready') return 'fallback'
     if (petTrafficLight?.state === 'listening') return 'listening'
     if (petTrafficLight?.state === 'working' || petTrafficLight?.state === 'connecting' || petTrafficLight?.state === 'waking') return 'thinking'
     if (petTrafficLight?.state === 'watching' || petTrafficLight?.state === 'idle') return 'standby'

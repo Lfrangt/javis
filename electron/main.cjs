@@ -31228,13 +31228,14 @@ function presenceRecentObservation(event = null) {
 
 function presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation }) {
   if (readiness?.overall === 'blocked') return 'setup_blocked';
-  if (readiness?.overall === 'degraded') return 'needs_attention';
   if (conversation?.status === 'connecting') return 'connecting';
   if (conversation?.status === 'live') return 'listening';
   if (conversation?.status === 'error' && Number(conversation.ageMs || 0) < 60000) return 'voice_error';
   if (pendingApprovals.length) return 'needs_attention';
   if (wake?.pending) return 'waking';
   if (activeJobs.length) return 'working';
+  if (readiness?.overall === 'fallback_ready') return 'fallback_ready';
+  if (readiness?.overall === 'degraded') return 'needs_attention';
   if (AMBIENT_OBSERVE_ENABLED) return 'watching';
   return 'standby';
 }
@@ -31308,6 +31309,7 @@ function presenceStateSnapshot(options = {}) {
   const summaryParts = [
     mode === 'watching' ? 'Standing by and passively observing local context.' : '',
     mode === 'standby' ? 'Standing by; passive ambient observation is off.' : '',
+    mode === 'fallback_ready' ? 'Standing by with local no-mic voice fallback ready.' : '',
     mode === 'connecting' ? 'Voice conversation is connecting.' : '',
     mode === 'listening' ? `Voice conversation is live in ${conversation.micMode} mic mode.` : '',
     mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
@@ -31332,6 +31334,7 @@ function presenceStateSnapshot(options = {}) {
     mode,
     label: {
       standby: 'Standby',
+      fallback_ready: 'Local fallback ready',
       watching: 'Watching',
       waking: 'Wake pending',
       connecting: 'Connecting',
@@ -31429,6 +31432,24 @@ function petReadinessSnapshot() {
   const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
   if (voiceHealth.status !== 'ready') {
     const blocked = voiceHealth.status === 'blocked';
+    const localFallbackReady = voiceHealth.status === 'warning' && voiceHealth.fallback?.available === true;
+    if (localFallbackReady) {
+      return {
+        overall: 'fallback_ready',
+        label: 'Local fallback ready',
+        summary: 'Realtime voice needs recovery, but local no-mic voice-command fallback is ready.',
+        counts: { ready: 1, warning: 1, blocked: 0, total: 2 },
+        primaryIssue: readinessItem(
+          'realtime_voice_provider',
+          'Realtime voice provider',
+          voiceHealth.status,
+          voiceHealth.summary || 'Realtime voice provider needs attention.',
+          voiceHealth.next || 'Open the terminal CUI for Realtime provider details.',
+          { recovery: voiceHealth.recovery },
+        ),
+        generatedAt: new Date().toISOString(),
+      };
+    }
     return {
       overall: blocked ? 'blocked' : 'degraded',
       label: blocked ? 'Setup blocked' : 'Needs attention',
@@ -31490,6 +31511,7 @@ function petPresenceSnapshot(options = {}) {
   const summaryParts = [
     mode === 'watching' ? 'Standing by and passively observing local context.' : '',
     mode === 'standby' ? 'Standing by.' : '',
+    mode === 'fallback_ready' ? 'Standing by with local no-mic voice fallback ready.' : '',
     mode === 'connecting' ? 'Voice conversation is connecting.' : '',
     mode === 'listening' ? `Voice conversation is live in ${conversation.micMode} mic mode.` : '',
     mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
@@ -31513,6 +31535,7 @@ function petPresenceSnapshot(options = {}) {
     mode,
     label: {
       standby: 'Standby',
+      fallback_ready: 'Local fallback ready',
       watching: 'Watching',
       waking: 'Wake pending',
       connecting: 'Connecting',
@@ -31788,6 +31811,15 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'interrupt',
       pulse: 'attention',
       label: presence.label || 'Setup blocked',
+    });
+  } else if (mode === 'fallback_ready') {
+    Object.assign(base, {
+      state: 'fallback_ready',
+      color: 'yellow',
+      activeLight: 'yellow',
+      urgency: 'ambient',
+      pulse: 'off',
+      label: presence.label || 'Local fallback ready',
     });
   } else if (mode === 'needs_attention' || intervention.shouldNotify) {
     Object.assign(base, {

@@ -219,7 +219,7 @@ export default {
     const queue = Array.isArray(p.queue) ? p.queue : [];
     const traffic = p.pet?.trafficLight || {};
     const trafficColors = new Set(['red', 'yellow', 'green']);
-    const trafficStates = new Set(['idle', 'watching', 'waking', 'connecting', 'listening', 'working', 'attention', 'blocked']);
+    const trafficStates = new Set(['idle', 'fallback_ready', 'watching', 'waking', 'connecting', 'listening', 'working', 'attention', 'blocked']);
     const trafficUrgency = new Set(['quiet', 'ambient', 'active', 'interrupt']);
     const trafficPulses = new Set(['off', 'slow', 'live', 'attention']);
     const voiceFallback = p.voiceHealth?.fallback || {};
@@ -279,6 +279,13 @@ export default {
         typeof fallbackBlocker.active === 'boolean' &&
         localVoice.available === true &&
         ['standby', 'fallback_ready'].includes(localVoice.mode) &&
+        (localVoice.mode !== 'fallback_ready' ||
+          p.voiceHealth?.status !== 'warning' ||
+          (p.pet?.mode === 'fallback_ready' &&
+            traffic.state === 'fallback_ready' &&
+            traffic.color === 'yellow' &&
+            traffic.urgency === 'ambient' &&
+            traffic.pulse === 'off')) &&
         localVoice.input?.endpoint === '/api/voice/command' &&
         localVoice.input?.historyEndpoint === '/api/voice/history' &&
         localVoice.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
