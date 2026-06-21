@@ -106,6 +106,7 @@ async function request(apiPath, options = {}) {
   const timeoutMs = Number.isFinite(options.timeoutMs)
     ? options.timeoutMs
     : numericArg('request-timeout-ms', DEFAULT_REQUEST_TIMEOUT_MS, { min: 1000, max: 120000 });
+  const startedAt = performance.now();
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers = {
@@ -120,12 +121,13 @@ async function request(apiPath, options = {}) {
       signal: controller.signal,
     });
     const data = await response.json().catch(() => null);
-    return { ok: response.ok, status: response.status, data };
+    return { ok: response.ok, status: response.status, data, elapsedMs: Math.round(performance.now() - startedAt) };
   } catch (error) {
     const timedOut = error?.name === 'AbortError';
     return {
       ok: false,
       status: 0,
+      elapsedMs: Math.round(performance.now() - startedAt),
       data: {
         ok: false,
         error: timedOut ? `request timed out after ${timeoutMs}ms` : String(error?.message || error),
@@ -253,6 +255,8 @@ async function runCommand(payload, wake, userCli) {
     ok: Boolean(response.ok && response.data?.ok),
     apiBase: API_BASE,
     cliMode: userCli ? 'local' : 'dogfood',
+    elapsedMs: response.elapsedMs,
+    apiElapsedMs: response.elapsedMs,
     previewOnly: !payload.execute,
     payload: {
       wake,
@@ -455,12 +459,19 @@ function commandOk(response, command) {
   return true;
 }
 
+function publicLoopCommandBase(base) {
+  const { startedAt, ...publicBase } = base;
+  return publicBase;
+}
+
 function loopCommandResult(base, response, output, details = {}) {
   return {
-    ...base,
+    ...publicLoopCommandBase(base),
     ...details,
     ok: commandOk(response, base.command),
     responseStatus: response.status,
+    elapsedMs: Math.round(performance.now() - base.startedAt),
+    apiElapsedMs: response.elapsedMs,
     output,
   };
 }
@@ -474,6 +485,7 @@ async function runLoopCommand(transcript) {
     transcript,
     kind: 'loop_command',
     command,
+    startedAt: performance.now(),
     ok: true,
     responseStatus: 0,
     previewOnly: true,
@@ -482,7 +494,13 @@ async function runLoopCommand(transcript) {
   };
 
   try {
-    if (command === 'help') return { ...base, output: loopHelpText() };
+    if (command === 'help') {
+      return {
+        ...publicLoopCommandBase(base),
+        elapsedMs: Math.round(performance.now() - base.startedAt),
+        output: loopHelpText(),
+      };
+    }
     if (command === 'status') {
       const full = loopFullMode('status');
       const endpoint = full ? '/api/status' : '/api/pet/status';
@@ -522,8 +540,9 @@ async function runLoopCommand(transcript) {
       const task = String(transcript || '').replace(/^\/agent\b/i, '').trim();
       if (!task) {
         return {
-          ...base,
+          ...publicLoopCommandBase(base),
           ok: false,
+          elapsedMs: Math.round(performance.now() - base.startedAt),
           output: 'Usage: /agent <task to think through>',
         };
       }
@@ -547,14 +566,16 @@ async function runLoopCommand(transcript) {
       });
     }
     return {
-      ...base,
+      ...publicLoopCommandBase(base),
       ok: false,
+      elapsedMs: Math.round(performance.now() - base.startedAt),
       output: `Unknown loop command: ${name}\n\n${loopHelpText()}`,
     };
   } catch (error) {
     return {
-      ...base,
+      ...publicLoopCommandBase(base),
       ok: false,
+      elapsedMs: Math.round(performance.now() - base.startedAt),
       output: `${name} failed: ${error instanceof Error ? error.message : String(error)}`,
     };
   }
@@ -590,6 +611,7 @@ async function runLoop() {
       turns.push(loopCommand);
       if (!json) {
         console.log(loopCommand.output);
+        console.log(`Latency: ${loopCommand.elapsedMs ?? '-'}ms${loopCommand.apiElapsedMs !== undefined ? ` · api=${loopCommand.apiElapsedMs}ms` : ''}`);
         console.log('Safety: read-only=yes · microphone=no · realtime=no · raw audio=no');
         if (process.stdin.isTTY) rl.prompt();
       }
@@ -606,6 +628,8 @@ async function runLoop() {
       executed: result.executed,
       previewOnly: result.previewOnly,
       spokenAck: result.spokenAck,
+      elapsedMs: result.elapsedMs,
+      apiElapsedMs: result.apiElapsedMs,
       safety: result.safety,
       context: result.context
         ? {
@@ -619,6 +643,7 @@ async function runLoop() {
     });
     if (!json) {
       console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
+      console.log(`Latency: ${result.elapsedMs ?? '-'}ms`);
       if (result.session?.recorded) console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);
       console.log(`Ack: ${result.spokenAck}`);
       console.log('Safety: microphone=no · realtime=no · raw audio=no');

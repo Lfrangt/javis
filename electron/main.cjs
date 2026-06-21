@@ -23659,6 +23659,15 @@ function voiceCommandAck(route = {}, options = {}) {
 function voiceCommandHistoryItemFromAudit(event = {}) {
   if (event.type !== 'voice_command.completed') return null;
   const data = event.data || {};
+  const rawTiming = data.timing || {};
+  const timing = {
+    totalMs: boundedCount(rawTiming.totalMs || data.elapsedMs, 120000),
+    contextMs: boundedCount(rawTiming.contextMs, 120000),
+    previewRouteMs: boundedCount(rawTiming.previewRouteMs, 120000),
+    executeRouteMs: boundedCount(rawTiming.executeRouteMs, 120000),
+    speechMs: boundedCount(rawTiming.speechMs, 120000),
+    sessionMs: boundedCount(rawTiming.sessionMs, 120000),
+  };
   const timestamp = event.ts || '';
   const idSource = [
     timestamp,
@@ -23673,6 +23682,8 @@ function voiceCommandHistoryItemFromAudit(event = {}) {
     source: compactRecordText(data.source || '', 80),
     transcriptPreview: compactRecordText(data.transcriptPreview || '', 240),
     transcriptLength: boundedCount(data.transcriptLength, 100000),
+    elapsedMs: timing.totalMs,
+    timing,
     ok: data.ok !== false,
     requestedExecute: Boolean(data.requestedExecute),
     executed: Boolean(data.executed),
@@ -23868,6 +23879,27 @@ function recordVoiceCommandSessionEvent(result = {}, options = {}) {
   }
 }
 
+function voiceCommandLatencySnapshot(items = []) {
+  const samples = items
+    .map((item) => boundedCount(item.elapsedMs, 120000))
+    .filter((value) => value > 0)
+    .sort((a, b) => a - b);
+  const latest = boundedCount(items[0]?.elapsedMs, 120000);
+  const count = samples.length;
+  const sum = samples.reduce((total, value) => total + value, 0);
+  const slowThresholdMs = 5000;
+  return {
+    count,
+    latestMs: latest,
+    avgMs: count ? Math.round(sum / count) : 0,
+    p50Ms: count ? samples[Math.floor((count - 1) * 0.5)] : 0,
+    p90Ms: count ? samples[Math.floor((count - 1) * 0.9)] : 0,
+    maxMs: count ? samples[count - 1] : 0,
+    slowThresholdMs,
+    slowCount: samples.filter((value) => value >= slowThresholdMs).length,
+  };
+}
+
 function voiceCommandHistorySnapshot(options = {}) {
   const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
   const auditLimit = Math.max(80, Math.min(200, Number(options.auditLimit || limit * 8)));
@@ -23882,6 +23914,7 @@ function voiceCommandHistorySnapshot(options = {}) {
     limit,
     count: items.length,
     items,
+    latency: voiceCommandLatencySnapshot(items),
     privacy: {
       localOnly: true,
       transcriptPreviewOnly: true,
@@ -23920,7 +23953,7 @@ function localVoiceStatusSnapshot(options = {}) {
   const conversation = options.conversation || conversationStateSnapshot();
   const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation });
   const fallback = voiceHealth.fallback || realtimeLocalVoiceFallbackSnapshot();
-  const history = voiceCommandHistorySnapshot({ limit: 1 });
+  const history = voiceCommandHistorySnapshot({ limit: 8 });
   const latest = history.items[0] || null;
   const fallbackReady = voiceHealth.status !== 'ready';
   const blocker = fallback.blocker || {
@@ -23962,6 +23995,7 @@ function localVoiceStatusSnapshot(options = {}) {
     },
     history: {
       count: history.count,
+      latency: history.latency,
       latest: latest
         ? {
             id: latest.id,
@@ -23972,6 +24006,7 @@ function localVoiceStatusSnapshot(options = {}) {
             executed: latest.executed,
             transcriptPreview: compactRecordText(latest.transcriptPreview, 140),
             contextSummary: compactRecordText(latest.contextSummary, 140),
+            elapsedMs: latest.elapsedMs,
           }
         : null,
     },
@@ -24040,6 +24075,18 @@ function safeUrlHost(value = '') {
   }
 }
 
+function contextPromiseWithTimeout(promise, timeoutMs) {
+  let timer = null;
+  return Promise.race([
+    Promise.resolve(promise).finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ timedOut: true }), timeoutMs);
+    }),
+  ]);
+}
+
 function voiceCommandContextPrompt(context = {}) {
   const lines = [
     'Local Mac context for this voice command:',
@@ -24072,6 +24119,10 @@ async function voiceCommandContextSnapshot(options = {}) {
     includesAccessibilityNodes: false,
     includeScreenRequested: includeScreen,
     includeAccessibilityRequested: includeAccessibility,
+    cached: false,
+    cacheAgeMs: null,
+    contextTimedOut: false,
+    skippedLiveContext: false,
     capturedAt: new Date().toISOString(),
     frontmost: { available: false, app: '', windowTitle: '' },
     browser: { available: false, app: '', title: '', host: '', source: '', supported: false },
@@ -24083,8 +24134,61 @@ async function voiceCommandContextSnapshot(options = {}) {
     prompt: '',
     summary: '',
   };
+  const cachedContextMaxAgeMs = Math.max(1000, Math.min(60000, Number(options.cachedContextMaxAgeMs || 30000)));
+  const cachedEvent = !includeScreen && !includeAccessibility && options.useCachedContext !== false
+    ? ambientSnapshot(1)[0] || null
+    : null;
+  const cacheAgeMs = cachedEvent?.createdAt ? Math.max(0, Date.now() - Number(cachedEvent.createdAt || 0)) : null;
+  if (cachedEvent && cacheAgeMs !== null && cacheAgeMs <= cachedContextMaxAgeMs) {
+    const frontmost = cachedEvent.frontmost || {};
+    const browser = cachedEvent.browser || {};
+    context.cached = true;
+    context.cacheAgeMs = cacheAgeMs;
+    context.frontmost = {
+      available: Boolean(frontmost.available),
+      app: compactRecordText(frontmost.app || '', 80),
+      windowTitle: compactRecordText(frontmost.windowTitle || '', 160),
+    };
+    context.browser = {
+      available: Boolean(browser.available),
+      supported: Boolean(browser.available),
+      app: compactRecordText(browser.app || '', 80),
+      title: compactRecordText(browser.title || '', 180),
+      host: safeUrlHost(browser.url || ''),
+      source: compactRecordText(browser.source || cachedEvent.source || 'ambient_cache', 40),
+    };
+    context.activeJobs = {
+      count: activeJobRuns.size,
+    };
+    context.pendingApprovals = {
+      count: pendingApprovalSnapshot(20).length,
+    };
+    context.summary = [
+      context.frontmost.app ? `${context.frontmost.app}${context.frontmost.windowTitle ? ` · ${context.frontmost.windowTitle}` : ''}` : '',
+      context.browser.available ? `${context.browser.title || context.browser.app} · ${context.browser.host}` : '',
+      `cached ${cacheAgeMs}ms`,
+    ].filter(Boolean).join(' | ') || 'cached metadata-only local context';
+    context.prompt = voiceCommandContextPrompt(context);
+    return context;
+  }
+  if (!includeScreen && !includeAccessibility && options.forceLiveContext !== true && options.liveContext !== true) {
+    context.skippedLiveContext = true;
+    context.summary = 'metadata-only low-latency context';
+    context.prompt = voiceCommandContextPrompt(context);
+    return context;
+  }
   try {
-    const mac = await macContextSnapshot({ includeClipboardText: false });
+    const liveContextTimeoutMs = Math.max(
+      500,
+      Math.min(10000, Number(options.liveContextTimeoutMs || (!includeScreen && !includeAccessibility ? 1200 : 8000))),
+    );
+    const mac = await contextPromiseWithTimeout(macContextSnapshot({ includeClipboardText: false }), liveContextTimeoutMs);
+    if (mac?.timedOut) {
+      context.contextTimedOut = true;
+      context.summary = 'metadata-only local context timed out';
+      context.prompt = voiceCommandContextPrompt(context);
+      return context;
+    }
     const frontmost = mac.frontmost || {};
     const browser = mac.browser || {};
     const screen = includeScreen ? mac.screen || latestScreenSnapshot() : null;
@@ -24162,6 +24266,7 @@ async function voiceCommandContextSnapshot(options = {}) {
 }
 
 async function runVoiceCommand(options = {}) {
+  const startedAt = Date.now();
   const transcript = compactRecordText(options.transcript || options.message || options.text || '', 1600);
   if (!transcript) throw new Error('Missing transcript.');
   const requestedExecute = booleanOption(options.execute);
@@ -24173,12 +24278,14 @@ async function runVoiceCommand(options = {}) {
   const confirmSpeak = booleanOption(options.confirmSpeak || options.confirmAudio || options.confirmSpeech);
   const mode = options.mode || options.lane;
   const source = String(options.source || 'voice_command').slice(0, 80);
+  const contextStartedAt = Date.now();
   const contextSnapshot = await voiceCommandContextSnapshot({
     includeScreen,
     includeAccessibility,
     maxAccessibilityNodes: options.maxAccessibilityNodes,
     maxAccessibilityDepth: options.maxAccessibilityDepth,
   });
+  const contextMs = Date.now() - contextStartedAt;
   const baseRouteOptions = {
     message: transcript,
     execute: false,
@@ -24206,9 +24313,12 @@ async function runVoiceCommand(options = {}) {
     hasContext: Boolean(contextSnapshot.prompt),
   });
 
+  const previewStartedAt = Date.now();
   const previewRoute = await routeTask(baseRouteOptions);
+  const previewRouteMs = Date.now() - previewStartedAt;
   let route = previewRoute;
   let heldReason = '';
+  let executeRouteMs = 0;
   const previewLane = previewRoute.decision?.lane || '';
   const previewRouteLane = previewRoute.routing?.lane || previewRoute.routeRecord?.lane || '';
   const previewIsLocalCommand = Boolean(previewRoute.localCommand || previewRoute.decision?.localCommand || previewRouteLane === 'local');
@@ -24216,16 +24326,20 @@ async function runVoiceCommand(options = {}) {
   if (requestedExecute && !canExecute) {
     heldReason = 'quick_lane_cloud_call_not_allowed';
   } else if (canExecute) {
+    const executeStartedAt = Date.now();
     route = await routeTask({
       ...baseRouteOptions,
       execute: true,
       source: `${source}_execute`,
     });
+    executeRouteMs = Date.now() - executeStartedAt;
   }
 
   const spokenAck = voiceCommandAck(route, { heldReason });
   let speech = null;
+  let speechMs = 0;
   if (speakRequested) {
+    const speechStartedAt = Date.now();
     try {
       speech = speechSay({
         text: spokenAck,
@@ -24239,6 +24353,7 @@ async function runVoiceCommand(options = {}) {
         dryRun: !confirmSpeak,
       };
     }
+    speechMs = Date.now() - speechStartedAt;
   }
 
   const result = {
@@ -24269,14 +24384,27 @@ async function runVoiceCommand(options = {}) {
       speechDryRun: Boolean(speakRequested && speech?.dryRun === true),
     },
   };
+  const sessionStartedAt = Date.now();
   result.session = recordVoiceCommandSessionEvent(result, {
     ...options,
     source,
   });
+  const sessionMs = Date.now() - sessionStartedAt;
+  result.timing = {
+    totalMs: Date.now() - startedAt,
+    contextMs,
+    previewRouteMs,
+    executeRouteMs,
+    speechMs,
+    sessionMs,
+  };
+  result.elapsedMs = result.timing.totalMs;
 
   appendAudit('voice_command.completed', {
     source,
     ok: result.ok,
+    elapsedMs: result.elapsedMs,
+    timing: result.timing,
     transcriptPreview: compactRecordText(transcript, 240),
     transcriptLength: transcript.length,
     requestedExecute,

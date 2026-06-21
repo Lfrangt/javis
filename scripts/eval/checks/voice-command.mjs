@@ -279,6 +279,9 @@ export default {
           commandTurns.every((turn) => (
             turn.ok === true &&
             turn.previewOnly === true &&
+            typeof turn.elapsedMs === 'number' &&
+            turn.elapsedMs >= 0 &&
+            (turn.apiElapsedMs === undefined || turn.apiElapsedMs >= 0) &&
             typeof turn.output === 'string' &&
             turn.output.length > 0 &&
             turn.safety?.readOnly === true &&
@@ -297,6 +300,10 @@ export default {
             turn.context?.includesScreenImage === false &&
             turn.context?.includesClipboardText === false &&
             turn.context?.includesAccessibilityNodes === false &&
+            typeof turn.elapsedMs === 'number' &&
+            turn.elapsedMs >= 0 &&
+            typeof turn.apiElapsedMs === 'number' &&
+            turn.apiElapsedMs >= 0 &&
             turn.session?.recorded === false &&
             turn.session?.reason === 'disabled' &&
             turn.session?.privacy?.transcriptPreviewOnly === true &&
@@ -594,6 +601,7 @@ export default {
       String(item.transcriptPreview || '').includes(localCliTranscript.slice(0, 8))
     ));
     const privacy = historyData.privacy || {};
+    const latency = historyData.latency || {};
     const safety = cliHistory?.safety || {};
     out.push(
       history.ok &&
@@ -604,7 +612,13 @@ export default {
         privacy.noScreenImages === true &&
         privacy.noClipboardText === true &&
         privacy.noAccessibilityNodes === true &&
+        latency.count > 0 &&
+        latency.latestMs >= 0 &&
+        latency.avgMs >= 0 &&
         cliHistory &&
+        cliHistory.elapsedMs > 0 &&
+        cliHistory.timing?.totalMs > 0 &&
+        cliHistory.timing?.previewRouteMs >= 0 &&
         cliHistory.includeScreen === true &&
         cliHistory.includeAccessibility === true &&
         cliHistory.transcriptPreview.includes(localCliTranscript.slice(0, 8)) &&
@@ -616,7 +630,7 @@ export default {
         safety.storesClipboardText === false &&
         safety.storesAccessibilityNodes === false &&
         !hasForbiddenHistoryPayload(cliHistory)
-        ? ok('voice_command.history', 'Local voice command history', `${historyItems.length} item(s) · preview-only transcript · no audio/screenshot/clipboard/AX payload`)
+        ? ok('voice_command.history', 'Local voice command history', `${historyItems.length} item(s) · latency avg ${latency.avgMs}ms · preview-only transcript · no audio/screenshot/clipboard/AX payload`)
         : fail('voice_command.history', 'Local voice command history', `expected sanitized local voice history, got ${history.status}`, {
             privacy,
             found: Boolean(cliHistory),
@@ -638,6 +652,7 @@ export default {
       out.push(
         stdout.includes('Local Voice Command History') &&
           stdout.includes('transcript-preview-only') &&
+          stdout.includes('Latency: latest') &&
           stdout.includes('route:') &&
           stdout.includes('Continue: npm run work:run -- --action-id route:')
           ? ok('voice_command.history_cui', 'Local voice history CUI', 'CUI prints recent sanitized voice-command history with route continuation command')

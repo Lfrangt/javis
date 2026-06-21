@@ -942,9 +942,13 @@ async function showVoiceHistory() {
   const result = await request(`/api/voice/history?limit=${encodeURIComponent(limit)}`);
   const history = result.history || {};
   const items = Array.isArray(history.items) ? history.items : [];
+  const latency = history.latency || {};
   console.log('\nLocal Voice Command History');
   console.log('===========================');
   console.log(`Items: ${items.length}/${history.limit || limit} · privacy: transcript-preview-only, no audio/screenshots/clipboard/full-AX`);
+  if (latency.count) {
+    console.log(`Latency: latest ${latency.latestMs || 0}ms · avg ${latency.avgMs || 0}ms · p90 ${latency.p90Ms || 0}ms · max ${latency.maxMs || 0}ms · slow ${latency.slowCount || 0}/${latency.count} over ${latency.slowThresholdMs || 5000}ms`);
+  }
   if (!items.length) {
     console.log('No local voice-command history yet.');
     return;
@@ -953,7 +957,8 @@ async function showVoiceHistory() {
     const state = item.queued ? 'queued' : item.executed ? 'executed' : 'preview';
     const ids = [item.jobId ? `job ${item.jobId}` : '', item.routeId ? `route ${item.routeId}` : ''].filter(Boolean).join(' · ');
     const context = item.contextSummary ? ` · ${compact(item.contextSummary, 120)}` : '';
-    console.log(`${index + 1}. ${formatTime(Date.parse(item.timestamp || '') || 0)} · ${item.lane || '-'} · ${state}${ids ? ` · ${ids}` : ''}`);
+    const elapsed = item.elapsedMs ? ` · ${item.elapsedMs}ms` : '';
+    console.log(`${index + 1}. ${formatTime(Date.parse(item.timestamp || '') || 0)} · ${item.lane || '-'} · ${state}${elapsed}${ids ? ` · ${ids}` : ''}`);
     console.log(`   ${compact(item.transcriptPreview || '(no transcript preview)', 220)}${context}`);
     if (state === 'preview' && item.routeId) {
       console.log(`   Continue: npm run work:run -- --action-id route:${item.routeId}`);
