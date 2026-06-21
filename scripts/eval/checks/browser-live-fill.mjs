@@ -44,7 +44,7 @@ function dogfoodPageHtml(runId) {
   </head>
   <body>
     <h1>JAVIS Browser Fill Dogfood</h1>
-    <p id="status">not submitted</p>
+    <p id="status">idle</p>
     <form id="dogfood-form">
       <label for="name">Name</label>
       <input id="name" name="name" placeholder="Full name" autocomplete="off">
@@ -58,10 +58,14 @@ function dogfoodPageHtml(runId) {
       </select>
       <button id="submit" type="submit">Submit</button>
     </form>
+    <button id="ping" type="button">Ping DOM action</button>
     <script>
       document.getElementById('dogfood-form').addEventListener('submit', (event) => {
         event.preventDefault();
-        document.getElementById('status').textContent = 'submitted';
+        document.getElementById('status').textContent = 'FORM_SUBMITTED';
+      });
+      document.getElementById('ping').addEventListener('click', () => {
+        document.getElementById('status').textContent = 'DOM_ACTION_CLICKED';
       });
     </script>
   </body>
@@ -258,12 +262,13 @@ export default {
       const dom = await ctx.api(`/api/browser/dom?app=${encodeURIComponent(app)}&limit=20`, { timeoutMs: 20000 });
       const controls = dom.data?.dom?.elements || [];
       const hasExpectedControls = ['Name', 'Email', 'Plan'].every((label) => controls.some((item) => item.label === label || item.name?.toLowerCase() === label.toLowerCase()));
+      const hasDomActionButton = controls.some((item) => item.selector === '#ping' || item.label === 'Ping DOM action' || item.text === 'Ping DOM action');
       out.push(
-        dom.ok && hasExpectedControls
-          ? ok('browser_live_fill.dom', 'Live DOM controls', `${controls.length} control(s), expected form fields visible`)
-          : fail('browser_live_fill.dom', 'Live DOM controls', 'expected Name, Email, and Plan controls in live DOM snapshot', dom.data),
+        dom.ok && hasExpectedControls && hasDomActionButton
+          ? ok('browser_live_fill.dom', 'Live DOM controls', `${controls.length} control(s), expected fields and DOM action button visible`)
+          : fail('browser_live_fill.dom', 'Live DOM controls', 'expected Name, Email, Plan, and Ping DOM action controls in live DOM snapshot', dom.data),
       );
-      if (!dom.ok || !hasExpectedControls) return out;
+      if (!dom.ok || !hasExpectedControls || !hasDomActionButton) return out;
 
       const fill = await ctx.api('/api/browser/fill-draft', {
         method: 'POST',
@@ -304,9 +309,43 @@ export default {
       const page = await ctx.api(`/api/browser/page?app=${encodeURIComponent(app)}&maxChars=1200`, { timeoutMs: 20000 });
       const text = String(page.data?.page?.text || '');
       out.push(
-        page.ok && text.includes('not submitted') && !text.includes('submitted submitted')
-          ? ok('browser_live_fill.no_submit', 'Form was not submitted', 'page still reports not submitted after fill')
+        page.ok && text.includes('idle') && !text.includes('FORM_SUBMITTED')
+          ? ok('browser_live_fill.no_submit', 'Form was not submitted', 'page still reports idle after fill')
           : fail('browser_live_fill.no_submit', 'Form was not submitted', 'form status did not prove non-submit behavior', page.data),
+      );
+
+      const domClick = await ctx.api('/api/browser/dom-action', {
+        method: 'POST',
+        timeoutMs: 60000,
+        body: {
+          app,
+          source: 'eval_browser_live_dom_click',
+          action: 'click',
+          selector: '#ping',
+          execute: true,
+          confirm: true,
+        },
+      });
+      out.push(
+        domClick.ok &&
+          domClick.data?.ok === true &&
+          domClick.data?.executed === true &&
+          domClick.data?.preflight?.submitLike === false &&
+          domClick.data?.safety?.preflightReobserve === true &&
+          domClick.data?.safety?.approvedRequested === true &&
+          domClick.data?.action === 'click'
+          ? ok('browser_live_fill.dom_action_click', 'Confirmed DOM action click', 'clicked safe button after live DOM re-observe')
+          : fail('browser_live_fill.dom_action_click', 'Confirmed DOM action click', `POST /api/browser/dom-action ${domClick.status}`, domClick.data),
+      );
+
+      const pageAfterDomAction = await ctx.api(`/api/browser/page?app=${encodeURIComponent(app)}&maxChars=1200`, { timeoutMs: 20000 });
+      const textAfterDomAction = String(pageAfterDomAction.data?.page?.text || '');
+      out.push(
+        pageAfterDomAction.ok &&
+          textAfterDomAction.includes('DOM_ACTION_CLICKED') &&
+          !textAfterDomAction.includes('FORM_SUBMITTED')
+          ? ok('browser_live_fill.dom_action_verified', 'DOM action click verified', 'page status changed without submitting the form')
+          : fail('browser_live_fill.dom_action_verified', 'DOM action click verified', 'page did not prove safe DOM click result', pageAfterDomAction.data),
       );
     } finally {
       if (app) await closeDogfoodBrowserTabs(app, urlNeedle);
