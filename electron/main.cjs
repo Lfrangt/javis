@@ -23268,7 +23268,7 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'setup_guide') {
-      const guide = setupGuideSnapshot();
+      const guide = setupGuideSnapshot({ includeRecentAudit: true });
       return {
         ok: true,
         localCommand: command,
@@ -29819,6 +29819,7 @@ function petReadinessSnapshot() {
         voiceHealth.status,
         voiceHealth.summary || 'Realtime voice provider needs attention.',
         voiceHealth.next || 'Open the terminal CUI for Realtime provider details.',
+        { recovery: voiceHealth.recovery },
       ),
       generatedAt: new Date().toISOString(),
     };
@@ -32000,6 +32001,120 @@ function classifyRealtimeProviderIssue(details = {}) {
   return null;
 }
 
+function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
+  const kind = compactRecordText(issue?.kind || '', 80);
+  const status = compactRecordText(issue?.status || 'ready', 80);
+  const quotaLike = kind === 'quota_or_rate_limit';
+  const active = Boolean(issue && status !== 'ready');
+  const billingUrl = 'https://platform.openai.com/settings/organization/billing/overview';
+  const limitsUrl = 'https://platform.openai.com/settings/organization/limits';
+  const keysUrl = 'https://platform.openai.com/api-keys';
+  const steps = [];
+
+  if (!OPENAI_API_KEY || kind === 'missing_key') {
+    steps.push({
+      id: 'add_api_key',
+      label: 'Add an OpenAI API key',
+      detail: 'Add OPENAI_API_KEY to the local .env file for an API project that has Realtime access.',
+      command: 'npm run config',
+      action: 'prepare_env_file',
+    });
+  }
+
+  if (quotaLike) {
+    steps.push(
+      {
+        id: 'open_api_billing',
+        label: 'Open API billing',
+        detail: 'OpenAI API usage is billed separately from ChatGPT subscriptions; add billing/credits to the API organization that owns this key.',
+        url: billingUrl,
+        action: 'open_openai_platform_billing',
+      },
+      {
+        id: 'check_api_limits',
+        label: 'Check API limits',
+        detail: 'Confirm the project has enough budget/rate-limit headroom for Realtime calls.',
+        url: limitsUrl,
+        action: 'open_openai_platform_limits',
+      },
+      {
+        id: 'replace_project_key',
+        label: 'Replace project key if needed',
+        detail: 'If the current project has no quota, create or paste a key from a project with Realtime quota.',
+        url: keysUrl,
+        command: 'npm run config',
+      },
+    );
+  } else if (kind === 'auth_or_permission') {
+    steps.push({
+      id: 'replace_api_key',
+      label: 'Replace API key',
+      detail: 'Update OPENAI_API_KEY and confirm the API project has permission to call Realtime.',
+      url: keysUrl,
+      command: 'npm run config',
+      action: 'prepare_env_file',
+    });
+  } else if (kind === 'provider_unverified') {
+    steps.push({
+      id: 'run_provider_probe',
+      label: 'Run no-mic provider probe',
+      detail: 'Verify the key/project/model/voice path before opening the microphone.',
+      command: 'npm run dogfood:realtime-provider-probe',
+    });
+  } else if (kind === 'network' || kind === 'provider_error') {
+    steps.push({
+      id: 'retry_provider_probe',
+      label: 'Retry provider probe',
+      detail: 'Retry the no-mic provider probe after checking network/provider status.',
+      command: 'npm run dogfood:realtime-provider-probe',
+    });
+  }
+
+  if (active) {
+    steps.push({
+      id: 'restart_and_probe',
+      label: 'Restart and probe again',
+      detail: 'After billing/key/limit changes, restart JAVIS and rerun the no-mic provider probe before live voice.',
+      command: 'npm run resident:restart && npm run dogfood:realtime-provider-probe',
+    });
+  }
+
+  return {
+    version: 1,
+    active,
+    kind,
+    status,
+    summary: quotaLike
+      ? 'OpenAI Realtime reached the API, but the API project has no usable quota/billing/rate-limit headroom.'
+      : compactRecordText(issue?.summary || 'Realtime provider is ready or has no current recovery issue.', 260),
+    next: compactRecordText(issue?.next || (steps[0]?.detail || ''), 320),
+    chatGptSubscriptionCoversApi: false,
+    subscriptionBoundary: 'ChatGPT app subscriptions and OpenAI API Platform billing are separate; API/Realtime usage needs API billing or credits on the project/org that owns OPENAI_API_KEY.',
+    billingLikely: quotaLike,
+    links: {
+      billing: billingUrl,
+      limits: limitsUrl,
+      apiKeys: keysUrl,
+      help: 'https://help.openai.com/en/articles/9039756-managing-billing-settings-on-chatgpt-web-and-platform',
+    },
+    steps,
+    localFallback: {
+      available: true,
+      command: 'npm run voice:chat',
+      oneShotCommand: 'npm run voice -- "..."',
+      endpoint: '/api/voice/command',
+      summary: 'Use local voice-command fallback for typed or future local-STT transcripts while live Realtime voice is unavailable.',
+    },
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      opensBrowserOnlyOnUserAction: true,
+    },
+    source: compactRecordText(options.source || 'realtime_voice_health', 80),
+  };
+}
+
 function realtimeProviderUnverifiedIssue() {
   return {
     kind: 'provider_unverified',
@@ -32088,6 +32203,7 @@ function realtimeVoiceHealthSnapshot(options = {}) {
     next: issue?.next || '',
     hasOpenAiKey: Boolean(OPENAI_API_KEY),
     maxAuditAgeMs: REALTIME_PROVIDER_WARNING_MAX_AGE_MS,
+    recovery: realtimeProviderRecoverySnapshot(issue, { source: 'voice_health' }),
     fallback: realtimeLocalVoiceFallbackSnapshot(issue),
     lastNegotiation: negotiation,
     lastProviderProbe: providerProbe,
@@ -40130,6 +40246,14 @@ async function openSystemSettings(anchor) {
   await execFileAsync('open', [url]);
 }
 
+async function openExternalUrl(url) {
+  const normalized = String(url || '').trim();
+  if (!/^https:\/\/(platform|help)\.openai\.com\//i.test(normalized)) {
+    throw new Error('Only OpenAI setup URLs can be opened from this setup action.');
+  }
+  await execFileAsync('open', [normalized]);
+}
+
 async function runSetupAction(action) {
   const normalized = String(action || '').trim();
   appendAudit('setup_action.requested', { action: normalized });
@@ -40170,6 +40294,19 @@ async function runSetupAction(action) {
     const output = 'Opened Microphone settings. Enable microphone access before using voice.';
     appendAudit('setup_action.completed', { action: normalized });
     return { ok: true, action: normalized, output };
+  }
+
+  if (normalized === 'open_openai_platform_billing' || normalized === 'open_openai_platform_limits') {
+    const recovery = realtimeVoiceHealthSnapshot({ includeRecentAudit: true }).recovery;
+    const url = normalized === 'open_openai_platform_limits'
+      ? recovery.links.limits
+      : recovery.links.billing;
+    await openExternalUrl(url);
+    const output = normalized === 'open_openai_platform_limits'
+      ? 'Opened OpenAI Platform limits. Confirm this API organization/project has enough Realtime budget and rate-limit headroom, then restart JAVIS and rerun the no-mic provider probe.'
+      : 'Opened OpenAI Platform billing. ChatGPT subscriptions do not include API usage; add API billing/credits for the project that owns OPENAI_API_KEY, then restart JAVIS and rerun the no-mic provider probe.';
+    appendAudit('setup_action.completed', { action: normalized, url });
+    return { ok: true, action: normalized, output, url, recovery };
   }
 
   if (normalized === 'open_runtime_dir') {
@@ -40224,6 +40361,23 @@ async function runSetupAction(action) {
 
 function setupActionForCheck(item) {
   const id = String(item?.id || '');
+  if (id === 'realtime_voice_provider') {
+    const recovery = item?.recovery || {};
+    if (recovery.billingLikely) {
+      return {
+        action: 'open_openai_platform_billing',
+        label: 'Open API billing',
+        reason: 'OpenAI API billing/credits are separate from ChatGPT subscriptions.',
+      };
+    }
+    if (recovery.kind === 'auth_or_permission' || recovery.kind === 'missing_key') {
+      return {
+        action: 'prepare_env_file',
+        label: 'Open .env',
+        reason: 'The API key or project permission needs to be reviewed.',
+      };
+    }
+  }
   if (['openai_key', 'env_file', 'env_example'].includes(id)) {
     return {
       action: 'prepare_env_file',
@@ -40290,8 +40444,8 @@ function setupActionForCheck(item) {
   return null;
 }
 
-function setupGuideSnapshot() {
-  const config = configCheckSnapshot();
+function setupGuideSnapshot(options = {}) {
+  const config = configCheckSnapshot({ includeRecentAudit: options.includeRecentAudit === true });
   const issueItems = (config.items || []).filter((item) => item.status !== 'ready');
   const rank = { blocked: 0, warning: 1, ready: 2 };
   const steps = issueItems
@@ -40303,6 +40457,7 @@ function setupGuideSnapshot() {
         status: item.status,
         summary: item.summary,
         next: item.next,
+        recovery: item.recovery || null,
         action,
       };
     })
@@ -40327,7 +40482,7 @@ function setupGuideSnapshot() {
 }
 
 async function runNextSetupAction(options = {}) {
-  const guide = setupGuideSnapshot();
+  const guide = setupGuideSnapshot({ includeRecentAudit: true });
   const step = guide.nextStep;
   if (!step?.action?.action) {
     return {
@@ -43348,7 +43503,7 @@ async function workNextAction(options = {}) {
       executed = true;
       output = result.output;
     } else {
-      result = setupGuideSnapshot();
+      result = setupGuideSnapshot({ includeRecentAudit: true });
       output = result.output;
     }
   } else if (action.source === 'inbox') {
@@ -44990,8 +45145,8 @@ function mediaAccessStatus(kind) {
   }
 }
 
-function readinessItem(id, label, status, summary, next = '') {
-  return { id, label, status, summary, next };
+function readinessItem(id, label, status, summary, next = '', extra = {}) {
+  return { id, label, status, summary, next, ...extra };
 }
 
 function readinessSnapshot(options = {}) {
@@ -45050,6 +45205,7 @@ function readinessSnapshot(options = {}) {
       realtimeVoiceHealth.status,
       realtimeVoiceHealth.summary,
       realtimeVoiceHealth.next,
+      { recovery: realtimeVoiceHealth.recovery },
     ),
     readinessItem(
       'runtime_storage',
@@ -45328,8 +45484,8 @@ function checkItem(id, label, status, summary, next = '') {
   return { id, label, status, summary, next };
 }
 
-function configCheckSnapshot() {
-  const readiness = readinessSnapshot();
+function configCheckSnapshot(options = {}) {
+  const readiness = readinessSnapshot({ includeRecentAudit: options.includeRecentAudit === true });
   const envFile = path.join(process.cwd(), '.env');
   const envExampleFile = path.join(process.cwd(), '.env.example');
   const launchAgentInstalled = fs.existsSync(LAUNCH_AGENT_FILE);
@@ -45462,7 +45618,7 @@ function configCheckSnapshot() {
 
 function healthSnapshot() {
   const counts = queueCounts();
-  const readiness = readinessSnapshot();
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
   return {
     ok: true,
     status: readiness.overall === 'blocked' ? 'needs_configuration' : readiness.overall,
@@ -45637,7 +45793,7 @@ function realtimeBrowserWorkflowToolSnapshot() {
 async function doctorReportSnapshot() {
   const health = healthSnapshot();
   const readiness = readinessSnapshot({ includeRecentAudit: true });
-  const config = configCheckSnapshot();
+  const config = configCheckSnapshot({ includeRecentAudit: true });
   const resident = await residentStatusSnapshot();
   const readFilePreview = previewDoctorAction({ action: 'list_directory', path: '.', maxEntries: 1 });
   const fileMutationPreview = previewDoctorAction({ action: 'create_directory', path: '.javis-doctor-preview' });
@@ -45715,7 +45871,7 @@ async function doctorReportSnapshot() {
   const skillDraftPreview = learningSkillDraft({ source: 'doctor', routeLimit: 3, workflowLimit: 3 });
   const briefingPreview = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const workNextPreview = await workNextAction({ execute: false, source: 'doctor' });
-  const setupGuidePreview = setupGuideSnapshot();
+  const setupGuidePreview = setupGuideSnapshot({ includeRecentAudit: true });
   const perceptionConsentPreview = perceptionConsentSnapshot({ limit: 3 });
   const axPressPreview = previewDoctorAction({
     action: 'ax_press',
@@ -45763,7 +45919,10 @@ async function doctorReportSnapshot() {
     'cli_command_policy',
   ]) {
     const item = readinessById(id);
-    if (item) checks.push(doctorCheck(id, item.label, item.status, item.summary, {}, item.next));
+    if (item) {
+      const evidence = item.recovery ? { recovery: item.recovery } : {};
+      checks.push(doctorCheck(id, item.label, item.status, item.summary, evidence, item.next));
+    }
   }
 
   checks.push(doctorCheck(
@@ -46797,7 +46956,7 @@ function buildRecoveryPlanForJob(job, error, options = {}) {
 
 function recoveryDiagnosticsSnapshot() {
   try {
-    const config = configCheckSnapshot();
+    const config = configCheckSnapshot({ includeRecentAudit: true });
     return {
       overall: config.overall,
       summary: config.summary,
@@ -47994,7 +48153,7 @@ async function executeTool(name, args) {
   }
 
   if (name === 'get_config_check') {
-    return { ok: true, output: JSON.stringify(configCheckSnapshot()) };
+    return { ok: true, output: JSON.stringify(configCheckSnapshot({ includeRecentAudit: true })) };
   }
 
   if (name === 'get_perception_consent') {
@@ -48075,7 +48234,7 @@ async function executeTool(name, args) {
   }
 
   if (name === 'get_setup_guide') {
-    return { ok: true, output: JSON.stringify(setupGuideSnapshot()) };
+    return { ok: true, output: JSON.stringify(setupGuideSnapshot({ includeRecentAudit: true })) };
   }
 
   if (name === 'run_setup_next') {
@@ -51456,11 +51615,11 @@ function startApiServer() {
   });
 
   api.get('/api/readiness', (_req, res) => {
-    res.json({ readiness: readinessSnapshot() });
+    res.json({ readiness: readinessSnapshot({ includeRecentAudit: true }) });
   });
 
   api.get('/api/config/check', (_req, res) => {
-    res.json({ config: configCheckSnapshot() });
+    res.json({ config: configCheckSnapshot({ includeRecentAudit: true }) });
   });
 
   api.post('/api/config/open-cui', (req, res) => {
@@ -52064,7 +52223,7 @@ function startApiServer() {
   });
 
   api.get('/api/status', (_req, res) => {
-    const readiness = readinessSnapshot();
+    const readiness = readinessSnapshot({ includeRecentAudit: true });
     const presence = presenceStateSnapshot({ readiness, limit: 5 });
     const conversation = presence.conversation || conversationStateSnapshot();
     const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
@@ -52225,6 +52384,24 @@ function startApiServer() {
       res.json({ probe: realtimeProviderProbeSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Realtime provider probe snapshot failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/provider/recovery', (_req, res) => {
+    try {
+      const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
+      res.json({
+        recovery: voiceHealth.recovery,
+        voiceHealth: {
+          status: voiceHealth.status,
+          kind: voiceHealth.kind,
+          summary: voiceHealth.summary,
+          next: voiceHealth.next,
+          hasOpenAiKey: voiceHealth.hasOpenAiKey,
+        },
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime provider recovery failed', error instanceof Error ? error.message : String(error));
     }
   });
 
@@ -53426,7 +53603,7 @@ function startApiServer() {
 
   api.get('/api/setup/guide', (_req, res) => {
     try {
-      res.json({ guide: setupGuideSnapshot() });
+      res.json({ guide: setupGuideSnapshot({ includeRecentAudit: true }) });
     } catch (error) {
       jsonError(res, 500, 'Setup guide failed', error instanceof Error ? error.message : String(error));
     }
@@ -53444,7 +53621,7 @@ function startApiServer() {
   api.post('/api/setup/actions', async (req, res) => {
     try {
       const result = await runSetupAction(req.body?.action);
-      res.json({ ...result, config: configCheckSnapshot() });
+      res.json({ ...result, config: configCheckSnapshot({ includeRecentAudit: true }) });
     } catch (error) {
       jsonError(res, 400, 'Setup action failed', error instanceof Error ? error.message : String(error));
     }

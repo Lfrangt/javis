@@ -207,6 +207,28 @@ export default {
         }),
     );
 
+    const recoveryResponse = await ctx.api('/api/realtime/provider/recovery');
+    const recovery = recoveryResponse.data?.recovery || {};
+    const recoverySteps = Array.isArray(recovery.steps) ? recovery.steps : [];
+    out.push(
+      recoveryResponse.ok &&
+        recovery.version === 1 &&
+        typeof recovery.active === 'boolean' &&
+        recovery.chatGptSubscriptionCoversApi === false &&
+        String(recovery.subscriptionBoundary || '').includes('OpenAI API Platform billing') &&
+        recovery.localFallback?.endpoint === '/api/voice/command' &&
+        String(recovery.localFallback?.command || '').includes('voice:chat') &&
+        recovery.safety?.startsMicrophone === false &&
+        recovery.safety?.usesRealtime === false &&
+        recovery.safety?.storesRawAudio === false &&
+        (!recovery.billingLikely || recoverySteps.some((step) => step.id === 'open_api_billing' && step.url))
+        ? ok('resident.realtime_provider_recovery', 'Realtime provider recovery plan', `${recovery.kind || 'ready'} · active=${recovery.active} · steps=${recoverySteps.length}`)
+        : fail('resident.realtime_provider_recovery', 'Realtime provider recovery plan', 'expected safe Realtime recovery payload with API billing boundary and local fallback', {
+            recovery,
+            status: recoveryResponse.status,
+          }),
+    );
+
     const appSource = fs.readFileSync('src/App.tsx', 'utf8');
     const startupCheckIndex = appSource.indexOf('const startupBlock = await readRealtimeStartupBlock().catch');
     const getUserMediaIndex = appSource.indexOf('navigator.mediaDevices.getUserMedia');

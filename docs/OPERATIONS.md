@@ -88,7 +88,16 @@ npm --silent run doctor -- --json --allow-blocked
 curl http://127.0.0.1:3417/api/doctor/report
 ```
 
-Doctor also reports Realtime voice provider health. A configured `OPENAI_API_KEY` is not enough: recent WebRTC session negotiation failures, including HTTP 429 quota/rate-limit and billing errors, show as a warning for up to `JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS` (24 hours by default). If the error code is `insufficient_quota`, the key has reached OpenAI but the OpenAI project has no usable quota, billing, or rate-limit headroom for Realtime; add billing/credits, raise limits, or replace `OPENAI_API_KEY` with a project key that has Realtime quota, then restart JAVIS. This keeps the desktop pet minimal while the terminal CUI and `/api/doctor/report` explain why live voice is not usable.
+Doctor also reports Realtime voice provider health. A configured `OPENAI_API_KEY` is not enough: recent WebRTC session negotiation failures, including HTTP 429 quota/rate-limit and billing errors, show as a warning for up to `JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS` (24 hours by default). If the error code is `insufficient_quota`, the key has reached OpenAI but the OpenAI project has no usable quota, billing, or rate-limit headroom for Realtime. ChatGPT app subscriptions and OpenAI API Platform billing are separate; API/Realtime usage needs API billing or credits on the project or organization that owns `OPENAI_API_KEY`. Add billing/credits, raise limits, or replace `OPENAI_API_KEY` with a project key that has Realtime quota, then restart JAVIS. This keeps the desktop pet minimal while the terminal CUI and `/api/doctor/report` explain why live voice is not usable.
+
+Use the recovery plan when Realtime reports quota, billing, auth, or provider readiness problems:
+
+```bash
+npm run config -- --print-realtime-recovery
+curl http://127.0.0.1:3417/api/realtime/provider/recovery
+```
+
+In the interactive CUI, option `1B` prints the same plan and can open the OpenAI API billing page after explicit confirmation. The recovery plan never starts microphone capture, never calls Realtime by itself, and keeps `/api/voice/command` / `npm run voice:chat` as the local fallback while billing or key changes are pending.
 
 Before opening a real microphone session, run the no-mic provider probe. It creates a renderer WebRTC offer without `getUserMedia`, calls the same OpenAI Realtime provider path with `probe=true`, records HTTP status/error evidence, and closes immediately:
 

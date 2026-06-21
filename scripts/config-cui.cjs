@@ -282,6 +282,11 @@ async function printStatus() {
     if (status.voiceHealth?.kind === 'quota_or_rate_limit') {
       console.log(`OpenAI provider: quota/rate-limit · ${compact(status.voiceHealth.next || status.voiceHealth.summary || '', 180)}`);
     }
+    if (status.voiceHealth?.recovery?.active) {
+      const recovery = status.voiceHealth.recovery;
+      const firstStep = Array.isArray(recovery.steps) ? recovery.steps[0] : null;
+      console.log(`Realtime recovery: ${compact(recovery.summary || '', 120)}${firstStep?.label ? ` · next ${firstStep.label}` : ''}`);
+    }
     console.log(`Local execution: ${status.api?.localExecutionEnabled ? 'enabled' : 'disabled'}`);
     console.log(`Trusted local mode: ${status.api?.trustedLocalMode ? 'enabled' : 'off'}`);
     if (status.actionPolicy) {
@@ -375,7 +380,7 @@ async function printStatus() {
   }
   console.log('\nActions');
   console.log('1. Set / replace OpenAI API key');
-  console.log('1B. Check OpenAI billing/quota if key is present but provider reports HTTP 429');
+  console.log('1B. Show OpenAI API billing/quota recovery');
   console.log('2. Open .env');
   console.log('M. Open Microphone settings');
   console.log('3. Open Screen Recording settings');
@@ -3291,6 +3296,50 @@ function printRealtimeProviderProbe(result) {
   }
 }
 
+function printRealtimeProviderRecovery(result) {
+  const recovery = result?.recovery || result || {};
+  const health = result?.voiceHealth || {};
+  const steps = Array.isArray(recovery.steps) ? recovery.steps : [];
+  console.log('JAVIS Realtime Provider Recovery');
+  console.log('================================');
+  console.log(`Status: ${health.status || recovery.status || '-'} · kind=${health.kind || recovery.kind || '-'} · active=${recovery.active ? 'yes' : 'no'}`);
+  if (health.summary || recovery.summary) console.log(`Summary: ${compact(health.summary || recovery.summary, 320)}`);
+  if (recovery.subscriptionBoundary) console.log(`Billing: ${compact(recovery.subscriptionBoundary, 320)}`);
+  if (recovery.next) console.log(`Next: ${compact(recovery.next, 320)}`);
+  if (steps.length) {
+    console.log('\nRecovery steps:');
+    for (const [index, step] of steps.entries()) {
+      const command = step.command ? ` · ${step.command}` : '';
+      const url = step.url ? ` · ${step.url}` : '';
+      console.log(`${index + 1}. ${step.label || step.id}: ${compact(step.detail || '', 260)}${command}${url}`);
+    }
+  }
+  if (recovery.localFallback?.command) {
+    console.log(`\nFallback now: ${recovery.localFallback.command} · ${recovery.localFallback.endpoint || '/api/voice/command'}`);
+  }
+  if (recovery.links?.billing) console.log(`API billing: ${recovery.links.billing}`);
+  if (recovery.links?.help) console.log(`OpenAI help: ${recovery.links.help}`);
+}
+
+async function showRealtimeProviderRecovery(options = {}) {
+  const result = await request('/api/realtime/provider/recovery');
+  printRealtimeProviderRecovery(result);
+  if (options.openBilling) await setupAction('open_openai_platform_billing');
+  return result;
+}
+
+async function showRealtimeProviderRecoveryFromCui(rl) {
+  const result = await showRealtimeProviderRecovery();
+  const recovery = result?.recovery || {};
+  if (!recovery.billingLikely) return;
+  const answer = (await rl.question('\nOpen OpenAI API billing in browser now? Type OPEN to continue: ')).trim();
+  if (answer !== 'OPEN') {
+    console.log('\nNo browser opened.');
+    return;
+  }
+  await setupAction('open_openai_platform_billing');
+}
+
 async function showRealtimeProviderProbe(options = {}) {
   const run = options.run === true;
   let result = run
@@ -4071,6 +4120,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-realtime-recovery') || process.argv.includes('--realtime-recovery')) {
+    await showRealtimeProviderRecovery({ openBilling: process.argv.includes('--open-billing') });
+    return;
+  }
+
   if (!process.stdin.isTTY) {
     await printStatus();
     return;
@@ -4082,6 +4136,7 @@ async function main() {
       await printStatus();
       const answer = (await rl.question('\nChoose: ')).trim().toLowerCase();
       if (answer === '1') await setOpenAiKey(rl);
+      else if (answer === '1b' || answer === 'billing' || answer === 'quota' || answer === 'realtime recovery') await showRealtimeProviderRecoveryFromCui(rl);
       else if (answer === '2') await setupAction('prepare_env_file');
       else if (answer === 'm' || answer === 'mic' || answer === 'microphone') await setupAction('open_microphone_settings');
       else if (answer === '3') await setupAction('open_screen_settings');
