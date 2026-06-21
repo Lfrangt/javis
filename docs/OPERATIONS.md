@@ -88,6 +88,8 @@ Readiness checks cover the OpenAI key, microphone, screen capture, Accessibility
 
 `GET /api/voice/standby` returns the current voice primary action. `POST /api/voice/standby` previews or runs that primary action from the same contract. When Realtime is blocked and local fallback is ready, `execute:false` prepares `npm run voice:chat` without opening Terminal, and `execute:true` opens that local no-mic loop through `/api/voice/open-local-loop`; neither path starts microphone capture, uses Realtime, or stores raw audio. When Realtime is ready, the POST path still refuses to start a microphone from the server and returns the renderer/microphone confirmation requirement.
 
+The same primary action is available through work-next as `actionId=voice:standby_primary`. `GET /api/work/next?actionId=voice:standby_primary` previews the current voice entry action without side effects; `POST /api/work/next` with `execute:true` and that action id runs it through the same standby contract. This lets Realtime tools, the CUI, and local automation ask for "the current voice entry action" without knowing whether the answer is local fallback or renderer-confirmed Realtime.
+
 The config check adds repeatable setup evidence for `.env`, `.env.example`, resident LaunchAgent installation, runtime files, policy files, and Codex/Claude worker command availability.
 
 The setup guide turns current blockers into one safe next action:

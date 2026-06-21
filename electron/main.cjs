@@ -45702,6 +45702,35 @@ async function workNextAction(options = {}) {
       localFallback: voiceHealth.fallback || null,
     };
   }
+  if (requestedActionId && !action && requestedActionId === 'voice:standby_primary') {
+    const standby = voiceStandbySnapshot();
+    const primaryAction = standby.primaryAction || {};
+    action = {
+      id: 'voice:standby_primary',
+      priority: 1.6,
+      label: primaryAction.label || 'Voice standby primary action',
+      summary: primaryAction.summary || standby.next || 'Preview or run the current voice entry action.',
+      source: 'voice_standby',
+      voiceStandbyPrimary: true,
+      executable: true,
+      autoEligible: false,
+      autopilotEligible: false,
+      manualOnly: Boolean(primaryAction.startsMicrophone),
+      requiresUserPresence: Boolean(primaryAction.startsMicrophone),
+      startsMicrophone: false,
+      requiresMicConfirmation: Boolean(primaryAction.startsMicrophone),
+      startsRecording: false,
+      startsWorkers: false,
+      executesTask: false,
+      riskLevel: primaryAction.id === 'open_local_voice_loop' ? 1 : 2,
+      primaryAction,
+      standby: {
+        mode: standby.mode,
+        label: standby.label,
+        next: standby.next,
+      },
+    };
+  }
   if (requestedActionId && !action && requestedActionId.startsWith('route:')) {
     const routeId = requestedActionId.replace(/^route:/, '');
     const record = routingRecords.get(routeId) || null;
@@ -45778,6 +45807,19 @@ async function workNextAction(options = {}) {
       result = setupGuideSnapshot({ includeRecentAudit: true });
       output = result.output;
     }
+  } else if (action.source === 'voice_standby') {
+    result = runVoiceStandbyPrimaryAction({
+      execute,
+      source: options.source || 'work_next_voice_standby',
+    });
+    executed = Boolean(result.executed);
+    output = [
+      result.output,
+      execute
+        ? 'Work-next ran the current voice standby primary action through the voice standby contract.'
+        : 'Preview mode: no Terminal was opened, no microphone was started, and no Realtime session was used.',
+      result.primaryAction?.id ? `Primary: ${result.primaryAction.id}` : '',
+    ].filter(Boolean).join('\n');
   } else if (action.source === 'inbox') {
     result = await processNextInbox({
       execute,

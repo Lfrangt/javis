@@ -168,6 +168,32 @@ export default {
         }),
     );
 
+    const voiceStandbyWorkNextPreview = await ctx.api('/api/work/next?actionId=voice%3Astandby_primary', {
+      timeoutMs: 10000,
+    });
+    const voiceStandbyWorkNext = voiceStandbyWorkNextPreview.data?.next || {};
+    const voiceStandbyWorkNextResult = voiceStandbyWorkNext.result || {};
+    out.push(
+      voiceStandbyWorkNextPreview.ok &&
+        voiceStandbyWorkNext.ok === true &&
+        voiceStandbyWorkNext.executed === false &&
+        voiceStandbyWorkNext.action?.id === 'voice:standby_primary' &&
+        voiceStandbyWorkNext.action?.source === 'voice_standby' &&
+        voiceStandbyWorkNext.action?.executable === true &&
+        voiceStandbyWorkNextResult.executed === false &&
+        voiceStandbyWorkNextResult.primaryAction?.id === voiceStandby.primaryAction?.id &&
+        voiceStandbyWorkNextResult.safety?.startsMicrophone === false &&
+        voiceStandbyWorkNextResult.safety?.usesRealtime === false &&
+        voiceStandbyWorkNextResult.safety?.storesRawAudio === false &&
+        voiceStandbyWorkNextResult.safety?.opensTerminal === false &&
+        String(voiceStandbyWorkNext.output || '').includes('Preview mode')
+        ? ok('resident.voice_standby_work_next_preview', 'Voice standby work-next preview', `${voiceStandbyWorkNext.action?.label || '-'} · primary=${voiceStandbyWorkNextResult.primaryAction?.id}`)
+        : fail('resident.voice_standby_work_next_preview', 'Voice standby work-next preview', 'expected work-next voice standby primary preview without mic, realtime, raw audio, or Terminal', {
+          status: voiceStandbyWorkNextPreview.status,
+          voiceStandbyWorkNext,
+        }),
+    );
+
     const keepAwakeStatus = await ctx.api('/api/keep-awake/status');
     const keepAwake = keepAwakeStatus.data?.keepAwake || {};
     const keepAwakePreview = await ctx.api('/api/keep-awake/start', {
