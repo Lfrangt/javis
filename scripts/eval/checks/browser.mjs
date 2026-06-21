@@ -173,6 +173,36 @@ export default {
         : fail('browser.dom_action_execute_gate_fixture', 'Browser DOM action execute gate fixture', `POST /api/browser/dom-action ${domActionExecuteGate.status}`, domActionExecuteGate.data),
     );
 
+    const domActionConfirmedFixture = await ctx.api('/api/browser/dom-action', {
+      method: 'POST',
+      body: {
+        action: 'click',
+        selector: '#submit',
+        execute: true,
+        confirm: true,
+        dom: fixtureDom,
+        source: 'eval_browser_dom_action_confirmed_fixture',
+      },
+    });
+    out.push(
+      domActionConfirmedFixture.ok &&
+        domActionConfirmedFixture.data?.executed === false &&
+        domActionConfirmedFixture.data?.fixture === true &&
+        domActionConfirmedFixture.data?.preflight?.submitLike === true &&
+        domActionConfirmedFixture.data?.plan?.riskLevel === 4 &&
+        domActionConfirmedFixture.data?.evaluation?.needsApproval === false &&
+        domActionConfirmedFixture.data?.confirmationRequired === false &&
+        domActionConfirmedFixture.data?.gate?.status === 'fixture_preview_only' &&
+        domActionConfirmedFixture.data?.gate?.approvedRequested === true &&
+        domActionConfirmedFixture.data?.gate?.browserAction === false &&
+        domActionConfirmedFixture.data?.gate?.formSubmitted === false &&
+        domActionConfirmedFixture.data?.safety?.approvedRequested === true &&
+        domActionConfirmedFixture.data?.safety?.fixtureExecutionBlocked === true &&
+        domActionConfirmedFixture.data?.safety?.executesFormSubmitByDefault === false
+        ? ok('browser.dom_action_confirmed_fixture_gate', 'Browser DOM action confirmed fixture gate', 'confirm:true is recognized but fixture DOM still cannot execute browser actions')
+        : fail('browser.dom_action_confirmed_fixture_gate', 'Browser DOM action confirmed fixture gate', `POST /api/browser/dom-action ${domActionConfirmedFixture.status}`, domActionConfirmedFixture.data),
+    );
+
     const fixtureExecute = await ctx.api('/api/browser/fill-draft', {
       method: 'POST',
       body: {
@@ -291,7 +321,7 @@ export default {
         bench?.executesBrowserActions === false &&
         bench?.modelCalls === false &&
         bench?.storesRawPageText === false &&
-        bench?.counts?.total >= 8 &&
+        bench?.counts?.total >= 9 &&
         bench?.counts?.pass === bench.counts.total &&
         bench?.counts?.fail === 0 &&
         bench?.safety?.noBrowserActions === true &&
@@ -299,9 +329,10 @@ export default {
         bench?.safety?.noSecretEcho === true &&
         bench?.safety?.domReobserveBeforeAction === true &&
         bench?.safety?.domSubmitExecuteGate === true &&
+        bench?.safety?.domConfirmFixtureNoExecute === true &&
         bench?.safety?.noFormSubmitByDefault === true &&
         bench?.safety?.sensitiveFieldsBlocked === true &&
-        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'dom_action_execute_gate_fixture', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
+        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'dom_action_execute_gate_fixture', 'dom_action_confirmed_fixture_gate', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
         bench.cases.every((item) => item.ok === true && item.modelCall === false && item.browserAction === false)
         ? ok('browser.workflow_benchmarks', 'Browser workflow benchmarks', `${bench.counts.pass}/${bench.counts.total} preview fixture(s) passed`)
         : fail('browser.workflow_benchmarks', 'Browser workflow benchmarks', `GET /api/browser/benchmarks ${benchmarks.status}`, benchmarks.data),
@@ -322,7 +353,9 @@ export default {
           output.includes('model calls=no') &&
           output.includes('sensitive fields blocked=yes') &&
           output.includes('submit execute gate=yes') &&
+          output.includes('confirmed fixture gate=yes') &&
           output.includes('DOM action execute gate fixture') &&
+          output.includes('DOM action confirmed fixture gate') &&
           output.includes('Research continuation fixture')
           ? ok('browser.cui_workflow_benchmarks', 'Browser CUI workflow benchmarks', 'config CUI prints preview-only benchmark status')
           : fail('browser.cui_workflow_benchmarks', 'Browser CUI workflow benchmarks', 'expected CUI benchmark output to print preview-only safety and benchmark cases', { output: output.slice(0, 2400) }),

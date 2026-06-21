@@ -1212,6 +1212,10 @@ style targets are promoted to Level 4 and require explicit confirmation instead 
 running by default. The fixture execute-gate benchmark sends a submit-like DOM target
 through `execute:true`, re-observes it, and still returns `executed=false` with
 `submit execute gate=yes`, proving the default path does not submit forms.
+When the operator explicitly passes `confirm:true`, the same API marks the
+approval request as satisfied before the final live execution attempt; fixture
+benchmarks still stop at `executed=false` with `confirmed fixture gate=yes`, so
+the confirmation plumbing can be checked without touching a real tab.
 
 Browser DOM control can use Chrome/Safari Apple Events JavaScript. For Chrome, enable `显示 > 开发者 > 允许 Apple 事件中的 JavaScript`, or restart Chrome with a local DevTools port that matches `JAVIS_CHROME_DEBUG_PORT`:
 
