@@ -11906,6 +11906,10 @@ function residentServiceTarget() {
   return domain ? `${domain}/${LAUNCH_AGENT_LABEL}` : '';
 }
 
+function residentLaunchAgentWorkingDirectory() {
+  return os.homedir();
+}
+
 function residentPlistContent() {
   const command = `cd ${shQuote(process.cwd())} && npm run start:desktop`;
   return `<?xml version="1.0" encoding="UTF-8"?>
@@ -11921,7 +11925,7 @@ function residentPlistContent() {
     <string>${xmlEscape(command)}</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${xmlEscape(process.cwd())}</string>
+  <string>${xmlEscape(residentLaunchAgentWorkingDirectory())}</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>

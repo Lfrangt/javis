@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import os from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 import { ok, warn, fail } from '../_client.mjs';
@@ -549,6 +550,23 @@ export default {
       resident.ok && res
         ? ok('resident.launchagent', 'LaunchAgent status', `installed=${res.installed} loaded=${res.loaded}${res.pid ? ` pid=${res.pid}` : ''} matchesProject=${res.matchesProject}`)
         : warn('resident.launchagent', 'LaunchAgent status', `GET /api/resident/status ${resident.status} ${resident.error || ''}`),
+    );
+
+    const launchAgentPath = `${os.homedir()}/Library/LaunchAgents/com.haoge.javis.plist`;
+    const launchAgentPlist = fs.existsSync(launchAgentPath) ? fs.readFileSync(launchAgentPath, 'utf8') : '';
+    const launchAgentWorkingDirectory = launchAgentPlist.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || '';
+    const launchAgentUsesSafeWorkingDirectory =
+      launchAgentWorkingDirectory === os.homedir() &&
+      launchAgentPlist.includes(`cd &apos;${process.cwd()}&apos; &amp;&amp; npm run start:desktop`);
+    out.push(
+      launchAgentUsesSafeWorkingDirectory
+        ? ok('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'plist starts from the home directory before cd-ing into the project to avoid protected-folder getcwd loops')
+        : fail('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'expected LaunchAgent WorkingDirectory to be home, not the protected project directory', {
+            launchAgentPath,
+            installed: fs.existsSync(launchAgentPath),
+            workingDirectory: launchAgentWorkingDirectory,
+            expectedWorkingDirectory: os.homedir(),
+          }),
     );
 
     const status = await ctx.api('/api/status');

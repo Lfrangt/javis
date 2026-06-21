@@ -11,6 +11,7 @@ const outLog = path.join(repoRoot, 'logs', 'resident.out.log');
 const errLog = path.join(repoRoot, 'logs', 'resident.err.log');
 const stopScript = path.join(repoRoot, 'scripts', 'stop-resident-processes.cjs');
 const uid = process.getuid?.();
+const launchAgentWorkingDirectory = os.homedir();
 
 function xmlEscape(value) {
   return String(value)
@@ -55,7 +56,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
     <string>${xmlEscape(command)}</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>${xmlEscape(repoRoot)}</string>
+  <string>${xmlEscape(launchAgentWorkingDirectory)}</string>
   <key>RunAtLoad</key>
   <true/>
   <key>KeepAlive</key>
