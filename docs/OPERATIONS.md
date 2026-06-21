@@ -708,6 +708,8 @@ curl -X POST http://127.0.0.1:3417/api/screen/describe \
 curl -X DELETE http://127.0.0.1:3417/api/screen/frame
 ```
 
+`/api/wake/status` includes a read-only `handoff` object. It does not start the microphone; it tells the renderer/CUI whether wake should try Realtime or use the local no-mic `/api/voice/command` path, including the `npm run voice -- "..."` command when Realtime is blocked. The handoff keeps the desktop pet minimal: no logs, screenshots, clipboard text, raw audio, or full Accessibility nodes are returned.
+
 Realtime can also call `get_attention_explanation` through `/api/tools/execute` when the user asks why the pet is green/yellow/red, why JAVIS stayed quiet, or what the last attention notification did. That tool returns a short Chinese `spokenSummary` plus read-only policy/history evidence; it does not add any diagnostics to the desktop pet. Realtime can call `get_perception_consent` when the user asks what JAVIS can currently see, read, hear, control, store, or why a permission/action is allowed or blocked.
 
 For a real voice progress run, keep `npm run config` open on option `V` while the desktop renderer voice session is live and a background worker batch is changing state. The monitor should show the latest work-progress sequence moving from `pending` or `stale` to `synced`, then move from pending to `READY`; then the voice model should answer the grouped worker summary without forcing the worker progress injection to become an assistant response by itself.

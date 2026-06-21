@@ -23744,6 +23744,47 @@ function localVoiceStatusSnapshot(options = {}) {
   };
 }
 
+function wakeHandoffSnapshot(options = {}) {
+  const conversation = options.conversation || conversationStateSnapshot();
+  const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const localVoice = options.localVoice || localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const fallbackReady = localVoice.mode === 'fallback_ready';
+  return {
+    version: 1,
+    ready: true,
+    mode: fallbackReady ? 'local_voice_fallback' : 'realtime_or_local',
+    label: fallbackReady ? 'Use local voice fallback' : 'Wake ready',
+    summary: compactRecordText(
+      fallbackReady
+        ? 'Wake is ready, but Realtime is blocked; send the next request through local voice-command intake.'
+        : 'Wake is ready; Realtime can be tried, and local voice-command intake is available as a no-mic fallback.',
+      220,
+    ),
+    next: compactRecordText(
+      fallbackReady
+        ? localVoice.next
+        : 'Click or summon to start Realtime, or use npm run voice for no-mic intake.',
+      220,
+    ),
+    input: localVoice.input,
+    localVoiceMode: localVoice.mode,
+    voiceHealth: {
+      status: voiceHealth.status || '',
+      kind: voiceHealth.kind || '',
+      summary: compactRecordText(voiceHealth.summary || '', 180),
+    },
+    safety: {
+      readOnly: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      storesScreenImage: false,
+      storesClipboardText: false,
+      storesAccessibilityNodes: false,
+    },
+  };
+}
+
 function safeUrlHost(value = '') {
   try {
     return value ? new URL(String(value)).host : '';
@@ -29500,6 +29541,7 @@ function petConversationSnapshot(conversation = conversationStateSnapshot()) {
 }
 
 function petWakeSnapshot(wake = wakeStatusSnapshot()) {
+  const handoff = wake.handoff || wakeHandoffSnapshot();
   return {
     words: Array.isArray(wake.words) ? wake.words.slice(0, 8) : [],
     softWakeOnly: Boolean(wake.softWakeOnly),
@@ -29515,6 +29557,25 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
       running: Boolean(wake.engine?.running),
       pid: wake.engine?.pid || null,
       startedAt: Number(wake.engine?.startedAt || 0),
+    },
+    handoff: {
+      version: Number(handoff.version || 1),
+      ready: Boolean(handoff.ready),
+      mode: compactRecordText(handoff.mode || '', 80),
+      label: compactRecordText(handoff.label || '', 120),
+      summary: compactRecordText(handoff.summary || '', 180),
+      next: compactRecordText(handoff.next || '', 180),
+      input: {
+        endpoint: compactRecordText(handoff.input?.endpoint || '', 120),
+        cliCommand: compactRecordText(handoff.input?.cliCommand || '', 140),
+      },
+      localVoiceMode: compactRecordText(handoff.localVoiceMode || '', 80),
+      safety: {
+        readOnly: handoff.safety?.readOnly !== false,
+        startsMicrophone: Boolean(handoff.safety?.startsMicrophone),
+        usesRealtime: Boolean(handoff.safety?.usesRealtime),
+        storesRawAudio: Boolean(handoff.safety?.storesRawAudio),
+      },
     },
   };
 }
@@ -31208,6 +31269,9 @@ function stopAutopilotMonitor() {
 function wakeStatusSnapshot(options = {}) {
   const since = Number(options.since || 0);
   const ageMs = wakeState.lastTriggerAt ? Date.now() - wakeState.lastTriggerAt : Infinity;
+  const conversation = conversationStateSnapshot();
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
   return {
     words: WAKE_WORDS,
     softWakeOnly: !WAKE_ENGINE_CMD,
@@ -31227,6 +31291,7 @@ function wakeStatusSnapshot(options = {}) {
       lastLine: wakeState.engineLastLine,
       lastError: wakeState.engineLastError,
     },
+    handoff: wakeHandoffSnapshot({ conversation, voiceHealth, localVoice }),
   };
 }
 

@@ -20,6 +20,7 @@
 - macOS menu bar resident controls.
 - Global pet hotkey.
 - Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch.
+- Wake handoff status that tells the pet/CUI whether the next invited turn should try Realtime or use local no-mic voice-command fallback, without starting the microphone from the status read.
 - Global clipboard-to-Inbox capture hotkey.
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.

@@ -9,10 +9,21 @@ export default {
 
     const wake = await ctx.api('/api/wake/status');
     const w = wake.data?.wake;
+    const wakeHandoff = w?.handoff || {};
     out.push(
-      wake.ok && w && Array.isArray(w.words)
-        ? ok('resident.wake', 'Wake state', `${w.words.length} wake word(s) · softWakeOnly=${w.softWakeOnly} triggers=${w.triggerCount ?? 0}`)
-        : warn('resident.wake', 'Wake state', `GET /api/wake/status ${wake.status} ${wake.error || ''}`),
+      wake.ok &&
+        w &&
+        Array.isArray(w.words) &&
+        wakeHandoff.ready === true &&
+        ['local_voice_fallback', 'realtime_or_local'].includes(wakeHandoff.mode) &&
+        wakeHandoff.input?.endpoint === '/api/voice/command' &&
+        String(wakeHandoff.input?.cliCommand || '').includes('npm run voice') &&
+        wakeHandoff.safety?.readOnly === true &&
+        wakeHandoff.safety?.startsMicrophone === false &&
+        wakeHandoff.safety?.usesRealtime === false &&
+        wakeHandoff.safety?.storesRawAudio === false
+        ? ok('resident.wake', 'Wake state', `${w.words.length} wake word(s) · handoff=${wakeHandoff.mode} · softWakeOnly=${w.softWakeOnly} triggers=${w.triggerCount ?? 0}`)
+        : warn('resident.wake', 'Wake state', `GET /api/wake/status ${wake.status} ${wake.error || ''}`, { wake: w }),
     );
 
     const guide = await ctx.api('/api/setup/guide');
@@ -55,6 +66,7 @@ export default {
     const trafficPulses = new Set(['off', 'slow', 'live', 'attention']);
     const voiceFallback = p.voiceHealth?.fallback || {};
     const localVoice = p.localVoice || {};
+    const petWakeHandoff = p.wake?.handoff || {};
     const raw = JSON.stringify(p);
     const rawBytes = Buffer.byteLength(raw, 'utf8');
     const hasForbiddenNestedKey = (value, forbidden) => {
@@ -121,6 +133,14 @@ export default {
         localVoice.safety?.storesClipboardText === false &&
         localVoice.safety?.storesAccessibilityNodes === false &&
         (localVoice.history?.latest === null || typeof localVoice.history?.latest?.transcriptPreview === 'string') &&
+        petWakeHandoff.ready === true &&
+        ['local_voice_fallback', 'realtime_or_local'].includes(petWakeHandoff.mode) &&
+        petWakeHandoff.input?.endpoint === '/api/voice/command' &&
+        String(petWakeHandoff.input?.cliCommand || '').includes('npm run voice') &&
+        petWakeHandoff.safety?.readOnly === true &&
+        petWakeHandoff.safety?.startsMicrophone === false &&
+        petWakeHandoff.safety?.usesRealtime === false &&
+        petWakeHandoff.safety?.storesRawAudio === false &&
         p.window?.mode &&
         p.presence?.intervention?.passiveByDefault === true &&
         p.presence?.intervention?.requiresUserIntent === true &&
@@ -144,6 +164,7 @@ export default {
           traffic,
           voiceFallback,
           localVoice,
+          petWakeHandoff,
         }),
     );
 

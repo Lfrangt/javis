@@ -69,7 +69,7 @@ Renderer
 - Agent collaboration ledger lane: persists short-lived scope claims from external Claude Code, Codex, or local CLI workers, with heartbeat/release APIs, suggested next scopes, and conflict counts used by briefing, CUI, voice, doctor, and the parallel ownership guard. Realtime voice can preview, confirm, heartbeat, and release scoped ownership records through compact collaboration tools; those tools only mutate the local ownership ledger and do not start workers or edit files.
 - Push-to-talk lane: keeps resident voice from becoming an always-open microphone.
 - Global hotkey lane: brings the desktop pet back without requiring app focus.
-- Tap-to-summon hotkey lane: global `JAVIS_SUMMON_HOTKEY`/`JAVIS_TAP_HOTKEY` wakes JAVIS, parks the capsule at the notch, and starts the same pending wake path used by local wake engines.
+- Tap-to-summon hotkey lane: global `JAVIS_SUMMON_HOTKEY`/`JAVIS_TAP_HOTKEY` wakes JAVIS, parks the capsule at the notch, starts the same pending wake path used by local wake engines, and exposes a read-only wake handoff that tells the pet/CUI whether to try Realtime or route the next request through local voice-command fallback.
 - Capture hotkey lane: saves current clipboard text into local Inbox without opening desktop UI.
 - Menu bar lane: resident macOS status item for opening the terminal CUI, parking the pet, seeing current blockers, and jumping to setup locations.
 - Config CUI lane: terminal-first setup surface for `.env`, permissions, doctor output, and parking the pet.

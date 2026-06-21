@@ -198,6 +198,36 @@ type WindowState = {
   height: number
 }
 
+type WakeHandoff = {
+  version: number
+  ready: boolean
+  mode: string
+  label: string
+  summary: string
+  next: string
+  input: {
+    endpoint: string
+    cliCommand: string
+    historyEndpoint?: string
+    historyCommand?: string
+  }
+  localVoiceMode: string
+  voiceHealth?: {
+    status: string
+    kind: string
+    summary: string
+  }
+  safety: {
+    readOnly: boolean
+    startsMicrophone: boolean
+    usesRealtime: boolean
+    storesRawAudio: boolean
+    storesScreenImage?: boolean
+    storesClipboardText?: boolean
+    storesAccessibilityNodes?: boolean
+  }
+}
+
 type MenuBarState = {
   available: boolean
   updatedAt: number | null
@@ -630,6 +660,7 @@ type Status = {
       lastLine: string
       lastError: string
     }
+    handoff?: WakeHandoff
   }
   readiness?: {
     overall: 'ready' | 'degraded' | 'blocked'
@@ -2638,7 +2669,8 @@ function App() {
     const wake = status?.wake
     if (!wake?.pending || !wake.lastTriggerAt || wake.lastTriggerAt <= lastWakeHandledAtRef.current) return
     lastWakeHandledAtRef.current = wake.lastTriggerAt
-    addMessage('system', `Wake: ${wake.lastPhrase || wake.lastSource || 'triggered'}`)
+    const handoff = wake.handoff?.summary || wake.handoff?.next || ''
+    addMessage('system', `Wake: ${wake.lastPhrase || wake.lastSource || 'triggered'}${handoff ? ` · ${handoff}` : ''}`)
     void beginAssistantSession()
   }, [addMessage, beginAssistantSession, status?.wake])
 
