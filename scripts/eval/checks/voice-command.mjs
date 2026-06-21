@@ -276,6 +276,30 @@ export default {
       out.push(fail('voice_command.local_cli_loop', 'Local voice command loop CLI', error instanceof Error ? error.message : String(error)));
     }
 
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-local-voice-loop'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('JAVIS Local Voice Command Loop') &&
+          stdout.includes('npm run voice:chat') &&
+          stdout.includes('starts microphone=no') &&
+          stdout.includes('uses Realtime=no') &&
+          stdout.includes('screen/UI context is metadata-only')
+          ? ok('voice_command.cui_loop_quickstart', 'Local voice loop CUI quickstart', 'config CUI exposes the no-mic continuous local intake quickstart')
+          : fail('voice_command.cui_loop_quickstart', 'Local voice loop CUI quickstart', 'config CUI did not expose the expected local loop quickstart', { output: stdout.slice(0, 1200) }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.cui_loop_quickstart', 'Local voice loop CUI quickstart', error instanceof Error ? error.message : String(error)));
+    }
+
     const wakeCommand = await ctx.api('/api/wake/command', {
       method: 'POST',
       body: {

@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const http = require('node:http');
 const os = require('node:os');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
+const { execFileSync, spawnSync } = require('node:child_process');
 const readline = require('node:readline/promises');
 
 const API_BASE = process.env.JAVIS_API_BASE || `http://127.0.0.1:${process.env.JAVIS_API_PORT || 3417}`;
@@ -367,6 +367,7 @@ async function printStatus() {
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('VH. Show local voice command history');
+  console.log('VC. Start local voice command loop (no mic)');
   console.log('WH. Show wake handoff');
   console.log('L. Show local capability map');
   console.log('I. Show permission matrix');
@@ -827,6 +828,51 @@ async function showVoiceHistory() {
     if (state === 'preview' && item.routeId) {
       console.log(`   Continue: npm run work:run -- --action-id route:${item.routeId}`);
     }
+  }
+}
+
+async function showLocalVoiceLoopQuickstart() {
+  const status = await request('/api/status').catch(() => ({}));
+  const voiceHealth = status.voiceHealth || {};
+  const localVoice = status.localVoice || {};
+  console.log('\nJAVIS Local Voice Command Loop');
+  console.log('==============================');
+  console.log('Use this when Realtime voice is unavailable or when you want a quiet terminal intake loop.');
+  console.log(`Realtime: ${voiceHealth.status || 'unknown'} · ${compact(voiceHealth.summary || '-', 220)}`);
+  console.log(`Local fallback: ${localVoice.mode || 'standby'} · ${localVoice.input?.endpoint || '/api/voice/command'}`);
+  console.log('\nCommands:');
+  console.log('  npm run voice:chat');
+  console.log('  npm run voice:chat -- --session');
+  console.log('  npm run voice:chat -- --run --include-screen --include-ui');
+  console.log('  npm run voice:chat -- --no-session --no-screen --no-ui');
+  console.log('\nInside the loop:');
+  console.log('  Type a request and press Enter.');
+  console.log('  Type /exit or /quit to return to the shell.');
+  console.log('\nSafety: starts microphone=no; uses Realtime=no; stores raw audio=no; screen/UI context is metadata-only.');
+}
+
+async function startLocalVoiceCommandLoopFromCui(rl) {
+  await showLocalVoiceLoopQuickstart();
+  const answer = (await rl.question('\nStart local no-mic command loop now? Press Enter to start, or type NO: ')).trim().toLowerCase();
+  if (answer === 'no' || answer === 'n') {
+    console.log('\nNo local loop started.');
+    return;
+  }
+  console.log('\nStarting local voice command loop. Type /exit to return to this CUI.');
+  if (typeof rl.pause === 'function') rl.pause();
+  const result = spawnSync(process.execPath, ['scripts/local-voice-command-dogfood.mjs', '--chat'], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      JAVIS_LOCAL_VOICE_CLI: 'true',
+    },
+    stdio: 'inherit',
+  });
+  if (typeof rl.resume === 'function') rl.resume();
+  if (result.error) {
+    console.log(`\nLocal voice command loop failed: ${result.error.message}`);
+  } else {
+    console.log(`\nLocal voice command loop exited with code ${result.status ?? 0}.`);
   }
 }
 
@@ -3748,6 +3794,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-local-voice-loop') || process.argv.includes('--local-voice-loop')) {
+    await showLocalVoiceLoopQuickstart();
+    return;
+  }
+
   if (process.argv.includes('--print-wake-handoff') || process.argv.includes('--wake-handoff')) {
     await showWakeHandoff();
     return;
@@ -3936,6 +3987,8 @@ async function main() {
         await showWorkHandoff();
       } else if (answer === 'vh' || answer === 'voice history' || answer === 'local voice history') {
         await showVoiceHistory();
+      } else if (answer === 'vc' || answer === 'voice chat' || answer === 'local voice loop' || answer === 'local voice command loop') {
+        await startLocalVoiceCommandLoopFromCui(rl);
       } else if (answer === 'wh' || answer === 'wake handoff' || answer === 'wake') {
         await showWakeHandoff();
       } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {
