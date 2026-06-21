@@ -394,6 +394,7 @@ async function printStatus() {
   console.log('11. Set control mode');
   console.log('12. Run doctor');
   console.log('13. Test wake trigger');
+  console.log('RB. Show resident recovery bundle');
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
   console.log('R. Run renderer Realtime dogfood (starts mic)');
@@ -3352,6 +3353,99 @@ async function showRealtimeProviderRecoveryFromCui(rl) {
   await setupAction('open_openai_platform_billing');
 }
 
+function printSetupRecoveryBundle(result) {
+  const bundle = result?.bundle || result || {};
+  const resident = bundle.resident || {};
+  const setup = bundle.setup || {};
+  const readiness = bundle.readiness || {};
+  const voice = bundle.voice || {};
+  const realtime = voice.realtime || {};
+  const localFallback = voice.localFallback || {};
+  const pet = bundle.pet || {};
+  const automation = bundle.automation || {};
+  const policy = automation.policy || {};
+  const allow = policy.allow || {};
+  const commands = bundle.commands || {};
+  const permissions = Array.isArray(bundle.permissions) ? bundle.permissions : [];
+  const capabilities = Array.isArray(automation.capabilities) ? automation.capabilities : [];
+  const nextActions = Array.isArray(bundle.nextActions) ? bundle.nextActions : [];
+  console.log('JAVIS Setup Recovery Bundle');
+  console.log('===========================');
+  console.log(`Status: ${bundle.overall || '-'} · ${bundle.label || '-'}`);
+  if (bundle.summary) console.log(`Summary: ${compact(bundle.summary, 420)}`);
+  if (bundle.nextAction) {
+    const action = bundle.nextAction;
+    const command = action.command ? ` · ${action.command}` : '';
+    const endpoint = action.endpoint ? ` · ${action.endpoint}` : '';
+    console.log(`Next: ${action.label || action.id || '-'}${command}${endpoint}`);
+    if (action.summary) console.log(`      ${compact(action.summary, 280)}`);
+  }
+
+  console.log('\nResident');
+  console.log(`- installed=${resident.installed ? 'yes' : 'no'} loaded=${resident.loaded ? 'yes' : 'no'} matchesProject=${resident.matchesProject ? 'yes' : 'no'}${resident.pid ? ` pid=${resident.pid}` : ''}`);
+  if (pet.window) {
+    console.log(`- pet ${pet.window.mode || pet.mode || '-'} ${pet.window.width || '-'}x${pet.window.height || '-'} park=${pet.window.parkCorner || '-'} hotkey=${pet.window.hotkeyRegistered ? 'on' : 'off'} summon=${pet.window.summonHotkeyRegistered ? 'on' : 'off'}`);
+  }
+
+  console.log('\nVoice');
+  console.log(`- realtime: ${realtime.status || '-'} · ${realtime.kind || '-'}${realtime.lastStatusCode ? ` · HTTP ${realtime.lastStatusCode}` : ''}`);
+  if (realtime.summary) console.log(`  ${compact(realtime.summary, 260)}`);
+  console.log(`- local fallback: ${localFallback.available ? 'ready' : 'off'} · ${localFallback.mode || '-'} · starts mic=${localFallback.safety?.startsMicrophone ? 'yes' : 'no'}`);
+  if (localFallback.input?.openLoopCommand) console.log(`  ${localFallback.input.openLoopCommand}`);
+
+  console.log('\nControl');
+  console.log(`- local execution=${automation.localExecutionEnabled ? 'on' : 'off'} trusted=${automation.trustedLocalMode ? 'on' : 'off'} mode=${automation.controlMode?.mode || '-'}`);
+  console.log(`- auto Level ${policy.maxAutoRiskLevel ?? '-'} · approval Level ${policy.requireApprovalAtRiskLevel ?? '-'} · dryRun=${policy.dryRun ? 'yes' : 'no'}`);
+  if (allow.files) console.log(`- files: ${allow.files.rootCount || 0} root(s), write ${allow.files.writeRootCount || 0}`);
+  if (allow.cli) console.log(`- cli: ${allow.cli.enabled ? 'on' : 'off'} · ${(allow.cli.allowedCommands || []).join(', ') || '-'}`);
+  if (allow.codeAgents) console.log(`- code agents: ${allow.codeAgents.enabled ? 'on' : 'off'} · ${(allow.codeAgents.allowedCommands || []).join(', ') || '-'}`);
+  if (automation.workers) {
+    console.log(`- workers: codex=${automation.workers.codex?.available ? 'ready' : 'missing'} claude=${automation.workers.claude?.available ? 'ready' : 'missing'}`);
+  }
+
+  if (permissions.length) {
+    console.log('\nPermissions');
+    for (const item of permissions) {
+      console.log(`- ${item.status || '-'} ${item.label || item.id}: ${compact(item.summary || item.next || '', 180)}`);
+    }
+  }
+
+  if (capabilities.length) {
+    console.log('\nCapabilities');
+    for (const item of capabilities.slice(0, 8)) {
+      console.log(`- ${item.status || '-'} ${item.label || item.id}: ${compact(item.summary || item.next || '', 180)}`);
+    }
+  }
+
+  if (nextActions.length > 1) {
+    console.log('\nNext actions');
+    for (const [index, action] of nextActions.slice(0, 6).entries()) {
+      const command = action.command ? ` · ${action.command}` : '';
+      console.log(`${index + 1}. ${action.label || action.id}${command}`);
+    }
+  }
+
+  console.log('\nCommands');
+  console.log(`- bundle: ${commands.bundle || 'npm run config -- --print-setup-recovery-bundle'}`);
+  console.log(`- doctor: ${commands.doctor || 'npm run doctor -- --allow-blocked'}`);
+  console.log(`- restart: ${commands.restart || 'npm run resident:restart'}`);
+  console.log(`- local voice: ${commands.localVoiceLoop || 'npm run voice:chat'}`);
+  console.log(`- realtime probe: ${commands.realtimeProviderProbe || 'npm run dogfood:realtime-provider-probe'}`);
+
+  const safety = bundle.safety || {};
+  console.log('\nSafety');
+  console.log(`- read-only=${safety.readOnly ? 'yes' : 'no'} starts mic=${safety.startsMicrophone ? 'yes' : 'no'} calls OpenAI=${safety.callsOpenAi ? 'yes' : 'no'} mutates files=${safety.mutatesFiles ? 'yes' : 'no'} exposes token=${safety.exposesApiToken ? 'yes' : 'no'}`);
+  if (setup.nextStep || readiness.primaryIssue) {
+    console.log(`\nReadiness: ${readiness.overall || setup.overall || '-'} · ${setup.blockedOrWarningCount || 0} setup issue(s)`);
+  }
+}
+
+async function showSetupRecoveryBundle() {
+  const result = await request('/api/setup/recovery-bundle');
+  printSetupRecoveryBundle(result);
+  return result;
+}
+
 async function showRealtimeProviderProbe(options = {}) {
   const run = options.run === true;
   let result = run
@@ -3968,6 +4062,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-setup-recovery-bundle') || process.argv.includes('--setup-recovery-bundle') || process.argv.includes('--recovery-bundle')) {
+    await showSetupRecoveryBundle();
+    return;
+  }
+
   if (process.argv.includes('--print-routing-speed-policy') || process.argv.includes('--routing-speed-policy')) {
     const messageIndex = process.argv.findIndex((item) => item === '--message');
     const laneIndex = process.argv.findIndex((item) => item === '--lane');
@@ -4176,6 +4275,8 @@ async function main() {
           body: { source: 'cui', phrase: 'manual test' },
         });
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
+      } else if (answer === 'rb' || answer === 'recovery bundle' || answer === 'setup recovery' || answer === 'resident recovery') {
+        await showSetupRecoveryBundle();
       } else if (answer === 'v' || answer === 'voice' || answer === 'realtime') {
         await watchRealtimeEvidence(rl);
       } else if (answer === 'd' || answer === 'dogfood' || answer === 'drill') {

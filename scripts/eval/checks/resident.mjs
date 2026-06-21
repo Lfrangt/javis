@@ -36,6 +36,56 @@ export default {
         : warn('resident.setup', 'Setup guide', `GET /api/setup/guide ${guide.status} ${guide.error || ''}`),
     );
 
+    const recoveryBundleResponse = await ctx.api('/api/setup/recovery-bundle');
+    const bundle = recoveryBundleResponse.data?.bundle || {};
+    const bundleRaw = JSON.stringify(bundle);
+    const bundleLocalVoice = bundle.voice?.localFallback || {};
+    const bundlePolicy = bundle.automation?.policy || {};
+    const bundleAllow = bundlePolicy.allow || {};
+    const bundlePermissions = Array.isArray(bundle.permissions) ? bundle.permissions : [];
+    const bundleCapabilities = Array.isArray(bundle.automation?.capabilities) ? bundle.automation.capabilities : [];
+    out.push(
+      recoveryBundleResponse.ok &&
+        bundle.version === 1 &&
+        ['ready', 'degraded', 'blocked'].includes(bundle.overall) &&
+        bundle.endpoints?.setupGuide === '/api/setup/guide' &&
+        bundle.endpoints?.doctor === '/api/doctor/report' &&
+        bundle.commands?.bundle?.includes('--print-setup-recovery-bundle') &&
+        typeof bundle.resident?.installed === 'boolean' &&
+        typeof bundle.resident?.loaded === 'boolean' &&
+        typeof bundle.resident?.matchesProject === 'boolean' &&
+        bundle.readiness?.counts?.total > 0 &&
+        bundlePermissions.some((item) => item.id === 'screen_permission') &&
+        bundlePermissions.some((item) => item.id === 'accessibility_permission') &&
+        bundleCapabilities.some((item) => item.id === 'browser_control_policy') &&
+        bundleCapabilities.some((item) => item.id === 'cli_command_policy') &&
+        bundleLocalVoice.available === true &&
+        bundleLocalVoice.input?.endpoint === '/api/voice/command' &&
+        bundleLocalVoice.safety?.startsMicrophone === false &&
+        bundleLocalVoice.safety?.usesRealtime === false &&
+        bundleLocalVoice.safety?.storesRawAudio === false &&
+        bundle.voice?.realtime?.recovery?.localFallback?.endpoint === '/api/voice/command' &&
+        typeof bundle.automation?.localExecutionEnabled === 'boolean' &&
+        typeof bundle.automation?.trustedLocalMode === 'boolean' &&
+        bundle.automation?.controlMode?.mode &&
+        typeof bundlePolicy.maxAutoRiskLevel === 'number' &&
+        bundleAllow.files?.rootCount >= 0 &&
+        Array.isArray(bundleAllow.cli?.allowedCommands) &&
+        Array.isArray(bundle.nextActions) &&
+        bundle.safety?.readOnly === true &&
+        bundle.safety?.startsMicrophone === false &&
+        bundle.safety?.callsOpenAi === false &&
+        bundle.safety?.mutatesFiles === false &&
+        bundle.safety?.exposesApiToken === false &&
+        !/sk-[A-Za-z0-9_-]{16,}/.test(bundleRaw) &&
+        !bundleRaw.includes('imageDataUrl')
+        ? ok('resident.setup_recovery_bundle', 'Resident setup recovery bundle', `${bundle.overall} · resident=${bundle.resident?.loaded ? 'loaded' : 'not-loaded'} · voice=${bundle.voice?.realtime?.status || 'unknown'} · actions=${bundle.nextActions.length}`)
+        : fail('resident.setup_recovery_bundle', 'Resident setup recovery bundle', 'expected compact read-only resident recovery bundle with setup, permissions, voice fallback, automation, and safety contract', {
+          status: recoveryBundleResponse.status,
+          bundle,
+        }),
+    );
+
     const win = await ctx.api('/api/window/state');
     const win2 = win.data?.window;
     out.push(

@@ -41041,6 +41041,375 @@ function setupGuideSnapshot(options = {}) {
   };
 }
 
+function compactReadinessItem(item) {
+  if (!item) return null;
+  return {
+    id: compactRecordText(item.id || '', 80),
+    label: compactRecordText(item.label || item.id || '', 120),
+    status: compactRecordText(item.status || '', 40),
+    summary: compactRecordText(item.summary || '', 260),
+    next: compactRecordText(item.next || '', 260),
+  };
+}
+
+function setupRecoveryActionFromSetupStep(step = {}) {
+  if (!step?.action?.action) return null;
+  const actionName = compactRecordText(step.action.action || '', 100);
+  const fileMutatingActions = new Set([
+    'prepare_env_file',
+    'open_runtime_dir',
+    'open_action_policy',
+    'apply_screen_privacy_sensitive_defaults',
+    'install_resident_agent',
+    'uninstall_resident_agent',
+  ]);
+  const finderActions = new Set(['prepare_env_file', 'open_runtime_dir', 'open_action_policy']);
+  const settingsActions = new Set([
+    'open_screen_settings',
+    'open_accessibility_settings',
+    'open_full_disk_access_settings',
+    'open_microphone_settings',
+  ]);
+  return {
+    id: `setup:${compactRecordText(step.id || step.action.action, 80)}`,
+    label: compactRecordText(step.action.label || step.label || 'Run setup action', 120),
+    status: compactRecordText(step.status || '', 40),
+    summary: compactRecordText(step.next || step.summary || step.action.reason || '', 260),
+    action: actionName,
+    endpoint: '/api/setup/next',
+    method: 'POST',
+    command: 'npm run config',
+    mutatesFiles: fileMutatingActions.has(actionName),
+    opensFinder: finderActions.has(actionName),
+    opensSystemUi: settingsActions.has(actionName),
+    opensBrowser: actionName.startsWith('open_openai_platform_'),
+    startsMicrophone: false,
+  };
+}
+
+function setupRecoveryActionFromRealtimeStep(step = {}) {
+  if (!step?.id) return null;
+  return {
+    id: `realtime:${compactRecordText(step.id, 80)}`,
+    label: compactRecordText(step.label || step.id, 120),
+    summary: compactRecordText(step.detail || '', 260),
+    command: compactRecordText(step.command || '', 180),
+    url: compactRecordText(step.url || '', 220),
+    mutatesFiles: false,
+    opensSystemUi: Boolean(step.url),
+    startsMicrophone: false,
+  };
+}
+
+function setupRecoveryActionFromWorkNext(action = {}) {
+  if (!action?.id) return null;
+  return {
+    id: `work:${compactRecordText(action.id, 100)}`,
+    label: compactRecordText(action.label || action.id, 140),
+    summary: compactRecordText(action.summary || action.nextAction || action.reason || '', 260),
+    source: compactRecordText(action.source || '', 80),
+    lane: compactRecordText(action.lane || action.mode || '', 60),
+    executable: Boolean(action.decision?.executable || action.executable),
+    riskLevel: boundedCount(action.riskLevel ?? action.decision?.riskLevel, 10),
+    startsMicrophone: false,
+  };
+}
+
+function setupRecoveryAllowSummary() {
+  const fileRoots = Array.from(new Set([
+    ...(actionPolicy.allow?.list_directory?.allowedRoots || []),
+    ...(actionPolicy.allow?.read_file?.allowedRoots || []),
+    ...(actionPolicy.allow?.search_files?.allowedRoots || []),
+    ...(actionPolicy.allow?.write_file?.allowedRoots || []),
+    ...(actionPolicy.allow?.create_directory?.allowedRoots || []),
+    ...(actionPolicy.allow?.copy_file?.allowedRoots || []),
+    ...(actionPolicy.allow?.move_file?.allowedRoots || []),
+  ].map(String).filter(Boolean)));
+  const cli = actionPolicy.allow?.cli_command || {};
+  const codeAgent = actionPolicy.allow?.code_agent || {};
+  const browser = actionPolicy.allow?.browser_control || {};
+  const axTree = actionPolicy.allow?.read_accessibility_tree || {};
+  return {
+    files: {
+      rootCount: fileRoots.length,
+      roots: fileRoots.slice(0, 12),
+      writeRootCount: (actionPolicy.allow?.write_file?.allowedRoots || []).length,
+      writeRoots: (actionPolicy.allow?.write_file?.allowedRoots || []).slice(0, 12),
+    },
+    cli: {
+      enabled: cli.enabled !== false,
+      allowedCommands: Array.isArray(cli.allowedCommands) ? cli.allowedCommands : [],
+      maxTimeoutMs: boundedCount(cli.maxTimeoutMs, 86_400_000),
+    },
+    codeAgents: {
+      enabled: codeAgent.enabled !== false,
+      allowedCommands: Array.isArray(codeAgent.allowedCommands) ? codeAgent.allowedCommands : [],
+      maxTimeoutMs: boundedCount(codeAgent.maxTimeoutMs, 86_400_000),
+    },
+    browserControl: {
+      enabled: browser.enabled !== false,
+      allowedActions: Array.isArray(browser.allowedActions) ? browser.allowedActions : [],
+    },
+    accessibilityTree: {
+      enabled: axTree.enabled !== false,
+      maxDepth: boundedCount(axTree.maxDepth, 100),
+      maxNodes: boundedCount(axTree.maxNodes, 100000),
+    },
+  };
+}
+
+async function setupRecoveryBundleSnapshot(options = {}) {
+  const includeRecentAudit = options.includeRecentAudit !== false;
+  const readiness = readinessSnapshot({ includeRecentAudit });
+  const config = configCheckSnapshot({ includeRecentAudit });
+  const setupGuide = setupGuideSnapshot({ includeRecentAudit });
+  const resident = await residentStatusSnapshot();
+  const conversation = conversationStateSnapshot();
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit });
+  const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const pet = petStatusSnapshot();
+  const briefing = workflowBriefing({ workflowLimit: 4, jobLimit: 4, includeMaintenance: true });
+  const readinessById = new Map((readiness.items || []).map((item) => [item.id, item]));
+  const configById = new Map((config.items || []).map((item) => [item.id, item]));
+  const permissionChecks = [
+    'microphone_permission',
+    'screen_permission',
+    'accessibility_permission',
+    'screen_privacy_preset',
+    'api_auth',
+  ].map((id) => compactReadinessItem(readinessById.get(id))).filter(Boolean);
+  const capabilityChecks = [
+    'local_execution',
+    'action_policy',
+    'control_mode',
+    'file_roots',
+    'memory_store',
+    'learning_profile',
+    'clipboard_policy',
+    'accessibility_tree_policy',
+    'browser_page_policy',
+    'browser_control_policy',
+    'cli_command_policy',
+  ].map((id) => compactReadinessItem(readinessById.get(id))).filter(Boolean);
+  const localSetupChecks = [
+    'env_file',
+    'launch_agent',
+    'action_policy_file',
+    'control_mode_file',
+    'codex_command',
+    'claude_command',
+  ].map((id) => compactReadinessItem(configById.get(id))).filter(Boolean);
+  const realtimeSteps = Array.isArray(voiceHealth.recovery?.steps) ? voiceHealth.recovery.steps : [];
+  const workActions = Array.isArray(briefing.nextActions)
+    ? briefing.nextActions.slice(0, 3).map(setupRecoveryActionFromWorkNext).filter(Boolean)
+    : [];
+  const nextActions = [
+    setupRecoveryActionFromSetupStep(setupGuide.nextStep),
+    voiceHealth.recovery?.active ? setupRecoveryActionFromRealtimeStep(realtimeSteps[0]) : null,
+    !resident.installed
+      ? {
+          id: 'resident:install',
+          label: 'Install resident LaunchAgent',
+          summary: 'Install login-start resident mode after the desktop build is ready.',
+          command: 'npm run resident:install',
+          mutatesFiles: true,
+          startsMicrophone: false,
+        }
+      : !resident.loaded || !resident.matchesProject
+        ? {
+            id: 'resident:restart',
+            label: 'Restart resident service',
+            summary: 'Reload the LaunchAgent so the current project owns the local API server.',
+            command: 'npm run resident:restart',
+            mutatesFiles: true,
+            startsMicrophone: false,
+          }
+        : null,
+    ...workActions,
+  ].filter(Boolean).slice(0, 6);
+  const residentReady = Boolean(resident.installed && resident.loaded && resident.matchesProject);
+  const setupBlocked = readiness.overall === 'blocked' || config.overall === 'blocked';
+  const realtimeReady = voiceHealth.status === 'ready';
+  const localVoiceReady = localVoice.available === true && localVoice.safety?.startsMicrophone === false;
+  const overall = setupBlocked ? 'blocked' : residentReady && localVoiceReady && realtimeReady ? 'ready' : 'degraded';
+  const label = overall === 'ready'
+    ? 'Resident ready'
+    : setupBlocked
+      ? 'Setup blocked'
+      : 'Resident degraded';
+  const summary = setupBlocked
+    ? setupGuide.output
+    : !residentReady
+      ? 'JAVIS local services are available, but resident login mode needs install/restart attention.'
+      : !realtimeReady
+        ? `Resident mode is usable with local voice-command fallback; Realtime is ${voiceHealth.kind || voiceHealth.status}.`
+        : 'JAVIS resident mode is ready for local voice, screen-aware routing, and guarded automation.';
+  const bundle = {
+    version: 1,
+    ok: overall !== 'blocked',
+    overall,
+    label,
+    summary: compactRecordText(summary, 520),
+    generatedAt: new Date().toISOString(),
+    nextAction: nextActions[0] || null,
+    nextActions,
+    endpoints: {
+      bundle: '/api/setup/recovery-bundle',
+      setupGuide: '/api/setup/guide',
+      setupNext: '/api/setup/next',
+      readiness: '/api/readiness',
+      doctor: '/api/doctor/report',
+      resident: '/api/resident/status',
+      pet: '/api/pet/status',
+      voiceCommand: '/api/voice/command',
+      realtimeRecovery: '/api/realtime/provider/recovery',
+    },
+    commands: {
+      bundle: 'npm run config -- --print-setup-recovery-bundle',
+      configCui: 'npm run config',
+      doctor: 'npm run doctor -- --allow-blocked',
+      restart: 'npm run resident:restart',
+      realtimeProviderProbe: 'npm run dogfood:realtime-provider-probe',
+      localVoiceLoop: 'npm run voice:chat',
+      localVoiceOneShot: 'npm run voice -- "..."',
+    },
+    resident: {
+      label: resident.label,
+      installed: Boolean(resident.installed),
+      loaded: Boolean(resident.loaded),
+      pid: resident.pid || null,
+      matchesProject: Boolean(resident.matchesProject),
+      target: resident.target,
+      launchctlError: compactRecordText(resident.launchctlError || '', 180),
+    },
+    setup: {
+      overall: setupGuide.overall,
+      counts: setupGuide.counts,
+      nextStep: setupGuide.nextStep
+        ? {
+            id: setupGuide.nextStep.id,
+            label: setupGuide.nextStep.label,
+            status: setupGuide.nextStep.status,
+            next: compactRecordText(setupGuide.nextStep.next || setupGuide.nextStep.summary || '', 240),
+            action: setupGuide.nextStep.action || null,
+          }
+        : null,
+      blockedOrWarningCount: setupGuide.steps.length,
+      checks: localSetupChecks,
+    },
+    readiness: {
+      overall: readiness.overall,
+      label: readiness.label,
+      counts: readiness.counts,
+      primaryIssue: compactReadinessItem(readiness.primaryIssue),
+    },
+    permissions: permissionChecks,
+    automation: {
+      localExecutionEnabled: LOCAL_EXEC_ENABLED,
+      trustedLocalMode: TRUSTED_LOCAL_MODE,
+      controlMode: controlModeSnapshot({ includeAvailableModes: true }),
+      policy: {
+        dryRun: Boolean(actionPolicy.dryRun),
+        maxAutoRiskLevel: boundedCount(actionPolicy.maxAutoRiskLevel, 10),
+        requireApprovalAtRiskLevel: boundedCount(actionPolicy.requireApprovalAtRiskLevel, 10),
+        effective: effectiveActionPolicySnapshot(),
+        allow: setupRecoveryAllowSummary(),
+      },
+      capabilities: capabilityChecks,
+      workers: {
+        codex: config.workers?.codex || null,
+        claude: config.workers?.claude || null,
+      },
+    },
+    voice: {
+      realtime: {
+        ok: Boolean(voiceHealth.ok),
+        status: voiceHealth.status,
+        kind: voiceHealth.kind,
+        summary: compactRecordText(voiceHealth.summary || '', 260),
+        next: compactRecordText(voiceHealth.next || '', 260),
+        hasOpenAiKey: Boolean(voiceHealth.hasOpenAiKey),
+        lastStatusCode: boundedCount(voiceHealth.lastProviderCheck?.statusCode || voiceHealth.lastNegotiation?.statusCode, 999),
+        recovery: voiceHealth.recovery,
+      },
+      localFallback: {
+        available: Boolean(localVoice.available),
+        mode: localVoice.mode,
+        label: localVoice.label,
+        summary: compactRecordText(localVoice.summary || '', 220),
+        next: compactRecordText(localVoice.next || '', 220),
+        input: localVoice.input,
+        interaction: localVoice.interaction,
+        blocker: localVoice.blocker,
+        safety: localVoice.safety,
+      },
+      wake: wakeHandoffSnapshot({ conversation, voiceHealth, localVoice }),
+    },
+    pet: {
+      mode: pet.pet?.mode || '',
+      label: pet.pet?.label || '',
+      color: pet.pet?.color || '',
+      trafficLight: pet.pet?.trafficLight || null,
+      window: {
+        mode: pet.window?.mode || '',
+        width: boundedCount(pet.window?.width, 10000),
+        height: boundedCount(pet.window?.height, 10000),
+        parkCorner: pet.window?.parkCorner || '',
+        position: pet.window?.position || null,
+        hotkeyRegistered: Boolean(pet.window?.hotkeyRegistered),
+        summonHotkeyRegistered: Boolean(pet.window?.summonHotkeyRegistered),
+        captureHotkeyRegistered: Boolean(pet.window?.captureHotkeyRegistered),
+      },
+    },
+    learning: {
+      enabled: Boolean(config.runtime?.learning?.enabled),
+      paused: Boolean(config.runtime?.learning?.paused),
+      includeInPrompts: Boolean(config.runtime?.learning?.includeInPrompts),
+      sourceEventCount: boundedCount(config.runtime?.learning?.profile?.sourceEventCount, 1000000),
+      summary: compactRecordText(config.runtime?.learning?.profile?.summary || '', 220),
+    },
+    autonomy: {
+      enabled: Boolean(config.runtime?.autopilot?.enabled),
+      running: Boolean(config.runtime?.autopilot?.running),
+      intervalMs: boundedCount(config.runtime?.autopilot?.intervalMs, 86_400_000),
+      tickCount: boundedCount(config.runtime?.autopilot?.tickCount, 1000000),
+      executedCount: boundedCount(config.runtime?.autopilot?.executedCount, 1000000),
+      lastResult: compactRecordText(config.runtime?.autopilot?.lastResult || '', 180),
+    },
+    queue: queueCounts(),
+    workflowCounts: workflowCounts(),
+    inbox: inboxCounts(),
+    safety: {
+      readOnly: true,
+      generatedFromLocalState: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAi: false,
+      opensBrowser: false,
+      opensSystemUi: false,
+      mutatesFiles: false,
+      storesRawAudio: false,
+      storesScreenImage: false,
+      exposesApiToken: false,
+      petPayloadRemainsLightweight: true,
+    },
+    responseBudget: {
+      compact: true,
+      omits: [
+        'api token',
+        'screen image data',
+        'raw audio',
+        'raw clipboard text',
+        'full audit log',
+        'job logs/results',
+      ],
+      outputBytes: 0,
+    },
+  };
+  bundle.responseBudget.outputBytes = Buffer.byteLength(JSON.stringify(bundle), 'utf8');
+  return bundle;
+}
+
 async function runNextSetupAction(options = {}) {
   const guide = setupGuideSnapshot({ includeRecentAudit: true });
   const step = guide.nextStep;
@@ -54204,6 +54573,14 @@ function startApiServer() {
       res.json({ guide: setupGuideSnapshot({ includeRecentAudit: true }) });
     } catch (error) {
       jsonError(res, 500, 'Setup guide failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/setup/recovery-bundle', async (_req, res) => {
+    try {
+      res.json({ bundle: await setupRecoveryBundleSnapshot({ includeRecentAudit: true }) });
+    } catch (error) {
+      jsonError(res, 500, 'Setup recovery bundle failed', error instanceof Error ? error.message : String(error));
     }
   });
 

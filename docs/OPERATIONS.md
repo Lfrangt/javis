@@ -56,7 +56,9 @@ For setup and permission debugging:
 ```bash
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/readiness
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/config/check
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/recovery-bundle
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/guide
+npm run setup:bundle
 npm run config -- --print-control-readiness
 npm run config -- --print-permissions
 npm run doctor
@@ -65,6 +67,8 @@ npm run doctor
 Readiness checks cover the OpenAI key, microphone, screen capture, Accessibility, local execution, action policy, control mode, runtime storage, queue state, and pending approvals.
 
 `npm run config -- --print-control-readiness` is the short local takeover packet. It summarizes whether voice entry, screen awareness, Mac app control, browser control, file/local actions, Codex, Claude Code, the generic CLI lane, resident hotkeys, perception consent, and multi-agent coordination are ready, then prints the next setup action only when a gate is blocked or limited.
+
+`npm run setup:bundle` is the compact resident landing packet for daily use. It combines resident LaunchAgent state, setup blockers, permission checks, pet/notch state, Realtime recovery, local voice fallback, worker availability, action policy, learning/autopilot state, and the next safe action. It is read-only: it does not open the microphone, call OpenAI, grant macOS permissions, open a browser, or mutate files.
 
 The config check adds repeatable setup evidence for `.env`, `.env.example`, resident LaunchAgent installation, runtime files, policy files, and Codex/Claude worker command availability.
 
