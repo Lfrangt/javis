@@ -2166,6 +2166,33 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
       },
     };
   }
+  const allowTerminal = options.allowTerminal === true && options.confirmTerminal === true;
+  if (!allowTerminal) {
+    const action = openLocalVoiceInput(sourceText, { execute: true });
+    appendAudit('local_voice_loop.redirected_to_compose', {
+      source: sourceText,
+      reason: 'terminal_loop_requires_explicit_confirmation',
+    });
+    return {
+      ok: action.ok !== false,
+      executed: Boolean(action.executed),
+      redirectedToCompose: true,
+      output: 'Opened JAVIS local input inside the desktop pet instead of launching a Terminal loop.',
+      command: 'npm run voice:chat',
+      window: action.window || null,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        opensTerminal: false,
+      },
+      terminalLoop: {
+        available: true,
+        command: 'npm run voice:chat',
+        requiresExplicitConfirmation: true,
+      },
+    };
+  }
   const now = Date.now();
   const running = localVoiceLoopRunningSnapshot();
   const terminalWindows = localVoiceLoopTerminalWindowSnapshot();
@@ -26145,7 +26172,8 @@ function localVoiceStatusSnapshot(options = {}) {
       method: 'POST',
       actionId: '',
       primaryActionEndpoint: fallbackReady ? '/api/voice/command' : '',
-      terminalLoopEndpoint: fallbackReady ? '/api/voice/open-local-loop' : '',
+      terminalLoopEndpoint: '',
+      terminalLoopRequiresConfirmation: true,
       opensTerminal: false,
       startsMicrophone: !fallbackReady,
       usesRealtime: !fallbackReady,
@@ -54603,7 +54631,11 @@ function startApiServer() {
   });
 
   api.post('/api/voice/open-local-loop', (req, res) => {
-    res.json(openLocalVoiceLoop(req.body?.source || 'api', { execute: req.body?.execute !== false }));
+    res.json(openLocalVoiceLoop(req.body?.source || 'api', {
+      execute: req.body?.execute !== false,
+      allowTerminal: req.body?.allowTerminal === true,
+      confirmTerminal: req.body?.confirmTerminal === true,
+    }));
   });
 
   api.get('/api/voice/standby', (_req, res) => {

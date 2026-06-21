@@ -437,7 +437,8 @@ export default {
             localVoiceInteraction.method === 'POST' &&
             !localVoiceInteraction.actionId &&
             localVoiceInteraction.primaryActionEndpoint === '/api/voice/command' &&
-            localVoiceInteraction.terminalLoopEndpoint === '/api/voice/open-local-loop'
+            !localVoiceInteraction.terminalLoopEndpoint &&
+            localVoiceInteraction.terminalLoopRequiresConfirmation === true
           : localVoiceInteraction.startsMicrophone === true &&
             localVoiceInteraction.usesRealtime === true) &&
         localVoice.privacy?.localOnly === true &&
@@ -515,12 +516,55 @@ export default {
         : fail('resident.local_voice_loop_preview', 'Local voice loop opener preview', `POST /api/voice/open-local-loop ${localLoopPreview.status}`, localLoopPreview.data),
     );
 
+    const localLoopDefaultExecuteResponse = await ctx.api('/api/voice/open-local-loop', {
+      method: 'POST',
+      body: {
+        execute: true,
+        source: 'eval_resident_local_voice_loop_default_execute',
+      },
+      timeoutMs: 10000,
+    });
+    const localLoopDefaultExecute = localLoopDefaultExecuteResponse.data || {};
+    const localLoopDefaultRestore = await ctx.api('/api/window/mode', {
+      method: 'POST',
+      body: {
+        mode: 'pet',
+        focus: false,
+        source: 'eval_resident_local_voice_loop_default_restore',
+      },
+      timeoutMs: 10000,
+    });
+    out.push(
+      localLoopDefaultExecuteResponse.ok &&
+        localLoopDefaultExecute.ok === true &&
+        localLoopDefaultExecute.executed === true &&
+        localLoopDefaultExecute.redirectedToCompose === true &&
+        localLoopDefaultExecute.window?.mode === 'compose' &&
+        localLoopDefaultExecute.safety?.startsMicrophone === false &&
+        localLoopDefaultExecute.safety?.usesRealtime === false &&
+        localLoopDefaultExecute.safety?.storesRawAudio === false &&
+        localLoopDefaultExecute.safety?.opensTerminal === false &&
+        localLoopDefaultExecute.terminalLoop?.requiresExplicitConfirmation === true &&
+        localLoopDefaultRestore.ok &&
+        localLoopDefaultRestore.data?.window?.mode === 'pet'
+        ? ok('resident.local_voice_loop_no_terminal_default', 'Local voice loop no-Terminal default', 'execute opens compose unless Terminal is explicitly confirmed')
+        : fail('resident.local_voice_loop_no_terminal_default', 'Local voice loop no-Terminal default', 'expected execute=true to open compose and avoid Terminal without allowTerminal+confirmTerminal', {
+          status: localLoopDefaultExecuteResponse.status,
+          body: localLoopDefaultExecute,
+          restoreStatus: localLoopDefaultRestore.status,
+          restoreBody: localLoopDefaultRestore.data,
+        }),
+    );
+
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
     const hasLocalLoopDedupe =
       mainSource.includes('localVoiceLoopRunningSnapshot') &&
       mainSource.includes('localVoiceLoopTerminalWindowSnapshot') &&
       mainSource.includes('LOCAL_VOICE_LOOP_STATE_FILE') &&
       mainSource.includes('LOCAL_VOICE_LOOP_DEBOUNCE_MS') &&
+      mainSource.includes('allowTerminal') &&
+      mainSource.includes('confirmTerminal') &&
+      mainSource.includes("appendAudit('local_voice_loop.redirected_to_compose'") &&
       mainSource.includes("appendAudit('local_voice_loop.reused'") &&
       mainSource.includes('reusedExisting: true') &&
       mainSource.includes('terminalWindowCount') &&
