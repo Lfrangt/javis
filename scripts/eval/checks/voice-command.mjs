@@ -302,6 +302,39 @@ export default {
         : fail('voice_command.natural_browser_dom', 'Natural browser DOM voice command', 'natural browser DOM phrase did not use the local browser_dom fast path', naturalBrowserDom.data),
     );
 
+    const naturalAppUi = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '当前应用有哪些控件？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_app_ui',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalAppUiData = naturalAppUi.data || {};
+    out.push(
+      naturalAppUi.ok &&
+        naturalAppUiData.ok === true &&
+        naturalAppUiData.executed === false &&
+        naturalAppUiData.route?.decision?.localCommand === 'app_ui' &&
+        naturalAppUiData.route?.localCommand?.intent === 'app_ui' &&
+        naturalAppUiData.route?.data?.tree &&
+        !('nodes' in naturalAppUiData.route.data.tree) &&
+        typeof naturalAppUiData.route.data.tree.nodeCount === 'number' &&
+        typeof naturalAppUiData.route?.output === 'string' &&
+        naturalAppUiData.route.output.includes('当前应用 UI:') &&
+        naturalAppUiData.route.output.includes('这里只读 Accessibility outline') &&
+        naturalAppUiData.safety?.startsMicrophone === false &&
+        naturalAppUiData.safety?.usesRealtime === false &&
+        naturalAppUiData.safety?.storesRawAudio === false &&
+        naturalAppUiData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_app_ui', 'Natural current-app UI voice command', '当前应用有哪些控件 routes to read-only app_ui without cloud/realtime or full AX nodes')
+        : fail('voice_command.natural_app_ui', 'Natural current-app UI voice command', 'natural current-app UI phrase did not use the local app_ui fast path', naturalAppUi.data),
+    );
+
     const naturalDelegate = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

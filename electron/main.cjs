@@ -23382,6 +23382,32 @@ function naturalBrowserLocalCommand(text) {
   return null;
 }
 
+function naturalAppUiLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  const mentionsBrowser = /\b(browser|webpage|web page|page|tab|url|link|website|site)\b/i.test(raw)
+    || /(浏览器|网页|页面|标签页|网址|链接|网站)/.test(compactTextNoSpace);
+  if (mentionsBrowser) return null;
+
+  const english = /\b(current|frontmost|active).*(app|application|window|ui|interface|screen|view).*(controls?|buttons?|inputs?|fields?|clickable|actionable|what can i click|what can you click)\b/i.test(raw)
+    || /\b(what|which).*(controls?|buttons?|inputs?|fields?|clickable|actionable).*(current|frontmost|active).*(app|application|window|ui|interface|screen|view)\b/i.test(raw)
+    || /\b(read|inspect|show|list).*(current|frontmost|active).*(app|application|window|ui|interface).*(controls?|buttons?|inputs?|fields?|ui tree|accessibility)\b/i.test(raw);
+  const chinese = /(?:当前|现在|前台)?(?:应用|软件|窗口|界面|UI|屏幕).*(?:控件|按钮|输入框|选择框|下拉|可点|能点|可以点|能点击|可以点击|能操作|可操作|有哪些按钮|有哪些控件)/.test(compactPlain)
+    || /(?:看一下|看看|观察|读一下|列一下).*(?:当前|现在|前台)?(?:应用|软件|窗口|界面|UI).*(?:控件|按钮|输入框|可点|能点|可以点|能操作|可操作)/.test(compactPlain)
+    || /(?:这个|当前|现在)(?:界面|窗口|应用|软件).*(?:有什么能点|有什么可点|能点什么|可以点什么|能操作什么|有哪些操作)/.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'app_ui',
+    label: 'Current app UI controls',
+    args: {
+      maxNodes: 80,
+      maxDepth: 6,
+    },
+  };
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
@@ -23397,6 +23423,9 @@ function localCommandDecision(task) {
 
   const browserCommand = naturalBrowserLocalCommand(text);
   if (browserCommand) return browserCommand;
+
+  const appUiCommand = naturalAppUiLocalCommand(text);
+  if (appUiCommand) return appUiCommand;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
     || /^(状态|当前状态|系统状态|下一步|有什么待办|现在该做什么|简报)$/.test(text)) {
@@ -23902,6 +23931,10 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
+    } else if (['app_ui'].includes(localCommand)) {
+      needs.macContext = true;
+      needs.accessibility = true;
+      needs.screen = false;
     } else if (['observe_now', 'describe_screen'].includes(localCommand)) {
       needs.macContext = true;
       needs.screen = true;
@@ -23939,7 +23972,9 @@ function buildContextPlan(message, options = {}) {
   }
 
   if (needs.browserPage || needs.browserDom || needs.accessibility) needs.macContext = true;
-  if (needs.vision || needs.accessibility) needs.screen = needs.screen || screenSignal || localCommand === 'describe_screen';
+  if (needs.vision || needs.accessibility) {
+    needs.screen = needs.screen || (screenSignal && localCommand !== 'app_ui') || localCommand === 'describe_screen';
+  }
 
   const recommendedTools = contextPlanRecommendedTools(needs);
   const skipped = Object.entries({
@@ -24059,6 +24094,77 @@ function formatObservationForLocalCommand(observation) {
     observation?.errors?.length ? `错误: ${observation.errors.join('; ')}` : '',
   ].filter(Boolean);
   return lines.join('\n');
+}
+
+const VOICE_UI_ACTIONABLE_AX_ROLES = new Set([
+  'AXButton',
+  'AXCheckBox',
+  'AXComboBox',
+  'AXLink',
+  'AXMenuButton',
+  'AXMenuItem',
+  'AXPopUpButton',
+  'AXRadioButton',
+  'AXSearchField',
+  'AXTab',
+  'AXTextArea',
+  'AXTextField',
+]);
+
+function formatAppUiForLocalCommand(tree = {}) {
+  const nodes = Array.isArray(tree.nodes) ? tree.nodes : [];
+  const actionable = nodes
+    .filter((node) => VOICE_UI_ACTIONABLE_AX_ROLES.has(node.role))
+    .slice(0, 12);
+  const lines = [
+    `当前应用 UI: ${tree.available ? 'available' : 'unavailable'} · app=${tree.app || '-'} · source=${tree.source || 'frontmost'}`,
+    tree.windowTitle ? `窗口: ${compactRecordText(tree.windowTitle, 180)}` : '',
+    `控件: ${actionable.length}/${Number(tree.nodeCount || nodes.length || 0)} actionable${tree.truncated ? ' · truncated' : ''}`,
+  ];
+  for (const node of actionable.slice(0, 8)) {
+    const label = node.label || compactAccessibilityLabel(node) || node.roleDescription || '-';
+    const state = node.enabled === false ? 'disabled' : 'enabled';
+    const focused = String(node.focused || '').toLowerCase() === 'true' ? ' focused' : '';
+    const editable = accessibilityEditableEvidenceSignals(accessibilityNodeEditableText(node)).length ? ' editable' : '';
+    lines.push(`- ${node.id || '-'} ${node.role || 'AXElement'} ${state}${focused}${editable} · ${compactRecordText(label, 130)}`);
+  }
+  if (!tree.available && tree.error) {
+    lines.push(`提示: ${compactRecordText(tree.error, 220)}`);
+  }
+  if (tree.outline) {
+    lines.push(`Outline:\n${compactRecordText(tree.outline, 900)}`);
+  }
+  lines.push('边界: 这里只读 Accessibility outline；点击/输入仍走 app workflow / UI action 的预览和确认门。');
+  return lines.filter(Boolean).join('\n');
+}
+
+function compactAppUiTreeForLocalCommand(tree = {}) {
+  const nodes = Array.isArray(tree.nodes) ? tree.nodes : [];
+  const controls = nodes
+    .filter((node) => VOICE_UI_ACTIONABLE_AX_ROLES.has(node.role))
+    .slice(0, 12)
+    .map((node) => ({
+      id: node.id || '',
+      role: node.role || '',
+      label: compactRecordText(node.label || compactAccessibilityLabel(node) || node.roleDescription || '', 160),
+      enabled: node.enabled !== false,
+      focused: String(node.focused || '').toLowerCase() === 'true',
+      editable: accessibilityEditableEvidenceSignals(accessibilityNodeEditableText(node)).length > 0,
+    }));
+  return {
+    available: Boolean(tree.available),
+    app: tree.app || '',
+    windowTitle: tree.windowTitle || '',
+    source: tree.source || '',
+    nodeCount: Number(tree.nodeCount || nodes.length || 0),
+    actionableCount: controls.length,
+    truncated: Boolean(tree.truncated),
+    maxNodes: Number(tree.maxNodes || 0),
+    maxDepth: Number(tree.maxDepth || 0),
+    outline: compactRecordText(tree.outline || '', 1200),
+    controls,
+    error: tree.error || '',
+  };
 }
 
 function formatCapabilityStatusForLocalCommand({ perception = {}, capabilities = {} } = {}) {
@@ -24268,6 +24374,20 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatScreenCaptureForLocalCommand(screenFrame),
         data: { screen: screenFrame },
+      };
+    }
+
+    if (command.intent === 'app_ui') {
+      const tree = await accessibilityTreeSnapshot({
+        app: command.args?.app,
+        maxNodes: command.args?.maxNodes || 80,
+        maxDepth: command.args?.maxDepth || 6,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatAppUiForLocalCommand(tree),
+        data: { tree: compactAppUiTreeForLocalCommand(tree) },
       };
     }
 
@@ -25705,7 +25825,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom'].includes(localCommand.intent)) {
+      if (['app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
