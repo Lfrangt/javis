@@ -127,6 +127,7 @@ Local Mac-first realtime desktop buddy.
 - Setup guide and one-step fix action for opening the current most important blocker.
 - Local setup actions for preparing `.env` and opening macOS permission/runtime locations.
 - Resident login-start install helper with LaunchAgent status.
+- Electron single-instance resident guard, so a second launch reuses the existing API/window process and summons the pet instead of creating duplicate resident windows or port conflicts.
 
 High-permission actions such as typing into the active app and hotkeys are disabled until `JAVIS_ENABLE_LOCAL_EXEC=true` is set.
 

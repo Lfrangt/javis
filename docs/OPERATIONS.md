@@ -26,6 +26,8 @@ npm run resident:restart
 Resident install, uninstall, and restart stop stale JAVIS Electron/npm processes from this project
 before loading the LaunchAgent. This prevents an older process from keeping `JAVIS_API_PORT` open
 while a newer LaunchAgent instance appears to be running.
+The Electron app also holds a single-instance lock: if JAVIS is launched again, the existing
+resident process records the event and summons the pet instead of starting a second API/window.
 
 Unattended overnight work:
 

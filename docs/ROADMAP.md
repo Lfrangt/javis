@@ -18,6 +18,7 @@
 - Codex and Claude Code delegation hooks.
 - Login-start resident mode.
 - Visible resident LaunchAgent status and install helper.
+- Electron single-instance guard for resident mode, so repeated launches reuse the existing process and summon the pet instead of starting duplicate API servers or windows.
 - macOS menu bar resident controls.
 - Global pet hotkey.
 - Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch, opening the compact compose input immediately when Realtime is blocked or unverified.

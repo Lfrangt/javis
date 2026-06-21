@@ -258,6 +258,10 @@ const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
 const MAX_PARALLEL_TASKS = Math.max(2, Math.min(12, Number(process.env.JAVIS_MAX_PARALLEL_TASKS || 6)));
+const HAS_SINGLE_INSTANCE_LOCK = app.requestSingleInstanceLock({
+  projectRoot: process.cwd(),
+  apiPort: API_PORT,
+});
 const MAX_BROWSER_SEARCH_QUERIES = Math.max(1, Math.min(6, Number(process.env.JAVIS_MAX_BROWSER_SEARCH_QUERIES || 4)));
 const MAX_BROWSER_PAGE_LINKS = Math.max(5, Math.min(120, Number(process.env.JAVIS_MAX_BROWSER_PAGE_LINKS || 40)));
 const MAX_RECOVERY_JOB_ATTEMPTS = Math.max(0, Math.min(5, Number(process.env.JAVIS_MAX_RECOVERY_JOB_ATTEMPTS || 2)));
@@ -57662,74 +57666,98 @@ function handleStartupError(error) {
   }
 }
 
-app.whenReady().then(async () => {
-  if (process.platform === 'darwin') {
-    app.dock?.hide();
-  }
-
-  session.defaultSession.setDisplayMediaRequestHandler(
-    (_request, callback) => {
-      desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
-        callback({ video: sources[0], audio: 'loopback' });
-      });
-    },
-    { useSystemPicker: false },
-  );
-
-  try {
-    await startApiServer();
-    createWindow();
-    registerGlobalHotkeys();
-    createMenuBarTray();
-    startAmbientMonitor();
-    startLearningMonitor();
-    startAutopilotMonitor();
-    startWakeEngine();
-    scheduleStartupAttentionCheck();
-  } catch (error) {
-    handleStartupError(error);
-  }
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
+function handleSecondInstance(_event, argv = [], workingDirectory = '', additionalData = {}) {
+  appendAudit('process.second_instance', {
+    pid: process.pid,
+    argv: Array.isArray(argv) ? argv.slice(-4).map((item) => compactRecordText(item, 120)) : [],
+    workingDirectory: compactRecordText(workingDirectory, 180),
+    projectRoot: compactRecordText(additionalData?.projectRoot || '', 180),
+    apiPort: additionalData?.apiPort || null,
   });
-});
-
-app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit();
-});
-
-app.on('before-quit', () => {
-  appendAudit('process.before_quit', { pid: process.pid, queue: queueCounts() });
-  globalShortcut.unregisterAll();
-  stopAmbientMonitor();
-  stopLearningMonitor();
-  stopAutopilotMonitor();
-  stopWakeEngine();
-  stopSpeechProcess('quit');
-  if (menuBarAvailable()) {
-    menuBarTray.destroy();
-    menuBarTray = null;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
   }
-  for (const [id, run] of activeJobRuns.entries()) {
-    const job = jobs.get(id);
-    if (job && ['queued', 'running'].includes(job.status)) {
-      setJob(id, {
-        status: 'failed',
-        completedAt: Date.now(),
-        pid: null,
-        cancelRequested: false,
-        log: `${job.log || ''}\nInterrupted by JAVIS shutdown.`,
-        result: 'Interrupted by JAVIS shutdown.',
-      });
+  summonJavis('second_instance', { wake: false });
+}
+
+function startJavisApp() {
+  app.on('second-instance', handleSecondInstance);
+
+  app.whenReady().then(async () => {
+    if (process.platform === 'darwin') {
+      app.dock?.hide();
     }
-    run.cancelled = true;
-    run.abortController?.abort();
-    stopJobRun(run, 'SIGTERM');
-  }
-  activeJobRuns.clear();
-  if (apiServer) apiServer.close();
-});
+
+    session.defaultSession.setDisplayMediaRequestHandler(
+      (_request, callback) => {
+        desktopCapturer.getSources({ types: ['screen'] }).then((sources) => {
+          callback({ video: sources[0], audio: 'loopback' });
+        });
+      },
+      { useSystemPicker: false },
+    );
+
+    try {
+      await startApiServer();
+      createWindow();
+      registerGlobalHotkeys();
+      createMenuBarTray();
+      startAmbientMonitor();
+      startLearningMonitor();
+      startAutopilotMonitor();
+      startWakeEngine();
+      scheduleStartupAttentionCheck();
+    } catch (error) {
+      handleStartupError(error);
+    }
+
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow();
+    });
+  });
+
+  app.on('window-all-closed', () => {
+    if (process.platform !== 'darwin') app.quit();
+  });
+
+  app.on('before-quit', () => {
+    appendAudit('process.before_quit', { pid: process.pid, queue: queueCounts() });
+    globalShortcut.unregisterAll();
+    stopAmbientMonitor();
+    stopLearningMonitor();
+    stopAutopilotMonitor();
+    stopWakeEngine();
+    stopSpeechProcess('quit');
+    if (menuBarAvailable()) {
+      menuBarTray.destroy();
+      menuBarTray = null;
+    }
+    for (const [id, run] of activeJobRuns.entries()) {
+      const job = jobs.get(id);
+      if (job && ['queued', 'running'].includes(job.status)) {
+        setJob(id, {
+          status: 'failed',
+          completedAt: Date.now(),
+          pid: null,
+          cancelRequested: false,
+          log: `${job.log || ''}\nInterrupted by JAVIS shutdown.`,
+          result: 'Interrupted by JAVIS shutdown.',
+        });
+      }
+      run.cancelled = true;
+      run.abortController?.abort();
+      stopJobRun(run, 'SIGTERM');
+    }
+    activeJobRuns.clear();
+    if (apiServer) apiServer.close();
+  });
+}
+
+if (HAS_SINGLE_INSTANCE_LOCK) {
+  startJavisApp();
+} else {
+  app.quit();
+}
 
 process.on('uncaughtException', (error) => {
   appendAudit('process.uncaught_exception', { message: error.message || String(error) });

@@ -569,6 +569,19 @@ export default {
           }),
     );
 
+    const singleInstanceGuard =
+      mainSource.includes('requestSingleInstanceLock') &&
+      mainSource.includes("app.on('second-instance'") &&
+      mainSource.includes("appendAudit('process.second_instance'") &&
+      mainSource.includes("summonJavis('second_instance'") &&
+      mainSource.includes('HAS_SINGLE_INSTANCE_LOCK') &&
+      mainSource.includes('startJavisApp()');
+    out.push(
+      singleInstanceGuard
+        ? ok('resident.single_instance_guard', 'Resident single-instance guard', 'second launches reuse the existing resident and summon the pet instead of starting another API/window process')
+        : fail('resident.single_instance_guard', 'Resident single-instance guard', 'expected Electron requestSingleInstanceLock plus second-instance summon handling'),
+    );
+
     const status = await ctx.api('/api/status');
     const statusVoiceHealth = status.data?.voiceHealth || {};
     const statusLocalVoice = status.data?.localVoice || {};
