@@ -219,6 +219,8 @@ const ATTENTION_NOTIFICATION_COOLDOWN_MS = Math.max(60000, Math.min(3600000, Num
 const AMBIENT_OBSERVE_ENABLED = process.env.JAVIS_AMBIENT_OBSERVE === 'true';
 const AMBIENT_CAPTURE_SCREEN = process.env.JAVIS_AMBIENT_CAPTURE_SCREEN === 'true';
 const AMBIENT_INTERVAL_MS = Math.max(2500, Math.min(60000, Number(process.env.JAVIS_AMBIENT_INTERVAL_MS || 8000)));
+const AMBIENT_PREWARM_APP_UI = process.env.JAVIS_AMBIENT_PREWARM_APP_UI !== 'false';
+const AMBIENT_APP_UI_PREWARM_MIN_INTERVAL_MS = Math.max(5000, Math.min(120000, Number(process.env.JAVIS_AMBIENT_APP_UI_PREWARM_MIN_INTERVAL_MS || 12000)));
 const AMBIENT_LEARNING_ENABLED = process.env.JAVIS_AMBIENT_LEARNING === 'true';
 const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(process.env.JAVIS_AMBIENT_LEARNING_INTERVAL_MS || 60000)));
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
@@ -887,6 +889,18 @@ let menuBarTray = null;
 let menuBarUpdatedAt = 0;
 let ambientTimer = null;
 let ambientSampling = false;
+const appUiPrewarmState = {
+  running: false,
+  lastStartedAt: 0,
+  lastCompletedAt: 0,
+  lastStatus: 'idle',
+  lastApp: '',
+  lastWindowTitle: '',
+  lastNodeCount: 0,
+  lastCached: false,
+  lastCacheAgeMs: 0,
+  lastError: '',
+};
 let learningTimer = null;
 let learningBusy = false;
 let autopilotTimer = null;
@@ -12740,6 +12754,124 @@ function cachedAccessibilityTreeSnapshot(options = {}) {
     }
   }
   return accessibilityTreeSnapshot({ ...options, maxNodes, maxDepth });
+}
+
+function appUiCacheStateSnapshot() {
+  const tree = latestAccessibilityTree?.tree || null;
+  const cachedAt = Number(latestAccessibilityTree?.cachedAt || 0);
+  return {
+    available: Boolean(tree?.available),
+    app: tree?.app || '',
+    windowTitle: tree?.windowTitle || '',
+    source: tree?.source || '',
+    ageMs: cachedAt ? Math.max(0, Date.now() - cachedAt) : null,
+    nodeCount: Number(tree?.nodeCount || 0),
+    truncated: Boolean(tree?.truncated),
+    maxNodes: Number(tree?.maxNodes || 0),
+    maxDepth: Number(tree?.maxDepth || 0),
+    error: tree?.error || '',
+  };
+}
+
+function ambientAppUiPrewarmEnabled() {
+  return AMBIENT_PREWARM_APP_UI && actionPolicy?.allow?.read_accessibility_tree?.enabled !== false;
+}
+
+function ambientAppUiPrewarmSnapshot() {
+  return {
+    enabled: ambientAppUiPrewarmEnabled(),
+    configured: AMBIENT_PREWARM_APP_UI,
+    minIntervalMs: AMBIENT_APP_UI_PREWARM_MIN_INTERVAL_MS,
+    cacheMaxAgeMs: APP_UI_CACHE_MAX_AGE_MS,
+    running: appUiPrewarmState.running,
+    lastStartedAt: appUiPrewarmState.lastStartedAt || null,
+    lastCompletedAt: appUiPrewarmState.lastCompletedAt || null,
+    lastStatus: appUiPrewarmState.lastStatus,
+    lastApp: appUiPrewarmState.lastApp,
+    lastWindowTitle: appUiPrewarmState.lastWindowTitle,
+    lastNodeCount: appUiPrewarmState.lastNodeCount,
+    lastCached: appUiPrewarmState.lastCached,
+    lastCacheAgeMs: appUiPrewarmState.lastCacheAgeMs,
+    lastError: appUiPrewarmState.lastError,
+    cache: appUiCacheStateSnapshot(),
+  };
+}
+
+async function maybePrewarmAppUiCache(frontmost = {}, options = {}) {
+  const source = String(options.source || 'ambient_app_ui_prewarm').slice(0, 80);
+  const app = String(options.app || frontmost.app || '').trim();
+  const windowTitle = String(options.windowTitle || frontmost.windowTitle || '').trim();
+  const force = options.force === true;
+  const now = Date.now();
+
+  if (!ambientAppUiPrewarmEnabled()) {
+    return { ok: false, status: 'disabled', reason: 'ambient_app_ui_prewarm_disabled' };
+  }
+  if (!app) {
+    return { ok: false, status: 'skipped', reason: 'no_frontmost_app' };
+  }
+  if (appUiPrewarmState.running) {
+    return { ok: false, status: 'running', reason: 'prewarm_already_running' };
+  }
+  if (!force && now - Number(appUiPrewarmState.lastStartedAt || 0) < AMBIENT_APP_UI_PREWARM_MIN_INTERVAL_MS) {
+    return { ok: false, status: 'throttled', reason: 'prewarm_min_interval' };
+  }
+
+  appUiPrewarmState.running = true;
+  appUiPrewarmState.lastStartedAt = now;
+  appUiPrewarmState.lastStatus = 'running';
+  appUiPrewarmState.lastApp = app;
+  appUiPrewarmState.lastWindowTitle = windowTitle;
+  appUiPrewarmState.lastError = '';
+
+  try {
+    const tree = await cachedAccessibilityTreeSnapshot({
+      app,
+      windowTitle,
+      maxNodes: options.maxNodes || 80,
+      maxDepth: options.maxDepth || 6,
+      maxAgeMs: options.maxAgeMs || APP_UI_CACHE_MAX_AGE_MS,
+      useCache: true,
+    });
+    appUiPrewarmState.running = false;
+    appUiPrewarmState.lastCompletedAt = Date.now();
+    appUiPrewarmState.lastStatus = tree.cached ? 'cached' : 'warmed';
+    appUiPrewarmState.lastNodeCount = Number(tree.nodeCount || 0);
+    appUiPrewarmState.lastCached = Boolean(tree.cached);
+    appUiPrewarmState.lastCacheAgeMs = Math.max(0, Math.round(Number(tree.cacheAgeMs || 0)));
+    appUiPrewarmState.lastError = tree.error || '';
+    appendAudit('ambient.app_ui_prewarm', {
+      source,
+      status: appUiPrewarmState.lastStatus,
+      app,
+      windowTitle: compactRecordText(windowTitle, 120),
+      nodeCount: appUiPrewarmState.lastNodeCount,
+      cached: appUiPrewarmState.lastCached,
+      cacheAgeMs: appUiPrewarmState.lastCacheAgeMs,
+      error: appUiPrewarmState.lastError,
+    });
+    return {
+      ok: true,
+      status: appUiPrewarmState.lastStatus,
+      tree: compactAppUiTreeForLocalCommand(tree),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    appUiPrewarmState.running = false;
+    appUiPrewarmState.lastCompletedAt = Date.now();
+    appUiPrewarmState.lastStatus = 'failed';
+    appUiPrewarmState.lastNodeCount = 0;
+    appUiPrewarmState.lastCached = false;
+    appUiPrewarmState.lastCacheAgeMs = 0;
+    appUiPrewarmState.lastError = compactRecordText(message, 240);
+    appendAudit('ambient.app_ui_prewarm_failed', {
+      source,
+      app,
+      windowTitle: compactRecordText(windowTitle, 120),
+      message: appUiPrewarmState.lastError,
+    });
+    return { ok: false, status: 'failed', reason: appUiPrewarmState.lastError };
+  }
 }
 
 const ACTIONABLE_AX_ROLES = new Set([
@@ -30245,7 +30377,7 @@ function recordAmbientEvent(rawEvent) {
   return event;
 }
 
-async function sampleAmbientContext(source = 'ambient') {
+async function sampleAmbientContext(source = 'ambient', options = {}) {
   if (ambientSampling) return null;
   ambientSampling = true;
   try {
@@ -30257,13 +30389,27 @@ async function sampleAmbientContext(source = 'ambient') {
       });
     }
     const context = await macContextSnapshot({ includeClipboardText: false });
-    return recordAmbientEvent({
+    const event = recordAmbientEvent({
       source,
       frontmost: context.frontmost,
       browser: context.browser,
       screen: screenFrame,
       createdAt: Date.now(),
     });
+    const prewarmOptions = {
+      source,
+      force: options.prewarmAppUi === true,
+    };
+    const shouldPrewarm = AMBIENT_PREWARM_APP_UI || options.prewarmAppUi === true;
+    if (shouldPrewarm) {
+      const prewarmPromise = maybePrewarmAppUiCache(context.frontmost, prewarmOptions);
+      if (options.waitForPrewarm === true) {
+        await prewarmPromise;
+      } else {
+        void prewarmPromise;
+      }
+    }
+    return event;
   } catch (error) {
     appendAudit('ambient.sample_failed', { message: error instanceof Error ? error.message : String(error) });
     return null;
@@ -30278,6 +30424,7 @@ function ambientStateSnapshot(limit = 8) {
     captureScreen: AMBIENT_CAPTURE_SCREEN,
     intervalMs: AMBIENT_INTERVAL_MS,
     learningEnabled: learningRuntimeEnabled(),
+    appUiPrewarm: ambientAppUiPrewarmSnapshot(),
     count: ambientEvents.length,
     recent: ambientSnapshot(limit),
     browserActivity: browserActivitySnapshot({ limit }),
@@ -54733,7 +54880,10 @@ function startApiServer() {
 
   api.post('/api/ambient/sample', express.json({ limit: '64kb' }), async (req, res) => {
     try {
-      const event = await sampleAmbientContext(req.body?.source || 'api');
+      const event = await sampleAmbientContext(req.body?.source || 'api', {
+        prewarmAppUi: req.body?.prewarmAppUi === true,
+        waitForPrewarm: req.body?.waitForPrewarm === true,
+      });
       res.json({ ok: true, event, ambient: ambientStateSnapshot(20), ambientFile: AMBIENT_FILE });
     } catch (error) {
       jsonError(res, 500, 'Ambient sample failed', error instanceof Error ? error.message : String(error));

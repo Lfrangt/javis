@@ -367,6 +367,60 @@ export default {
         : fail('voice_command.natural_app_ui_cached', 'Natural current-app UI cache hit', 'second current-app UI phrase did not reuse the bounded AX cache', naturalAppUiCached.data),
     );
 
+    const ambientPrewarm = await ctx.api('/api/ambient/sample', {
+      method: 'POST',
+      body: {
+        source: 'eval_voice_command_app_ui_prewarm',
+        prewarmAppUi: true,
+        waitForPrewarm: true,
+      },
+      timeoutMs: 30000,
+    });
+    const ambientPrewarmState = ambientPrewarm.data?.ambient?.appUiPrewarm || {};
+    const ambientPrewarmCache = ambientPrewarmState.cache || {};
+    out.push(
+      ambientPrewarm.ok &&
+        ambientPrewarm.data?.ok === true &&
+        ambientPrewarmState.enabled === true &&
+        ['cached', 'warmed'].includes(ambientPrewarmState.lastStatus) &&
+        typeof ambientPrewarmState.lastNodeCount === 'number' &&
+        typeof ambientPrewarmCache.ageMs === 'number' &&
+        !('nodes' in ambientPrewarmCache)
+        ? ok('voice_command.ambient_app_ui_prewarm', 'Ambient current-app UI prewarm', `${ambientPrewarmState.lastStatus} · app=${ambientPrewarmState.lastApp || '-'} · nodes=${ambientPrewarmState.lastNodeCount}`)
+        : fail('voice_command.ambient_app_ui_prewarm', 'Ambient current-app UI prewarm', 'ambient sample did not expose a bounded current-app UI prewarm cache', ambientPrewarm.data),
+    );
+
+    const naturalAppUiAfterPrewarm = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '这个界面能点什么？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_app_ui_after_prewarm',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalAppUiAfterPrewarmData = naturalAppUiAfterPrewarm.data || {};
+    out.push(
+      naturalAppUiAfterPrewarm.ok &&
+        naturalAppUiAfterPrewarmData.ok === true &&
+        naturalAppUiAfterPrewarmData.executed === false &&
+        naturalAppUiAfterPrewarmData.route?.decision?.localCommand === 'app_ui' &&
+        naturalAppUiAfterPrewarmData.route?.localCommand?.intent === 'app_ui' &&
+        naturalAppUiAfterPrewarmData.route?.data?.tree?.cached === true &&
+        !('nodes' in naturalAppUiAfterPrewarmData.route.data.tree) &&
+        typeof naturalAppUiAfterPrewarmData.route?.output === 'string' &&
+        naturalAppUiAfterPrewarmData.route.output.includes('cache=hit') &&
+        naturalAppUiAfterPrewarmData.safety?.startsMicrophone === false &&
+        naturalAppUiAfterPrewarmData.safety?.usesRealtime === false &&
+        naturalAppUiAfterPrewarmData.safety?.storesRawAudio === false &&
+        naturalAppUiAfterPrewarmData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_app_ui_after_prewarm', 'Natural current-app UI after ambient prewarm', '这个界面能点什么 uses the prewarmed read-only app_ui cache')
+        : fail('voice_command.natural_app_ui_after_prewarm', 'Natural current-app UI after ambient prewarm', 'natural app UI phrase did not use the prewarmed app_ui cache', naturalAppUiAfterPrewarm.data),
+    );
+
     const naturalDelegate = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
