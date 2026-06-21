@@ -26,8 +26,12 @@ export default {
     const win = await ctx.api('/api/window/state');
     const win2 = win.data?.window;
     out.push(
-      win.ok && win2
-        ? ok('resident.window', 'Pet window + hotkeys', `mode=${win2.mode} park=${win2.parkCorner} hotkey=${win2.hotkeyRegistered ? 'on' : 'off'} summon=${win2.summonHotkeyRegistered ? 'on' : 'off'} capture=${win2.captureHotkeyRegistered ? 'on' : 'off'}`)
+      win.ok &&
+        win2 &&
+        win2.parkCorner === 'notch' &&
+        Number(win2.width || 0) <= 148 &&
+        Number(win2.height || 0) <= 40
+        ? ok('resident.window', 'Pet window + hotkeys', `mode=${win2.mode} ${win2.width}x${win2.height} park=${win2.parkCorner} hotkey=${win2.hotkeyRegistered ? 'on' : 'off'} summon=${win2.summonHotkeyRegistered ? 'on' : 'off'} capture=${win2.captureHotkeyRegistered ? 'on' : 'off'}`)
         : warn('resident.window', 'Pet window + hotkeys', `GET /api/window/state ${win.status} ${win.error || ''}`),
     );
 

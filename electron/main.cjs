@@ -732,8 +732,8 @@ const realtimeToolCallEvents = [];
 const activeJobRuns = new Map();
 let learnedProfile = null;
 const windowModes = {
-  pet: { width: 160, height: 44 },
-  panel: { width: 160, height: 44 },
+  pet: { width: 148, height: 40 },
+  panel: { width: 148, height: 40 },
 };
 let latestScreen = null;
 let latestAccessibilityTree = null;

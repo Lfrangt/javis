@@ -2,7 +2,14 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const { app, BrowserWindow } = require('electron');
+const electron = require('electron');
+
+if (!electron.app || !electron.BrowserWindow) {
+  console.error('Run with Electron: ./node_modules/.bin/electron scripts/capture-demo.cjs [output.png]');
+  process.exit(1);
+}
+
+const { app, BrowserWindow } = electron;
 
 const mode = 'pet';
 const outputArg = process.argv.find((arg) => arg.endsWith('.png'));
@@ -11,7 +18,7 @@ const outputFile = outputArg
   : path.join(process.cwd(), 'artifacts', 'javis-demo-pet.png');
 
 const windowSizes = {
-  pet: { width: 160, height: 44 },
+  pet: { width: 148, height: 40 },
 };
 
 function wait(ms) {
