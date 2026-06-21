@@ -68,6 +68,7 @@ export default {
     const trafficPulses = new Set(['off', 'slow', 'live', 'attention']);
     const voiceFallback = p.voiceHealth?.fallback || {};
     const localVoice = p.localVoice || {};
+    const localVoiceInteraction = localVoice.interaction || {};
     const petWakeHandoff = p.wake?.handoff || {};
     const localBlocker = localVoice.blocker || {};
     const fallbackBlocker = voiceFallback.blocker || {};
@@ -124,8 +125,19 @@ export default {
         ['standby', 'fallback_ready'].includes(localVoice.mode) &&
         localVoice.input?.endpoint === '/api/voice/command' &&
         localVoice.input?.historyEndpoint === '/api/voice/history' &&
+        localVoice.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
         String(localVoice.input?.cliCommand || '').includes('npm run voice') &&
+        String(localVoice.input?.openLoopCommand || '').includes('npm run voice:chat') &&
         String(localVoice.input?.historyCommand || '').includes('--print-voice-history') &&
+        ['open_local_voice_loop', 'start_realtime_voice'].includes(localVoiceInteraction.capsuleClick) &&
+        localVoiceInteraction.keepsPetCompact === true &&
+        (localVoice.mode === 'fallback_ready'
+          ? localVoiceInteraction.opensTerminal === true &&
+            localVoiceInteraction.startsMicrophone === false &&
+            localVoiceInteraction.usesRealtime === false &&
+            localVoiceInteraction.endpoint === '/api/voice/open-local-loop'
+          : localVoiceInteraction.startsMicrophone === true &&
+            localVoiceInteraction.usesRealtime === true) &&
         localVoice.privacy?.localOnly === true &&
         localVoice.privacy?.transcriptPreviewOnly === true &&
         localVoice.privacy?.noRawAudio === true &&
@@ -173,9 +185,32 @@ export default {
           traffic,
           voiceFallback,
           localVoice,
+          localVoiceInteraction,
           localBlocker,
           petWakeHandoff,
         }),
+    );
+
+    const localLoopPreview = await ctx.api('/api/voice/open-local-loop', {
+      method: 'POST',
+      body: {
+        execute: false,
+        source: 'eval_resident_local_voice_loop_preview',
+      },
+      timeoutMs: 10000,
+    });
+    const localLoop = localLoopPreview.data || {};
+    out.push(
+      localLoopPreview.ok &&
+        localLoop.ok === true &&
+        localLoop.executed === false &&
+        String(localLoop.command || '').includes('npm run voice:chat') &&
+        localLoop.safety?.startsMicrophone === false &&
+        localLoop.safety?.usesRealtime === false &&
+        localLoop.safety?.storesRawAudio === false &&
+        localLoop.safety?.opensTerminal === false
+        ? ok('resident.local_voice_loop_preview', 'Local voice loop opener preview', 'preview prepares npm run voice:chat without opening Terminal, mic, Realtime, or raw audio')
+        : fail('resident.local_voice_loop_preview', 'Local voice loop opener preview', `POST /api/voice/open-local-loop ${localLoopPreview.status}`, localLoopPreview.data),
     );
 
     const resident = await ctx.api('/api/resident/status');

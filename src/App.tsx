@@ -120,8 +120,19 @@ type LocalVoiceStatus = {
   input: {
     endpoint: string
     historyEndpoint: string
+    openLoopEndpoint?: string
     cliCommand: string
+    openLoopCommand?: string
     historyCommand: string
+  }
+  interaction?: {
+    capsuleClick?: 'open_local_voice_loop' | 'start_realtime_voice' | string
+    label?: string
+    endpoint?: string
+    opensTerminal?: boolean
+    startsMicrophone?: boolean
+    usesRealtime?: boolean
+    keepsPetCompact?: boolean
   }
   history: {
     count: number
@@ -1364,6 +1375,7 @@ function App() {
   const [accessibilityTarget, setAccessibilityTarget] = useState<{ nodeId: string; role: string; label: string } | null>(null)
 
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  const quickInputRef = useRef<HTMLInputElement | null>(null)
   const micStreamRef = useRef<MediaStream | null>(null)
   const peerRef = useRef<RTCPeerConnection | null>(null)
   const dataChannelRef = useRef<RTCDataChannel | null>(null)
@@ -1752,6 +1764,36 @@ function App() {
     }
   }, [])
 
+  const localVoiceOpenLoopEndpoint = status?.localVoice?.input?.openLoopEndpoint || '/api/voice/open-local-loop'
+
+  const focusLocalInputPanel = useCallback(async (reason = '') => {
+    try {
+      const windowState = await setWindowMode('panel')
+      if (windowState.mode === 'panel') {
+        void loadPanelDetails()
+        window.setTimeout(() => quickInputRef.current?.focus(), 80)
+      }
+      addMessage('system', reason ? `本地输入已打开：${reason}` : '本地输入已打开。')
+    } catch (error) {
+      setLastError(error instanceof Error ? error.message : String(error))
+    }
+  }, [addMessage, loadPanelDetails, setWindowMode])
+
+  const openLocalVoiceLoop = useCallback(async (reason = '') => {
+    try {
+      const result = await apiJson<{ ok: boolean; output: string; command?: string }>(localVoiceOpenLoopEndpoint, {
+        method: 'POST',
+        body: JSON.stringify({ source: 'pet_realtime_fallback' }),
+      })
+      addMessage('system', result.output || 'Opened JAVIS local voice/text loop in Terminal.')
+      setLastError('')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setLastError(message)
+      await focusLocalInputPanel(reason || message)
+    }
+  }, [addMessage, focusLocalInputPanel, localVoiceOpenLoopEndpoint])
+
   const updateResidentConversation = useCallback((patch: Partial<ConversationState> & Record<string, unknown>) => {
     return apiJson<{ conversation: ConversationState }>('/api/conversation/state', {
       method: 'POST',
@@ -2057,8 +2099,9 @@ function App() {
     try {
       if (!prompt) {
         const reasonText = reason ? `原因：${reason.slice(0, 240)}` : ''
-        const notice = `实时语音暂时连不上。我先切到本地语音；你可以在输入框里发消息。${reasonText}`
+        const notice = `实时语音暂时连不上。我已打开本地语音/文本终端 loop。${reasonText}`
         addMessage('assistant', notice)
+        await openLocalVoiceLoop(reason)
         await speakLocal(notice)
         return
       }
@@ -2086,7 +2129,7 @@ function App() {
     } catch (error) {
       addMessage('system', `本地语音兜底失败：${error instanceof Error ? error.message : String(error)}`)
     }
-  }, [addMessage, fallbackIncludesScreen, quickInput, refreshStatus, speakLocal])
+  }, [addMessage, fallbackIncludesScreen, openLocalVoiceLoop, quickInput, refreshStatus, speakLocal])
 
   const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
     const intendedScreenLive = options.screenLive ?? screenLive
@@ -2835,6 +2878,26 @@ function App() {
       setBusy(true)
       addMessage('user', message)
       try {
+        if (status?.localVoice?.mode === 'fallback_ready') {
+          const result = await apiJson<VoiceCommandResult>('/api/voice/command', {
+            method: 'POST',
+            body: JSON.stringify({
+              transcript: message,
+              includeScreen: Boolean(status?.screen),
+              includeAccessibility: Boolean(status?.screen),
+              execute: true,
+              speak: true,
+              confirmSpeak: false,
+              useMemory: false,
+              allowCloudQuick: false,
+              source: 'pet_quick_local_voice',
+            }),
+          })
+          const output = result.spokenAck?.trim() || result.route?.output?.trim() || '已通过本地语音指令通道处理。'
+          addMessage(result.ok ? 'assistant' : 'system', output)
+          refreshStatus()
+          return
+        }
         const result = await apiJson<TaskRouteResult>('/api/tasks/route', {
           method: 'POST',
           body: JSON.stringify({ message, includeScreen: Boolean(status?.screen), execute: true }),
@@ -3409,7 +3472,24 @@ function App() {
     void startScreen({ describe: true })
   }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
-  const petAction = hasOpenAiKey === true ? startAssistantSession : openConfigCui
+  const localVoiceInteraction = status?.localVoice?.interaction
+  const petLocalLoopReady = hasOpenAiKey === true && localVoiceInteraction?.capsuleClick === 'open_local_voice_loop'
+  const petAction = useCallback(() => {
+    if (voiceStatus === 'live' || screenLive) {
+      stopVoice()
+      stopScreen()
+      return
+    }
+    if (hasOpenAiKey !== true) {
+      void openConfigCui()
+      return
+    }
+    if (petLocalLoopReady) {
+      void openLocalVoiceLoop(status?.localVoice?.blocker?.summary || status?.voiceHealth?.summary || '')
+      return
+    }
+    void startAssistantSession()
+  }, [hasOpenAiKey, openConfigCui, openLocalVoiceLoop, petLocalLoopReady, screenLive, startAssistantSession, status?.localVoice?.blocker?.summary, status?.voiceHealth?.summary, stopScreen, stopVoice, voiceStatus])
   const petStatusLabel = talking ? 'Hearing you' : petTrafficLight?.label || petMoodLabel(mood, presence, false)
   const petStatusDetail = petTrafficLight?.reason || presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
   const petAccessibleLabel = petTrafficLight?.accessibleLabel || `${petStatusLabel}. ${petStatusDetail}`
@@ -3419,7 +3499,9 @@ function App() {
       ? 'Stop JAVIS voice and screen'
       : voiceStatus === 'connecting'
         ? 'Connecting JAVIS'
-        : 'Talk to JAVIS with screen'
+        : petLocalLoopReady
+          ? 'Open local voice/text loop'
+          : 'Talk to JAVIS with screen'
 
   return (
     <main className={`pet-shell ${expanded ? 'expanded' : 'compact'} mood-${mood} signal-${petTrafficLight?.activeLight || petTrafficLight?.color || 'green'} pulse-${petTrafficLight?.pulse || 'off'}`}>
@@ -3445,7 +3527,7 @@ function App() {
           }}
           aria-disabled={voiceStatus === 'connecting'}
           aria-label={`${petAccessibleLabel}. ${petActionLabel}`}
-          title={`${petStatusLabel}. ${petStatusDetail} Drag to move. Click to talk. Right-click for config.`}
+          title={`${petStatusLabel}. ${petStatusDetail} Drag to move. ${petActionLabel}. Right-click for config.`}
         >
           <span className="island-traffic" aria-hidden="true">
             <span className="traffic-light light-red" />
@@ -3631,7 +3713,7 @@ function App() {
           </div>
 
           <form className="quick-row" onSubmit={sendQuick}>
-            <input value={quickInput} onChange={(event) => setQuickInput(event.target.value)} placeholder="Ask or task" />
+            <input ref={quickInputRef} value={quickInput} onChange={(event) => setQuickInput(event.target.value)} placeholder="Ask or task" />
             <button type="submit" disabled={busy || !quickInput.trim()} aria-label="Send">
               {busy ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
             </button>

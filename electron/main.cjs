@@ -1882,8 +1882,7 @@ function runMenuBarSetupAction(action) {
     });
 }
 
-function openConfigCui(source = 'api') {
-  const command = `cd ${shQuote(process.cwd())} && npm run config:cui`;
+function openTerminalCommand(command, options = {}) {
   const escapedCommand = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const child = spawn('osascript', [
     '-e',
@@ -1895,11 +1894,61 @@ function openConfigCui(source = 'api') {
     stdio: 'ignore',
   });
   child.unref();
-  appendAudit('config_cui.opened', { source, command: 'npm run config:cui' });
+  appendAudit(options.auditType || 'terminal.opened', {
+    source: String(options.source || 'api').slice(0, 80),
+    command: compactRecordText(options.auditCommand || command, 180),
+  });
   return {
     ok: true,
+    output: options.output || 'Opened JAVIS terminal.',
+    command: options.displayCommand || command,
+  };
+}
+
+function openConfigCui(source = 'api') {
+  return openTerminalCommand(`cd ${shQuote(process.cwd())} && npm run config:cui`, {
+    source,
+    auditType: 'config_cui.opened',
+    auditCommand: 'npm run config:cui',
     output: 'Opened JAVIS terminal config.',
-    command: 'npm run config:cui',
+    displayCommand: 'npm run config:cui',
+  });
+}
+
+function openLocalVoiceLoop(source = 'api', options = {}) {
+  if (options.execute === false) {
+    appendAudit('local_voice_loop.previewed', {
+      source: String(source || 'api').slice(0, 80),
+      command: 'npm run voice:chat',
+    });
+    return {
+      ok: true,
+      executed: false,
+      output: 'Prepared JAVIS local voice/text loop command.',
+      command: 'npm run voice:chat',
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        opensTerminal: false,
+      },
+    };
+  }
+  return {
+    ...openTerminalCommand(`cd ${shQuote(process.cwd())} && npm run voice:chat`, {
+    source,
+    auditType: 'local_voice_loop.opened',
+    auditCommand: 'npm run voice:chat',
+    output: 'Opened JAVIS local voice/text loop in Terminal.',
+    displayCommand: 'npm run voice:chat',
+    }),
+    executed: true,
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      opensTerminal: true,
+    },
   };
 }
 
@@ -24168,8 +24217,19 @@ function localVoiceStatusSnapshot(options = {}) {
     input: {
       endpoint: '/api/voice/command',
       historyEndpoint: '/api/voice/history',
+      openLoopEndpoint: '/api/voice/open-local-loop',
       cliCommand: 'npm run voice -- "..."',
+      openLoopCommand: 'npm run voice:chat',
       historyCommand: 'npm run config -- --print-voice-history',
+    },
+    interaction: {
+      capsuleClick: fallbackReady ? 'open_local_voice_loop' : 'start_realtime_voice',
+      label: fallbackReady ? 'Open local voice/text loop' : 'Start Realtime voice',
+      endpoint: fallbackReady ? '/api/voice/open-local-loop' : '/api/realtime/session',
+      opensTerminal: fallbackReady,
+      startsMicrophone: !fallbackReady,
+      usesRealtime: !fallbackReady,
+      keepsPetCompact: true,
     },
     history: {
       count: history.count,
@@ -51802,6 +51862,10 @@ function startApiServer() {
 
   api.post('/api/config/open-cui', (req, res) => {
     res.json(openConfigCui(req.body?.source || 'api'));
+  });
+
+  api.post('/api/voice/open-local-loop', (req, res) => {
+    res.json(openLocalVoiceLoop(req.body?.source || 'api', { execute: req.body?.execute !== false }));
   });
 
   api.get('/api/doctor/report', async (_req, res) => {
