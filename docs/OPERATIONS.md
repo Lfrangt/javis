@@ -137,6 +137,8 @@ By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback do
 
 `npm run wake -- "..."` is the one-shot wake path. It records the wake phrase, returns the same read-only handoff evidence as `/api/wake/status`, then routes the transcript through local voice-command intake. It does not start microphone capture or Realtime.
 
+To continue the latest executable voice preview by voice/text instead of copying a route id, send `继续刚才那个` or `continue last voice route` through `/api/voice/command` with `execute:true`. This uses sanitized voice history to find the latest executable preview route, then runs it through `/api/work/next`; quick-lane previews still stay held unless explicitly rerouted or cloud quick execution is allowed.
+
 When a local voice or wake command is preview-only, the response includes `route.routing.id`. Continue that prepared route from the terminal/API instead of repeating the request:
 
 ```bash

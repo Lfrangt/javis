@@ -22527,6 +22527,11 @@ function localCommandDecision(task) {
     return { intent: 'work_next', label: 'Work next', args: {} };
   }
 
+  if (/^(continue last voice(?: route| task)?|run last voice(?: route| task)?|execute last voice(?: route| task)?|continue previous voice(?: route| task)?)$/i.test(text)
+    || /^(继续刚才|继续刚才那个|继续上一个语音任务|继续最近的语音任务|执行刚才那个|执行上一个语音任务|执行最近的语音任务|把刚才那个继续跑|运行刚才那个)$/.test(text)) {
+    return { intent: 'continue_last_voice_route', label: 'Continue last voice route', args: {} };
+  }
+
   if (/^(capture screen|refresh screen|screen capture|update screen frame|take screenshot)$/i.test(text)
     || /^(刷新屏幕|捕获屏幕|截图|截屏|更新屏幕|刷新屏幕帧)$/.test(text)) {
     return { intent: 'capture_screen', label: 'Capture screen', args: {} };
@@ -23183,6 +23188,40 @@ async function runLocalCommand(command, options = {}) {
       };
     }
 
+    if (command.intent === 'continue_last_voice_route') {
+      const latest = latestExecutableVoiceRoute({ source: 'local_command_last_voice_route' });
+      if (!latest?.item?.routeId) {
+        return {
+          ok: false,
+          localCommand: command,
+          output: '没有找到可继续执行的上一条语音 preview route。',
+          data: { history: voiceCommandHistorySnapshot({ limit: 5 }) },
+        };
+      }
+      const result = await workNextAction({
+        execute: true,
+        actionId: `route:${latest.item.routeId}`,
+        source: 'local_command_last_voice_route',
+      });
+      return {
+        ok: result.ok,
+        localCommand: command,
+        output: [
+          `继续上一条语音任务: ${latest.item.routeId}`,
+          latest.item.transcriptPreview ? `原始语音: ${compactRecordText(latest.item.transcriptPreview, 180)}` : '',
+          result.output || '',
+        ].filter(Boolean).join('\n'),
+        data: {
+          result,
+          lastVoiceRoute: {
+            routeId: latest.item.routeId,
+            transcriptPreview: latest.item.transcriptPreview,
+            recommended: latest.recommended,
+          },
+        },
+      };
+    }
+
     if (command.intent === 'capture_screen') {
       const screenFrame = await captureResidentScreen({ source: 'local_command' });
       return {
@@ -23685,6 +23724,29 @@ function voiceCommandHistorySnapshot(options = {}) {
   };
 }
 
+function latestExecutableVoiceRoute(options = {}) {
+  const history = voiceCommandHistorySnapshot({
+    limit: options.limit || 20,
+    auditLimit: options.auditLimit || 200,
+  });
+  for (const item of history.items || []) {
+    if (!item?.routeId || item.executed || item.queued) continue;
+    const record = routingRecords.get(String(item.routeId || '')) || null;
+    if (!record) continue;
+    const routeRecovery = routingRecoveryEnvelope(record, { source: options.source || 'latest_voice_route' });
+    const recommended = routeRecovery.recommended || null;
+    if (routeRecovery.ok !== false && recommended?.executable === true) {
+      return {
+        item,
+        record,
+        routeRecovery,
+        recommended,
+      };
+    }
+  }
+  return null;
+}
+
 function localVoiceStatusSnapshot(options = {}) {
   const conversation = options.conversation || conversationStateSnapshot();
   const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation });
@@ -23964,7 +24026,9 @@ async function runVoiceCommand(options = {}) {
   let route = previewRoute;
   let heldReason = '';
   const previewLane = previewRoute.decision?.lane || '';
-  const canExecute = requestedExecute && (allowCloudQuick || previewLane !== 'quick');
+  const previewRouteLane = previewRoute.routing?.lane || previewRoute.routeRecord?.lane || '';
+  const previewIsLocalCommand = Boolean(previewRoute.localCommand || previewRoute.decision?.localCommand || previewRouteLane === 'local');
+  const canExecute = requestedExecute && (previewIsLocalCommand || allowCloudQuick || previewLane !== 'quick');
   if (requestedExecute && !canExecute) {
     heldReason = 'quick_lane_cloud_call_not_allowed';
   } else if (canExecute) {
@@ -24013,9 +24077,10 @@ async function runVoiceCommand(options = {}) {
       usesMemory: useMemory,
       usesContextMetadata: Boolean(contextSnapshot.prompt),
       usesAccessibilityMetadata: Boolean(contextSnapshot.accessibility?.requested),
-      callsOpenAIImmediately: Boolean(canExecute && previewLane === 'quick' && allowCloudQuick),
+      callsOpenAIImmediately: Boolean(canExecute && previewLane === 'quick' && allowCloudQuick && !previewIsLocalCommand),
       mayQueueCloudModel: Boolean(canExecute && previewLane === 'background'),
       mayQueueLocalWorker: Boolean(canExecute && ['codex', 'claude'].includes(previewLane)),
+      executesLocalCommand: Boolean(canExecute && previewIsLocalCommand),
       speaksAudio: Boolean(speakRequested && confirmSpeak && speech?.speaking),
       speechDryRun: Boolean(speakRequested && speech?.dryRun === true),
     },

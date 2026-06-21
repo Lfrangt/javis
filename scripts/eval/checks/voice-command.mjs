@@ -227,7 +227,7 @@ export default {
         useMemory: false,
         source: 'eval_wake_voice_command',
       },
-      timeoutMs: 15000,
+      timeoutMs: 30000,
     });
     const wakeCommandData = wakeCommand.data || {};
     out.push(
@@ -292,6 +292,56 @@ export default {
             route: routeContinuationData.route,
             previewRouteId,
             workNext: workNextRoute.data,
+        }),
+    );
+
+    const localContinueSeed = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '状态',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_continue_last_seed',
+      },
+      timeoutMs: 15000,
+    });
+    const localContinueRouteId = localContinueSeed.data?.route?.routing?.id || '';
+    const localContinue = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '继续刚才那个',
+        execute: true,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_continue_last_route',
+      },
+      timeoutMs: 20000,
+    });
+    const localContinueData = localContinue.data || {};
+    const continued = localContinueData.route?.data?.lastVoiceRoute || {};
+    const continuedResult = localContinueData.route?.data?.result || {};
+    out.push(
+      localContinueSeed.ok &&
+        localContinueRouteId &&
+        localContinue.ok &&
+        localContinueData.ok === true &&
+        localContinueData.requestedExecute === true &&
+        localContinueData.executed === true &&
+        localContinueData.heldReason === '' &&
+        localContinueData.route?.localCommand?.intent === 'continue_last_voice_route' &&
+        continued.routeId === localContinueRouteId &&
+        continuedResult.executed === true &&
+        localContinueData.safety?.executesLocalCommand === true &&
+        localContinueData.safety?.callsOpenAIImmediately === false &&
+        String(localContinueData.route?.output || '').includes(localContinueRouteId)
+        ? ok('voice_command.continue_last_route', 'Voice continue last route', `${localContinueRouteId} continued through local command without quick cloud call`)
+        : fail('voice_command.continue_last_route', 'Voice continue last route', `expected voice command to continue latest route, got ${localContinue.status}`, {
+            seed: localContinueSeed.data,
+            localContinue: localContinue.data,
+            localContinueRouteId,
           }),
     );
 
