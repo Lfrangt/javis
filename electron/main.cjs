@@ -10288,6 +10288,285 @@ function approvalStatusSnapshot(options = {}) {
   };
 }
 
+function blockerSeverityRank(severity = '') {
+  const ranks = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
+  return ranks[String(severity || '').toLowerCase()] || 0;
+}
+
+function blockerItem(id, severity, label, summary, extra = {}) {
+  return {
+    id: compactRecordText(id || label || 'blocker', 100),
+    severity: compactRecordText(severity || 'info', 40),
+    label: compactRecordText(label || id || 'Blocker', 120),
+    summary: compactRecordText(summary || '', 260),
+    source: compactRecordText(extra.source || id || 'system', 80),
+    count: Math.max(0, Number(extra.count || 0)),
+    next: compactRecordText(extra.next || extra.action || '', 260),
+    routeId: compactRecordText(extra.routeId || '', 120),
+    workflowId: compactRecordText(extra.workflowId || '', 120),
+    jobId: compactRecordText(extra.jobId || '', 120),
+  };
+}
+
+function dedupeBlockers(items = []) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${item.id}:${item.source}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function blockerStatusSnapshot(options = {}) {
+  const source = compactRecordText(options.source || 'local_command', 80);
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
+  const conversation = conversationStateSnapshot();
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const approvalStatus = approvalStatusSnapshot({ limit: options.approvalLimit || 5, source });
+  const progress = workProgressCheckIn({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    includeInternal: false,
+    source,
+  });
+  const autopilot = autopilotStatusVoicePayload(
+    autopilotVoiceStatusSnapshot({
+      source,
+      workflowLimit: options.workflowLimit || 6,
+      jobLimit: options.jobLimit || 6,
+    }),
+    { source },
+  );
+  const attention = attentionPolicySnapshot({
+    readiness,
+    conversation,
+    pendingApprovals: approvalStatus.pending,
+    activeJobs: progress.activeJobs,
+    activeRoutes: progress.routingLedger,
+    inbox: progress.counts?.inbox || inboxCounts(),
+  });
+
+  const blockers = [];
+  const readinessPrimaryIsVoice = readiness.primaryIssue?.id === 'realtime_voice_provider' && voiceHealth.status && voiceHealth.status !== 'ready';
+  if ((readiness.overall === 'blocked' || readiness.overall === 'degraded') && !readinessPrimaryIsVoice) {
+    blockers.push(blockerItem(
+      `setup_${readiness.overall}`,
+      readiness.overall === 'blocked' ? 'critical' : 'medium',
+      readiness.primaryIssue?.label || 'Setup needs attention',
+      readiness.primaryIssue?.summary || readiness.summary,
+      {
+        source: 'readiness',
+        next: readiness.primaryIssue?.next || '',
+      },
+    ));
+  }
+  if (voiceHealth.status && voiceHealth.status !== 'ready') {
+    blockers.push(blockerItem(
+      'realtime_voice',
+      voiceHealth.status === 'blocked' ? 'high' : 'medium',
+      'Realtime voice',
+      voiceHealth.summary,
+      {
+        source: 'voice',
+        next: voiceHealth.next,
+      },
+    ));
+  }
+  if (approvalStatus.count > 0) {
+    blockers.push(blockerItem(
+      'pending_approvals',
+      'high',
+      'Approvals waiting',
+      `${approvalStatus.count} action approval(s) are waiting.`,
+      {
+        source: 'approvals',
+        count: approvalStatus.count,
+        next: approvalStatus.pending?.[0]?.summary || approvalStatus.nextAction,
+      },
+    ));
+  }
+  const recoveryCount = Number(progress.counts?.recovery?.recoverable || 0);
+  if (recoveryCount > 0) {
+    blockers.push(blockerItem(
+      'worker_recovery',
+      'medium',
+      'Worker recovery available',
+      progress.recovery?.summary || `${recoveryCount} failed worker job(s) can be recovered.`,
+      {
+        source: 'jobs',
+        count: recoveryCount,
+        next: progress.recovery?.items?.[0]?.recovery?.recommended?.label || '',
+        jobId: progress.recovery?.items?.[0]?.id || '',
+      },
+    ));
+  }
+  const blockedWorkflowCount = Number(progress.counts?.blockedWorkflows || 0);
+  if (blockedWorkflowCount > 0) {
+    blockers.push(blockerItem(
+      'blocked_workflows',
+      'medium',
+      'Blocked workflows',
+      `${blockedWorkflowCount} workflow(s) are blocked or failed.`,
+      {
+        source: 'workflows',
+        count: blockedWorkflowCount,
+        next: progress.blockedWorkflows?.[0]?.result || progress.blockedWorkflows?.[0]?.request || '',
+        workflowId: progress.blockedWorkflows?.[0]?.id || '',
+      },
+    ));
+  }
+  const blockedRoutes = (Array.isArray(progress.routingLedger) ? progress.routingLedger : [])
+    .filter((route) => ['blocked', 'failed', 'needs_attention'].includes(String(route.status || '')));
+  if (blockedRoutes.length) {
+    blockers.push(blockerItem(
+      'blocked_routes',
+      'medium',
+      'Routed work blocked',
+      `${blockedRoutes.length} routed task(s) need attention.`,
+      {
+        source: 'routing',
+        count: blockedRoutes.length,
+        next: blockedRoutes[0]?.nextAction || blockedRoutes[0]?.taskTitle || '',
+        routeId: blockedRoutes[0]?.id || '',
+      },
+    ));
+  }
+  if (autopilot.enabled && !autopilot.canActNow) {
+    blockers.push(blockerItem(
+      'autopilot_waiting',
+      'low',
+      'Autopilot waiting',
+      autopilot.spokenSummary || autopilot.skipSummary || autopilot.nextWait || autopilot.reason || 'Autopilot is not acting right now.',
+      {
+        source: 'autopilot',
+        count: Array.isArray(autopilot.waitingFor) ? autopilot.waitingFor.length : 0,
+        next: autopilot.nextWait || autopilot.nextAction,
+      },
+    ));
+  } else if (!autopilot.enabled) {
+    blockers.push(blockerItem(
+      'autopilot_disabled',
+      'info',
+      'Autopilot disabled',
+      autopilot.spokenSummary || 'Autopilot is disabled; JAVIS waits for direct user intent.',
+      {
+        source: 'autopilot',
+        next: autopilot.nextAction,
+      },
+    ));
+  }
+
+  const sortedBlockers = dedupeBlockers(blockers)
+    .sort((a, b) => blockerSeverityRank(b.severity) - blockerSeverityRank(a.severity) || b.count - a.count || a.id.localeCompare(b.id));
+  const top = sortedBlockers[0] || null;
+  const counts = {
+    total: sortedBlockers.length,
+    critical: sortedBlockers.filter((item) => item.severity === 'critical').length,
+    high: sortedBlockers.filter((item) => item.severity === 'high').length,
+    medium: sortedBlockers.filter((item) => item.severity === 'medium').length,
+    low: sortedBlockers.filter((item) => item.severity === 'low').length,
+    approvals: approvalStatus.count,
+    activeJobs: Number(progress.counts?.activeJobs || 0),
+    activeRoutes: Number(progress.counts?.activeRoutes || 0),
+    blockedWorkflows: blockedWorkflowCount,
+    recovery: recoveryCount,
+  };
+  return {
+    version: 1,
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    source,
+    status: top ? 'blocked_or_waiting' : 'clear',
+    summary: top
+      ? `${top.label}: ${top.summary}`
+      : 'No active blockers found in resident state.',
+    counts,
+    top,
+    blockers: sortedBlockers.slice(0, 8),
+    readiness: {
+      overall: readiness.overall,
+      label: readiness.label,
+      summary: compactRecordText(readiness.summary || '', 260),
+      primaryIssue: readiness.primaryIssue
+        ? {
+            id: compactRecordText(readiness.primaryIssue.id || '', 100),
+            label: compactRecordText(readiness.primaryIssue.label || '', 120),
+            status: compactRecordText(readiness.primaryIssue.status || '', 40),
+            summary: compactRecordText(readiness.primaryIssue.summary || '', 220),
+            next: compactRecordText(readiness.primaryIssue.next || '', 260),
+          }
+        : null,
+    },
+    voice: {
+      status: compactRecordText(voiceHealth.status || '', 80),
+      kind: compactRecordText(voiceHealth.kind || '', 80),
+      summary: compactRecordText(voiceHealth.summary || '', 260),
+      next: compactRecordText(voiceHealth.next || '', 260),
+      localFallback: {
+        available: localVoice.available === true,
+        mode: compactRecordText(localVoice.mode || '', 80),
+        endpoint: localVoice.input?.endpoint || '/api/voice/command',
+        opensTerminal: Boolean(localVoice.interaction?.opensTerminal),
+      },
+    },
+    approvals: approvalStatus,
+    progress: {
+      counts: progress.counts,
+      workerSummary: compactRecordText(progress.workerSummary || '', 260),
+      spokenSummary: compactRecordText(progress.spokenSummary || '', 420),
+      nextActions: Array.isArray(progress.nextActions)
+        ? progress.nextActions.slice(0, 3).map((action) => ({
+            id: compactRecordText(action.id || '', 120),
+            label: compactRecordText(action.label || '', 120),
+            summary: compactRecordText(action.summary || '', 220),
+            source: compactRecordText(action.source || '', 80),
+          }))
+        : [],
+    },
+    autopilot: {
+      enabled: Boolean(autopilot.enabled),
+      running: Boolean(autopilot.running),
+      busy: Boolean(autopilot.busy),
+      canActNow: Boolean(autopilot.canActNow),
+      reason: compactRecordText(autopilot.reason || '', 120),
+      nextWait: compactRecordText(autopilot.nextWait || '', 260),
+      spokenSummary: compactRecordText(autopilot.spokenSummary || autopilot.skipSummary || '', 420),
+      waitingFor: autopilot.waitingFor,
+      candidateCounts: autopilot.candidateCounts,
+    },
+    attention: {
+      level: compactRecordText(attention.level || '', 80),
+      shouldNotify: Boolean(attention.shouldNotify),
+      summary: compactRecordText(attention.summary || '', 260),
+      nextAction: compactRecordText(attention.nextAction || '', 260),
+      reasons: Array.isArray(attention.reasons)
+        ? attention.reasons.slice(0, 5).map((reason) => ({
+            id: compactRecordText(reason.id || '', 100),
+            severity: compactRecordText(reason.severity || '', 40),
+            label: compactRecordText(reason.label || '', 120),
+            summary: compactRecordText(reason.summary || '', 220),
+            source: compactRecordText(reason.source || '', 80),
+          }))
+        : [],
+    },
+    safety: {
+      readOnly: true,
+      executesActions: false,
+      resolvesApprovals: false,
+      startsWorkers: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      opensTerminal: false,
+      capturesScreenNow: false,
+      returnsScreenImage: false,
+      readsClipboardText: false,
+      mutatesUserFiles: false,
+    },
+  };
+}
+
 async function resolveApprovalFromVoice(options = {}) {
   const id = String(options.id || options.approvalId || '').trim();
   const action = String(options.action || options.decision || '').trim().toLowerCase();
@@ -23902,6 +24181,27 @@ function naturalApprovalStatusLocalCommand(text) {
   };
 }
 
+function naturalBlockerStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  if (!raw) return null;
+  const mentionsBlocker = /\b(blocker|blockers|blocking|blocked|stuck|stalled|waiting|what is blocking|why stuck|why blocked|why waiting)\b/i.test(raw)
+    || /(阻塞|卡住|卡着|卡在哪|卡哪里|卡在|堵住|停住|停了|等什么|为什么卡|为什么停|为什么不动|哪里卡|哪里阻塞|有什么阻塞|哪些阻塞|什么卡住|什么挡住)/i.test(compact);
+  if (!mentionsBlocker) return null;
+
+  const statusSignal = /\b(status|why|what|which|where|any|list|show|now|current|summary|check)\b/i.test(raw)
+    || /(为什么|什么|哪些|哪个|哪里|在哪|有没有|当前|现在|状态|看一下|看看|汇总|总结)/i.test(compact);
+  if (!statusSignal) return null;
+
+  return {
+    intent: 'blocker_status',
+    label: 'Blocker status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalCapabilityStatusCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24174,6 +24474,9 @@ function localCommandDecision(task) {
 
   const approvalStatusCommand = naturalApprovalStatusLocalCommand(text);
   if (approvalStatusCommand) return approvalStatusCommand;
+
+  const blockerStatusCommand = naturalBlockerStatusLocalCommand(text);
+  if (blockerStatusCommand) return blockerStatusCommand;
 
   const capabilityCommand = naturalCapabilityStatusCommand(text);
   if (capabilityCommand) return capabilityCommand;
@@ -24686,7 +24989,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -24717,6 +25020,14 @@ function buildContextPlan(message, options = {}) {
       needs.browserPage = false;
       needs.browserDom = false;
     } else if (['approval_status'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
+      needs.browserContext = false;
+      needs.browserPage = false;
+      needs.browserDom = false;
+    } else if (['blocker_status'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -25315,6 +25626,25 @@ function formatApprovalStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatBlockerStatusForLocalCommand(status = {}) {
+  const blockers = Array.isArray(status.blockers) ? status.blockers : [];
+  const counts = status.counts || {};
+  const top = status.top || blockers[0] || null;
+  const blockerLines = blockers
+    .slice(0, 5)
+    .map((item) => `- ${item.severity || '-'} · ${item.label || item.id || '-'}: ${compactRecordText(item.summary || '', 180)}${item.next ? ` · next ${compactRecordText(item.next, 120)}` : ''}`);
+  const progressCounts = status.progress?.counts || {};
+  return [
+    `Blockers: ${counts.total ?? blockers.length} active · attention=${status.attention?.level || '-'} · service=${status.readiness?.overall || '-'} · autopilot=${status.autopilot?.canActNow ? 'can act' : 'waiting'}`,
+    top ? `Top: ${top.label || top.id || '-'} · ${compactRecordText(top.summary || '', 240)}` : 'Top: none',
+    blockerLines.length ? `Items:\n${blockerLines.join('\n')}` : 'Items: none',
+    `Work: active jobs ${progressCounts.activeJobs ?? counts.activeJobs ?? 0} · routes ${progressCounts.activeRoutes ?? counts.activeRoutes ?? 0} · blocked workflows ${progressCounts.blockedWorkflows ?? counts.blockedWorkflows ?? 0} · recovery ${progressCounts.recovery?.recoverable ?? counts.recovery ?? 0}`,
+    `Voice: ${status.voice?.status || '-'} · ${compactRecordText(status.voice?.summary || '', 220)} · local=${status.voice?.localFallback?.mode || '-'}`,
+    status.autopilot?.spokenSummary || status.autopilot?.nextWait ? `Autopilot: ${compactRecordText(status.autopilot.spokenSummary || status.autopilot.nextWait, 260)}` : '',
+    '边界: 这里只读 resident 阻塞总览；不执行动作、不批准/拒绝审批、不启动 worker、不启动麦克风或 Realtime、不打开 Terminal、不主动截屏。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatAutopilotStatusForLocalCommand(status = {}) {
   const selected = status.selectedAction || null;
   const first = status.firstAction || null;
@@ -25576,6 +25906,20 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatApprovalStatusForLocalCommand(approvalStatus),
         data: { approvalStatus },
+      };
+    }
+
+    if (command.intent === 'blocker_status') {
+      const blockerStatus = blockerStatusSnapshot({
+        source: 'local_command',
+        jobLimit: 5,
+        workflowLimit: 5,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatBlockerStatusForLocalCommand(blockerStatus),
+        data: { blockerStatus },
       };
     }
 
@@ -55274,6 +55618,21 @@ function startApiServer() {
       });
     } catch (error) {
       jsonError(res, 500, 'Work handoff failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/blockers', (req, res) => {
+    try {
+      res.json({
+        blockers: blockerStatusSnapshot({
+          jobLimit: req.query.jobLimit,
+          workflowLimit: req.query.workflowLimit,
+          approvalLimit: req.query.approvalLimit,
+          source: 'api',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Blocker status failed', error instanceof Error ? error.message : String(error));
     }
   });
 

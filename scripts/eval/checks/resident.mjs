@@ -266,6 +266,50 @@ export default {
         }),
     );
 
+    const blockerStatusCommandResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '现在有哪些阻塞卡住了，为什么不动？',
+        execute: true,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_blocker_status_local_command',
+      },
+      timeoutMs: 10000,
+    });
+    const blockerStatusCommand = blockerStatusCommandResponse.data || {};
+    const blockerStatusRoute = blockerStatusCommand.route || {};
+    const blockerStatus = blockerStatusRoute.data?.blockerStatus || {};
+    out.push(
+      blockerStatusCommandResponse.ok &&
+        blockerStatusCommand.ok === true &&
+        blockerStatusRoute.localCommand?.intent === 'blocker_status' &&
+        blockerStatusRoute.decision?.localCommand === 'blocker_status' &&
+        String(blockerStatusRoute.output || '').includes('Blockers:') &&
+        blockerStatus.version === 1 &&
+        Array.isArray(blockerStatus.blockers) &&
+        typeof blockerStatus.counts?.total === 'number' &&
+        blockerStatus.safety?.readOnly === true &&
+        blockerStatus.safety?.executesActions === false &&
+        blockerStatus.safety?.resolvesApprovals === false &&
+        blockerStatus.safety?.startsWorkers === false &&
+        blockerStatus.safety?.startsMicrophone === false &&
+        blockerStatus.safety?.usesRealtime === false &&
+        blockerStatus.safety?.opensTerminal === false &&
+        blockerStatus.safety?.capturesScreenNow === false &&
+        blockerStatus.safety?.mutatesUserFiles === false &&
+        blockerStatusRoute.contextPlan?.needs?.residentState === true &&
+        blockerStatusRoute.contextPlan?.needs?.screen === false &&
+        blockerStatusRoute.contextPlan?.needs?.accessibility === false
+        ? ok('resident.blocker_status_local_command', 'Blocker status local command', `${blockerStatus.counts.total || 0} blocker(s) · top=${blockerStatus.top?.id || 'none'}`)
+        : fail('resident.blocker_status_local_command', 'Blocker status local command', 'expected natural blocked/stuck question to route to a read-only blocker_status fast path', {
+          status: blockerStatusCommandResponse.status,
+          body: blockerStatusCommand,
+        }),
+    );
+
     const voiceStandbyPrimaryPreview = await ctx.api('/api/voice/standby', {
       method: 'POST',
       body: {
@@ -773,6 +817,17 @@ export default {
       hasApprovalStatusLoop
         ? ok('resident.local_voice_loop_approval_status', 'Local voice loop approval-status command', '/approvals reads pending confirmation gates without resolving or executing them')
         : fail('resident.local_voice_loop_approval_status', 'Local voice loop approval-status command', 'expected /approvals slash command to read summarized pending approvals with read-only safety copy'),
+    );
+
+    const hasBlockerStatusLoop =
+      loopSource.includes("command === 'blockers'") &&
+      loopSource.includes('/api/blockers?jobLimit=5&workflowLimit=5&approvalLimit=5') &&
+      loopSource.includes('formatLoopBlockers') &&
+      loopSource.includes('does not execute actions, resolve approvals, start workers');
+    out.push(
+      hasBlockerStatusLoop
+        ? ok('resident.local_voice_loop_blocker_status', 'Local voice loop blocker-status command', '/blockers reads voice, approvals, work, routes, and autopilot blockers without side effects')
+        : fail('resident.local_voice_loop_blocker_status', 'Local voice loop blocker-status command', 'expected /blockers slash command to read /api/blockers with read-only safety copy'),
     );
 
     const petStandbyNoTerminal =

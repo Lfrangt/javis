@@ -353,6 +353,7 @@ function loopHelpText() {
     '  /handoff  Read the voice-ready work handoff summary.',
     '  /jobs     Read active/recent jobs, worker groups, recovery hints, and next action.',
     '  /progress Alias for /jobs.',
+    '  /blockers Read why JAVIS is blocked/waiting across voice, approvals, jobs, routes, and autopilot.',
     '  /next     Fast-read the next workbench action preview.',
     '  /auto     Read autopilot/agency status and why unattended work is or is not acting.',
     '  /approvals Read pending approval/confirmation gates without resolving them.',
@@ -1209,6 +1210,32 @@ function formatLoopNext(data = {}) {
   return lines.join('\n');
 }
 
+function formatLoopBlockers(data = {}) {
+  const status = data.blockers || data || {};
+  const blockers = Array.isArray(status.blockers) ? status.blockers : [];
+  const counts = status.counts || {};
+  const top = status.top || blockers[0] || null;
+  const lines = [
+    `Blockers: ${counts.total ?? blockers.length} active · attention=${status.attention?.level || '-'} · service=${status.readiness?.overall || '-'} · autopilot=${status.autopilot?.canActNow ? 'can act' : 'waiting'}`,
+  ];
+  if (top) lines.push(`Top: ${top.label || top.id || '-'} · ${compactText(top.summary || '-', 220)}`);
+  if (blockers.length) {
+    lines.push('Items:');
+    for (const item of blockers.slice(0, 5)) {
+      lines.push(`- ${item.severity || '-'} · ${item.label || item.id || '-'}: ${compactText(item.summary || '', 170)}${item.next ? ` · next ${compactText(item.next, 110)}` : ''}`);
+    }
+  } else {
+    lines.push('Items: none');
+  }
+  lines.push(`Work: active jobs ${counts.activeJobs ?? 0} · routes ${counts.activeRoutes ?? 0} · blocked workflows ${counts.blockedWorkflows ?? 0} · recovery ${counts.recovery ?? 0}`);
+  lines.push(`Voice: ${status.voice?.status || '-'} · ${compactText(status.voice?.summary || '-', 220)} · local=${status.voice?.localFallback?.mode || '-'}`);
+  if (status.autopilot?.spokenSummary || status.autopilot?.nextWait) {
+    lines.push(`Autopilot: ${compactText(status.autopilot.spokenSummary || status.autopilot.nextWait, 260)}`);
+  }
+  lines.push('Safety: read-only; does not execute actions, resolve approvals, start workers, microphone, Realtime, Terminal, or screen capture.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopAutopilot(data = {}) {
   const payload = parseToolJsonOutput(data);
   const selected = payload.selectedAction || null;
@@ -1643,6 +1670,15 @@ async function runLoopCommand(transcript) {
       const endpoint = '/api/work/progress?jobLimit=5&workflowLimit=5';
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopJobs(response.data || {}), {
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'blockers' || command === 'blocked' || command === 'stuck' || command === 'waiting') {
+      const endpoint = '/api/blockers?jobLimit=5&workflowLimit=5&approvalLimit=5';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopBlockers(response.data || {}), {
+        command,
         endpoint,
         detailLevel: 'fast',
       });
