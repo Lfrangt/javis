@@ -23783,6 +23783,29 @@ function naturalDelegateCommand(text) {
   };
 }
 
+function naturalVoiceStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  if (!raw) return null;
+  const mentionsVoice = /\b(realtime|real[- ]?time|webrtc|voice|speech|audio|mic|microphone|talk|listen|hear|hearing|can you hear)\b/i.test(raw)
+    || /(实时语音|实时对话|语音|说话|对话|麦克风|麦|收音|音频|听见|听到|听我|能听|Realtime|realtime|WebRTC|webrtc)/i.test(compact);
+  if (!mentionsVoice) return null;
+
+  const statusSignal = /\b(status|ready|connected|connect|blocked|working|available|enabled|disabled|quota|billing|api key|api|key|why|problem|issue|fixed|recovered)\b/i.test(raw)
+    || /(状态|准备|准备好|准备好了|好了没|连上|连接|通了|可用|能用|可以用|不能用|为什么|怎么没|没连|没通|不能说话|说不了|听不到|听不见|收费|额度|充值|账单|密钥|钥匙|修好|恢复|开了没|权限)/i.test(compact);
+  const directQuestion = /\b(can you hear me|can i talk|can we talk|voice connected|mic ready|microphone ready|realtime ready)\b/i.test(raw)
+    || /(能听见我吗|听得到我吗|可以说话了吗|现在能说话吗|实时语音好了吗|麦克风好了吗|语音连上了吗)/i.test(compact);
+  if (!statusSignal && !directQuestion) return null;
+
+  return {
+    intent: 'voice_status',
+    label: 'Voice status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalCapabilityStatusCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24046,6 +24069,9 @@ function localCommandDecision(task) {
 
   const delegateCommand = naturalDelegateCommand(text);
   if (delegateCommand) return delegateCommand;
+
+  const voiceStatusCommand = naturalVoiceStatusLocalCommand(text);
+  if (voiceStatusCommand) return voiceStatusCommand;
 
   const capabilityCommand = naturalCapabilityStatusCommand(text);
   if (capabilityCommand) return capabilityCommand;
@@ -24558,7 +24584,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -24575,6 +24601,11 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
+    } else if (['voice_status'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
     } else if (['autopilot_status'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
@@ -25009,6 +25040,33 @@ function formatCapabilityStatusForLocalCommand({ perception = {}, capabilities =
   ].filter(Boolean).join('\n');
 }
 
+function formatVoiceStatusForLocalCommand(status = {}) {
+  const standby = status.standby || {};
+  const provider = standby.provider || {};
+  const local = standby.local || {};
+  const localInteraction = local.interaction || {};
+  const primary = standby.primaryAction || {};
+  const blocker = local.blocker || {};
+  const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
+  const recoveryLine = recoveryActions.length
+    ? recoveryActions
+      .slice(0, 3)
+      .map((action) => `- ${action.label || action.id || '-'}: ${compactRecordText(action.detail || action.command || action.url || '', 180)}`)
+      .join('\n')
+    : '';
+  return [
+    `Voice: ${standby.label || standby.mode || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
+    provider.summary ? `Realtime: ${compactRecordText(provider.summary, 260)}` : '',
+    provider.subscriptionBoundary ? `Billing/API: ${compactRecordText(provider.subscriptionBoundary, 260)}` : '',
+    blocker.active ? `Blocker: ${blocker.kind || provider.kind || '-'} · ${compactRecordText(blocker.summary || provider.summary || '', 240)}` : '',
+    `Primary: ${primary.label || primary.id || '-'} · mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`,
+    `Local fallback: ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · terminal=${localInteraction.opensTerminal ? 'yes' : 'no'}`,
+    standby.next || provider.next || local.next ? `Next: ${compactRecordText(standby.next || provider.next || local.next, 320)}` : '',
+    recoveryLine ? `Recovery:\n${recoveryLine}` : '',
+    '边界: 这里只读语音/Realtime 状态；不启动麦克风，不创建 Realtime session，不开 Terminal，不读取屏幕。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatAutopilotStatusForLocalCommand(status = {}) {
   const selected = status.selectedAction || null;
   const first = status.firstAction || null;
@@ -25217,6 +25275,33 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatCapabilityStatusForLocalCommand({ perception, capabilities }),
         data: { perception, capabilities },
+      };
+    }
+
+    if (command.intent === 'voice_status') {
+      const conversation = conversationStateSnapshot();
+      const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+      const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+      const wake = wakeHandoffSnapshot({ conversation, voiceHealth, localVoice });
+      const standby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice, wake });
+      const voiceStatus = {
+        standby,
+        safety: {
+          readOnly: true,
+          startsMicrophone: false,
+          usesRealtime: false,
+          storesRawAudio: false,
+          opensTerminal: false,
+          storesScreenImage: false,
+          storesClipboardText: false,
+          storesAccessibilityNodes: false,
+        },
+      };
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatVoiceStatusForLocalCommand(voiceStatus),
+        data: { voiceStatus },
       };
     }
 

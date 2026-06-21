@@ -142,6 +142,44 @@ export default {
         }),
     );
 
+    const voiceStatusCommandResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '实时语音连上了吗，为什么现在不能直接说话？',
+        execute: true,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_voice_status_local_command',
+      },
+      timeoutMs: 10000,
+    });
+    const voiceStatusCommand = voiceStatusCommandResponse.data || {};
+    const voiceStatusRoute = voiceStatusCommand.route || {};
+    const voiceStatus = voiceStatusRoute.data?.voiceStatus || {};
+    out.push(
+      voiceStatusCommandResponse.ok &&
+        voiceStatusCommand.ok === true &&
+        voiceStatusRoute.localCommand?.intent === 'voice_status' &&
+        voiceStatusRoute.decision?.localCommand === 'voice_status' &&
+        String(voiceStatusRoute.output || '').includes('Voice:') &&
+        voiceStatus.standby?.version === 1 &&
+        voiceStatus.safety?.readOnly === true &&
+        voiceStatus.safety?.startsMicrophone === false &&
+        voiceStatus.safety?.usesRealtime === false &&
+        voiceStatus.safety?.storesRawAudio === false &&
+        voiceStatus.safety?.opensTerminal === false &&
+        voiceStatusRoute.contextPlan?.needs?.residentState === true &&
+        voiceStatusRoute.contextPlan?.needs?.screen === false &&
+        voiceStatusRoute.contextPlan?.needs?.accessibility === false
+        ? ok('resident.voice_status_local_command', 'Voice status local command', `${voiceStatus.standby.mode} · primary=${voiceStatus.standby.primaryAction?.id || '-'}`)
+        : fail('resident.voice_status_local_command', 'Voice status local command', 'expected natural Realtime/mic status question to route to a read-only voice_status fast path', {
+          status: voiceStatusCommandResponse.status,
+          body: voiceStatusCommand,
+        }),
+    );
+
     const voiceStandbyPrimaryPreview = await ctx.api('/api/voice/standby', {
       method: 'POST',
       body: {
@@ -596,6 +634,7 @@ export default {
     );
 
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    const loopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
     const hasLocalLoopDedupe =
       mainSource.includes('localVoiceLoopRunningSnapshot') &&
       mainSource.includes('localVoiceLoopTerminalWindowSnapshot') &&
@@ -615,6 +654,17 @@ export default {
       hasLocalLoopDedupe
         ? ok('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'existing, visible, or just-opened voice loop is reused instead of opening another Terminal window')
         : fail('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'expected /api/voice/open-local-loop to reuse existing voice loop windows and persisted recent opens'),
+    );
+
+    const hasVoiceStatusLoop =
+      loopSource.includes("command === 'voice'") &&
+      loopSource.includes('/api/voice/standby') &&
+      loopSource.includes('formatLoopVoiceStatus') &&
+      loopSource.includes('does not start microphone, Realtime, Terminal');
+    out.push(
+      hasVoiceStatusLoop
+        ? ok('resident.local_voice_loop_voice_status', 'Local voice loop voice-status command', '/voice reads standby state without microphone, Realtime, or Terminal')
+        : fail('resident.local_voice_loop_voice_status', 'Local voice loop voice-status command', 'expected /voice slash command to read /api/voice/standby with read-only safety copy'),
     );
 
     const petStandbyNoTerminal =

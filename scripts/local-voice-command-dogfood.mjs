@@ -338,6 +338,7 @@ function loopDelegateConfirmRequested() {
 function loopHelpText() {
   return [
     'Loop commands:',
+    '  /voice    Read Realtime/live voice blocker, local fallback, and next recovery step.',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /app      Fast-read recent Mac app and screen metadata; add --full-app for live UI outline.',
     '  /ui       Preview a local app/UI workflow plan; add --run to execute through policy.',
@@ -1009,6 +1010,32 @@ function formatLoopStatus(data = {}) {
   return lines.join('\n');
 }
 
+function formatLoopVoiceStatus(data = {}) {
+  const standby = data.standby || {};
+  const provider = standby.provider || {};
+  const local = standby.local || {};
+  const primary = standby.primaryAction || {};
+  const blocker = local.blocker || {};
+  const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
+  const lines = [
+    `Voice: ${standby.label || standby.mode || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
+    `Primary: ${primary.label || primary.id || '-'} · mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`,
+    `Local fallback: ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · terminal=${local.interaction?.opensTerminal ? 'yes' : 'no'}`,
+  ];
+  if (provider.summary) lines.push(`Realtime: ${compactText(provider.summary, 260)}`);
+  if (provider.subscriptionBoundary) lines.push(`Billing/API: ${compactText(provider.subscriptionBoundary, 260)}`);
+  if (blocker.active) lines.push(`Blocker: ${blocker.kind || provider.kind || '-'} · ${compactText(blocker.summary || provider.summary || '', 240)}`);
+  if (standby.next || provider.next || local.next) lines.push(`Next: ${compactText(standby.next || provider.next || local.next, 320)}`);
+  if (recoveryActions.length) {
+    lines.push('Recovery:');
+    for (const action of recoveryActions.slice(0, 3)) {
+      lines.push(`- ${action.label || action.id || '-'}: ${compactText(action.detail || action.command || action.url || '', 180)}`);
+    }
+  }
+  lines.push('Safety: read-only; does not start microphone, Realtime, Terminal, screen capture, or raw audio storage.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopHandoff(data = {}) {
   const handoff = data.handoff || {};
   const counts = handoff.progress?.counts || {};
@@ -1269,6 +1296,14 @@ async function runLoopCommand(transcript) {
       return loopCommandResult(base, response, formatLoopStatus(response.data || {}), {
         endpoint,
         detailLevel: full ? 'full' : 'fast',
+      });
+    }
+    if (command === 'voice' || command === 'voice-status' || command === 'mic' || command === 'realtime') {
+      const endpoint = '/api/voice/standby';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopVoiceStatus(response.data || {}), {
+        endpoint,
+        detailLevel: 'fast',
       });
     }
     if (command === 'app') {
