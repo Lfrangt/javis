@@ -366,6 +366,7 @@ async function printStatus() {
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
+  console.log('VH. Show local voice command history');
   console.log('L. Show local capability map');
   console.log('I. Show permission matrix');
   console.log('CR. Show local control readiness');
@@ -696,6 +697,28 @@ async function showWorkHandoff() {
   const result = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
   console.log('');
   printWorkHandoff(result);
+}
+
+async function showVoiceHistory() {
+  const limitIndex = process.argv.findIndex((item) => item === '--limit');
+  const limit = limitIndex >= 0 && process.argv[limitIndex + 1] ? process.argv[limitIndex + 1] : '10';
+  const result = await request(`/api/voice/history?limit=${encodeURIComponent(limit)}`);
+  const history = result.history || {};
+  const items = Array.isArray(history.items) ? history.items : [];
+  console.log('\nLocal Voice Command History');
+  console.log('===========================');
+  console.log(`Items: ${items.length}/${history.limit || limit} · privacy: transcript-preview-only, no audio/screenshots/clipboard/full-AX`);
+  if (!items.length) {
+    console.log('No local voice-command history yet.');
+    return;
+  }
+  for (const [index, item] of items.entries()) {
+    const state = item.queued ? 'queued' : item.executed ? 'executed' : 'preview';
+    const ids = [item.jobId ? `job ${item.jobId}` : '', item.routeId ? `route ${item.routeId}` : ''].filter(Boolean).join(' · ');
+    const context = item.contextSummary ? ` · ${compact(item.contextSummary, 120)}` : '';
+    console.log(`${index + 1}. ${formatTime(Date.parse(item.timestamp || '') || 0)} · ${item.lane || '-'} · ${state}${ids ? ` · ${ids}` : ''}`);
+    console.log(`   ${compact(item.transcriptPreview || '(no transcript preview)', 220)}${context}`);
+  }
 }
 
 function printLocalCapabilities(result) {
@@ -3588,6 +3611,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-voice-history') || process.argv.includes('--voice-history')) {
+    await showVoiceHistory();
+    return;
+  }
+
   if (process.argv.includes('--print-browser-activity') || process.argv.includes('--browser-activity')) {
     await showBrowserActivity();
     return;
@@ -3769,6 +3797,8 @@ async function main() {
         await manageRealtimeDogfoodSession(rl);
       } else if (answer === 'h' || answer === 'handoff' || answer === 'work handoff') {
         await showWorkHandoff();
+      } else if (answer === 'vh' || answer === 'voice history' || answer === 'local voice history') {
+        await showVoiceHistory();
       } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {
         await showLocalCapabilities({ includeNext: true });
       } else if (answer === 'i' || answer === 'permissions' || answer === 'permission matrix') {

@@ -6,7 +6,7 @@
 - Desktop pet stays visually minimal; configuration moves to terminal CUI.
 - Realtime voice session.
 - Local macOS speech fallback with silent preflight and explicit short audible dogfood.
-- Local voice-command fallback that turns a transcript plus metadata-only Mac/UI context into route preview/queued work plus local spoken acknowledgement without starting Realtime, has a user-facing `npm run voice -- "..."` intake command, and is advertised from Realtime health, pet status, work-next, and compact voice handoff when provider quota/auth/network checks block live voice.
+- Local voice-command fallback that turns a transcript plus metadata-only Mac/UI context into route preview/queued work plus local spoken acknowledgement without starting Realtime, has a user-facing `npm run voice -- "..."` intake command, exposes sanitized local history in CUI/API, and is advertised from Realtime health, pet status, work-next, and compact voice handoff when provider quota/auth/network checks block live voice.
 - Screen sharing and frame analysis.
 - Live screen context in active Realtime sessions.
 - Private screen mode with renderer-side downscale/blur before API or Realtime delivery.
@@ -24,6 +24,7 @@
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.
 - Runtime/tool activity log in CUI/API, not on the desktop pet.
+- Sanitized voice-command history in CUI/API for recovery/debugging without putting logs on the desktop pet.
 - Desktop pet consumes resident presence as a stable 148x40 red/yellow/green traffic-light Dynamic Island capsule instead of showing diagnostic chips.
 - Desktop pet uses a lightweight `/api/pet/status` lane for parked state with no raw screen image, model list, learning profile, routing history, workflow logs, or runtime data directory; full doctor/config/briefing/context checks stay in CUI, manual refresh, or slow expanded-panel refresh.
 

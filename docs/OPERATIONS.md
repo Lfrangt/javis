@@ -130,6 +130,15 @@ curl -X POST http://127.0.0.1:3417/api/voice/command \
 
 By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback does not attach local memory or inferred learning unless `useMemory:true` is explicit. The user-facing `npm run voice -- "..."` command defaults to metadata-only screen plus bounded UI outline context; add `--no-screen` or `--no-ui` to make it lighter. Its context snapshot is metadata-only: frontmost app/window, browser title/host, screen frame freshness/privacy when `includeScreen:true`, clipboard presence/length only, active-job count, approval count, and, when `includeAccessibility:true`, a compact UI outline capped by the existing Accessibility read policy. It does not attach screenshots, raw screen pixels, clipboard text, raw audio, browser page body, full Accessibility nodes, or local learning profile by default. Add `confirmSpeak:true` or CLI `--confirm-speak` only when you intentionally want local audio. If `execute:true` or CLI `--run` is used on a quick-lane question, `/api/voice/command` holds the cloud call unless `allowCloudQuick:true` is also set; background/Codex/Claude/local routes can still be queued through the normal policy gates.
 
+Recent local voice-command intake can be inspected without opening raw logs:
+
+```bash
+npm run config -- --print-voice-history
+curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/voice/history?limit=10"
+```
+
+The history is local and sanitized for recovery/debugging: it keeps transcript previews, transcript length, lane/status, route/job/workflow ids, and metadata-only context summaries. It does not store or return raw audio, screenshots, clipboard text, browser page bodies, or full Accessibility node payloads.
+
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
 ```bash

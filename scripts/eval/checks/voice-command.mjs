@@ -14,6 +14,29 @@ function parseJson(text) {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
+function hasForbiddenHistoryPayload(value) {
+  if (!value || typeof value !== 'object') return false;
+  const forbidden = new Set([
+    'rawAudio',
+    'audioData',
+    'screenImage',
+    'imageDataUrl',
+    'clipboardText',
+    'accessibilityNodes',
+    'nodes',
+  ]);
+  const stack = [value];
+  while (stack.length) {
+    const current = stack.pop();
+    if (!current || typeof current !== 'object') continue;
+    for (const [key, child] of Object.entries(current)) {
+      if (forbidden.has(key)) return true;
+      if (child && typeof child === 'object') stack.push(child);
+    }
+  }
+  return false;
+}
+
 export default {
   lane: 'voice-command',
   async run(ctx) {
@@ -150,13 +173,14 @@ export default {
       out.push(fail('voice_command.dogfood_preview', 'Local voice command dogfood', error instanceof Error ? error.message : String(error)));
     }
 
+    const localCliTranscript = '看一下当前窗口，判断下一步应该交给哪个本地通道，先不要执行。';
     try {
       const { stdout } = await execFileAsync('npm', [
         'run',
         'voice',
         '--',
         '--json',
-        '看一下当前窗口，判断下一步应该交给哪个本地通道，先不要执行。',
+        localCliTranscript,
       ], {
         cwd: process.cwd(),
         env: {
@@ -189,6 +213,66 @@ export default {
       );
     } catch (error) {
       out.push(fail('voice_command.local_cli', 'Local voice command CLI', error instanceof Error ? error.message : String(error)));
+    }
+
+    const history = await ctx.api('/api/voice/history?limit=12', { timeoutMs: 10000 });
+    const historyData = history.data?.history || {};
+    const historyItems = Array.isArray(historyData.items) ? historyData.items : [];
+    const cliHistory = historyItems.find((item) => (
+      String(item.source || '').includes('local_voice_command_cli') &&
+      String(item.transcriptPreview || '').includes(localCliTranscript.slice(0, 8))
+    ));
+    const privacy = historyData.privacy || {};
+    const safety = cliHistory?.safety || {};
+    out.push(
+      history.ok &&
+        historyData.ok === true &&
+        privacy.localOnly === true &&
+        privacy.transcriptPreviewOnly === true &&
+        privacy.noRawAudio === true &&
+        privacy.noScreenImages === true &&
+        privacy.noClipboardText === true &&
+        privacy.noAccessibilityNodes === true &&
+        cliHistory &&
+        cliHistory.includeScreen === true &&
+        cliHistory.includeAccessibility === true &&
+        cliHistory.transcriptPreview.includes(localCliTranscript.slice(0, 8)) &&
+        cliHistory.contextSummary &&
+        safety.startsMicrophone === false &&
+        safety.usesRealtime === false &&
+        safety.storesRawAudio === false &&
+        safety.storesScreenImage === false &&
+        safety.storesClipboardText === false &&
+        safety.storesAccessibilityNodes === false &&
+        !hasForbiddenHistoryPayload(cliHistory)
+        ? ok('voice_command.history', 'Local voice command history', `${historyItems.length} item(s) · preview-only transcript · no audio/screenshot/clipboard/AX payload`)
+        : fail('voice_command.history', 'Local voice command history', `expected sanitized local voice history, got ${history.status}`, {
+            privacy,
+            found: Boolean(cliHistory),
+            item: cliHistory || historyItems[0] || null,
+          }),
+    );
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-voice-history', '--limit', '8'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('Local Voice Command History') &&
+          stdout.includes('transcript-preview-only') &&
+          stdout.includes(localCliTranscript.slice(0, 8))
+          ? ok('voice_command.history_cui', 'Local voice history CUI', 'CUI prints recent sanitized voice-command history')
+          : fail('voice_command.history_cui', 'Local voice history CUI', 'CUI did not print the expected local voice history summary', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.history_cui', 'Local voice history CUI', error instanceof Error ? error.message : String(error)));
     }
 
     try {

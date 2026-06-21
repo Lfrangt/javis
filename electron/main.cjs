@@ -23616,6 +23616,74 @@ function voiceCommandAck(route = {}, options = {}) {
   return `收到。我会走${laneName}。${reason}`;
 }
 
+function voiceCommandHistoryItemFromAudit(event = {}) {
+  if (event.type !== 'voice_command.completed') return null;
+  const data = event.data || {};
+  const timestamp = event.ts || '';
+  const idSource = [
+    timestamp,
+    data.source || '',
+    data.transcriptPreview || '',
+    data.routeId || '',
+    data.jobId || '',
+  ].join('|');
+  return {
+    id: crypto.createHash('sha1').update(idSource).digest('hex').slice(0, 16),
+    timestamp,
+    source: compactRecordText(data.source || '', 80),
+    transcriptPreview: compactRecordText(data.transcriptPreview || '', 240),
+    transcriptLength: boundedCount(data.transcriptLength, 100000),
+    ok: data.ok !== false,
+    requestedExecute: Boolean(data.requestedExecute),
+    executed: Boolean(data.executed),
+    heldReason: compactRecordText(data.heldReason || '', 120),
+    lane: compactRecordText(data.lane || '', 80),
+    queued: Boolean(data.queued),
+    routeId: compactRecordText(data.routeId || '', 120),
+    jobId: compactRecordText(data.jobId || '', 120),
+    workflowId: compactRecordText(data.workflowId || '', 120),
+    contextSummary: compactRecordText(data.contextSummary || '', 220),
+    includeScreen: Boolean(data.includeScreen),
+    includeAccessibility: Boolean(data.includeAccessibility),
+    usesMemory: Boolean(data.usesMemory),
+    speechDryRun: Boolean(data.speechDryRun),
+    speaksAudio: Boolean(data.speaksAudio),
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      storesScreenImage: false,
+      storesClipboardText: false,
+      storesAccessibilityNodes: false,
+    },
+  };
+}
+
+function voiceCommandHistorySnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
+  const auditLimit = Math.max(80, Math.min(200, Number(options.auditLimit || limit * 8)));
+  const items = readRecentAudit(auditLimit)
+    .map(voiceCommandHistoryItemFromAudit)
+    .filter(Boolean)
+    .reverse()
+    .slice(0, limit);
+  return {
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    limit,
+    count: items.length,
+    items,
+    privacy: {
+      localOnly: true,
+      transcriptPreviewOnly: true,
+      noRawAudio: true,
+      noScreenImages: true,
+      noClipboardText: true,
+      noAccessibilityNodes: true,
+    },
+  };
+}
+
 function safeUrlHost(value = '') {
   try {
     return value ? new URL(String(value)).host : '';
@@ -23854,11 +23922,19 @@ async function runVoiceCommand(options = {}) {
   appendAudit('voice_command.completed', {
     source,
     ok: result.ok,
+    transcriptPreview: compactRecordText(transcript, 240),
+    transcriptLength: transcript.length,
     requestedExecute,
     executed: result.executed,
     heldReason,
     lane: route.decision?.lane || '',
     queued: Boolean(route.queued || route.job?.id),
+    routeId: route.routing?.id || '',
+    jobId: route.job?.id || '',
+    workflowId: route.workflow?.id || route.data?.workflow?.id || '',
+    contextSummary: contextSnapshot.summary,
+    includeScreen,
+    includeAccessibility,
     usesMemory: useMemory,
     hasContext: Boolean(contextSnapshot.prompt),
     speechDryRun: result.safety.speechDryRun,
@@ -52936,6 +53012,10 @@ function startApiServer() {
     } catch (error) {
       jsonError(res, 400, 'Voice command failed', error instanceof Error ? error.message : String(error));
     }
+  });
+
+  api.get('/api/voice/history', (req, res) => {
+    res.json({ history: voiceCommandHistorySnapshot({ limit: req.query.limit, auditLimit: req.query.auditLimit }) });
   });
 
   api.post('/api/tasks/route', async (req, res) => {
