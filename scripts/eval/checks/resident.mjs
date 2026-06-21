@@ -556,14 +556,55 @@ export default {
         }),
     );
 
+    const localLoopExplicitTerminalResponse = await ctx.api('/api/voice/open-local-loop', {
+      method: 'POST',
+      body: {
+        execute: true,
+        allowTerminal: true,
+        confirmTerminal: true,
+        source: 'eval_resident_local_voice_loop_terminal_disabled',
+      },
+      timeoutMs: 10000,
+    });
+    const localLoopExplicitTerminal = localLoopExplicitTerminalResponse.data || {};
+    const localLoopExplicitRestore = await ctx.api('/api/window/mode', {
+      method: 'POST',
+      body: {
+        mode: 'pet',
+        focus: false,
+        source: 'eval_resident_local_voice_loop_terminal_disabled_restore',
+      },
+      timeoutMs: 10000,
+    });
+    out.push(
+      localLoopExplicitTerminalResponse.ok &&
+        localLoopExplicitTerminal.ok === true &&
+        localLoopExplicitTerminal.executed === true &&
+        localLoopExplicitTerminal.redirectedToCompose === true &&
+        localLoopExplicitTerminal.safety?.opensTerminal === false &&
+        localLoopExplicitTerminal.terminalLoop?.disabledByDefault === true &&
+        localLoopExplicitTerminal.terminalLoop?.enableEnv === 'JAVIS_ALLOW_TERMINAL_VOICE_LOOP' &&
+        localLoopExplicitRestore.ok &&
+        localLoopExplicitRestore.data?.window?.mode === 'pet'
+        ? ok('resident.local_voice_loop_terminal_env_gate', 'Local voice loop Terminal env gate', 'even explicit Terminal requests redirect to compose unless JAVIS_ALLOW_TERMINAL_VOICE_LOOP=true')
+        : fail('resident.local_voice_loop_terminal_env_gate', 'Local voice loop Terminal env gate', 'expected explicit Terminal request to stay in pet compose by default', {
+          status: localLoopExplicitTerminalResponse.status,
+          body: localLoopExplicitTerminal,
+          restoreStatus: localLoopExplicitRestore.status,
+          restoreBody: localLoopExplicitRestore.data,
+        }),
+    );
+
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
     const hasLocalLoopDedupe =
       mainSource.includes('localVoiceLoopRunningSnapshot') &&
       mainSource.includes('localVoiceLoopTerminalWindowSnapshot') &&
       mainSource.includes('LOCAL_VOICE_LOOP_STATE_FILE') &&
       mainSource.includes('LOCAL_VOICE_LOOP_DEBOUNCE_MS') &&
+      mainSource.includes('JAVIS_ALLOW_TERMINAL_VOICE_LOOP') &&
       mainSource.includes('allowTerminal') &&
       mainSource.includes('confirmTerminal') &&
+      mainSource.includes('terminal_loop_disabled_by_default') &&
       mainSource.includes("appendAudit('local_voice_loop.redirected_to_compose'") &&
       mainSource.includes("appendAudit('local_voice_loop.reused'") &&
       mainSource.includes('reusedExisting: true') &&
