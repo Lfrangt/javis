@@ -360,6 +360,7 @@ async function printStatus() {
   console.log('H. Show spoken work handoff');
   console.log('L. Show local capability map');
   console.log('I. Show permission matrix');
+  console.log('CR. Show local control readiness');
   console.log('S. Show routing speed policy');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
@@ -937,6 +938,176 @@ async function showPermissionMatrix() {
   console.log('- npm run config -- --print-capabilities --include-next');
   console.log('- npm run doctor -- --allow-blocked');
   console.log('- npm run eval -- --only=health,control,parallel,collaboration');
+}
+
+function readinessStatusFromChecks(checks) {
+  if (checks.some((check) => check.status === 'blocked')) return 'blocked';
+  if (checks.some((check) => check.status === 'warning' || check.status === 'manual' || check.status === 'limited')) return 'warning';
+  return 'ready';
+}
+
+function printReadinessGate(gate) {
+  console.log(`- ${statusGlyph(gate.status)} ${gate.label}: ${compact(gate.summary, 220)}`);
+  if (gate.next) console.log(`  next=${compact(gate.next, 220)}`);
+}
+
+async function showControlReadiness() {
+  const [status, configResult, capabilitiesResult, perceptionResult, collaborationResult] = await Promise.all([
+    request('/api/status'),
+    request('/api/config/check'),
+    request('/api/capabilities?includeNext=false').catch(() => ({ capabilities: null })),
+    request('/api/perception/consent?limit=10').catch(() => ({ perception: null })),
+    request('/api/collaboration/handoff?limit=8').catch(() => ({ handoff: null })),
+  ]);
+  const config = configResult.config || {};
+  const items = Array.isArray(config.items) ? config.items : [];
+  const item = (...ids) => firstConfigItem(...ids)(items);
+  const policy = status.actionPolicy?.effective || status.actionPolicy || {};
+  const allow = policy.allow || {};
+  const control = status.actionPolicy?.controlMode || {};
+  const capabilities = capabilitiesResult.capabilities || {};
+  const capabilityRows = Array.isArray(capabilities.capabilities) ? capabilities.capabilities : [];
+  const capability = (id) => capabilityRows.find((row) => row.id === id) || null;
+  const perception = perceptionResult.perception || {};
+  const perceptionCounts = perception.counts || {};
+  const collaboration = collaborationResult.handoff || {};
+  const collaborationCounts = collaboration.counts || {};
+  const writeRoots = allow.write_file?.allowedRoots || allow.create_directory?.allowedRoots || [];
+  const codexCommand = getEnvValue('JAVIS_CODEX_CMD') || 'codex exec';
+  const claudeCommand = getEnvValue('JAVIS_CLAUDE_CMD') || 'claude -p';
+  const codexPath = commandPath(codexCommand);
+  const claudePath = commandPath(claudeCommand);
+  const codePolicy = allow.code_agent || {};
+  const cliPolicy = allow.cli_command || {};
+  const gates = [
+    {
+      id: 'voice',
+      label: 'Voice entry',
+      status: readinessStatusFromChecks([
+        { status: status.api?.hasOpenAiKey ? 'ready' : 'blocked' },
+        { status: item('microphone_permission')?.status || 'unknown' },
+      ]),
+      summary: `OpenAI key ${status.api?.hasOpenAiKey ? 'present' : 'missing'}; microphone ${item('microphone_permission')?.status || 'unknown'}.`,
+      next: status.api?.hasOpenAiKey ? item('microphone_permission')?.next || '' : 'Add OPENAI_API_KEY from CUI option 1, then restart JAVIS.',
+    },
+    {
+      id: 'screen',
+      label: 'Screen awareness',
+      status: readinessStatusFromChecks([
+        { status: item('screen_permission')?.status || 'unknown' },
+        { status: item('screen_privacy_preset')?.status || 'unknown' },
+      ]),
+      summary: `${item('screen_permission')?.summary || 'Screen status unknown'} Privacy: ${item('screen_privacy_preset')?.summary || 'preset unknown'}`,
+      next: item('screen_permission')?.next || item('screen_privacy_preset')?.next || '',
+    },
+    {
+      id: 'app',
+      label: 'Mac app control',
+      status: readinessStatusFromChecks([
+        { status: item('accessibility_permission')?.status || 'unknown' },
+        { status: capability('app')?.status || 'unknown' },
+      ]),
+      summary: capability('app')?.summary || item('accessibility_permission')?.summary || 'Accessibility/app capability unknown.',
+      next: capability('app')?.nextAction || item('accessibility_permission')?.next || '',
+    },
+    {
+      id: 'browser',
+      label: 'Browser control',
+      status: readinessStatusFromChecks([
+        { status: item('browser_page_policy')?.status || capability('browser')?.status || 'unknown' },
+        { status: item('browser_control_policy')?.status || capability('browser')?.status || 'unknown' },
+      ]),
+      summary: `${item('browser_page_policy')?.summary || 'Browser read policy unknown'} ${item('browser_control_policy')?.summary || ''}`,
+      next: item('browser_control_policy')?.next || 'Use browser workflow previews first; submissions still require confirmation.',
+    },
+    {
+      id: 'files',
+      label: 'Files and local actions',
+      status: readinessStatusFromChecks([
+        { status: status.api?.localExecutionEnabled ? 'ready' : 'blocked' },
+        { status: writeRoots.length ? 'ready' : 'warning' },
+        { status: capability('file')?.status || 'unknown' },
+      ]),
+      summary: `local execution=${status.api?.localExecutionEnabled ? 'on' : 'off'}; trusted=${status.api?.trustedLocalMode ? 'yes' : 'no'}; write roots=${writeRoots.length || 0}.`,
+      next: status.api?.localExecutionEnabled ? '' : 'Enable local execution from CUI option 8.',
+    },
+    {
+      id: 'workers',
+      label: 'Codex and Claude Code',
+      status: readinessStatusFromChecks([
+        { status: codexPath ? 'ready' : 'blocked' },
+        { status: claudePath ? 'ready' : 'blocked' },
+        { status: codePolicy.enabled ? 'ready' : 'blocked' },
+      ]),
+      summary: `Codex ${codexPath ? 'ready' : 'missing'}; Claude Code ${claudePath ? 'ready' : 'missing'}; code-agent policy=${codePolicy.enabled ? 'on' : 'off'}.`,
+      next: !codexPath ? 'Install/login Codex CLI or set JAVIS_CODEX_CMD.' : !claudePath ? 'Install/login Claude Code CLI or set JAVIS_CLAUDE_CMD.' : '',
+    },
+    {
+      id: 'cli',
+      label: 'Generic CLI lane',
+      status: cliPolicy.enabled ? 'ready' : 'blocked',
+      summary: `allowed commands=${Array.isArray(cliPolicy.allowedCommands) ? cliPolicy.allowedCommands.join(', ') : '-'}; timeout=${formatInterval(cliPolicy.maxTimeoutMs || 0)}.`,
+      next: cliPolicy.enabled ? '' : 'Enable allow.cli_command in action-policy.json.',
+    },
+    {
+      id: 'resident',
+      label: 'Resident and hotkeys',
+      status: readinessStatusFromChecks([
+        { status: item('launch_agent')?.status || 'unknown' },
+        { status: item('summon_hotkey')?.status || (status.window?.summonHotkeyRegistered ? 'ready' : 'warning') },
+        { status: item('capture_hotkey')?.status || (status.window?.captureHotkeyRegistered ? 'ready' : 'warning') },
+      ]),
+      summary: `LaunchAgent ${item('launch_agent')?.status || 'unknown'}; summon ${status.window?.summonHotkeyRegistered ? 'registered' : 'off'} (${status.window?.summonHotkey || '-'}); capture ${status.window?.captureHotkeyRegistered ? 'registered' : 'off'} (${status.window?.captureHotkey || '-'}).`,
+      next: item('launch_agent')?.next || '',
+    },
+    {
+      id: 'perception',
+      label: 'Consent and storage posture',
+      status: Number(perceptionCounts.blocked || 0) > 0 ? 'blocked' : Number(perceptionCounts.limited || 0) > 0 ? 'warning' : 'ready',
+      summary: `${perceptionCounts.enabled || 0}/${perceptionCounts.total || 0} perception/tool surfaces enabled; ${perceptionCounts.active || 0} active; ${perceptionCounts.blocked || 0} blocked.`,
+      next: Number(perceptionCounts.blocked || 0) > 0 ? 'Run npm run config -- --print-perception to inspect blocked surfaces.' : '',
+    },
+    {
+      id: 'collaboration',
+      label: 'Multi-agent coordination',
+      status: Number(collaborationCounts.conflicts || 0) > 0 ? 'blocked' : 'ready',
+      summary: `${collaborationCounts.active || 0} active claim(s); ${collaborationCounts.conflicts || 0} conflict pair(s).`,
+      next: Number(collaborationCounts.conflicts || 0) > 0 ? 'Run npm run collab -- handoff to resolve overlapping scopes.' : 'Use npm run collab -- handoff --markdown --agent claude-code before starting external workers.',
+    },
+  ];
+
+  const counts = gates.reduce((acc, gate) => {
+    acc[gate.status] = (acc[gate.status] || 0) + 1;
+    return acc;
+  }, {});
+  const overall = counts.blocked ? 'blocked' : counts.warning ? 'limited' : 'ready';
+  const takeoverReady = overall === 'ready' && status.api?.trustedLocalMode && Number(policy.maxAutoRiskLevel || 0) >= 3;
+
+  console.log('JAVIS Local Control Readiness');
+  console.log('=============================');
+  console.log(`Overall: ${overall} · ready ${counts.ready || 0} · warning ${counts.warning || 0} · blocked ${counts.blocked || 0}`);
+  console.log(`Takeover posture: ${takeoverReady ? 'ready for supervised local control' : 'needs review before broad local control'} · control=${control.mode || '-'} · auto L${control.effective?.maxAutoRiskLevel ?? policy.maxAutoRiskLevel ?? '-'} · approval L${control.effective?.requireApprovalAtRiskLevel ?? policy.requireApprovalAtRiskLevel ?? '-'}`);
+  console.log(`Summary: ${capabilities.spokenSummary || config.summary || status.readiness?.summary || 'Local control status loaded.'}`);
+
+  console.log('\nReadiness gates:');
+  for (const gate of gates) printReadinessGate(gate);
+
+  const nextActions = gates
+    .filter((gate) => gate.status !== 'ready' && gate.next)
+    .map((gate) => `${gate.label}: ${gate.next}`);
+  console.log('\nNext actions:');
+  if (nextActions.length) {
+    for (const action of nextActions.slice(0, 6)) console.log(`- ${compact(action, 240)}`);
+  } else {
+    console.log('- No setup blocker found. Start live voice from the pet or summon hotkey when you want JAVIS to act.');
+    console.log('- Keep Level 4 actions such as sends, purchases, deletes, form submissions, and account changes behind explicit confirmation.');
+  }
+
+  console.log('\nUseful commands:');
+  console.log('- npm run config -- --print-control-readiness');
+  console.log('- npm run config -- --print-permissions');
+  console.log('- npm run config -- --print-capabilities --include-next');
+  console.log('- npm run eval -- --only=health,control,presence,parallel,collaboration');
 }
 
 function printRoutingSpeedPolicy(result) {
@@ -3244,6 +3415,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-control-readiness') || process.argv.includes('--control-readiness')) {
+    await showControlReadiness();
+    return;
+  }
+
   if (process.argv.includes('--print-routing-speed-policy') || process.argv.includes('--routing-speed-policy')) {
     const messageIndex = process.argv.findIndex((item) => item === '--message');
     const laneIndex = process.argv.findIndex((item) => item === '--lane');
@@ -3432,6 +3608,8 @@ async function main() {
         await showLocalCapabilities({ includeNext: true });
       } else if (answer === 'i' || answer === 'permissions' || answer === 'permission matrix') {
         await showPermissionMatrix();
+      } else if (answer === 'cr' || answer === 'control readiness' || answer === 'readiness packet') {
+        await showControlReadiness();
       } else if (answer === 's' || answer === 'speed' || answer === 'speed policy' || answer === 'routing speed') {
         await showRoutingSpeedPolicy();
       } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {

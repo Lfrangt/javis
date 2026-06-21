@@ -1,4 +1,8 @@
 import { ok, fail } from '../_client.mjs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export default {
   lane: 'control',
@@ -64,6 +68,29 @@ export default {
         ? ok('control.restore', 'Control mode restore', `restored ${originalMode}`)
         : fail('control.restore', 'Control mode restore', `expected ${originalMode}, got ${restored.data?.controlMode?.mode || '-'}`, restored.data),
     );
+
+    try {
+      const { stdout } = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-control-readiness'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('JAVIS Local Control Readiness') &&
+          stdout.includes('Takeover posture:') &&
+          stdout.includes('Readiness gates:') &&
+          stdout.includes('Voice entry') &&
+          stdout.includes('Screen awareness') &&
+          stdout.includes('Browser control') &&
+          stdout.includes('Codex and Claude Code') &&
+          stdout.includes('Useful commands:')
+          ? ok('control.readiness_cui', 'Control readiness CUI', 'config CUI prints local control readiness gates and next actions')
+          : fail('control.readiness_cui', 'Control readiness CUI', 'expected --print-control-readiness to print readiness packet', { stdout: stdout.slice(0, 3000) }),
+      );
+    } catch (error) {
+      out.push(fail('control.readiness_cui', 'Control readiness CUI', error instanceof Error ? error.message : String(error)));
+    }
 
     return out;
   },
