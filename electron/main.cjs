@@ -198,6 +198,9 @@ const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const LAUNCH_AGENT_FILE = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 const RESIDENT_OUT_LOG = path.join(process.cwd(), 'logs', 'resident.out.log');
 const RESIDENT_ERR_LOG = path.join(process.cwd(), 'logs', 'resident.err.log');
+const KEEP_AWAKE_LABEL = process.env.JAVIS_KEEP_AWAKE_LABEL || `${LAUNCH_AGENT_LABEL}.keepawake`;
+const KEEP_AWAKE_COMMAND = '/usr/bin/caffeinate';
+const KEEP_AWAKE_FLAGS = normalizeKeepAwakeFlags(process.env.JAVIS_KEEP_AWAKE_FLAGS || '-i -m -s');
 const TOGGLE_HOTKEY = process.env.JAVIS_TOGGLE_HOTKEY || 'Control+Shift+Space';
 const SUMMON_HOTKEY_DISABLED = process.env.JAVIS_SUMMON_HOTKEY === 'false' || process.env.JAVIS_TAP_HOTKEY === 'false';
 const SUMMON_HOTKEY = SUMMON_HOTKEY_DISABLED ? '' : (process.env.JAVIS_SUMMON_HOTKEY || process.env.JAVIS_TAP_HOTKEY || 'Alt+Space');
@@ -11720,6 +11723,303 @@ async function residentStatusSnapshot() {
     matchesProject: installed ? plist.includes(xmlEscape(process.cwd())) || plist.includes(process.cwd()) : false,
     expectedCommand,
     launchctlError: launchctl.loaded ? '' : launchctl.error,
+  };
+}
+
+function normalizeKeepAwakeFlags(value = '') {
+  const allowed = new Set(['-d', '-i', '-m', '-s', '-u']);
+  const flags = String(value || '')
+    .split(/[\s,]+/)
+    .map((item) => item.trim())
+    .filter((item) => allowed.has(item));
+  const unique = Array.from(new Set(flags));
+  return unique.length ? unique : ['-i', '-m', '-s'];
+}
+
+function keepAwakeTarget() {
+  if (process.platform !== 'darwin') return '';
+  const uid = typeof process.getuid === 'function' ? process.getuid() : '';
+  return uid ? `gui/${uid}/${KEEP_AWAKE_LABEL}` : '';
+}
+
+function keepAwakeCommandSummary() {
+  return [KEEP_AWAKE_COMMAND, ...KEEP_AWAKE_FLAGS].join(' ');
+}
+
+async function keepAwakeLaunchctlState() {
+  const target = keepAwakeTarget();
+  if (!target) return { available: false, loaded: false, running: false, raw: '', pid: null, state: '', error: 'launchctl_domain_unavailable' };
+  try {
+    const { stdout } = await execFileAsync('launchctl', ['print', target], { timeout: 3000, maxBuffer: 1024 * 256 });
+    const text = String(stdout || '');
+    const pid = Number(text.match(/\bpid\s*=\s*(\d+)/)?.[1] || 0) || null;
+    const state = compactRecordText(text.match(/\bstate\s*=\s*([^\n]+)/)?.[1] || '', 80);
+    return {
+      available: true,
+      loaded: true,
+      running: Boolean(pid) || /state\s*=\s*running/i.test(text),
+      raw: text.slice(0, 2000),
+      pid,
+      state,
+      error: '',
+    };
+  } catch (error) {
+    return {
+      available: true,
+      loaded: false,
+      running: false,
+      raw: '',
+      pid: null,
+      state: '',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+async function keepAwakePowerSnapshot() {
+  if (process.platform !== 'darwin') {
+    return { available: false, source: '', acPower: false, raw: '', error: 'pmset_is_macos_only' };
+  }
+  try {
+    const { stdout } = await execFileAsync('pmset', ['-g', 'batt'], { timeout: 3000, maxBuffer: 1024 * 128 });
+    const raw = String(stdout || '');
+    const source = compactRecordText(raw.match(/Now drawing from '([^']+)'/)?.[1] || '', 80);
+    return {
+      available: true,
+      source,
+      acPower: /AC Power/i.test(source),
+      raw: raw.slice(0, 1200),
+      error: '',
+    };
+  } catch (error) {
+    return { available: false, source: '', acPower: false, raw: '', error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+async function keepAwakeAssertionsSnapshot() {
+  if (process.platform !== 'darwin') {
+    return { available: false, active: false, system: false, idle: false, disk: false, display: false, raw: '', error: 'pmset_is_macos_only' };
+  }
+  try {
+    const { stdout } = await execFileAsync('pmset', ['-g', 'assertions'], { timeout: 3000, maxBuffer: 1024 * 512 });
+    const raw = String(stdout || '');
+    const hasCaffeinate = /caffeinate command-line tool|caffeinate/i.test(raw);
+    return {
+      available: true,
+      active: hasCaffeinate,
+      system: /PreventSystemSleep[^\n]*1|PreventUserIdleSystemSleep[^\n]*1/i.test(raw) && hasCaffeinate,
+      idle: /PreventUserIdleSystemSleep[^\n]*1/i.test(raw) && hasCaffeinate,
+      disk: /PreventDiskIdle[^\n]*1/i.test(raw) && hasCaffeinate,
+      display: /PreventUserIdleDisplaySleep[^\n]*1/i.test(raw) && hasCaffeinate,
+      raw: raw.slice(0, 2500),
+      error: '',
+    };
+  } catch (error) {
+    return {
+      available: false,
+      active: false,
+      system: false,
+      idle: false,
+      disk: false,
+      display: false,
+      raw: '',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function keepAwakePlanSnapshot() {
+  return {
+    label: KEEP_AWAKE_LABEL,
+    target: keepAwakeTarget(),
+    command: KEEP_AWAKE_COMMAND,
+    args: KEEP_AWAKE_FLAGS,
+    commandLine: keepAwakeCommandSummary(),
+    mode: 'system_awake_screen_may_sleep',
+    screenMaySleep: !KEEP_AWAKE_FLAGS.includes('-d'),
+    preventsSystemIdleSleep: KEEP_AWAKE_FLAGS.includes('-i') || KEEP_AWAKE_FLAGS.includes('-s'),
+    preventsDiskIdle: KEEP_AWAKE_FLAGS.includes('-m'),
+    acPowerRecommended: KEEP_AWAKE_FLAGS.includes('-s'),
+    note: 'Keeps the Mac awake for resident/background work while allowing display sleep by default. Closed-lid sleep can still depend on macOS clamshell/power conditions.',
+  };
+}
+
+async function keepAwakeStatusSnapshot() {
+  const [launchctl, power, assertions] = await Promise.all([
+    keepAwakeLaunchctlState(),
+    keepAwakePowerSnapshot(),
+    keepAwakeAssertionsSnapshot(),
+  ]);
+  const plan = keepAwakePlanSnapshot();
+  const running = Boolean(launchctl.running);
+  const active = Boolean(running || assertions.active);
+  const summary = running
+    ? 'JAVIS-managed keep-awake is active; resident/background work can continue while the display may sleep.'
+    : assertions.active
+      ? 'A sleep-prevention assertion is active, but the JAVIS-managed keep-awake launchd job is not loaded.'
+      : 'Keep-awake is off; macOS system sleep can pause resident/background work.';
+  const next = running
+    ? 'Leave it on for overnight/background work, or stop it when you want normal sleep behavior.'
+    : assertions.active
+      ? 'Start JAVIS-managed keep-awake if you want this project to own the launchd job, or leave the existing assertion in place.'
+      : 'Start keep-awake before unattended overnight work if you want JAVIS to keep running while the display is off.';
+  return {
+    version: 1,
+    supported: process.platform === 'darwin',
+    active,
+    running,
+    label: KEEP_AWAKE_LABEL,
+    target: plan.target,
+    pid: launchctl.pid,
+    state: launchctl.state,
+    launchctl: {
+      available: launchctl.available,
+      loaded: launchctl.loaded,
+      running: launchctl.running,
+      pid: launchctl.pid,
+      state: launchctl.state,
+      error: compactRecordText(launchctl.error || '', 240),
+    },
+    power: {
+      available: power.available,
+      source: power.source,
+      acPower: power.acPower,
+      error: compactRecordText(power.error || '', 160),
+    },
+    assertions: {
+      available: assertions.available,
+      active: assertions.active,
+      system: assertions.system,
+      idle: assertions.idle,
+      disk: assertions.disk,
+      display: assertions.display,
+      error: compactRecordText(assertions.error || '', 160),
+    },
+    plan,
+    summary,
+    next,
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAi: false,
+      readsUserFiles: false,
+      mutatesProjectFiles: false,
+      changesLaunchdJob: false,
+      allowsDisplaySleep: plan.screenMaySleep,
+    },
+    generatedAt: new Date().toISOString(),
+  };
+}
+
+async function startKeepAwake(options = {}) {
+  const source = String(options.source || 'api').slice(0, 80);
+  const execute = options.execute === true;
+  const before = await keepAwakeStatusSnapshot();
+  const plan = keepAwakePlanSnapshot();
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      preview: true,
+      output: `Preview only. Would start ${plan.commandLine} under ${KEEP_AWAKE_LABEL}.`,
+      keepAwake: before,
+      plan,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        callsOpenAi: false,
+        mutatesProjectFiles: false,
+        changesLaunchdJob: true,
+      },
+    };
+  }
+  if (process.platform !== 'darwin') throw new Error('Keep-awake is only supported on macOS.');
+  if (before.running) {
+    return {
+      ok: true,
+      executed: false,
+      alreadyRunning: true,
+      output: `Keep-awake is already running as ${KEEP_AWAKE_LABEL}.`,
+      keepAwake: before,
+      plan,
+    };
+  }
+  await execFileAsync('launchctl', ['submit', '-l', KEEP_AWAKE_LABEL, '--', KEEP_AWAKE_COMMAND, ...KEEP_AWAKE_FLAGS], {
+    timeout: 5000,
+    maxBuffer: 1024 * 128,
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const after = await keepAwakeStatusSnapshot();
+  appendAudit('keep_awake.started', {
+    source,
+    label: KEEP_AWAKE_LABEL,
+    command: plan.commandLine,
+    pid: after.pid,
+    running: after.running,
+    power: after.power.source,
+  });
+  return {
+    ok: true,
+    executed: true,
+    output: after.running
+      ? `Keep-awake started with ${plan.commandLine}. The display may still sleep; system idle sleep is held.`
+      : 'Keep-awake start was requested, but launchd did not report a running job yet.',
+    keepAwake: after,
+    plan,
+  };
+}
+
+async function stopKeepAwake(options = {}) {
+  const source = String(options.source || 'api').slice(0, 80);
+  const execute = options.execute === true;
+  const before = await keepAwakeStatusSnapshot();
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      preview: true,
+      output: `Preview only. Would remove launchd job ${KEEP_AWAKE_LABEL}.`,
+      keepAwake: before,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        callsOpenAi: false,
+        mutatesProjectFiles: false,
+        changesLaunchdJob: true,
+      },
+    };
+  }
+  if (process.platform !== 'darwin') throw new Error('Keep-awake is only supported on macOS.');
+  if (!before.loaded && !before.running) {
+    return {
+      ok: true,
+      executed: false,
+      alreadyStopped: true,
+      output: `Keep-awake is not running as ${KEEP_AWAKE_LABEL}.`,
+      keepAwake: before,
+    };
+  }
+  await execFileAsync('launchctl', ['remove', KEEP_AWAKE_LABEL], {
+    timeout: 5000,
+    maxBuffer: 1024 * 128,
+  }).catch(async () => {
+    if (before.pid) {
+      await execFileAsync('kill', [String(before.pid)], { timeout: 3000, maxBuffer: 1024 * 64 });
+    }
+  });
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  const after = await keepAwakeStatusSnapshot();
+  appendAudit('keep_awake.stopped', {
+    source,
+    label: KEEP_AWAKE_LABEL,
+    pid: before.pid,
+    running: after.running,
+  });
+  return {
+    ok: true,
+    executed: true,
+    output: after.running ? 'Keep-awake stop was requested, but launchd still reports it running.' : 'Keep-awake stopped. Normal macOS sleep behavior can resume.',
+    keepAwake: after,
   };
 }
 
@@ -41164,6 +41464,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
   const config = configCheckSnapshot({ includeRecentAudit });
   const setupGuide = setupGuideSnapshot({ includeRecentAudit });
   const resident = await residentStatusSnapshot();
+  const keepAwake = await keepAwakeStatusSnapshot();
   const conversation = conversationStateSnapshot();
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit });
   const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
@@ -41225,6 +41526,19 @@ async function setupRecoveryBundleSnapshot(options = {}) {
             startsMicrophone: false,
           }
         : null,
+    !keepAwake.running
+      ? {
+          id: 'keep_awake:start',
+          label: 'Start keep-awake',
+          summary: 'Start launchd-managed caffeinate so JAVIS can keep resident/background work running while the display may sleep.',
+          command: 'npm run keepawake:start',
+          endpoint: '/api/keep-awake/start',
+          method: 'POST',
+          mutatesFiles: false,
+          changesLaunchdJob: true,
+          startsMicrophone: false,
+        }
+      : null,
     ...workActions,
   ].filter(Boolean).slice(0, 6);
   const residentReady = Boolean(resident.installed && resident.loaded && resident.matchesProject);
@@ -41261,6 +41575,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       doctor: '/api/doctor/report',
       resident: '/api/resident/status',
       pet: '/api/pet/status',
+      keepAwake: '/api/keep-awake/status',
       voiceCommand: '/api/voice/command',
       realtimeRecovery: '/api/realtime/provider/recovery',
     },
@@ -41272,6 +41587,9 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       realtimeProviderProbe: 'npm run dogfood:realtime-provider-probe',
       localVoiceLoop: 'npm run voice:chat',
       localVoiceOneShot: 'npm run voice -- "..."',
+      keepAwakeStatus: 'npm run keepawake',
+      keepAwakeStart: 'npm run keepawake:start',
+      keepAwakeStop: 'npm run keepawake:stop',
     },
     resident: {
       label: resident.label,
@@ -41281,6 +41599,18 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       matchesProject: Boolean(resident.matchesProject),
       target: resident.target,
       launchctlError: compactRecordText(resident.launchctlError || '', 180),
+    },
+    keepAwake: {
+      active: Boolean(keepAwake.active),
+      running: Boolean(keepAwake.running),
+      label: keepAwake.label,
+      pid: keepAwake.pid || null,
+      summary: compactRecordText(keepAwake.summary || '', 220),
+      next: compactRecordText(keepAwake.next || '', 220),
+      power: keepAwake.power,
+      assertions: keepAwake.assertions,
+      plan: keepAwake.plan,
+      safety: keepAwake.safety,
     },
     setup: {
       overall: setupGuide.overall,
@@ -52602,6 +52932,40 @@ function startApiServer() {
       res.json({ resident: await residentStatusSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Resident status failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/keep-awake/status', async (_req, res) => {
+    try {
+      res.json({ keepAwake: await keepAwakeStatusSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Keep-awake status failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/keep-awake/start', async (req, res) => {
+    try {
+      const result = await startKeepAwake({
+        ...(req.body || {}),
+        execute: req.body?.execute === true,
+        source: req.body?.source || 'api',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Keep-awake start failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/keep-awake/stop', async (req, res) => {
+    try {
+      const result = await stopKeepAwake({
+        ...(req.body || {}),
+        execute: req.body?.execute === true,
+        source: req.body?.source || 'api',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Keep-awake stop failed', error instanceof Error ? error.message : String(error));
     }
   });
 

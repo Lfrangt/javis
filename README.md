@@ -186,6 +186,9 @@ Local Express service on 127.0.0.1:3417
   /api/sessions         -> local work session list/start/resume/event/check-in/end
   /api/setup/actions    -> low-risk local setup helpers
   /api/resident/status  -> LaunchAgent install/load status
+  /api/keep-awake/status -> launchd/caffeinate sleep-prevention status for unattended resident work
+  /api/keep-awake/start -> explicitly start launchd-managed caffeinate so background work can continue while the display sleeps
+  /api/keep-awake/stop  -> explicitly stop the keep-awake launchd job
   /api/window/state     -> pet mode, position, and global hotkey status
   /api/window/park      -> move the buddy back to its configured notch/corner position
   /api/window/move      -> move the buddy to explicit screen coordinates

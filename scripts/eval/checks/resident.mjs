@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { spawnSync } from 'node:child_process';
 
 import { ok, warn, fail } from '../_client.mjs';
 
@@ -50,10 +51,18 @@ export default {
         ['ready', 'degraded', 'blocked'].includes(bundle.overall) &&
         bundle.endpoints?.setupGuide === '/api/setup/guide' &&
         bundle.endpoints?.doctor === '/api/doctor/report' &&
+        bundle.endpoints?.keepAwake === '/api/keep-awake/status' &&
         bundle.commands?.bundle?.includes('--print-setup-recovery-bundle') &&
+        bundle.commands?.keepAwakeStart?.includes('keepawake:start') &&
         typeof bundle.resident?.installed === 'boolean' &&
         typeof bundle.resident?.loaded === 'boolean' &&
         typeof bundle.resident?.matchesProject === 'boolean' &&
+        typeof bundle.keepAwake?.active === 'boolean' &&
+        bundle.keepAwake?.plan?.command === '/usr/bin/caffeinate' &&
+        bundle.keepAwake?.plan?.screenMaySleep === true &&
+        bundle.keepAwake?.safety?.startsMicrophone === false &&
+        bundle.keepAwake?.safety?.callsOpenAi === false &&
+        bundle.keepAwake?.safety?.mutatesProjectFiles === false &&
         bundle.readiness?.counts?.total > 0 &&
         bundlePermissions.some((item) => item.id === 'screen_permission') &&
         bundlePermissions.some((item) => item.id === 'accessibility_permission') &&
@@ -83,6 +92,57 @@ export default {
         : fail('resident.setup_recovery_bundle', 'Resident setup recovery bundle', 'expected compact read-only resident recovery bundle with setup, permissions, voice fallback, automation, and safety contract', {
           status: recoveryBundleResponse.status,
           bundle,
+        }),
+    );
+
+    const keepAwakeStatus = await ctx.api('/api/keep-awake/status');
+    const keepAwake = keepAwakeStatus.data?.keepAwake || {};
+    const keepAwakePreview = await ctx.api('/api/keep-awake/start', {
+      method: 'POST',
+      body: {
+        execute: false,
+        source: 'eval_resident_keep_awake_preview',
+      },
+      timeoutMs: 10000,
+    });
+    const keepAwakePreviewBody = keepAwakePreview.data || {};
+    const keepAwakeCui = spawnSync('npm', ['run', 'config', '--', '--print-keep-awake'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 15000,
+      env: {
+        ...process.env,
+        ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+      },
+    });
+    out.push(
+      keepAwakeStatus.ok &&
+        keepAwake.version === 1 &&
+        keepAwake.plan?.command === '/usr/bin/caffeinate' &&
+        Array.isArray(keepAwake.plan?.args) &&
+        keepAwake.plan.args.includes('-i') &&
+        keepAwake.plan.args.includes('-m') &&
+        keepAwake.plan.args.includes('-s') &&
+        keepAwake.plan.screenMaySleep === true &&
+        keepAwake.safety?.startsMicrophone === false &&
+        keepAwake.safety?.usesRealtime === false &&
+        keepAwake.safety?.callsOpenAi === false &&
+        keepAwake.safety?.mutatesProjectFiles === false &&
+        keepAwakePreview.ok &&
+        keepAwakePreviewBody.executed === false &&
+        keepAwakePreviewBody.preview === true &&
+        keepAwakePreviewBody.safety?.changesLaunchdJob === true &&
+        keepAwakeCui.status === 0 &&
+        keepAwakeCui.stdout.includes('JAVIS Keep-Awake') &&
+        keepAwakeCui.stdout.includes('screen may sleep=yes')
+        ? ok('resident.keep_awake_status', 'Keep-awake resident status', `${keepAwake.active ? 'active' : 'off'} · command=${keepAwake.plan.commandLine}`)
+        : fail('resident.keep_awake_status', 'Keep-awake resident status', 'expected read-only keep-awake status plus no-execute preview and CUI output', {
+          status: keepAwakeStatus.status,
+          keepAwake,
+          preview: keepAwakePreviewBody,
+          cui: keepAwakeCui.stdout,
+          cuiError: keepAwakeCui.stderr,
+          cuiStatus: keepAwakeCui.status,
         }),
     );
 

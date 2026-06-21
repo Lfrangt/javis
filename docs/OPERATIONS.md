@@ -27,6 +27,16 @@ Resident install, uninstall, and restart stop stale JAVIS Electron/npm processes
 before loading the LaunchAgent. This prevents an older process from keeping `JAVIS_API_PORT` open
 while a newer LaunchAgent instance appears to be running.
 
+Unattended overnight work:
+
+```bash
+npm run keepawake
+npm run keepawake:start
+npm run keepawake:stop
+```
+
+Keep-awake starts a launchd-managed `/usr/bin/caffeinate -i -m -s` job under `com.haoge.javis.keepawake` by default. This keeps the Mac available for resident/background work while allowing the display to sleep. Display sleep is not the same as system sleep; a black screen is fine, but closed-lid sleep can still depend on macOS clamshell, power, and external-display conditions. The status command checks both launchd and `pmset` assertions.
+
 ## Health
 
 ```bash
@@ -58,7 +68,9 @@ curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/readiness
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/config/check
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/recovery-bundle
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/guide
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/keep-awake/status
 npm run setup:bundle
+npm run keepawake
 npm run config -- --print-control-readiness
 npm run config -- --print-permissions
 npm run doctor

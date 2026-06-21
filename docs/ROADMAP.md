@@ -72,6 +72,7 @@
 - Add resident status views and spoken check-ins that report active parallel work by lane, owner, blocker, and next action.
 - Add a local config validator with terminal CUI diagnostics.
 - Add a setup guide that maps blockers to the next safe local setup action.
+- Add launchd-managed keep-awake controls for unattended resident/background work: `npm run keepawake`, `npm run keepawake:start`, `npm run keepawake:stop`, and `/api/keep-awake/status` verify `caffeinate` plus `pmset` assertions while allowing display sleep by default.
 - Add signed allowlists for local actions.
 - Add file tool runtime for list/read/search/write with risk-aware approvals.
 

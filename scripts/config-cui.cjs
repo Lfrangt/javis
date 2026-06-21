@@ -267,7 +267,7 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor, autopilotResult, browserJs, shortcutsResult, perceptionResult, collaborationHandoffResult] = await Promise.all([
+    const [status, doctor, autopilotResult, browserJs, shortcutsResult, perceptionResult, collaborationHandoffResult, keepAwakeResult] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
       request('/api/autopilot').catch(() => ({ autopilot: null })),
@@ -275,6 +275,7 @@ async function printStatus() {
       request('/api/shortcuts?limit=5').catch(() => ({ shortcuts: null })),
       request('/api/perception/consent?limit=3').catch(() => ({ perception: null })),
       request('/api/collaboration/handoff?limit=5').catch(() => ({ handoff: null })),
+      request('/api/keep-awake/status').catch(() => ({ keepAwake: null })),
     ]);
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
@@ -300,6 +301,12 @@ async function printStatus() {
     console.log(`Hotkeys: pet ${window.hotkeyRegistered ? 'ready' : 'off'} (${window.hotkey || '-'}) · capture ${window.captureHotkeyRegistered ? 'ready' : 'off'} (${window.captureHotkey || '-'})`);
     if (status.wake) {
       console.log(`Wake: ${status.wake.engine?.configured ? (status.wake.engine.running ? 'engine running' : 'engine stopped') : 'soft'} · words ${status.wake.words?.join(', ') || '-'}`);
+    }
+    if (keepAwakeResult.keepAwake) {
+      const keepAwake = keepAwakeResult.keepAwake;
+      const power = keepAwake.power?.source ? ` · ${keepAwake.power.source}` : '';
+      const managed = keepAwake.running ? `managed pid ${keepAwake.pid || '-'}` : keepAwake.active ? 'external assertion' : 'off';
+      console.log(`Keep-awake: ${managed}${power} · screen ${keepAwake.plan?.screenMaySleep ? 'may sleep' : 'held awake'}`);
     }
     if (status.conversation) {
       const conversation = status.conversation;
@@ -395,6 +402,9 @@ async function printStatus() {
   console.log('12. Run doctor');
   console.log('13. Test wake trigger');
   console.log('RB. Show resident recovery bundle');
+  console.log('KA. Show keep-awake status');
+  console.log('KS. Start keep-awake');
+  console.log('KX. Stop keep-awake');
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
   console.log('R. Run renderer Realtime dogfood (starts mic)');
@@ -3362,6 +3372,7 @@ function printSetupRecoveryBundle(result) {
   const realtime = voice.realtime || {};
   const localFallback = voice.localFallback || {};
   const pet = bundle.pet || {};
+  const keepAwake = bundle.keepAwake || {};
   const automation = bundle.automation || {};
   const policy = automation.policy || {};
   const allow = policy.allow || {};
@@ -3385,6 +3396,10 @@ function printSetupRecoveryBundle(result) {
   console.log(`- installed=${resident.installed ? 'yes' : 'no'} loaded=${resident.loaded ? 'yes' : 'no'} matchesProject=${resident.matchesProject ? 'yes' : 'no'}${resident.pid ? ` pid=${resident.pid}` : ''}`);
   if (pet.window) {
     console.log(`- pet ${pet.window.mode || pet.mode || '-'} ${pet.window.width || '-'}x${pet.window.height || '-'} park=${pet.window.parkCorner || '-'} hotkey=${pet.window.hotkeyRegistered ? 'on' : 'off'} summon=${pet.window.summonHotkeyRegistered ? 'on' : 'off'}`);
+  }
+  if (keepAwake.plan) {
+    const keepAwakeLabel = keepAwake.running ? 'managed' : keepAwake.active ? 'external assertion' : 'off';
+    console.log(`- keep-awake ${keepAwakeLabel}${keepAwake.pid ? ` pid=${keepAwake.pid}` : ''} · screen ${keepAwake.plan.screenMaySleep ? 'may sleep' : 'held awake'} · power=${keepAwake.power?.source || '-'}`);
   }
 
   console.log('\nVoice');
@@ -3431,6 +3446,7 @@ function printSetupRecoveryBundle(result) {
   console.log(`- restart: ${commands.restart || 'npm run resident:restart'}`);
   console.log(`- local voice: ${commands.localVoiceLoop || 'npm run voice:chat'}`);
   console.log(`- realtime probe: ${commands.realtimeProviderProbe || 'npm run dogfood:realtime-provider-probe'}`);
+  console.log(`- keep awake: ${commands.keepAwakeStatus || 'npm run keepawake'} / ${commands.keepAwakeStart || 'npm run keepawake:start'} / ${commands.keepAwakeStop || 'npm run keepawake:stop'}`);
 
   const safety = bundle.safety || {};
   console.log('\nSafety');
@@ -3444,6 +3460,84 @@ async function showSetupRecoveryBundle() {
   const result = await request('/api/setup/recovery-bundle');
   printSetupRecoveryBundle(result);
   return result;
+}
+
+function printKeepAwake(result) {
+  const keepAwake = result?.keepAwake || result || {};
+  const plan = keepAwake.plan || {};
+  const power = keepAwake.power || {};
+  const assertions = keepAwake.assertions || {};
+  const launchctl = keepAwake.launchctl || {};
+  console.log('JAVIS Keep-Awake');
+  console.log('================');
+  const statusLabel = keepAwake.running ? 'managed' : keepAwake.active ? 'external assertion' : 'off';
+  console.log(`Status: ${statusLabel} · running=${keepAwake.running ? 'yes' : 'no'}${keepAwake.pid ? ` · pid=${keepAwake.pid}` : ''}`);
+  console.log(`Label: ${keepAwake.label || plan.label || '-'}`);
+  console.log(`Command: ${plan.commandLine || '-'}`);
+  console.log(`Mode: ${plan.mode || '-'} · screen may sleep=${plan.screenMaySleep ? 'yes' : 'no'}`);
+  if (power.available) console.log(`Power: ${power.source || '-'} · AC=${power.acPower ? 'yes' : 'no'}`);
+  else if (power.error) console.log(`Power: unavailable · ${compact(power.error, 180)}`);
+  if (assertions.available) {
+    console.log(`Assertions: active=${assertions.active ? 'yes' : 'no'} system=${assertions.system ? 'yes' : 'no'} idle=${assertions.idle ? 'yes' : 'no'} disk=${assertions.disk ? 'yes' : 'no'} display=${assertions.display ? 'yes' : 'no'}`);
+  } else if (assertions.error) {
+    console.log(`Assertions: unavailable · ${compact(assertions.error, 180)}`);
+  }
+  if (launchctl.error && !launchctl.loaded) console.log(`Launchd: not loaded · ${compact(launchctl.error, 180)}`);
+  if (keepAwake.summary) console.log(`Summary: ${compact(keepAwake.summary, 300)}`);
+  if (keepAwake.next) console.log(`Next: ${compact(keepAwake.next, 300)}`);
+  console.log('\nCommands');
+  console.log('- status: npm run keepawake');
+  console.log('- start: npm run keepawake:start');
+  console.log('- stop: npm run keepawake:stop');
+  console.log('\nSafety');
+  console.log(`- starts mic=${keepAwake.safety?.startsMicrophone ? 'yes' : 'no'} calls OpenAI=${keepAwake.safety?.callsOpenAi ? 'yes' : 'no'} mutates project files=${keepAwake.safety?.mutatesProjectFiles ? 'yes' : 'no'} allows display sleep=${keepAwake.safety?.allowsDisplaySleep ? 'yes' : 'no'}`);
+}
+
+async function showKeepAwakeStatus() {
+  const result = await request('/api/keep-awake/status');
+  printKeepAwake(result);
+  return result;
+}
+
+async function runKeepAwakeAction(action, options = {}) {
+  const result = await request(`/api/keep-awake/${action}`, {
+    method: 'POST',
+    body: {
+      execute: options.execute === true,
+      source: options.source || 'cui',
+    },
+  });
+  if (result.output) console.log(`\n${result.output}`);
+  printKeepAwake(result);
+  return result;
+}
+
+async function startKeepAwakeFromCui(rl) {
+  const preview = await request('/api/keep-awake/start', {
+    method: 'POST',
+    body: { execute: false, source: 'cui_preview' },
+  });
+  printKeepAwake(preview);
+  const answer = (await rl.question('\nStart keep-awake now? Type START to continue: ')).trim();
+  if (answer !== 'START') {
+    console.log('\nKeep-awake not started.');
+    return;
+  }
+  await runKeepAwakeAction('start', { execute: true, source: 'cui' });
+}
+
+async function stopKeepAwakeFromCui(rl) {
+  const preview = await request('/api/keep-awake/stop', {
+    method: 'POST',
+    body: { execute: false, source: 'cui_preview' },
+  });
+  printKeepAwake(preview);
+  const answer = (await rl.question('\nStop keep-awake now? Type STOP to continue: ')).trim();
+  if (answer !== 'STOP') {
+    console.log('\nKeep-awake left unchanged.');
+    return;
+  }
+  await runKeepAwakeAction('stop', { execute: true, source: 'cui' });
 }
 
 async function showRealtimeProviderProbe(options = {}) {
@@ -4067,6 +4161,21 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-keep-awake') || process.argv.includes('--keep-awake')) {
+    await showKeepAwakeStatus();
+    return;
+  }
+
+  if (process.argv.includes('--start-keep-awake')) {
+    await runKeepAwakeAction('start', { execute: true, source: 'cui_cli' });
+    return;
+  }
+
+  if (process.argv.includes('--stop-keep-awake')) {
+    await runKeepAwakeAction('stop', { execute: true, source: 'cui_cli' });
+    return;
+  }
+
   if (process.argv.includes('--print-routing-speed-policy') || process.argv.includes('--routing-speed-policy')) {
     const messageIndex = process.argv.findIndex((item) => item === '--message');
     const laneIndex = process.argv.findIndex((item) => item === '--lane');
@@ -4277,6 +4386,12 @@ async function main() {
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
       } else if (answer === 'rb' || answer === 'recovery bundle' || answer === 'setup recovery' || answer === 'resident recovery') {
         await showSetupRecoveryBundle();
+      } else if (answer === 'ka' || answer === 'keep awake' || answer === 'keep-awake') {
+        await showKeepAwakeStatus();
+      } else if (answer === 'ks' || answer === 'keep awake start' || answer === 'start keep awake' || answer === 'start keep-awake') {
+        await startKeepAwakeFromCui(rl);
+      } else if (answer === 'kx' || answer === 'keep awake stop' || answer === 'stop keep awake' || answer === 'stop keep-awake') {
+        await stopKeepAwakeFromCui(rl);
       } else if (answer === 'v' || answer === 'voice' || answer === 'realtime') {
         await watchRealtimeEvidence(rl);
       } else if (answer === 'd' || answer === 'dogfood' || answer === 'drill') {
