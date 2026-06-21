@@ -295,6 +295,37 @@ export default {
         ? ok('learning.record_replay_teaching_save', 'Record & Replay teaching packet save', teachingRunResult.metadata.file)
         : fail('learning.record_replay_teaching_save', 'Record & Replay teaching packet save', 'execute=true should only save a local teaching packet', teachingRun.data),
     );
+    const teachingList = await ctx.api('/api/record-replay/teaching-packets?limit=5');
+    const teachingLatest = teachingList.data?.latest || {};
+    out.push(
+      teachingList.ok &&
+        teachingList.data?.ok === true &&
+        Array.isArray(teachingList.data?.packets?.items) &&
+        teachingList.data.packets.items.some((item) => item.file === teachingRunResult.metadata?.file) &&
+        teachingLatest.safety?.startsMicrophone === false &&
+        teachingLatest.safety?.startsRecording === false &&
+        teachingLatest.safety?.executesTask === false
+        ? ok('learning.record_replay_teaching_api', 'Record & Replay teaching packet API', `${teachingList.data.packets.items.length} saved packet(s)`)
+        : fail('learning.record_replay_teaching_api', 'Record & Replay teaching packet API', 'saved teaching packet should be listable with safe metadata', teachingList.data),
+    );
+    try {
+      const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-record-replay-teaching'], {
+        cwd: process.cwd(),
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        cui.stdout.includes('Record & Replay Teaching Packet') &&
+          cui.stdout.includes('Safety: microphone=no') &&
+          cui.stdout.includes('recording=no') &&
+          cui.stdout.includes('replay/actions=no') &&
+          cui.stdout.includes('Latest saved:')
+          ? ok('learning.record_replay_teaching_cui', 'Record & Replay teaching packet CUI', 'config CUI prints packet preview, latest saved packet, and safety gates')
+          : fail('learning.record_replay_teaching_cui', 'Record & Replay teaching packet CUI', 'expected config CUI to print packet summary and safety gates', { stdout: cui.stdout }),
+      );
+    } catch (error) {
+      out.push(fail('learning.record_replay_teaching_cui', 'Record & Replay teaching packet CUI', error instanceof Error ? error.message : String(error)));
+    }
 
     let demoId = '';
     let savedSkillPath = '';

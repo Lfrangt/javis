@@ -343,6 +343,9 @@ demonstration/replay/skill endpoints, and the safety boundaries for teaching JAV
 start microphone capture, start UI demonstration recording, launch workers, replay UI actions, save skills,
 save shortcuts, promote memory, or grant permissions. Autopilot may run this preparation once per freshness
 window because it only writes local evidence; the user still has to explicitly start the real demonstration.
+Use `npm run config -- --print-record-replay-teaching` to inspect the current preview plus the latest saved
+packet, or `npm run config -- --save-record-replay-teaching` to write a fresh local packet from the terminal
+CUI without starting recording.
 
 Use option `24. Show learning evolution`, or:
 

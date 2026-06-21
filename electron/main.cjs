@@ -49468,6 +49468,56 @@ function startApiServer() {
     });
   });
 
+  api.get('/api/record-replay/teaching-packets', (req, res) => {
+    try {
+      const packets = recordReplayTeachingPacketList({ limit: req.query.limit || 10 });
+      res.json({
+        ok: true,
+        packets,
+        latest: packets.items[0] || null,
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Record & Replay teaching packet list failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/record-replay/teaching-packet', (req, res) => {
+    try {
+      const packet = recordReplayTeachingPacketSnapshot({
+        source: req.query.source || 'api_record_replay_teaching_packet',
+        candidateId: req.query.candidateId,
+        candidateLimit: req.query.candidateLimit,
+        skillLimit: req.query.skillLimit,
+        demonstrationLimit: req.query.demonstrationLimit,
+        shortcutLimit: req.query.shortcutLimit,
+        eventLimit: req.query.eventLimit,
+        recentLimit: req.query.recentLimit,
+        baselineLimit: req.query.baselineLimit,
+        query: req.query.query || req.query.q,
+      });
+      res.json({
+        ok: true,
+        teachingPacket: packet,
+        latest: latestRecordReplayTeachingPacket(),
+        packets: recordReplayTeachingPacketList({ limit: req.query.limit || 5 }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Record & Replay teaching packet preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/record-replay/teaching-packet', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      const result = saveRecordReplayTeachingPacket({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_record_replay_teaching_packet',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Record & Replay teaching packet save failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.put('/api/learning/settings', express.json({ limit: '64kb' }), (req, res) => {
     try {
       const body = req.body || {};

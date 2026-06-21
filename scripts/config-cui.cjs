@@ -377,6 +377,8 @@ async function printStatus() {
   console.log('17. Run one autopilot tick');
   console.log('18. Toggle overnight autopilot');
   console.log('J. Show learning distillation');
+  console.log('RR. Show Record & Replay teaching packet');
+  console.log('RT. Save Record & Replay teaching packet');
   console.log('19. Refresh learning profile');
   console.log('20. Save learning as memory');
   console.log('21. Pause/resume learning');
@@ -1361,6 +1363,67 @@ async function showLearningDistillation() {
   const result = await request('/api/learning/distillation?source=cui');
   console.log('');
   printLearningDistillation(result.distillation || result);
+}
+
+function printRecordReplayTeachingPacket(result) {
+  const packet = result?.teachingPacket || result?.packet || result || {};
+  const metadata = result?.metadata || {};
+  const latest = result?.latest || null;
+  const packets = result?.packets || {};
+  const candidate = packet.candidate || metadata.candidate || {};
+  const safety = packet.safety || metadata.safety || {};
+  const distillation = packet.distillation || {};
+  const teachingScript = Array.isArray(packet.teachingScript) ? packet.teachingScript : [];
+  const prompts = Array.isArray(packet.liveVoicePrompts) ? packet.liveVoicePrompts : [];
+  const boundaries = Array.isArray(packet.boundaries) ? packet.boundaries : [];
+  const recentItems = Array.isArray(packets.items) ? packets.items : [];
+  console.log('Record & Replay Teaching Packet');
+  console.log('===============================');
+  console.log(packet.summary || metadata.summary || 'No teaching packet preview available.');
+  console.log(`Saved: ${packet.saved || metadata.saved ? 'yes' : 'no'}${metadata.file || packet.file?.path ? ` · ${metadata.file || packet.file.path}` : ''}`);
+  console.log(`Candidate: ${candidate.kind || '-'} · ${candidate.label || candidate.id || '-'} · confidence ${candidate.confidence ?? '-'}`);
+  if (distillation.spokenSummary || distillation.summary) console.log(`Distillation: ${compact(distillation.spokenSummary || distillation.summary, 420)}`);
+  console.log(`Safety: microphone=${safety.startsMicrophone ? 'starts' : 'no'} · recording=${safety.startsRecording ? 'starts' : 'no'} · workers=${safety.startsWorkers ? 'starts' : 'no'} · replay/actions=${safety.executesTask ? 'yes' : 'no'} · grants permission=${safety.grantsPermission ? 'yes' : 'no'}`);
+  console.log(`Confirm gates: recording=${safety.confirmationRequiredForRecording !== false ? 'yes' : 'unknown'} · replay=${safety.confirmationRequiredForReplay !== false ? 'yes' : 'unknown'} · skill save=${safety.confirmationRequiredForSkillSave !== false ? 'yes' : 'unknown'} · shortcut=${safety.confirmationRequiredForShortcutSave !== false ? 'yes' : 'unknown'}`);
+  if (prompts.length) {
+    console.log('\nVoice prompts:');
+    for (const prompt of prompts.slice(0, 6)) console.log(`- ${compact(prompt, 220)}`);
+  }
+  if (teachingScript.length) {
+    console.log('\nTeaching steps:');
+    for (const step of teachingScript.slice(0, 8)) {
+      console.log(`- ${step.id || '-'} · ${step.label || '-'}: ${compact(step.instruction || '', 220)}`);
+      if (step.endpoint?.path) console.log(`  endpoint=${step.endpoint.method || 'POST'} ${step.endpoint.path}`);
+      if (Array.isArray(step.endpoints) && step.endpoints.length) {
+        console.log(`  endpoints=${step.endpoints.slice(0, 3).map((item) => `${item.method || 'POST'} ${item.path || '-'}`).join(' | ')}`);
+      }
+    }
+  }
+  if (boundaries.length) {
+    console.log('\nBoundaries:');
+    for (const boundary of boundaries.slice(0, 6)) console.log(`- ${compact(boundary, 220)}`);
+  }
+  if (latest) {
+    console.log(`\nLatest saved: ${latest.filename || '-'} · ${latest.savedAt || latest.generatedAt || '-'} · ${compact(latest.summary || '', 180)}`);
+  }
+  if (recentItems.length) {
+    console.log('\nRecent saved packets:');
+    for (const item of recentItems.slice(0, 5)) {
+      console.log(`- ${item.filename || '-'} · ${item.candidate?.label || item.candidate?.id || '-'} · ${item.counts?.teachingSteps || 0} step(s)`);
+    }
+  }
+}
+
+async function showRecordReplayTeachingPacket(options = {}) {
+  const save = options.save === true;
+  const result = save
+    ? await request('/api/record-replay/teaching-packet', {
+      method: 'POST',
+      body: { source: 'cui_record_replay_teaching_packet' },
+    })
+    : await request('/api/record-replay/teaching-packet?source=cui_record_replay_teaching_packet&limit=5');
+  console.log('');
+  printRecordReplayTeachingPacket(result);
 }
 
 async function toggleLearning(rl) {
@@ -3450,6 +3513,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-record-replay-teaching') || process.argv.includes('--record-replay-teaching')) {
+    await showRecordReplayTeachingPacket();
+    return;
+  }
+
+  if (process.argv.includes('--save-record-replay-teaching')) {
+    await showRecordReplayTeachingPacket({ save: true });
+    return;
+  }
+
   if (process.argv.includes('--print-browser-benchmarks') || process.argv.includes('--browser-benchmarks')) {
     await showBrowserBenchmarks();
     return;
@@ -3652,6 +3725,10 @@ async function main() {
         await toggleAutopilot(rl);
       } else if (answer === 'j' || answer === 'learning distillation') {
         await showLearningDistillation();
+      } else if (answer === 'rr' || answer === 'record replay' || answer === 'record replay teaching') {
+        await showRecordReplayTeachingPacket();
+      } else if (answer === 'rt' || answer === 'record replay save' || answer === 'record replay packet') {
+        await showRecordReplayTeachingPacket({ save: true });
       } else if (answer === '19') {
         const result = await request('/api/learning/distill', {
           method: 'POST',
