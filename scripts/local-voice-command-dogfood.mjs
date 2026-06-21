@@ -9,6 +9,7 @@ const API_BASE = process.env.JAVIS_API_BASE || `http://127.0.0.1:${process.env.J
 const APP_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
 const DATA_DIR = process.env.JAVIS_DATA_DIR || path.join(APP_SUPPORT_DIR, 'Runtime');
 const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, 'api-token');
+const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 
 function readApiToken() {
   const envToken = String(process.env.JAVIS_API_TOKEN || '').trim();
@@ -33,8 +34,16 @@ function hasFlag(name) {
   return process.argv.includes(`--${name}`);
 }
 
+function numericArg(name, fallback, options = {}) {
+  const value = Number(argValue(name, ''));
+  if (!Number.isFinite(value)) return fallback;
+  const min = Number.isFinite(options.min) ? options.min : 0;
+  const max = Number.isFinite(options.max) ? options.max : Number.MAX_SAFE_INTEGER;
+  return Math.max(min, Math.min(max, value));
+}
+
 function positionalMessage() {
-  const valueFlags = new Set(['--message', '--text', '--mode', '--wake-phrase', '--session-goal', '--session-title']);
+  const valueFlags = new Set(['--message', '--text', '--mode', '--wake-phrase', '--session-goal', '--session-title', '--request-timeout-ms']);
   const parts = [];
   const args = process.argv.slice(2);
   for (let index = 0; index < args.length; index += 1) {
@@ -79,6 +88,7 @@ Flags:
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
                                Slash commands: /status, /handoff, /next, /history, /agent, /help.
+  --request-timeout-ms <ms>    Bound each local API call. Default: 30000.
   --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
   --no-speech                 Disable the acknowledgement preview.
   --mode <lane>               Hint quick/background/codex/claude.
@@ -87,17 +97,37 @@ Flags:
 
 async function request(apiPath, options = {}) {
   const token = readApiToken();
+  const timeoutMs = Number.isFinite(options.timeoutMs)
+    ? options.timeoutMs
+    : numericArg('request-timeout-ms', DEFAULT_REQUEST_TIMEOUT_MS, { min: 1000, max: 120000 });
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const headers = {
     ...(options.body ? { 'content-type': 'application/json' } : {}),
     ...(token ? { 'X-JAVIS-Token': token } : {}),
   };
-  const response = await fetch(`${API_BASE}${apiPath}`, {
-    method: options.method || 'GET',
-    headers,
-    body: options.body ? JSON.stringify(options.body) : undefined,
-  });
-  const data = await response.json().catch(() => null);
-  return { ok: response.ok, status: response.status, data };
+  try {
+    const response = await fetch(`${API_BASE}${apiPath}`, {
+      method: options.method || 'GET',
+      headers,
+      body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: controller.signal,
+    });
+    const data = await response.json().catch(() => null);
+    return { ok: response.ok, status: response.status, data };
+  } catch (error) {
+    const timedOut = error?.name === 'AbortError';
+    return {
+      ok: false,
+      status: 0,
+      data: {
+        ok: false,
+        error: timedOut ? `request timed out after ${timeoutMs}ms` : String(error?.message || error),
+      },
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 function buildPayload(options = {}) {

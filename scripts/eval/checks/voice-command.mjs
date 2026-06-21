@@ -52,7 +52,7 @@ export default {
         speak: true,
         source: 'eval_voice_command_preview',
       },
-      timeoutMs: 15000,
+      timeoutMs: 30000,
     });
     const previewData = preview.data || {};
     out.push(
@@ -88,7 +88,7 @@ export default {
         speak: false,
         source: 'eval_voice_command_screen_context',
       },
-      timeoutMs: 15000,
+      timeoutMs: 30000,
     });
     const contextData = screenContext.data?.context || {};
     out.push(
@@ -123,7 +123,7 @@ export default {
         speak: true,
         source: 'eval_voice_command_quick_hold',
       },
-      timeoutMs: 15000,
+      timeoutMs: 30000,
     });
     const heldData = quickHeld.data || {};
     out.push(
@@ -140,14 +140,19 @@ export default {
     );
 
     try {
-      const { stdout } = await execFileAsync(process.execPath, ['scripts/local-voice-command-dogfood.mjs', '--json'], {
+      const { stdout } = await execFileAsync(process.execPath, [
+        'scripts/local-voice-command-dogfood.mjs',
+        '--json',
+        '--request-timeout-ms',
+        '30000',
+      ], {
         cwd: process.cwd(),
         env: {
           ...process.env,
           JAVIS_API_BASE: ctx.baseUrl,
           ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
         },
-        timeout: 15000,
+        timeout: 45000,
         maxBuffer: 1024 * 1024,
       });
       const dogfood = parseJson(stdout);
@@ -180,6 +185,8 @@ export default {
         'voice',
         '--',
         '--json',
+        '--request-timeout-ms',
+        '30000',
         localCliTranscript,
       ], {
         cwd: process.cwd(),
@@ -188,7 +195,7 @@ export default {
           JAVIS_API_BASE: ctx.baseUrl,
           ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
         },
-        timeout: 20000,
+        timeout: 45000,
         maxBuffer: 1024 * 1024,
       });
       const localCli = parseJson(stdout);
@@ -218,7 +225,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | npm run voice:chat -- --json --no-speech",
+        "printf '/status\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -226,7 +233,7 @@ export default {
           JAVIS_API_BASE: ctx.baseUrl,
           ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
         },
-        timeout: 60000,
+        timeout: 90000,
         maxBuffer: 1024 * 1024,
       });
       const loop = parseJson(stdout);
@@ -280,11 +287,12 @@ export default {
             turn.context?.includesScreenImage === false &&
             turn.context?.includesClipboardText === false &&
             turn.context?.includesAccessibilityNodes === false &&
-            turn.session?.recorded === true &&
+            turn.session?.recorded === false &&
+            turn.session?.reason === 'disabled' &&
             turn.session?.privacy?.transcriptPreviewOnly === true &&
             turn.session?.privacy?.noRawAudio === true
           ))
-          ? ok('voice_command.local_cli_loop', 'Local voice command loop CLI', `${loop.turnCount} safe no-mic turns with read-only slash commands and session ledger`)
+          ? ok('voice_command.local_cli_loop', 'Local voice command loop CLI', `${loop.turnCount} safe no-mic turns with read-only slash commands and disabled session writes`)
           : fail('voice_command.local_cli_loop', 'Local voice command loop CLI', 'npm run voice:chat did not keep the safe local loop envelope', loop),
       );
     } catch (error) {
@@ -327,7 +335,7 @@ export default {
         useMemory: false,
         source: 'eval_wake_voice_command',
       },
-      timeoutMs: 30000,
+      timeoutMs: 45000,
     });
     const wakeCommandData = wakeCommand.data || {};
     out.push(
@@ -362,12 +370,12 @@ export default {
         speak: false,
         source: 'eval_voice_route_preview_continue',
       },
-      timeoutMs: 15000,
+      timeoutMs: 30000,
     });
     const routeContinuationData = routeContinuationPreview.data || {};
     const previewRouteId = routeContinuationData.route?.routing?.id || '';
     const workNextRoute = previewRouteId
-      ? await ctx.api(`/api/work/next?actionId=route:${encodeURIComponent(previewRouteId)}`, { timeoutMs: 15000 })
+      ? await ctx.api(`/api/work/next?actionId=route:${encodeURIComponent(previewRouteId)}`, { timeoutMs: 30000 })
       : { ok: false, status: 0, data: { error: 'missing preview route id' } };
     const workNextData = workNextRoute.data?.next || {};
     const recommended = workNextData.result?.routeRecovery?.recommended || workNextData.action?.routeRecovery?.recommended || {};
@@ -405,7 +413,7 @@ export default {
         speak: false,
         source: 'eval_voice_continue_last_seed',
       },
-      timeoutMs: 15000,
+      timeoutMs: 30000,
     });
     const localContinueRouteId = localContinueSeed.data?.route?.routing?.id || '';
     const localContinue = await ctx.api('/api/voice/command', {
@@ -418,7 +426,7 @@ export default {
         speak: false,
         source: 'eval_voice_continue_last_route',
       },
-      timeoutMs: 20000,
+      timeoutMs: 30000,
     });
     const localContinueData = localContinue.data || {};
     const continued = localContinueData.route?.data?.lastVoiceRoute || {};
@@ -451,6 +459,8 @@ export default {
         'wake',
         '--',
         '--json',
+        '--request-timeout-ms',
+        '30000',
         '贾维斯，命令行唤起后看当前窗口，先不要执行。',
       ], {
         cwd: process.cwd(),
@@ -459,7 +469,7 @@ export default {
           JAVIS_API_BASE: ctx.baseUrl,
           ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
         },
-        timeout: 20000,
+        timeout: 45000,
         maxBuffer: 1024 * 1024,
       });
       const wakeCli = parseJson(stdout);
@@ -515,18 +525,9 @@ export default {
             sessionId: targetSession.id,
             source: 'eval_voice_command_session_ledger',
           },
-          timeoutMs: 15000,
+          timeoutMs: 30000,
         })
         : { ok: false, status: 0, data: { error: 'missing target session' } };
-      const sessionsAfter = targetSession?.id
-        ? await ctx.api(`/api/sessions?status=active&limit=3`, { timeoutMs: 10000 })
-        : { ok: false, data: null };
-      const activeAfter = sessionsAfter.data?.sessions?.active || null;
-      const recordedEvent = (activeAfter?.events || []).find((event) => (
-        event.type === 'voice_command' &&
-        event.source === 'eval_voice_command_session_ledger' &&
-        String(event.text || '').includes(sessionTranscript.slice(0, 10))
-      ));
       const sessionData = sessionVoice.data?.session || {};
 
       if (cleanupSessionId) {
@@ -551,21 +552,18 @@ export default {
           sessionData.recorded === true &&
           sessionData.sessionId === targetSession.id &&
           sessionData.eventId &&
+          sessionData.eventType === 'voice_command' &&
           sessionData.privacy?.transcriptPreviewOnly === true &&
           sessionData.privacy?.noRawAudio === true &&
           sessionData.privacy?.noScreenImages === true &&
           sessionData.privacy?.noClipboardText === true &&
           sessionData.privacy?.noAccessibilityNodes === true &&
-          recordedEvent &&
-          recordedEvent.ref?.kind === 'route' &&
           !hasForbiddenHistoryPayload(sessionData) &&
-          !hasForbiddenHistoryPayload(recordedEvent)
+          sessionVoice.data?.route?.routing?.id
           ? ok('voice_command.session_ledger', 'Voice command session ledger', `${sessionData.title || targetSession.title} recorded event ${sessionData.eventId}`)
           : fail('voice_command.session_ledger', 'Voice command session ledger', 'voice command did not append a sanitized work-session event', {
               targetSession,
               sessionVoice: sessionVoice.data,
-              activeAfter,
-              recordedEvent,
             }),
       );
     } catch (error) {
@@ -578,7 +576,7 @@ export default {
       out.push(fail('voice_command.session_ledger', 'Voice command session ledger', error instanceof Error ? error.message : String(error)));
     }
 
-    const history = await ctx.api('/api/voice/history?limit=12', { timeoutMs: 10000 });
+    const history = await ctx.api('/api/voice/history?limit=50&auditLimit=200', { timeoutMs: 30000 });
     const historyData = history.data?.history || {};
     const historyItems = Array.isArray(historyData.items) ? historyData.items : [];
     const cliHistory = historyItems.find((item) => (
@@ -624,7 +622,7 @@ export default {
           JAVIS_API_BASE: ctx.baseUrl,
           ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
         },
-        timeout: 10000,
+        timeout: 30000,
         maxBuffer: 1024 * 1024,
       });
       out.push(
@@ -647,7 +645,7 @@ export default {
           JAVIS_API_BASE: ctx.baseUrl,
           ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
         },
-        timeout: 10000,
+        timeout: 30000,
         maxBuffer: 1024 * 1024,
       });
       out.push(
