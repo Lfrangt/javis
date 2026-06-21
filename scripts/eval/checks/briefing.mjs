@@ -50,6 +50,18 @@ export default {
     const realtimePending = realtimeVoice.status && realtimeVoice.status !== 'ready';
     const realtimeGuide = realtimeAction?.dogfoodGuide || {};
     const realtimeActionPlan = realtimeAction?.dogfoodActionPlan || {};
+    const realtimeLocalFallback = realtimeAction?.localFallback || {};
+    const realtimeLocalFallbackReady = Boolean(
+      !realtimeAction ||
+        (
+          realtimeLocalFallback.available === true &&
+          realtimeLocalFallback.endpoint === '/api/voice/command' &&
+          realtimeLocalFallback.lane === 'local_voice_command' &&
+          realtimeLocalFallback.safety?.startsMicrophone === false &&
+          realtimeLocalFallback.safety?.usesRealtime === false &&
+          realtimeLocalFallback.safety?.storesRawAudio === false
+        ),
+    );
     const realtimeGuideReady = Boolean(
       !realtimeAction ||
         (
@@ -88,6 +100,7 @@ export default {
             realtimeAction &&
             realtimeAction.phase === realtimeVoice.phase &&
             realtimeAction.blocker &&
+            realtimeLocalFallbackReady &&
             realtimeAction.manualOnly === true &&
             realtimeAction.autoEligible === false &&
             realtimeAction.autopilotEligible === false &&
@@ -119,6 +132,7 @@ export default {
       : [];
     const selectedGuide = selectedAction?.dogfoodGuide || {};
     const selectedPlan = selectedAction?.dogfoodActionPlan || {};
+    const selectedLocalFallback = selectedAction?.localFallback || {};
     const matchesBriefing = !selectedAction ||
       (next.length === 0 && workNextActions.length === 0) ||
       workNextActions.some((item) => item?.id && item.id === selectedAction.id);
@@ -137,7 +151,11 @@ export default {
         selectedPlan.previewable?.some((action) => action.startsMicrophone === false) &&
         selectedPlan.previewable?.some((action) => action.id === 'prepare_live_run' && action.startsMicrophone === false) &&
         selectedPlan.previewable?.some((action) => action.id === 'prepare_preflight_bundle' && action.startsMicrophone === false) &&
-        selectedPlan.manual?.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true),
+        selectedPlan.manual?.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
+        selectedLocalFallback.available === true &&
+        selectedLocalFallback.endpoint === '/api/voice/command' &&
+        selectedLocalFallback.safety?.startsMicrophone === false &&
+        selectedLocalFallback.safety?.usesRealtime === false,
     );
     out.push(
       workNextReady && matchesBriefing && workNextGuideOk
@@ -264,16 +282,23 @@ export default {
         maxBuffer: 1024 * 1024,
       });
       const output = `${cui.stdout || ''}\n${cui.stderr || ''}`;
+      const hasRealtimePrepareGuide =
+        output.includes('Preview Realtime live dogfood preparation without starting microphone capture') &&
+        output.includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance');
+      const hasProviderFallbackGuide =
+        output.includes('Realtime voice provider') &&
+        output.includes('Local fallback: /api/voice/command') &&
+        output.includes('Fallback command: npm run dogfood:voice-command') &&
+        output.includes('Fallback safety: starts microphone=no; realtime=no; raw audio=no');
       out.push(
         output.includes('Next action:') &&
           output.includes('Guide:') &&
           output.includes('Monitor: npm run config -> V. Watch Realtime voice evidence') &&
           output.includes('现在做到哪了') &&
           output.includes('get_work_handoff') &&
-          output.includes('Preview Realtime live dogfood preparation without starting microphone capture') &&
-          output.includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance')
-          ? ok('briefing.cui_worknext', 'CUI work-next guide', 'config CUI prints the guided Realtime work-next prepare path')
-          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print the Realtime prepare guide', { output: output.slice(0, 2000) }),
+          (hasRealtimePrepareGuide || hasProviderFallbackGuide)
+          ? ok('briefing.cui_worknext', 'CUI work-next guide', hasProviderFallbackGuide ? 'config CUI prints provider warning plus local voice-command fallback' : 'config CUI prints the guided Realtime work-next prepare path')
+          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print either the Realtime prepare guide or provider-warning local fallback guide', { output: output.slice(0, 2200) }),
       );
     } catch (error) {
       out.push(fail('briefing.cui_worknext', 'CUI work-next guide', error instanceof Error ? error.message : String(error)));

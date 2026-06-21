@@ -121,6 +121,19 @@ export default {
           : warn('realtime.voice_health', 'Realtime voice health', realtime.voiceHealth.summary, realtime.voiceHealth)
         : fail('realtime.voice_health', 'Realtime voice health', 'config snapshot did not expose provider health state'),
     );
+    const localFallback = realtime.voiceHealth?.fallback || {};
+    out.push(
+      localFallback.available === true &&
+        localFallback.endpoint === '/api/voice/command' &&
+        localFallback.lane === 'local_voice_command' &&
+        typeof localFallback.summary === 'string' &&
+        localFallback.summary.toLowerCase().includes('local voice-command fallback') &&
+        localFallback.safety?.startsMicrophone === false &&
+        localFallback.safety?.usesRealtime === false &&
+        localFallback.safety?.storesRawAudio === false
+        ? ok('realtime.voice_health_local_fallback', 'Realtime local fallback path', `${localFallback.lane} · no mic/realtime/raw audio`)
+        : fail('realtime.voice_health_local_fallback', 'Realtime local fallback path', 'provider health must expose the no-mic local voice-command fallback', localFallback),
+    );
 
     out.push(
       realtime.preflightContextEnabled

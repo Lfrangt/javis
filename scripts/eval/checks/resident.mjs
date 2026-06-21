@@ -53,6 +53,7 @@ export default {
     const trafficStates = new Set(['idle', 'watching', 'waking', 'connecting', 'listening', 'working', 'attention', 'blocked']);
     const trafficUrgency = new Set(['quiet', 'ambient', 'active', 'interrupt']);
     const trafficPulses = new Set(['off', 'slow', 'live', 'attention']);
+    const voiceFallback = p.voiceHealth?.fallback || {};
     const raw = JSON.stringify(p);
     const rawBytes = Buffer.byteLength(raw, 'utf8');
     const hasForbiddenNestedKey = (value, forbidden) => {
@@ -94,6 +95,12 @@ export default {
         traffic.accessibleLabel.includes('JAVIS') &&
         traffic.startsMicrophone === false &&
         traffic.passiveByDefault === true &&
+        voiceFallback.available === true &&
+        voiceFallback.endpoint === '/api/voice/command' &&
+        voiceFallback.lane === 'local_voice_command' &&
+        voiceFallback.safety?.startsMicrophone === false &&
+        voiceFallback.safety?.usesRealtime === false &&
+        voiceFallback.safety?.storesRawAudio === false &&
         p.window?.mode &&
         p.presence?.intervention?.passiveByDefault === true &&
         p.presence?.intervention?.requiresUserIntent === true &&
@@ -115,6 +122,7 @@ export default {
           contract,
           pet: p.pet,
           traffic,
+          voiceFallback,
         }),
     );
 

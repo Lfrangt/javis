@@ -613,6 +613,15 @@ function printNextAction(next) {
   console.log(`Next action: ${action.label || action.id || 'unnamed'} (${action.source || 'unknown'}, ${auto})`);
   if (action.summary) console.log(`Summary: ${compact(action.summary, 260)}`);
   if (action.manualOnlyReason) console.log(`Manual reason: ${compact(action.manualOnlyReason, 220)}`);
+  const fallback = action.localFallback || action.fallback || action.voiceHealth?.fallback || {};
+  if (fallback.available) {
+    console.log(`Local fallback: ${fallback.endpoint || '/api/voice/command'} (${fallback.lane || 'local_voice_command'})`);
+    if (fallback.dogfoodCommand) console.log(`Fallback command: ${fallback.dogfoodCommand}`);
+    if (fallback.summary) console.log(`Fallback summary: ${compact(fallback.summary, 260)}`);
+    if (fallback.safety) {
+      console.log(`Fallback safety: starts microphone=${fallback.safety.startsMicrophone ? 'yes' : 'no'}; realtime=${fallback.safety.usesRealtime ? 'yes' : 'no'}; raw audio=${fallback.safety.storesRawAudio ? 'yes' : 'no'}`);
+    }
+  }
   const guide = action.dogfoodGuide || action.guide || {};
   return printDogfoodGuide(guide);
 }

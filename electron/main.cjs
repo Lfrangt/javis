@@ -29676,6 +29676,7 @@ function petStatusSnapshot() {
     conversation: petConversationSnapshot(conversation),
     voiceHealth: (() => {
       const health = realtimeVoiceHealthSnapshot({ conversation });
+      const fallback = health.fallback || {};
       return {
         ok: Boolean(health.ok),
         status: health.status || '',
@@ -29685,6 +29686,23 @@ function petStatusSnapshot() {
         hasOpenAiKey: Boolean(health.hasOpenAiKey),
         lastStatusCode: boundedCount(health.lastNegotiation?.statusCode, 999),
         lastError: compactRecordText(health.error || health.lastError || '', 180),
+        fallback: {
+          available: Boolean(fallback.available),
+          activeWhenRealtimeBlocked: Boolean(fallback.activeWhenRealtimeBlocked),
+          lane: compactRecordText(fallback.lane || '', 80),
+          endpoint: compactRecordText(fallback.endpoint || '', 120),
+          dogfoodCommand: compactRecordText(fallback.dogfoodCommand || '', 160),
+          summary: compactRecordText(fallback.summary || '', 180),
+          next: compactRecordText(fallback.next || '', 180),
+          safety: {
+            startsMicrophone: Boolean(fallback.safety?.startsMicrophone),
+            usesRealtime: Boolean(fallback.safety?.usesRealtime),
+            storesRawAudio: Boolean(fallback.safety?.storesRawAudio),
+            speaksWithMacTts: Boolean(fallback.safety?.speaksWithMacTts),
+            screenContextMetadataOnly: Boolean(fallback.safety?.screenContextMetadataOnly),
+            accessibilityOutlineOnly: Boolean(fallback.safety?.accessibilityOutlineOnly),
+          },
+        },
       };
     })(),
     progressVersion: workProgressSnapshot(),
@@ -31300,6 +31318,32 @@ function classifyRealtimeProviderIssue(details = {}) {
   return null;
 }
 
+function realtimeLocalVoiceFallbackSnapshot(issue = null) {
+  const blockedByQuota = issue?.kind === 'quota_or_rate_limit';
+  const providerBlocked = Boolean(issue && ['quota_or_rate_limit', 'provider_error', 'network'].includes(issue.kind));
+  return {
+    available: true,
+    activeWhenRealtimeBlocked: providerBlocked,
+    lane: 'local_voice_command',
+    endpoint: '/api/voice/command',
+    dogfoodCommand: 'npm run dogfood:voice-command -- --include-screen --include-accessibility',
+    summary: blockedByQuota
+      ? 'Realtime quota is blocked, but local voice-command fallback can still route typed or tap transcripts with Mac context and local speech.'
+      : 'Local voice-command fallback can route typed or tap transcripts without starting Realtime.',
+    next: blockedByQuota
+      ? 'Use the local voice-command fallback for task routing now; add API quota later to restore live WebRTC voice.'
+      : 'Use this fallback when live Realtime is unavailable or when a no-mic preview is safer.',
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      speaksWithMacTts: true,
+      screenContextMetadataOnly: true,
+      accessibilityOutlineOnly: true,
+    },
+  };
+}
+
 function realtimeVoiceHealthSnapshot(options = {}) {
   const conversation = options.conversation || conversationStateSnapshot();
   const negotiation = latestRealtimeNegotiationSnapshot(conversation, {
@@ -31344,6 +31388,7 @@ function realtimeVoiceHealthSnapshot(options = {}) {
     next: issue?.next || '',
     hasOpenAiKey: Boolean(OPENAI_API_KEY),
     maxAuditAgeMs: REALTIME_PROVIDER_WARNING_MAX_AGE_MS,
+    fallback: realtimeLocalVoiceFallbackSnapshot(issue),
     lastNegotiation: negotiation,
     lastProviderProbe: providerProbe,
     lastProviderCheck: providerCheck,
@@ -41265,13 +41310,17 @@ function workflowBriefing(options = {}) {
   const nextActions = [];
 
   if (readiness.primaryIssue) {
-    nextActions.push({
+    const readinessAction = {
       id: `readiness:${readiness.primaryIssue.id}`,
       priority: readiness.primaryIssue.status === 'blocked' ? 1 : 2,
       label: readiness.primaryIssue.label,
       summary: readiness.primaryIssue.next || readiness.primaryIssue.summary,
       source: 'readiness',
-    });
+    };
+    if (readiness.primaryIssue.id === 'realtime_voice_provider') {
+      readinessAction.localFallback = realtimeWorkbench.voiceHealth?.fallback || null;
+    }
+    nextActions.push(readinessAction);
   }
 
   if (pendingApprovals.length) {
@@ -41367,6 +41416,7 @@ function workflowBriefing(options = {}) {
       phase: realtimeWorkbench.phase,
       status: realtimeWorkbench.status,
       blocker: realtimeWorkbench.blocker,
+      localFallback: realtimeWorkbench.voiceHealth?.fallback || null,
       dogfoodGuide: realtimeWorkbench.dogfoodGuide,
       dogfoodActionPlan: realtimeWorkbench.actionPlan,
       preparableActions: Array.isArray(realtimeWorkbench.actionPlan?.previewable)
@@ -41396,6 +41446,7 @@ function workflowBriefing(options = {}) {
         status: 'can_prepare',
         realtimePreparation: 'preflight_bundle',
         blocker: realtimeWorkbench.blocker,
+        localFallback: realtimeWorkbench.voiceHealth?.fallback || null,
         dogfoodGuide: realtimeWorkbench.dogfoodGuide,
         dogfoodActionPlan: realtimeWorkbench.actionPlan,
         preparableActions: [preflightBundleAction],
@@ -41987,6 +42038,21 @@ function compactWorkHandoffActionForVoice(action = null) {
         status: compactRecordText(action.blocker.status || '', 60),
         summary: compactRecordText(action.blocker.summary || '', 220),
         nextAction: compactRecordText(action.blocker.nextAction || '', 220),
+      }
+      : null,
+    localFallback: action.localFallback
+      ? {
+        available: Boolean(action.localFallback.available),
+        activeWhenRealtimeBlocked: Boolean(action.localFallback.activeWhenRealtimeBlocked),
+        lane: compactRecordText(action.localFallback.lane || '', 80),
+        endpoint: compactRecordText(action.localFallback.endpoint || '', 120),
+        summary: compactRecordText(action.localFallback.summary || '', 220),
+        next: compactRecordText(action.localFallback.next || '', 220),
+        safety: {
+          startsMicrophone: Boolean(action.localFallback.safety?.startsMicrophone),
+          usesRealtime: Boolean(action.localFallback.safety?.usesRealtime),
+          storesRawAudio: Boolean(action.localFallback.safety?.storesRawAudio),
+        },
       }
       : null,
     dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
