@@ -215,6 +215,67 @@ export default {
       out.push(fail('voice_command.local_cli', 'Local voice command CLI', error instanceof Error ? error.message : String(error)));
     }
 
+    try {
+      const { stdout } = await execFileAsync('/bin/sh', [
+        '-lc',
+        "printf '状态\\n继续刚才那个\\n/exit\\n' | npm run voice:chat -- --json --no-speech",
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 45000,
+        maxBuffer: 1024 * 1024,
+      });
+      const loop = parseJson(stdout);
+      const turns = Array.isArray(loop.turns) ? loop.turns : [];
+      const sessionId = turns.find((turn) => turn.session?.sessionId)?.session?.sessionId || '';
+      if (sessionId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(sessionId)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_voice_command_loop_cleanup',
+            note: 'Cleaning up eval-created local voice loop session.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(sessionId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+      out.push(
+        loop.ok === true &&
+          loop.cliMode === 'local' &&
+          loop.loop === true &&
+          loop.turnCount === 2 &&
+          loop.previewOnly === true &&
+          loop.safety?.startsMicrophone === false &&
+          loop.safety?.usesRealtime === false &&
+          loop.safety?.storesRawAudio === false &&
+          turns.every((turn) => (
+            turn.ok === true &&
+            turn.previewOnly === true &&
+            turn.safety?.startsMicrophone === false &&
+            turn.safety?.usesRealtime === false &&
+            turn.safety?.storesRawAudio === false &&
+            turn.context?.metadataOnly === true &&
+            turn.context?.includesScreenImage === false &&
+            turn.context?.includesClipboardText === false &&
+            turn.context?.includesAccessibilityNodes === false &&
+            turn.session?.recorded === true &&
+            turn.session?.privacy?.transcriptPreviewOnly === true &&
+            turn.session?.privacy?.noRawAudio === true
+          ))
+          ? ok('voice_command.local_cli_loop', 'Local voice command loop CLI', `${loop.turnCount} safe no-mic local turns with session ledger`)
+          : fail('voice_command.local_cli_loop', 'Local voice command loop CLI', 'npm run voice:chat did not keep the safe local loop envelope', loop),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.local_cli_loop', 'Local voice command loop CLI', error instanceof Error ? error.message : String(error)));
+    }
+
     const wakeCommand = await ctx.api('/api/wake/command', {
       method: 'POST',
       body: {

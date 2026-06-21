@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import readline from 'node:readline';
 
 const API_BASE = process.env.JAVIS_API_BASE || `http://127.0.0.1:${process.env.JAVIS_API_PORT || 3417}`;
 const APP_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
@@ -33,7 +34,7 @@ function hasFlag(name) {
 }
 
 function positionalMessage() {
-  const valueFlags = new Set(['--message', '--text', '--mode']);
+  const valueFlags = new Set(['--message', '--text', '--mode', '--wake-phrase', '--session-goal', '--session-title']);
   const parts = [];
   const args = process.argv.slice(2);
   for (let index = 0; index < args.length; index += 1) {
@@ -61,6 +62,8 @@ Examples:
   npm run voice -- --wake "贾维斯，帮我看当前窗口下一步做什么"
   npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
   npm run voice -- --session "把这次本地语音指令写入工作会话"
+  npm run voice:chat -- --session
+  printf "状态\\n继续刚才那个\\n/exit\\n" | npm run voice:chat -- --json
   npm run voice -- --json --no-speech "当前状态怎么样？"
 
 Flags:
@@ -74,6 +77,7 @@ Flags:
   --session                   Record into the active work session; if none exists, start one.
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
+  --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
   --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
   --no-speech                 Disable the acknowledgement preview.
   --mode <lane>               Hint quick/background/codex/claude.
@@ -95,7 +99,7 @@ async function request(apiPath, options = {}) {
   return { ok: response.ok, status: response.status, data };
 }
 
-function buildPayload() {
+function buildPayload(options = {}) {
   const userCli = userCliMode();
   const execute = hasFlag('execute') || hasFlag('run');
   const wake = hasFlag('wake') || hasFlag('summon');
@@ -106,10 +110,18 @@ function buildPayload() {
     hasFlag('include-ui') ||
     hasFlag('ui') ||
     (userCli && includeScreen && !hasFlag('no-ui'));
-  const sessionRequested = hasFlag('session') || hasFlag('work-session') || hasFlag('record-session');
-  const sessionGoal = argValue('session-goal', argValue('session-title', ''));
+  const loop = Boolean(options.loop);
+  const sessionRequested = hasFlag('session') || hasFlag('work-session') || hasFlag('record-session') || (loop && !hasFlag('no-session'));
+  const sessionGoal = argValue('session-goal', argValue('session-title', loop ? 'JAVIS local voice command loop' : ''));
+  const source = userCli
+    ? wake
+      ? execute ? 'local_wake_voice_command_cli_execute' : 'local_wake_voice_command_cli_preview'
+      : execute ? 'local_voice_command_cli_execute' : 'local_voice_command_cli_preview'
+    : wake
+      ? execute ? 'dogfood_wake_voice_command_execute' : 'dogfood_wake_voice_command_preview'
+      : execute ? 'dogfood_voice_command_execute' : 'dogfood_voice_command_preview';
   return {
-    transcript: argValue('message', argValue('text', positionalMessage() || '帮我整理当前工作状态，给我一个三步计划，先不要执行。')),
+    transcript: String(options.transcript || argValue('message', argValue('text', positionalMessage() || '帮我整理当前工作状态，给我一个三步计划，先不要执行。'))).trim(),
     execute,
     includeScreen,
     includeAccessibility,
@@ -122,13 +134,7 @@ function buildPayload() {
     sessionTitle: sessionGoal,
     mode: argValue('mode', ''),
     phrase: argValue('wake-phrase', '贾维斯'),
-    source: userCli
-      ? wake
-        ? execute ? 'local_wake_voice_command_cli_execute' : 'local_wake_voice_command_cli_preview'
-        : execute ? 'local_voice_command_cli_execute' : 'local_voice_command_cli_preview'
-      : wake
-        ? execute ? 'dogfood_wake_voice_command_execute' : 'dogfood_wake_voice_command_preview'
-        : execute ? 'dogfood_voice_command_execute' : 'dogfood_voice_command_preview',
+    source: loop ? `${source}_loop` : source,
   };
 }
 
@@ -200,21 +206,13 @@ function summarize(data = {}) {
   };
 }
 
-async function main() {
-  if (hasFlag('help') || process.argv.includes('-h')) {
-    printHelp();
-    return;
-  }
-
-  const userCli = userCliMode();
-  const payload = buildPayload();
-  const wake = hasFlag('wake') || hasFlag('summon');
+async function runCommand(payload, wake, userCli) {
   const response = await request(wake ? '/api/wake/command' : '/api/voice/command', {
     method: 'POST',
     body: payload,
   });
   const summary = summarize(response.data || {});
-  const result = {
+  return {
     ok: Boolean(response.ok && response.data?.ok),
     apiBase: API_BASE,
     cliMode: userCli ? 'local' : 'dogfood',
@@ -235,31 +233,129 @@ async function main() {
     responseStatus: response.status,
     ...summary,
   };
+}
+
+function printResult(result, payload, userCli) {
+  console.log(userCli ? 'JAVIS Local Voice Command' : 'JAVIS Local Voice Command Dogfood');
+  console.log(userCli ? '=========================' : '=================================');
+  console.log(`API: ${API_BASE}`);
+  console.log(`Mode: ${payload.execute ? 'execute' : 'preview'} · ok=${result.ok ? 'yes' : 'no'}`);
+  if (result.wake) console.log(`Wake: ${result.wake.pending ? 'pending' : 'recorded'} · ${result.wake.handoffMode || '-'} · ${result.wake.lastPhrase || '-'}`);
+  console.log(`Task: ${payload.transcript}`);
+  console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
+  if (result.route.jobId) console.log(`Job: ${result.route.jobId}`);
+  if (result.session?.recorded) {
+    console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);
+  } else if (result.session?.requested || result.session?.error) {
+    console.log(`Session: not recorded · ${result.session.reason || result.session.error || 'no active session'}`);
+  }
+  console.log(`Speech: ${result.speech?.dryRun ? 'preview' : result.speech?.speaking ? 'speaking' : 'off'} · microphone=no · realtime=no`);
+  console.log(`Context: ${result.context?.metadataOnly ? 'metadata-only' : 'unavailable'} · ${result.context?.summary || '-'}`);
+  if (result.context?.accessibility?.requested) {
+    console.log(`UI: ${result.context.accessibility.available ? `${result.context.accessibility.nodeCount || 0} node(s)` : result.context.accessibility.error || 'unavailable'}`);
+  }
+  console.log(`Ack: ${result.spokenAck}`);
+  if (userCli && !payload.execute) console.log('Next: add --run to queue non-quick work through normal policy gates.');
+  if (!result.ok) console.log(`Error: HTTP ${result.responseStatus}`);
+}
+
+async function runLoop() {
+  const userCli = userCliMode();
+  const wake = hasFlag('wake') || hasFlag('summon');
+  const json = hasFlag('json');
+  const rl = readline.createInterface({
+    input: process.stdin,
+    output: json || !process.stdin.isTTY ? undefined : process.stdout,
+    terminal: Boolean(process.stdin.isTTY && !json),
+  });
+  const turns = [];
+  if (!json) {
+    console.log('JAVIS Local Voice Command Loop');
+    console.log('==============================');
+    console.log('Type /exit or /quit to stop. This loop starts no microphone and no Realtime session.');
+  }
+
+  if (process.stdin.isTTY && !json) rl.setPrompt('JAVIS> ');
+  if (process.stdin.isTTY && !json) rl.prompt();
+  for await (const rawLine of rl) {
+    const transcript = String(rawLine || '').trim();
+    if (!transcript) {
+      if (process.stdin.isTTY && !json) rl.prompt();
+      continue;
+    }
+    if (['/exit', '/quit', 'exit', 'quit'].includes(transcript.toLowerCase())) break;
+    const payload = buildPayload({ loop: true, transcript });
+    const result = await runCommand(payload, wake, userCli);
+    turns.push({
+      transcript,
+      ok: result.ok,
+      responseStatus: result.responseStatus,
+      route: result.route,
+      executed: result.executed,
+      previewOnly: result.previewOnly,
+      spokenAck: result.spokenAck,
+      safety: result.safety,
+      context: result.context
+        ? {
+            metadataOnly: result.context.metadataOnly,
+            includesScreenImage: result.context.includesScreenImage,
+            includesClipboardText: result.context.includesClipboardText,
+            includesAccessibilityNodes: result.context.includesAccessibilityNodes,
+          }
+        : null,
+      session: result.session,
+    });
+    if (!json) {
+      console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
+      if (result.session?.recorded) console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);
+      console.log(`Ack: ${result.spokenAck}`);
+      console.log('Safety: microphone=no · realtime=no · raw audio=no');
+      if (process.stdin.isTTY) rl.prompt();
+    }
+    if (!result.ok && hasFlag('stop-on-error')) break;
+  }
+  rl.close();
+
+  const okAll = turns.length > 0 && turns.every((turn) => turn.ok);
+  if (json) {
+    console.log(JSON.stringify({
+      ok: okAll,
+      apiBase: API_BASE,
+      cliMode: userCli ? 'local' : 'dogfood',
+      loop: true,
+      turnCount: turns.length,
+      previewOnly: !(hasFlag('execute') || hasFlag('run')),
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+      },
+      turns,
+    }, null, 2));
+  }
+  process.exitCode = okAll ? 0 : 1;
+}
+
+async function main() {
+  if (hasFlag('help') || process.argv.includes('-h')) {
+    printHelp();
+    return;
+  }
+
+  if (hasFlag('chat') || hasFlag('loop') || hasFlag('interactive')) {
+    await runLoop();
+    return;
+  }
+
+  const userCli = userCliMode();
+  const payload = buildPayload();
+  const wake = hasFlag('wake') || hasFlag('summon');
+  const result = await runCommand(payload, wake, userCli);
 
   if (hasFlag('json')) {
     console.log(JSON.stringify(result, null, 2));
   } else {
-    console.log(userCli ? 'JAVIS Local Voice Command' : 'JAVIS Local Voice Command Dogfood');
-    console.log(userCli ? '=========================' : '=================================');
-    console.log(`API: ${API_BASE}`);
-    console.log(`Mode: ${payload.execute ? 'execute' : 'preview'} · ok=${result.ok ? 'yes' : 'no'}`);
-    if (result.wake) console.log(`Wake: ${result.wake.pending ? 'pending' : 'recorded'} · ${result.wake.handoffMode || '-'} · ${result.wake.lastPhrase || '-'}`);
-    console.log(`Task: ${payload.transcript}`);
-    console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
-    if (result.route.jobId) console.log(`Job: ${result.route.jobId}`);
-    if (result.session?.recorded) {
-      console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);
-    } else if (result.session?.requested || result.session?.error) {
-      console.log(`Session: not recorded · ${result.session.reason || result.session.error || 'no active session'}`);
-    }
-    console.log(`Speech: ${result.speech?.dryRun ? 'preview' : result.speech?.speaking ? 'speaking' : 'off'} · microphone=no · realtime=no`);
-    console.log(`Context: ${result.context?.metadataOnly ? 'metadata-only' : 'unavailable'} · ${result.context?.summary || '-'}`);
-    if (result.context?.accessibility?.requested) {
-      console.log(`UI: ${result.context.accessibility.available ? `${result.context.accessibility.nodeCount || 0} node(s)` : result.context.accessibility.error || 'unavailable'}`);
-    }
-    console.log(`Ack: ${result.spokenAck}`);
-    if (userCli && !payload.execute) console.log('Next: add --run to queue non-quick work through normal policy gates.');
-    if (!response.ok) console.log(`Error: HTTP ${response.status}`);
+    printResult(result, payload, userCli);
   }
 
   process.exitCode = result.ok ? 0 : 1;
