@@ -353,7 +353,10 @@ export default {
           ? localVoiceInteraction.opensTerminal === true &&
             localVoiceInteraction.startsMicrophone === false &&
             localVoiceInteraction.usesRealtime === false &&
-            localVoiceInteraction.endpoint === '/api/voice/open-local-loop'
+            localVoiceInteraction.endpoint === '/api/voice/standby' &&
+            localVoiceInteraction.method === 'POST' &&
+            localVoiceInteraction.actionId === 'voice:standby_primary' &&
+            localVoiceInteraction.primaryActionEndpoint === '/api/voice/open-local-loop'
           : localVoiceInteraction.startsMicrophone === true &&
             localVoiceInteraction.usesRealtime === true) &&
         localVoice.privacy?.localOnly === true &&

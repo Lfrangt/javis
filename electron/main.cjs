@@ -25488,7 +25488,10 @@ function localVoiceStatusSnapshot(options = {}) {
     interaction: {
       capsuleClick: fallbackReady ? 'open_local_voice_loop' : 'start_realtime_voice',
       label: fallbackReady ? 'Open local voice/text loop' : 'Start Realtime voice',
-      endpoint: fallbackReady ? '/api/voice/open-local-loop' : '/api/realtime/session',
+      endpoint: fallbackReady ? '/api/voice/standby' : '/api/realtime/session',
+      method: 'POST',
+      actionId: fallbackReady ? 'voice:standby_primary' : '',
+      primaryActionEndpoint: fallbackReady ? '/api/voice/open-local-loop' : '',
       opensTerminal: fallbackReady,
       startsMicrophone: !fallbackReady,
       usesRealtime: !fallbackReady,

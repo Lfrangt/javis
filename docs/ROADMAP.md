@@ -30,7 +30,7 @@
 - Runtime/tool activity log in CUI/API, not on the desktop pet.
 - Sanitized voice-command history in CUI/API for recovery/debugging without putting logs on the desktop pet.
 - Lightweight local voice standby state in `/api/pet/status` so the notch capsule can reflect no-mic fallback readiness without becoming a dashboard.
-- Quota-aware local loop opener: `/api/pet/status` now tells the compact capsule to open `npm run voice:chat` in Terminal through `/api/voice/open-local-loop` when Realtime is blocked or warning, keeping the pet compact and avoiding repeated microphone startup attempts.
+- Quota-aware local loop opener: `/api/pet/status` now tells the compact capsule to run the voice standby primary action through `/api/voice/standby` when Realtime is blocked or warning; that primary action opens `npm run voice:chat` through `/api/voice/open-local-loop`, keeping the pet compact and avoiding repeated microphone startup attempts.
 - Voice standby primary action endpoint: `POST /api/voice/standby` now previews or runs the current primary voice entry action, opening the local no-mic `voice:chat` loop when Realtime is blocked while refusing server-side microphone starts.
 - Voice standby work-next action: `actionId=voice:standby_primary` exposes that same current voice entry action through `/api/work/next` for CUI, Realtime tools, and local automation.
 - Desktop pet fallback click now calls the voice standby primary contract instead of hardcoding the local loop endpoint, keeping pet behavior aligned with the resident voice entry policy.
