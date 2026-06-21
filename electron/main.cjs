@@ -23694,6 +23694,54 @@ function naturalAppUiLocalCommand(text) {
   };
 }
 
+function windowControlCornerFromText(raw, compactPlain) {
+  const text = String(raw || '').toLowerCase();
+  if (/bottom[-_\s]*left|left[-_\s]*bottom/.test(text) || /左下/.test(compactPlain)) return 'bottom-left';
+  if (/bottom[-_\s]*right|right[-_\s]*bottom/.test(text) || /右下/.test(compactPlain)) return 'bottom-right';
+  if (/top[-_\s]*left|left[-_\s]*top/.test(text) || /左上/.test(compactPlain)) return 'top-left';
+  if (/top[-_\s]*right|right[-_\s]*top/.test(text) || /右上/.test(compactPlain)) return 'top-right';
+  if (/notch|dynamic island|center[-_\s]*top|top[-_\s]*center/.test(text) || /(刘海|灵动岛|顶部中间|上面中间|中间上面|回中间)/.test(compactPlain)) return 'notch';
+  return '';
+}
+
+function windowControlModeFromText(raw, compactPlain) {
+  const text = String(raw || '').toLowerCase();
+  if (/compose|input strip|text input|local input|type input/.test(text) || /(输入条|输入框|本地输入|打开输入|打字条|文字输入)/.test(compactPlain)) return 'compose';
+  if (/compact|mini|small|shrink|pet mode|back to pet|standby/.test(text) || /(变小|小一点|小点|收起|待机|回小|小胶囊|恢复小)/.test(compactPlain)) return 'pet';
+  return '';
+}
+
+function naturalWindowControlLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  const mentionsSelfWindow = /\b(javis|jarvis|pet|buddy|capsule|notch|dynamic island|floating window|desktop buddy)\b/i.test(raw)
+    || /(你|你自己|贾维斯|JAVIS|宠物|小宠物|胶囊|灵动岛|刘海|悬浮窗|浮窗|输入条|桌面助手)/.test(compactTextNoSpace);
+  const obstructionSignal = /\b(out of the way|move aside|too big|blocking|in the way|less intrusive)\b/i.test(raw)
+    || /(挡着|遮挡|碍事|太大|挪开|移开|让开|别挡|别遮|无感一点)/.test(compactTextNoSpace);
+  const motionSignal = /\b(move|park|dock|pin|relocate|corner|position|place|notch|dynamic island|top|bottom|left|right)\b/i.test(raw)
+    || /(移动|挪|移|停靠|停到|放到|靠|去|回到|回|位置|角落|左上|右上|左下|右下|刘海|灵动岛)/.test(compactTextNoSpace);
+  const modeSignal = /\b(compose|input strip|text input|compact|mini|small|shrink|standby)\b/i.test(raw)
+    || /(输入条|输入框|本地输入|变小|小一点|小点|收起|待机|回小|恢复小)/.test(compactTextNoSpace);
+  if (!mentionsSelfWindow && !obstructionSignal) return null;
+  if (!motionSignal && !modeSignal && !obstructionSignal) return null;
+
+  const corner = windowControlCornerFromText(raw, compactPlain) || (obstructionSignal ? 'bottom-right' : '');
+  const mode = windowControlModeFromText(raw, compactPlain);
+  if (!corner && !mode) return null;
+
+  return {
+    intent: 'window_control',
+    label: 'JAVIS window control',
+    requiresLocalExecution: true,
+    args: {
+      corner,
+      mode,
+      reason: obstructionSignal ? 'move_aside' : 'explicit_position',
+    },
+  };
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
@@ -23715,6 +23763,9 @@ function localCommandDecision(task) {
 
   const appUiCommand = naturalAppUiLocalCommand(text);
   if (appUiCommand) return appUiCommand;
+
+  const windowCommand = naturalWindowControlLocalCommand(text);
+  if (windowCommand) return windowCommand;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
     || /^(状态|当前状态|系统状态|下一步|有什么待办|现在该做什么|简报)$/.test(text)) {
@@ -24004,7 +24055,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -24242,6 +24293,12 @@ function buildContextPlan(message, options = {}) {
     } else if (['browser_dom'].includes(localCommand)) {
       needs.browserContext = true;
       needs.browserDom = true;
+    } else if (['window_control'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.localExecution = false;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
     } else if (['browser_control', 'web_search', 'open_url'].includes(localCommand)) {
       needs.browserContext = true;
       needs.localExecution = true;
@@ -24582,6 +24639,83 @@ function formatBrowserDomForLocalCommand(dom = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function windowControlTargetFromCommand(command = {}) {
+  const args = command.args || {};
+  const mode = args.mode ? normalizeWindowMode(args.mode) : '';
+  const corner = args.corner ? parseParkCorner(args.corner) : '';
+  const targetMode = mode || currentWindowMode;
+  const targetCorner = corner || currentParkCorner;
+  const targetSize = windowTargetForMode(targetMode);
+  const targetPosition = (mode || corner)
+    ? parkedPosition(targetMode, targetCorner, WINDOW_PARK_DISPLAY)
+    : null;
+  return {
+    mode,
+    corner,
+    targetMode,
+    targetCorner,
+    targetSize,
+    targetPosition,
+    reason: args.reason || '',
+  };
+}
+
+function formatWindowControlForLocalCommand(control = {}) {
+  const target = control.target || {};
+  const after = control.after || control.before || {};
+  const predicted = target.targetPosition || {};
+  return [
+    `窗口控制: ${control.executed ? 'executed' : 'preview only'}`,
+    `目标: mode=${target.mode || after.mode || '-'} · corner=${target.corner || after.parkCorner || '-'}`,
+    predicted.x !== undefined
+      ? `预计位置: ${predicted.x},${predicted.y} · ${target.targetSize?.width || '?'}x${target.targetSize?.height || '?'}`
+      : '',
+    `当前: mode=${after.mode || '-'} · park=${after.parkCorner || '-'} · ${after.width || '?'}x${after.height || '?'}`,
+    '边界: 只控制 JAVIS 自己的悬浮窗；不操作用户文件、浏览器页面、其他 App、麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
+}
+
+function runWindowControlLocalCommand(command = {}, options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const before = windowStateSnapshot();
+  const target = windowControlTargetFromCommand(command);
+  let after = before;
+  if (execute) {
+    if (target.mode) {
+      after = applyWindowMode(target.mode, {
+        source: 'local_command_window_control',
+        focus: target.mode === 'compose',
+        park: true,
+        corner: target.corner || currentParkCorner,
+      });
+    } else if (target.corner) {
+      after = parkWindow('local_command_window_control', { corner: target.corner });
+    }
+  }
+  const control = {
+    ok: true,
+    executed: execute,
+    before,
+    after,
+    target,
+    safety: {
+      controlsJavisWindowOnly: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      mutatesUserFiles: false,
+      controlsOtherApps: false,
+    },
+  };
+  return {
+    ok: true,
+    executed: execute,
+    localCommand: command,
+    output: formatWindowControlForLocalCommand(control),
+    data: { windowControl: control },
+  };
+}
+
 async function runLocalCommand(command, options = {}) {
   appendAudit('local_command.requested', { intent: command.intent, label: command.label });
   try {
@@ -24789,6 +24923,10 @@ async function runLocalCommand(command, options = {}) {
         output: formatBrowserDomForLocalCommand(dom),
         data: { dom },
       };
+    }
+
+    if (command.intent === 'window_control') {
+      return runWindowControlLocalCommand(command, options);
     }
 
     if (command.intent === 'browser_control') {
@@ -26282,7 +26420,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

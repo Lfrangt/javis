@@ -207,6 +207,96 @@ export default {
         : fail('voice_command.natural_capabilities', 'Natural capability voice command', 'natural capability phrase did not use the local capability_status fast path', naturalCapabilities.data),
     );
 
+    const naturalWindowPreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '把你挪到左下角，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_window_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalWindowPreviewData = naturalWindowPreview.data || {};
+    const naturalWindowPreviewControl = naturalWindowPreviewData.route?.data?.windowControl || {};
+    out.push(
+      naturalWindowPreview.ok &&
+        naturalWindowPreviewData.ok === true &&
+        naturalWindowPreviewData.executed === false &&
+        naturalWindowPreviewData.route?.decision?.localCommand === 'window_control' &&
+        naturalWindowPreviewData.route?.localCommand?.intent === 'window_control' &&
+        naturalWindowPreviewControl.executed === false &&
+        naturalWindowPreviewControl.target?.corner === 'bottom-left' &&
+        naturalWindowPreviewControl.target?.targetPosition?.corner === 'bottom-left' &&
+        naturalWindowPreviewControl.safety?.controlsJavisWindowOnly === true &&
+        naturalWindowPreviewControl.safety?.mutatesUserFiles === false &&
+        typeof naturalWindowPreviewData.route?.output === 'string' &&
+        naturalWindowPreviewData.route.output.includes('窗口控制: preview only') &&
+        naturalWindowPreviewData.safety?.startsMicrophone === false &&
+        naturalWindowPreviewData.safety?.usesRealtime === false &&
+        naturalWindowPreviewData.safety?.storesRawAudio === false &&
+        naturalWindowPreviewData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_window_preview', 'Natural pet window preview voice command', '把你挪到左下角 routes to JAVIS-only window_control preview')
+        : fail('voice_command.natural_window_preview', 'Natural pet window preview voice command', 'natural pet/window phrase did not use the safe window_control preview path', naturalWindowPreview.data),
+    );
+
+    const naturalWindowExecute = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '回到刘海并变小',
+        execute: true,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_window_execute',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalWindowExecuteData = naturalWindowExecute.data || {};
+    const naturalWindowExecuteControl = naturalWindowExecuteData.route?.data?.windowControl || {};
+    await ctx.api('/api/window/mode', {
+      method: 'POST',
+      body: {
+        mode: 'pet',
+        focus: false,
+      },
+      timeoutMs: 10000,
+    });
+    await ctx.api('/api/window/park', {
+      method: 'POST',
+      body: {
+        corner: 'notch',
+      },
+      timeoutMs: 10000,
+    });
+    out.push(
+      naturalWindowExecute.ok &&
+        naturalWindowExecuteData.ok === true &&
+        naturalWindowExecuteData.requestedExecute === true &&
+        naturalWindowExecuteData.executed === true &&
+        naturalWindowExecuteData.route?.decision?.localCommand === 'window_control' &&
+        naturalWindowExecuteData.route?.localCommand?.intent === 'window_control' &&
+        naturalWindowExecuteControl.executed === true &&
+        naturalWindowExecuteControl.target?.mode === 'pet' &&
+        naturalWindowExecuteControl.target?.corner === 'notch' &&
+        naturalWindowExecuteControl.after?.mode === 'pet' &&
+        naturalWindowExecuteControl.after?.parkCorner === 'notch' &&
+        naturalWindowExecuteControl.safety?.controlsJavisWindowOnly === true &&
+        naturalWindowExecuteControl.safety?.controlsOtherApps === false &&
+        naturalWindowExecuteControl.safety?.mutatesUserFiles === false &&
+        typeof naturalWindowExecuteData.route?.output === 'string' &&
+        naturalWindowExecuteData.route.output.includes('窗口控制: executed') &&
+        naturalWindowExecuteData.safety?.startsMicrophone === false &&
+        naturalWindowExecuteData.safety?.usesRealtime === false &&
+        naturalWindowExecuteData.safety?.storesRawAudio === false &&
+        naturalWindowExecuteData.safety?.callsOpenAIImmediately === false &&
+        naturalWindowExecuteData.safety?.executesLocalCommand === true
+        ? ok('voice_command.natural_window_execute', 'Natural pet window execute voice command', '回到刘海并变小 executes only JAVIS window park/mode control and restores pet state')
+        : fail('voice_command.natural_window_execute', 'Natural pet window execute voice command', 'natural pet/window execute phrase did not stay within JAVIS-only window control', naturalWindowExecute.data),
+    );
+
     const naturalBrowserReady = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
