@@ -25,6 +25,7 @@
 - Push-to-talk voice mode.
 - Runtime/tool activity log in CUI/API, not on the desktop pet.
 - Sanitized voice-command history in CUI/API for recovery/debugging without putting logs on the desktop pet.
+- Lightweight local voice standby state in `/api/pet/status` so the notch capsule can reflect no-mic fallback readiness without becoming a dashboard.
 - Desktop pet consumes resident presence as a stable 148x40 red/yellow/green traffic-light Dynamic Island capsule instead of showing diagnostic chips.
 - Desktop pet uses a lightweight `/api/pet/status` lane for parked state with no raw screen image, model list, learning profile, routing history, workflow logs, or runtime data directory; full doctor/config/briefing/context checks stay in CUI, manual refresh, or slow expanded-panel refresh.
 

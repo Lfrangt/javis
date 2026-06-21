@@ -23684,6 +23684,66 @@ function voiceCommandHistorySnapshot(options = {}) {
   };
 }
 
+function localVoiceStatusSnapshot(options = {}) {
+  const conversation = options.conversation || conversationStateSnapshot();
+  const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation });
+  const fallback = voiceHealth.fallback || realtimeLocalVoiceFallbackSnapshot();
+  const history = voiceCommandHistorySnapshot({ limit: 1 });
+  const latest = history.items[0] || null;
+  const fallbackReady = voiceHealth.status !== 'ready';
+  return {
+    version: 1,
+    available: true,
+    mode: fallbackReady ? 'fallback_ready' : 'standby',
+    label: fallbackReady ? 'Local voice ready' : 'Local voice standby',
+    summary: compactRecordText(
+      fallbackReady
+        ? 'Realtime voice is not ready; local typed voice-command intake can still route work.'
+        : 'Local typed voice-command intake is ready for no-mic preview or fallback use.',
+      180,
+    ),
+    next: compactRecordText(
+      fallbackReady
+        ? fallback.next || 'Use npm run voice with a quoted request while Realtime is unavailable.'
+        : 'Use npm run voice when you want no-mic intake, or start Realtime when provider health is ready.',
+      220,
+    ),
+    input: {
+      endpoint: '/api/voice/command',
+      historyEndpoint: '/api/voice/history',
+      cliCommand: 'npm run voice -- "..."',
+      historyCommand: 'npm run config -- --print-voice-history',
+    },
+    history: {
+      count: history.count,
+      latest: latest
+        ? {
+            id: latest.id,
+            timestamp: latest.timestamp,
+            source: latest.source,
+            lane: latest.lane,
+            queued: latest.queued,
+            executed: latest.executed,
+            transcriptPreview: compactRecordText(latest.transcriptPreview, 140),
+            contextSummary: compactRecordText(latest.contextSummary, 140),
+          }
+        : null,
+    },
+    privacy: history.privacy,
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      storesScreenImage: false,
+      storesClipboardText: false,
+      storesAccessibilityNodes: false,
+      speaksWithMacTts: Boolean(fallback.safety?.speaksWithMacTts),
+      screenContextMetadataOnly: true,
+      accessibilityOutlineOnly: true,
+    },
+  };
+}
+
 function safeUrlHost(value = '') {
   try {
     return value ? new URL(String(value)).host : '';
@@ -29663,6 +29723,7 @@ function petStatusSnapshot() {
   const presence = petPresenceStatusSnapshot(rawPresence);
   const trafficLight = petTrafficLightSnapshot({ presence });
   const screenFrame = latestScreenSnapshot();
+  const rawVoiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const allowedTopLevel = [
     'pet',
     'api',
@@ -29672,6 +29733,7 @@ function petStatusSnapshot() {
     'presence',
     'conversation',
     'voiceHealth',
+    'localVoice',
     'progressVersion',
     'wake',
     'speech',
@@ -29751,7 +29813,7 @@ function petStatusSnapshot() {
     presence,
     conversation: petConversationSnapshot(conversation),
     voiceHealth: (() => {
-      const health = realtimeVoiceHealthSnapshot({ conversation });
+      const health = rawVoiceHealth;
       const fallback = health.fallback || {};
       return {
         ok: Boolean(health.ok),
@@ -29781,6 +29843,7 @@ function petStatusSnapshot() {
         },
       };
     })(),
+    localVoice: localVoiceStatusSnapshot({ conversation, voiceHealth: rawVoiceHealth }),
     progressVersion: workProgressSnapshot(),
     wake: petWakeSnapshot(wake),
     speech: speechStateSnapshot(),

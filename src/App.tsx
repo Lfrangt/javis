@@ -92,6 +92,53 @@ type RealtimeVoiceHealth = {
   lastError?: string
 }
 
+type LocalVoiceStatus = {
+  version: number
+  available: boolean
+  mode: 'standby' | 'fallback_ready' | string
+  label: string
+  summary: string
+  next: string
+  input: {
+    endpoint: string
+    historyEndpoint: string
+    cliCommand: string
+    historyCommand: string
+  }
+  history: {
+    count: number
+    latest: null | {
+      id: string
+      timestamp: string
+      source: string
+      lane: string
+      queued: boolean
+      executed: boolean
+      transcriptPreview: string
+      contextSummary: string
+    }
+  }
+  privacy: {
+    localOnly: boolean
+    transcriptPreviewOnly: boolean
+    noRawAudio: boolean
+    noScreenImages: boolean
+    noClipboardText: boolean
+    noAccessibilityNodes: boolean
+  }
+  safety: {
+    startsMicrophone: boolean
+    usesRealtime: boolean
+    storesRawAudio: boolean
+    storesScreenImage: boolean
+    storesClipboardText: boolean
+    storesAccessibilityNodes: boolean
+    speaksWithMacTts: boolean
+    screenContextMetadataOnly: boolean
+    accessibilityOutlineOnly: boolean
+  }
+}
+
 type RealtimeProviderProbeEvent = {
   runId: string
   type: string
@@ -549,6 +596,7 @@ type Status = {
   presence?: PresenceState
   conversation?: ConversationState
   voiceHealth?: RealtimeVoiceHealth
+  localVoice?: LocalVoiceStatus
   progressVersion?: ProgressVersion
   speech?: {
     available: boolean
@@ -644,6 +692,7 @@ type PetStatusPayload = Pick<
   | 'presence'
   | 'conversation'
   | 'voiceHealth'
+  | 'localVoice'
   | 'progressVersion'
   | 'speech'
   | 'wake'
@@ -1544,6 +1593,7 @@ function App() {
               presence: next.presence,
               conversation: next.conversation,
               voiceHealth: next.voiceHealth,
+              localVoice: next.localVoice,
               progressVersion: next.progressVersion,
               wake: next.wake,
               speech: next.speech,

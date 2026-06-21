@@ -54,6 +54,7 @@ export default {
     const trafficUrgency = new Set(['quiet', 'ambient', 'active', 'interrupt']);
     const trafficPulses = new Set(['off', 'slow', 'live', 'attention']);
     const voiceFallback = p.voiceHealth?.fallback || {};
+    const localVoice = p.localVoice || {};
     const raw = JSON.stringify(p);
     const rawBytes = Buffer.byteLength(raw, 'utf8');
     const hasForbiddenNestedKey = (value, forbidden) => {
@@ -101,6 +102,25 @@ export default {
         voiceFallback.safety?.startsMicrophone === false &&
         voiceFallback.safety?.usesRealtime === false &&
         voiceFallback.safety?.storesRawAudio === false &&
+        localVoice.available === true &&
+        ['standby', 'fallback_ready'].includes(localVoice.mode) &&
+        localVoice.input?.endpoint === '/api/voice/command' &&
+        localVoice.input?.historyEndpoint === '/api/voice/history' &&
+        String(localVoice.input?.cliCommand || '').includes('npm run voice') &&
+        String(localVoice.input?.historyCommand || '').includes('--print-voice-history') &&
+        localVoice.privacy?.localOnly === true &&
+        localVoice.privacy?.transcriptPreviewOnly === true &&
+        localVoice.privacy?.noRawAudio === true &&
+        localVoice.privacy?.noScreenImages === true &&
+        localVoice.privacy?.noClipboardText === true &&
+        localVoice.privacy?.noAccessibilityNodes === true &&
+        localVoice.safety?.startsMicrophone === false &&
+        localVoice.safety?.usesRealtime === false &&
+        localVoice.safety?.storesRawAudio === false &&
+        localVoice.safety?.storesScreenImage === false &&
+        localVoice.safety?.storesClipboardText === false &&
+        localVoice.safety?.storesAccessibilityNodes === false &&
+        (localVoice.history?.latest === null || typeof localVoice.history?.latest?.transcriptPreview === 'string') &&
         p.window?.mode &&
         p.presence?.intervention?.passiveByDefault === true &&
         p.presence?.intervention?.requiresUserIntent === true &&
@@ -112,7 +132,7 @@ export default {
         unexpectedTopLevel.length === 0 &&
         !hasForbiddenNestedKey(p, forbiddenNestedKeys) &&
         queue.every((job) => !Object.prototype.hasOwnProperty.call(job, 'log') && !Object.prototype.hasOwnProperty.call(job, 'result'))
-        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${traffic.color}/${traffic.state} · ${p.presence.mode} · ${rawBytes}/${contract.maxTargetBytes} bytes`)
+        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${traffic.color}/${traffic.state} · ${p.presence.mode} · localVoice=${localVoice.mode} · ${rawBytes}/${contract.maxTargetBytes} bytes`)
         : fail('resident.pet_status_lightweight', 'Pet status lightweight payload', `expected slim pet payload, got ${pet.status}`, {
           forbiddenTopLevel,
           unexpectedTopLevel,
@@ -123,6 +143,7 @@ export default {
           pet: p.pet,
           traffic,
           voiceFallback,
+          localVoice,
         }),
     );
 

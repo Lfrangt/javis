@@ -139,6 +139,8 @@ curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/voice/history?limit=1
 
 The history is local and sanitized for recovery/debugging: it keeps transcript previews, transcript length, lane/status, route/job/workflow ids, and metadata-only context summaries. It does not store or return raw audio, screenshots, clipboard text, browser page bodies, or full Accessibility node payloads.
 
+The tiny desktop pet can also read a compact `localVoice` state from `/api/pet/status`. It is not a log viewer: it only says whether no-mic typed voice-command intake is on standby or acting as fallback, lists `/api/voice/command`, `npm run voice -- "..."`, and the history command, and includes at most the latest sanitized transcript preview plus metadata summary.
+
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
 ```bash
