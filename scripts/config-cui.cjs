@@ -1053,6 +1053,7 @@ function printVoiceStandby(result) {
   }
   console.log('\nCommands');
   console.log('- standby: npm run voice:standby');
+  console.log('- primary action API: POST /api/voice/standby {"execute":false|true}');
   console.log('- local loop: npm run voice:chat');
   console.log('- one shot: npm run voice -- "..."');
   console.log('- provider probe: npm run dogfood:realtime-provider-probe');

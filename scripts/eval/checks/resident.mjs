@@ -141,6 +141,33 @@ export default {
         }),
     );
 
+    const voiceStandbyPrimaryPreview = await ctx.api('/api/voice/standby', {
+      method: 'POST',
+      body: {
+        execute: false,
+        source: 'eval_resident_voice_standby_primary_preview',
+      },
+      timeoutMs: 10000,
+    });
+    const voiceStandbyPrimary = voiceStandbyPrimaryPreview.data || {};
+    out.push(
+      voiceStandbyPrimaryPreview.ok &&
+        voiceStandbyPrimary.ok === true &&
+        voiceStandbyPrimary.executed === false &&
+        voiceStandbyPrimary.mode === voiceStandby.mode &&
+        voiceStandbyPrimary.primaryAction?.id === voiceStandby.primaryAction?.id &&
+        voiceStandbyPrimary.action?.executed === false &&
+        voiceStandbyPrimary.safety?.startsMicrophone === false &&
+        voiceStandbyPrimary.safety?.usesRealtime === false &&
+        voiceStandbyPrimary.safety?.storesRawAudio === false &&
+        voiceStandbyPrimary.safety?.opensTerminal === false
+        ? ok('resident.voice_standby_primary_preview', 'Voice standby primary action preview', `${voiceStandbyPrimary.mode} · primary=${voiceStandbyPrimary.primaryAction?.id}`)
+        : fail('resident.voice_standby_primary_preview', 'Voice standby primary action preview', 'expected POST /api/voice/standby preview to prepare the current primary voice action without side effects', {
+          status: voiceStandbyPrimaryPreview.status,
+          voiceStandbyPrimary,
+        }),
+    );
+
     const keepAwakeStatus = await ctx.api('/api/keep-awake/status');
     const keepAwake = keepAwakeStatus.data?.keepAwake || {};
     const keepAwakePreview = await ctx.api('/api/keep-awake/start', {

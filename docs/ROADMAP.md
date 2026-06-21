@@ -31,6 +31,7 @@
 - Sanitized voice-command history in CUI/API for recovery/debugging without putting logs on the desktop pet.
 - Lightweight local voice standby state in `/api/pet/status` so the notch capsule can reflect no-mic fallback readiness without becoming a dashboard.
 - Quota-aware local loop opener: `/api/pet/status` now tells the compact capsule to open `npm run voice:chat` in Terminal through `/api/voice/open-local-loop` when Realtime is blocked or warning, keeping the pet compact and avoiding repeated microphone startup attempts.
+- Voice standby primary action endpoint: `POST /api/voice/standby` now previews or runs the current primary voice entry action, opening the local no-mic `voice:chat` loop when Realtime is blocked while refusing server-side microphone starts.
 - Quiet fallback-ready pet state: warning-level Realtime provider failures with local no-mic fallback available now map to a yellow ambient traffic light instead of red interrupt attention; detailed recovery stays in CUI/API.
 - Desktop pet consumes resident presence as a stable 148x40 red/yellow/green traffic-light Dynamic Island capsule instead of showing diagnostic chips.
 - Desktop pet uses a lightweight `/api/pet/status` lane for parked state with no raw screen image, model list, learning profile, routing history, workflow logs, or runtime data directory; full doctor/config/briefing/context checks stay in CUI, manual refresh, or slow expanded-panel refresh.

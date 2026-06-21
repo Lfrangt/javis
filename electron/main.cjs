@@ -25673,6 +25673,67 @@ function voiceStandbySnapshot(options = {}) {
   };
 }
 
+function runVoiceStandbyPrimaryAction(options = {}) {
+  const conversation = conversationStateSnapshot();
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const standby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
+  const primaryAction = standby.primaryAction || {};
+  const execute = options.execute === true;
+  const source = options.source || 'api_voice_standby';
+
+  if (primaryAction.id === 'open_local_voice_loop') {
+    const action = openLocalVoiceLoop(source, { execute });
+    return {
+      ok: action.ok !== false,
+      executed: Boolean(action.executed),
+      mode: standby.mode,
+      primaryAction,
+      standby,
+      action,
+      output: action.output,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        opensTerminal: Boolean(action.safety?.opensTerminal),
+      },
+    };
+  }
+
+  const preview = {
+    ok: !execute,
+    executed: false,
+    mode: standby.mode,
+    primaryAction,
+    standby,
+    action: {
+      ok: !execute,
+      executed: false,
+      reason: execute ? 'mic_confirmation_required' : 'preview_only',
+      output: execute
+        ? 'Start Realtime from the renderer pet with explicit microphone confirmation.'
+        : 'Prepared Realtime voice start; no microphone was opened.',
+    },
+    output: execute
+      ? 'Start Realtime from the renderer pet with explicit microphone confirmation.'
+      : 'Prepared Realtime voice start; no microphone was opened.',
+    safety: {
+      startsMicrophone: false,
+      requiresMicConfirmation: true,
+      usesRealtime: Boolean(primaryAction.usesRealtime),
+      storesRawAudio: false,
+      opensTerminal: false,
+    },
+  };
+  appendAudit(execute ? 'voice_standby.primary_blocked' : 'voice_standby.primary_previewed', {
+    source: String(source || 'api').slice(0, 80),
+    primaryAction: primaryAction.id || '',
+    reason: preview.action.reason,
+  });
+  return preview;
+}
+
 function safeUrlHost(value = '') {
   try {
     return value ? new URL(String(value)).host : '';
@@ -53851,6 +53912,15 @@ function startApiServer() {
     const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
     const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
     res.json({ standby: voiceStandbySnapshot({ conversation, voiceHealth, localVoice }) });
+  });
+
+  api.post('/api/voice/standby', (req, res) => {
+    const result = runVoiceStandbyPrimaryAction({
+      ...(req.body || {}),
+      execute: req.body?.execute === true,
+      source: req.body?.source || 'api_voice_standby',
+    });
+    res.status(result.ok === false ? 409 : 200).json(result);
   });
 
   api.get('/api/doctor/report', async (_req, res) => {
