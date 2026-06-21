@@ -326,6 +326,9 @@ why an action ran, why it skipped, which candidates were auto-executable, and wh
 If no user-visible action is auto-executable, it can run a cooldown-gated read-only maintenance snapshot
 that records resident health, doctor/readiness state, worker progress, learning status, Realtime status,
 and collaboration state as an internal workflow. Tune the cooldown with `JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS`.
+Record & Replay teaching packets are also no-recording local JSON preparation artifacts; autopilot can
+save one when stale, and reports the cooldown with `record_replay_teaching_fresh` while it is fresh.
+Tune that freshness window with `JAVIS_RECORD_REPLAY_TEACHING_FRESH_MS`.
 
 Use options `19`-`26` for local learning maintenance: refresh the inferred profile, save it as an
 explicit local memory, pause/resume learning, manage exclusions, delete inferred learning data, inspect

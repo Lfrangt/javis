@@ -308,6 +308,26 @@ export default {
         ? ok('learning.record_replay_teaching_api', 'Record & Replay teaching packet API', `${teachingList.data.packets.items.length} saved packet(s)`)
         : fail('learning.record_replay_teaching_api', 'Record & Replay teaching packet API', 'saved teaching packet should be listable with safe metadata', teachingList.data),
     );
+
+    const teachingAutopilot = await ctx.api('/api/autopilot');
+    const teachingAutopilotDecision = teachingAutopilot.data?.decisionPreview || {};
+    const teachingAutopilotFreshness = teachingAutopilotDecision.recordReplayTeaching?.freshness || {};
+    const teachingWaitingFor = Array.isArray(teachingAutopilotDecision.waitingFor)
+      ? teachingAutopilotDecision.waitingFor
+      : [];
+    const teachingFreshWaitingExpected = teachingAutopilotDecision.candidateCounts?.autoExecutable === 0;
+    out.push(
+      teachingAutopilot.ok &&
+        teachingAutopilotFreshness.fresh === true &&
+        teachingAutopilotFreshness.latest?.file === teachingRunResult.metadata?.file &&
+        teachingAutopilotFreshness.waitMs > 0 &&
+        (!teachingFreshWaitingExpected || teachingWaitingFor.some((item) => item.id === 'record_replay_teaching_fresh'))
+        ? ok('learning.record_replay_autopilot_freshness', 'Record & Replay autopilot freshness', `${teachingAutopilotFreshness.waitLabel || 'fresh'} cooldown after saved packet`)
+        : fail('learning.record_replay_autopilot_freshness', 'Record & Replay autopilot freshness', 'autopilot should expose fresh no-recording teaching packet cooldown state', {
+          teachingRun: teachingRun.data,
+          autopilot: teachingAutopilot.data,
+        }),
+    );
     try {
       const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-record-replay-teaching'], {
         cwd: process.cwd(),

@@ -102,6 +102,7 @@ const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000,
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const REALTIME_PREFLIGHT_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PREFLIGHT_FRESH_MS || 900000)));
+const RECORD_REPLAY_TEACHING_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_RECORD_REPLAY_TEACHING_FRESH_MS || 43200000)));
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
 const RENDERER_DOGFOOD_EVENT_NAME = 'javis:realtime-dogfood';
@@ -8061,12 +8062,81 @@ function latestRecordReplayTeachingPacket() {
   return list.items[0] || null;
 }
 
-function recordReplayTeachingPacketFresh(maxAgeMs = 12 * 60 * 60 * 1000) {
+function recordReplayTeachingPacketFreshness(maxAgeMs = RECORD_REPLAY_TEACHING_FRESH_MS) {
   const latest = latestRecordReplayTeachingPacket();
-  if (!latest?.savedAt && !latest?.generatedAt) return null;
+  const cooldownMs = Math.max(60000, Number(maxAgeMs || RECORD_REPLAY_TEACHING_FRESH_MS));
+  if (!latest?.savedAt && !latest?.generatedAt) {
+    return {
+      fresh: false,
+      cooldownMs,
+      ageMs: null,
+      waitMs: 0,
+      ageLabel: '',
+      waitLabel: '',
+      latest: null,
+    };
+  }
   const timestamp = Date.parse(latest.savedAt || latest.generatedAt);
-  if (!Number.isFinite(timestamp)) return null;
-  return Date.now() - timestamp <= Math.max(60000, Number(maxAgeMs || 0)) ? latest : null;
+  if (!Number.isFinite(timestamp)) {
+    return {
+      fresh: false,
+      cooldownMs,
+      ageMs: null,
+      waitMs: 0,
+      ageLabel: '',
+      waitLabel: '',
+      latest: null,
+    };
+  }
+  const ageMs = Math.max(0, Date.now() - timestamp);
+  const waitMs = Math.max(0, cooldownMs - ageMs);
+  return {
+    fresh: waitMs > 0,
+    cooldownMs,
+    ageMs,
+    waitMs,
+    ageLabel: autopilotWaitDurationLabel(ageMs),
+    waitLabel: autopilotWaitDurationLabel(waitMs),
+    latest: {
+      id: compactRecordText(latest.id || '', 120),
+      at: new Date(timestamp).toISOString(),
+      source: compactRecordText(latest.source || '', 80),
+      file: compactRecordText(latest.file || '', 300),
+      summary: compactRecordText(latest.summary || '', 240),
+      candidate: latest.candidate || {},
+    },
+  };
+}
+
+function compactRecordReplayTeachingFreshness(freshness = null) {
+  if (!freshness || typeof freshness !== 'object') return null;
+  return {
+    fresh: Boolean(freshness.fresh),
+    cooldownMs: Math.max(0, Number(freshness.cooldownMs || 0)),
+    ageMs: freshness.ageMs === null || freshness.ageMs === undefined ? null : Math.max(0, Number(freshness.ageMs || 0)),
+    waitMs: Math.max(0, Number(freshness.waitMs || 0)),
+    ageLabel: compactRecordText(freshness.ageLabel || '', 40),
+    waitLabel: compactRecordText(freshness.waitLabel || '', 40),
+    latest: freshness.latest
+      ? {
+        id: compactRecordText(freshness.latest.id || '', 120),
+        at: compactRecordText(freshness.latest.at || '', 80),
+        source: compactRecordText(freshness.latest.source || '', 80),
+        file: compactRecordText(freshness.latest.file || '', 220),
+        summary: compactRecordText(freshness.latest.summary || '', 180),
+        candidate: {
+          id: compactRecordText(freshness.latest.candidate?.id || '', 120),
+          label: compactRecordText(freshness.latest.candidate?.label || '', 160),
+          kind: compactRecordText(freshness.latest.candidate?.kind || '', 80),
+        },
+      }
+      : null,
+  };
+}
+
+function recordReplayTeachingPacketFresh(maxAgeMs = RECORD_REPLAY_TEACHING_FRESH_MS) {
+  const freshness = recordReplayTeachingPacketFreshness(maxAgeMs);
+  return freshness.fresh ? freshness.latest : null;
 }
 
 function recordReplayTeachingPacketSnapshot(options = {}) {
@@ -8285,7 +8355,8 @@ function saveRecordReplayTeachingPacket(options = {}) {
 
 function recordReplayTeachingPacketWorkNextAction(options = {}) {
   const force = options.force === true || String(options.force || '').toLowerCase() === 'true';
-  const fresh = force ? null : recordReplayTeachingPacketFresh(options.maxAgeMs || 12 * 60 * 60 * 1000);
+  const freshness = recordReplayTeachingPacketFreshness(options.maxAgeMs || RECORD_REPLAY_TEACHING_FRESH_MS);
+  const fresh = force ? null : freshness.fresh ? freshness.latest : null;
   if (fresh) return null;
   const packet = recordReplayTeachingPacketSnapshot({
     source: options.source || 'work_next_record_replay_teaching',
@@ -8304,6 +8375,7 @@ function recordReplayTeachingPacketWorkNextAction(options = {}) {
     recordReplayPreparation: 'teaching_packet',
     candidateId: packet.candidate?.id || '',
     candidateKind: packet.candidate?.kind || '',
+    freshness: compactRecordReplayTeachingFreshness(freshness),
     teachingPacket: {
       id: packet.id,
       summary: packet.summary,
@@ -29435,7 +29507,7 @@ function pushAutopilotWaitingCondition(list, item) {
   });
 }
 
-function autopilotWaitingConditions({ reason = '', candidates = [], selectedAction = null, firstAction = null, maintenance = null } = {}) {
+function autopilotWaitingConditions({ reason = '', candidates = [], selectedAction = null, firstAction = null, maintenance = null, recordReplayTeaching = null } = {}) {
   if (selectedAction?.decision?.executable && !reason) return [];
   const waiting = [];
   if (!AUTOPILOT_ENABLED) {
@@ -29520,6 +29592,26 @@ function autopilotWaitingConditions({ reason = '', candidates = [], selectedActi
     });
   }
 
+  const recordReplayTeachingFresh = recordReplayTeaching?.freshness?.fresh === true
+    ? recordReplayTeaching.freshness
+    : null;
+  if (recordReplayTeachingFresh && !candidates.some((candidate) => candidate.id === 'record_replay:prepare_teaching_packet')) {
+    const waitMs = Math.max(0, Number(recordReplayTeachingFresh.waitMs || 0));
+    const waitLabel = recordReplayTeachingFresh.waitLabel || autopilotWaitDurationLabel(waitMs);
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'record_replay_teaching_fresh',
+      label: 'Teaching packet cooldown',
+      summary: waitLabel
+        ? `Record & Replay teaching packet is fresh; wait about ${waitLabel} before saving another no-recording packet.`
+        : 'Record & Replay teaching packet is fresh; skip saving another packet for now.',
+      status: 'cooldown',
+      actionId: 'record_replay:prepare_teaching_packet',
+      actionSource: 'record_replay',
+      waitMs,
+      waitLabel,
+    });
+  }
+
   const noExecutableCandidate = candidates.length && !candidates.some((candidate) => candidate.decision?.executable);
   if (noExecutableCandidate) {
     pushAutopilotWaitingCondition(waiting, {
@@ -29594,6 +29686,7 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
   const selected = selectedAction ? autopilotActionDecision(selectedAction, actions.indexOf(selectedAction)) : null;
   const first = firstAction ? autopilotActionDecision(firstAction, actions.indexOf(firstAction)) : null;
   const maintenance = briefing?.maintenance || maintenanceStateSnapshot();
+  const recordReplayTeaching = briefing?.recordReplayTeaching || null;
   const candidateCounts = autopilotCandidateCounts(candidates);
   const waitingFor = autopilotWaitingConditions({
     reason,
@@ -29601,6 +29694,7 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
     selectedAction: selected,
     firstAction: first,
     maintenance,
+    recordReplayTeaching,
   });
   const skipSummary = autopilotSkipSummary(reason, waitingFor, selected);
   return {
@@ -29621,6 +29715,7 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
     waitingFor,
     skipSummary: compactRecordText(skipSummary || '', 500),
     maintenance,
+    recordReplayTeaching,
     nextWait: autopilotNextWaitReason(reason, selectedAction, firstAction),
   };
 }
@@ -29681,6 +29776,7 @@ function autopilotVoiceStatusSnapshot(options = {}) {
     lastResult: compactRecordText(state.lastResult || '', 500),
     lastError: compactRecordText(state.lastError || '', 500),
     maintenance: state.maintenance,
+    recordReplayTeaching: preview.recordReplayTeaching || null,
     canActNow,
     reason,
     nextWait: preview.nextWait,
@@ -29810,6 +29906,19 @@ function compactAutopilotMaintenanceForVoice(maintenance = null) {
   };
 }
 
+function compactAutopilotRecordReplayTeachingForVoice(state = null) {
+  if (!state || typeof state !== 'object') return null;
+  const freshness = state.freshness || {};
+  return {
+    actionAvailable: Boolean(state.actionAvailable),
+    fresh: Boolean(freshness.fresh),
+    waitMs: boundedCount(freshness.waitMs, 7 * 24 * 60 * 60 * 1000),
+    waitLabel: compactRecordText(freshness.waitLabel || '', 40),
+    ageLabel: compactRecordText(freshness.ageLabel || '', 40),
+    latestCandidate: compactRecordText(freshness.latest?.candidate?.label || '', 140),
+  };
+}
+
 function autopilotStatusVoicePayload(status = {}, options = {}) {
   const candidates = Array.isArray(status.candidates) ? status.candidates : [];
   const waitingFor = Array.isArray(status.waitingFor) ? status.waitingFor : [];
@@ -29829,6 +29938,7 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
     lastResult: compactRecordText(status.lastResult || '', 200),
     lastError: compactRecordText(status.lastError || '', 200),
     maintenance: compactAutopilotMaintenanceForVoice(status.maintenance),
+    recordReplayTeaching: compactAutopilotRecordReplayTeachingForVoice(status.recordReplayTeaching || preview.recordReplayTeaching),
     canActNow: Boolean(status.canActNow),
     reason: compactRecordText(status.reason || '', 120),
     nextWait: compactRecordText(status.nextWait || '', 260),
@@ -29887,6 +29997,7 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
         : [],
       skipSummary: compactRecordText(preview.skipSummary || '', 240),
       maintenance: compactAutopilotMaintenanceForVoice(preview.maintenance),
+      recordReplayTeaching: compactAutopilotRecordReplayTeachingForVoice(preview.recordReplayTeaching),
       nextWait: compactRecordText(preview.nextWait || '', 220),
     },
     nextAction: compactRecordText(status.nextAction || '', 260),
@@ -39887,6 +39998,9 @@ function workflowBriefing(options = {}) {
       maxAgeMs: options.recordReplayTeachingFreshMs,
       candidateLimit: options.recordReplayCandidateLimit || options.candidateLimit || 4,
     });
+  const recordReplayTeachingFreshness = options.includeRecordReplayTeachingPacket === false
+    ? null
+    : recordReplayTeachingPacketFreshness(options.recordReplayTeachingFreshMs || RECORD_REPLAY_TEACHING_FRESH_MS);
   const nextActions = [];
 
   if (readiness.primaryIssue) {
@@ -40124,6 +40238,10 @@ function workflowBriefing(options = {}) {
     followUps,
     availableActions: learningHabitActions,
     realtimeVoice: realtimeWorkbench,
+    recordReplayTeaching: {
+      actionAvailable: Boolean(recordReplayTeachingAction),
+      freshness: compactRecordReplayTeachingFreshness(recordReplayTeachingFreshness),
+    },
     maintenance,
     routingLedger,
     collaboration,
