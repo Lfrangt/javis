@@ -23616,6 +23616,107 @@ function voiceCommandAck(route = {}, options = {}) {
   return `收到。我会走${laneName}。${reason}`;
 }
 
+function safeUrlHost(value = '') {
+  try {
+    return value ? new URL(String(value)).host : '';
+  } catch {
+    return '';
+  }
+}
+
+function voiceCommandContextPrompt(context = {}) {
+  const lines = [
+    'Local Mac context for this voice command:',
+    `- Frontmost app: ${context.frontmost?.app || 'unknown'}`,
+    context.frontmost?.windowTitle ? `- Frontmost window: ${context.frontmost.windowTitle}` : '',
+    context.browser?.available ? `- Browser: ${context.browser.app || 'browser'} · ${context.browser.title || 'untitled'} · ${context.browser.host || 'unknown host'}` : '',
+    context.screen?.available
+      ? `- Screen: ${context.screen.width || 0}x${context.screen.height || 0}, age ${context.screen.ageMs}ms, privacy ${context.screen.privacyMode || 'unknown'}`
+      : '- Screen: no current frame',
+    context.clipboard?.hasText ? `- Clipboard: text present (${context.clipboard.length || 0} chars), content not attached` : '- Clipboard: no text content attached',
+    context.pendingApprovals?.count ? `- Pending approvals: ${context.pendingApprovals.count}` : '',
+    context.activeJobs?.count ? `- Active jobs: ${context.activeJobs.count}` : '',
+    'Do not infer unseen details from this metadata. Ask or observe if the task requires private contents, exact UI state, or irreversible action.',
+  ].filter(Boolean);
+  return lines.join('\n');
+}
+
+async function voiceCommandContextSnapshot(options = {}) {
+  const includeScreen = booleanOption(options.includeScreen);
+  const context = {
+    ok: true,
+    metadataOnly: true,
+    includesScreenImage: false,
+    includesClipboardText: false,
+    includeScreenRequested: includeScreen,
+    capturedAt: new Date().toISOString(),
+    frontmost: { available: false, app: '', windowTitle: '' },
+    browser: { available: false, app: '', title: '', host: '', source: '', supported: false },
+    screen: { available: false },
+    clipboard: { hasText: false, length: 0 },
+    activeJobs: { count: 0 },
+    pendingApprovals: { count: 0 },
+    prompt: '',
+    summary: '',
+  };
+  try {
+    const mac = await macContextSnapshot({ includeClipboardText: false });
+    const frontmost = mac.frontmost || {};
+    const browser = mac.browser || {};
+    const screen = includeScreen ? mac.screen || latestScreenSnapshot() : null;
+    context.frontmost = {
+      available: Boolean(frontmost.available),
+      app: compactRecordText(frontmost.app || '', 80),
+      windowTitle: compactRecordText(frontmost.windowTitle || '', 160),
+    };
+    context.browser = {
+      available: Boolean(browser.available),
+      supported: Boolean(browser.supported),
+      app: compactRecordText(browser.app || '', 80),
+      title: compactRecordText(browser.title || '', 180),
+      host: safeUrlHost(browser.url || ''),
+      source: compactRecordText(browser.source || '', 40),
+    };
+    context.clipboard = {
+      hasText: Boolean(mac.clipboard?.hasText),
+      length: Number(mac.clipboard?.length || 0),
+    };
+    context.activeJobs = {
+      count: Array.isArray(mac.activeJobs) ? mac.activeJobs.length : 0,
+    };
+    context.pendingApprovals = {
+      count: Array.isArray(mac.pendingApprovals) ? mac.pendingApprovals.length : 0,
+    };
+    if (screen) {
+      const ageMs = screen.updatedAt ? Math.max(0, Date.now() - Number(screen.updatedAt)) : null;
+      context.screen = {
+        available: true,
+        width: Number(screen.width || 0),
+        height: Number(screen.height || 0),
+        ageMs,
+        fresh: ageMs !== null ? ageMs <= 30000 : false,
+        privacyMode: screen.privacy?.mode || '',
+        realtimeAllowed: screen.privacy?.realtimeAllowed !== false,
+        source: compactRecordText(screen.source || '', 80),
+        displayName: compactRecordText(screen.displayName || '', 80),
+      };
+    }
+    context.summary = [
+      context.frontmost.app ? `${context.frontmost.app}${context.frontmost.windowTitle ? ` · ${context.frontmost.windowTitle}` : ''}` : '',
+      context.browser.available ? `${context.browser.title || context.browser.app} · ${context.browser.host}` : '',
+      context.screen.available ? `screen ${context.screen.width}x${context.screen.height}, ${context.screen.privacyMode || 'privacy unknown'}` : '',
+    ].filter(Boolean).join(' | ') || 'metadata-only local context unavailable';
+    context.prompt = voiceCommandContextPrompt(context);
+    return context;
+  } catch (error) {
+    context.ok = false;
+    context.error = error instanceof Error ? error.message : String(error);
+    context.summary = 'metadata-only local context unavailable';
+    context.prompt = voiceCommandContextPrompt(context);
+    return context;
+  }
+}
+
 async function runVoiceCommand(options = {}) {
   const transcript = compactRecordText(options.transcript || options.message || options.text || '', 1600);
   if (!transcript) throw new Error('Missing transcript.');
@@ -23627,10 +23728,12 @@ async function runVoiceCommand(options = {}) {
   const confirmSpeak = booleanOption(options.confirmSpeak || options.confirmAudio || options.confirmSpeech);
   const mode = options.mode || options.lane;
   const source = String(options.source || 'voice_command').slice(0, 80);
+  const contextSnapshot = await voiceCommandContextSnapshot({ includeScreen });
   const baseRouteOptions = {
     message: transcript,
     execute: false,
     includeScreen,
+    contextText: contextSnapshot.prompt,
     mode,
     useMemory,
     memoryLimit: options.memoryLimit,
@@ -23649,6 +23752,7 @@ async function runVoiceCommand(options = {}) {
     useMemory,
     speakRequested,
     confirmSpeak,
+    hasContext: Boolean(contextSnapshot.prompt),
   });
 
   const previewRoute = await routeTask(baseRouteOptions);
@@ -23694,6 +23798,7 @@ async function runVoiceCommand(options = {}) {
     heldReason,
     route,
     routePreview: previewRoute,
+    context: contextSnapshot,
     spokenAck,
     speech,
     safety: {
@@ -23701,6 +23806,7 @@ async function runVoiceCommand(options = {}) {
       usesRealtime: false,
       storesRawAudio: false,
       usesMemory: useMemory,
+      usesContextMetadata: Boolean(contextSnapshot.prompt),
       callsOpenAIImmediately: Boolean(canExecute && previewLane === 'quick' && allowCloudQuick),
       mayQueueCloudModel: Boolean(canExecute && previewLane === 'background'),
       mayQueueLocalWorker: Boolean(canExecute && ['codex', 'claude'].includes(previewLane)),
@@ -23718,6 +23824,7 @@ async function runVoiceCommand(options = {}) {
     lane: route.decision?.lane || '',
     queued: Boolean(route.queued || route.job?.id),
     usesMemory: useMemory,
+    hasContext: Boolean(contextSnapshot.prompt),
     speechDryRun: result.safety.speechDryRun,
     speaksAudio: result.safety.speaksAudio,
   });
@@ -23845,6 +23952,7 @@ async function routeTask(options = {}) {
   const taskInput = [
     memoryContext.prompt,
     formatSkillRecallPlanForPrompt(skillRecallPlan),
+    compactRecordText(options.contextText || options.localContext || '', 3000),
     'Task:',
     task,
   ].filter(Boolean).join('\n\n');

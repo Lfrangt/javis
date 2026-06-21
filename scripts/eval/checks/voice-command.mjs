@@ -37,15 +37,51 @@ export default {
         previewData.ok === true &&
         previewData.channel === 'local_voice_command' &&
         previewData.executed === false &&
+        previewData.context?.metadataOnly === true &&
+        previewData.context?.includesScreenImage === false &&
+        previewData.context?.includesClipboardText === false &&
+        typeof previewData.context?.summary === 'string' &&
+        previewData.context?.prompt?.includes('Local Mac context for this voice command:') &&
         previewData.route?.decision?.lane &&
         previewData.speech?.dryRun === true &&
         previewData.safety?.startsMicrophone === false &&
         previewData.safety?.usesRealtime === false &&
         previewData.safety?.storesRawAudio === false &&
         previewData.safety?.usesMemory === false &&
+        previewData.safety?.usesContextMetadata === true &&
         previewData.safety?.speaksAudio === false
-        ? ok('voice_command.preview', 'Local voice command preview', `${previewData.route.decision.lane} · speech dry-run · no mic/realtime`)
+        ? ok('voice_command.preview', 'Local voice command preview', `${previewData.route.decision.lane} · speech dry-run · context=${previewData.context.summary || 'metadata'} · no mic/realtime`)
         : fail('voice_command.preview', 'Local voice command preview', `POST /api/voice/command ${preview.status}`, preview.data),
+    );
+
+    const screenContext = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '看一下我当前窗口，告诉我应该走哪个工作通道，先不要执行。',
+        execute: false,
+        includeScreen: true,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_screen_context',
+      },
+      timeoutMs: 15000,
+    });
+    const contextData = screenContext.data?.context || {};
+    out.push(
+      screenContext.ok &&
+        screenContext.data?.ok === true &&
+        contextData.metadataOnly === true &&
+        contextData.includeScreenRequested === true &&
+        contextData.includesScreenImage === false &&
+        contextData.includesClipboardText === false &&
+        !('imageDataUrl' in (contextData.screen || {})) &&
+        !('text' in (contextData.clipboard || {})) &&
+        typeof contextData.frontmost?.app === 'string' &&
+        typeof contextData.browser?.host === 'string' &&
+        typeof contextData.prompt === 'string' &&
+        contextData.prompt.includes('Clipboard:')
+        ? ok('voice_command.context_metadata', 'Voice command context metadata', `${contextData.summary || 'metadata'} · screenImage=no clipboardText=no`)
+        : fail('voice_command.context_metadata', 'Voice command context metadata', `expected metadata-only context, got ${screenContext.status}`, screenContext.data),
     );
 
     const quickHeld = await ctx.api('/api/voice/command', {
@@ -93,7 +129,11 @@ export default {
           dogfood.safety?.startsMicrophone === false &&
           dogfood.safety?.usesRealtime === false &&
           dogfood.safety?.storesRawAudio === false &&
-          dogfood.safety?.usesMemory === false
+          dogfood.safety?.usesMemory === false &&
+          dogfood.safety?.usesContextMetadata === true &&
+          dogfood.context?.metadataOnly === true &&
+          dogfood.context?.includesScreenImage === false &&
+          dogfood.context?.includesClipboardText === false
           ? ok('voice_command.dogfood_preview', 'Local voice command dogfood', `${dogfood.route?.lane || '-'} preview with spoken ack dry-run`)
           : fail('voice_command.dogfood_preview', 'Local voice command dogfood', 'dogfood preview missing safety markers', dogfood),
       );

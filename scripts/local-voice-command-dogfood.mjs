@@ -81,6 +81,19 @@ function summarize(data = {}) {
       output: String(route.output || '').slice(0, 180),
     },
     spokenAck: String(data.spokenAck || '').slice(0, 220),
+    context: data.context
+      ? {
+          ok: data.context.ok !== false,
+          metadataOnly: Boolean(data.context.metadataOnly),
+          includesScreenImage: Boolean(data.context.includesScreenImage),
+          includesClipboardText: Boolean(data.context.includesClipboardText),
+          includeScreenRequested: Boolean(data.context.includeScreenRequested),
+          summary: String(data.context.summary || '').slice(0, 220),
+          frontmost: data.context.frontmost || {},
+          browser: data.context.browser || {},
+          screen: data.context.screen || {},
+        }
+      : null,
     speech: data.speech
       ? {
           ok: data.speech.ok !== false,
@@ -127,6 +140,7 @@ async function main() {
     console.log(`Mode: ${payload.execute ? 'execute' : 'preview'} · ok=${result.ok ? 'yes' : 'no'}`);
     console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
     console.log(`Speech: ${result.speech?.dryRun ? 'preview' : result.speech?.speaking ? 'speaking' : 'off'} · microphone=no · realtime=no`);
+    console.log(`Context: ${result.context?.metadataOnly ? 'metadata-only' : 'unavailable'} · ${result.context?.summary || '-'}`);
     console.log(`Ack: ${result.spokenAck}`);
     if (!response.ok) console.log(`Error: HTTP ${response.status}`);
   }

@@ -116,7 +116,7 @@ curl -X POST http://127.0.0.1:3417/api/speech/say \
 
 To intentionally hear the fallback, run `npm run dogfood:local-speech -- --execute --confirm`; the script speaks briefly, then stops the local `say` process. Use `/api/speech/state` and `/api/speech/stop` for direct state and stop controls.
 
-Local voice-command fallback is the no-Realtime intake path. It accepts a transcript, routes it through the normal quick/background/Codex/Claude/local router, and prepares a local spoken acknowledgement without starting a microphone:
+Local voice-command fallback is the no-Realtime intake path. It accepts a transcript, attaches metadata-only Mac context, routes it through the normal quick/background/Codex/Claude/local router, and prepares a local spoken acknowledgement without starting a microphone:
 
 ```bash
 npm run dogfood:voice-command
@@ -126,7 +126,7 @@ curl -X POST http://127.0.0.1:3417/api/voice/command \
   -d '{"transcript":"帮我整理当前工作状态，给我一个三步计划，先不要执行。","execute":false,"speak":true}'
 ```
 
-By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback does not attach local memory or inferred learning unless `useMemory:true` is explicit. Add `confirmSpeak:true` only when you intentionally want local audio. If `execute:true` is used on a quick-lane question, `/api/voice/command` holds the cloud call unless `allowCloudQuick:true` is also set; background/Codex/Claude/local routes can still be queued through the normal policy gates.
+By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback does not attach local memory or inferred learning unless `useMemory:true` is explicit. Its context snapshot is metadata-only: frontmost app/window, browser title/host, screen frame freshness/privacy when `includeScreen:true`, clipboard presence/length only, active-job count, and approval count. It does not attach screenshots, raw screen pixels, clipboard text, raw audio, browser page body, or local learning profile by default. Add `confirmSpeak:true` only when you intentionally want local audio. If `execute:true` is used on a quick-lane question, `/api/voice/command` holds the cloud call unless `allowCloudQuick:true` is also set; background/Codex/Claude/local routes can still be queued through the normal policy gates.
 
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
