@@ -434,6 +434,19 @@ export default {
         : fail('resident.local_voice_loop_preview', 'Local voice loop opener preview', `POST /api/voice/open-local-loop ${localLoopPreview.status}`, localLoopPreview.data),
     );
 
+    const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    const hasLocalLoopDedupe =
+      mainSource.includes('localVoiceLoopRunningSnapshot') &&
+      mainSource.includes('LOCAL_VOICE_LOOP_DEBOUNCE_MS') &&
+      mainSource.includes("appendAudit('local_voice_loop.reused'") &&
+      mainSource.includes('reusedExisting: true') &&
+      mainSource.includes('opensTerminal: false');
+    out.push(
+      hasLocalLoopDedupe
+        ? ok('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'existing or just-opened voice loop is reused instead of opening another Terminal window')
+        : fail('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'expected /api/voice/open-local-loop to reuse existing voice loop and debounce repeat opens'),
+    );
+
     const resident = await ctx.api('/api/resident/status');
     const res = resident.data?.resident;
     out.push(

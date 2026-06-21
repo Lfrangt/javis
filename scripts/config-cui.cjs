@@ -1067,6 +1067,32 @@ async function showVoiceStandby() {
   return result;
 }
 
+function printVoiceStandbyPrimaryAction(result) {
+  const primary = result?.primaryAction || {};
+  const action = result?.action || {};
+  const safety = result?.safety || {};
+  console.log('\nJAVIS Voice Entry');
+  console.log('=================');
+  console.log(`Mode: ${result?.mode || '-'}`);
+  console.log(`Primary: ${primary.label || primary.id || '-'}${primary.command ? ` · ${primary.command}` : ''}${primary.endpoint ? ` · ${primary.endpoint}` : ''}`);
+  console.log(`Executed: ${result?.executed ? 'yes' : 'no'}`);
+  if (result?.output || action.output) console.log(`Output: ${compact(result.output || action.output, 500)}`);
+  console.log(`Safety: starts mic=${safety.startsMicrophone ? 'yes' : 'no'} uses Realtime=${safety.usesRealtime ? 'yes' : 'no'} opens Terminal=${safety.opensTerminal ? 'yes' : 'no'} stores raw audio=${safety.storesRawAudio ? 'yes' : 'no'}`);
+}
+
+async function runVoiceStandbyPrimaryActionFromCli(options = {}) {
+  const execute = options.execute === true;
+  const result = await request('/api/voice/standby', {
+    method: 'POST',
+    body: {
+      execute,
+      source: execute ? 'cui_cli_voice_open' : 'cui_cli_voice_entry_preview',
+    },
+  });
+  printVoiceStandbyPrimaryAction(result);
+  return result;
+}
+
 async function startLocalVoiceCommandLoopFromCui(rl) {
   await showLocalVoiceLoopQuickstart();
   const answer = (await rl.question('\nStart local no-mic command loop now? Press Enter to start, or type NO: ')).trim().toLowerCase();
@@ -4318,6 +4344,16 @@ async function main() {
 
   if (process.argv.includes('--print-voice-standby') || process.argv.includes('--voice-standby') || process.argv.includes('--standby')) {
     await showVoiceStandby();
+    return;
+  }
+
+  if (process.argv.includes('--voice-entry') || process.argv.includes('--preview-voice-entry')) {
+    await runVoiceStandbyPrimaryActionFromCli({ execute: false });
+    return;
+  }
+
+  if (process.argv.includes('--open-voice-entry') || process.argv.includes('--run-voice-entry')) {
+    await runVoiceStandbyPrimaryActionFromCli({ execute: true });
     return;
   }
 

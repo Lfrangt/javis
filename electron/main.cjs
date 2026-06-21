@@ -1,5 +1,5 @@
 const crypto = require('node:crypto');
-const { execFile, spawn } = require('node:child_process');
+const { execFile, execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -1938,6 +1938,58 @@ function openTerminalCommand(command, options = {}) {
   };
 }
 
+const LOCAL_VOICE_LOOP_DEBOUNCE_MS = 5000;
+let lastLocalVoiceLoopOpenAt = 0;
+
+function localVoiceLoopRunningSnapshot() {
+  try {
+    const output = execFileSync('/usr/bin/pgrep', ['-af', 'local-voice-command-dogfood\\.mjs --chat'], {
+      encoding: 'utf8',
+      timeout: 1000,
+    });
+    const lines = output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .filter((line) => !line.includes('/usr/bin/pgrep'));
+    return {
+      running: lines.length > 0,
+      count: lines.length,
+      sample: compactRecordText(lines[0] || '', 180),
+    };
+  } catch {
+    return {
+      running: false,
+      count: 0,
+      sample: '',
+    };
+  }
+}
+
+function focusLocalVoiceLoopTerminal() {
+  const script = [
+    'tell application "Terminal"',
+    '  repeat with w in windows',
+    '    if (name of w contains "npm run voice:chat") or (name of w contains "local-voice-command-dogfood") then',
+    '      set index of w to 1',
+    '      activate',
+    '      return true',
+    '    end if',
+    '  end repeat',
+    '  return false',
+    'end tell',
+  ].join('\n');
+  try {
+    const output = execFileSync('/usr/bin/osascript', ['-e', script], {
+      encoding: 'utf8',
+      timeout: 1500,
+    });
+    return output.trim() === 'true';
+  } catch {
+    return false;
+  }
+}
+
 function openConfigCui(source = 'api') {
   return openTerminalCommand(`cd ${shQuote(process.cwd())} && npm run config:cui`, {
     source,
@@ -1949,9 +2001,10 @@ function openConfigCui(source = 'api') {
 }
 
 function openLocalVoiceLoop(source = 'api', options = {}) {
+  const sourceText = String(source || 'api').slice(0, 80);
   if (options.execute === false) {
     appendAudit('local_voice_loop.previewed', {
-      source: String(source || 'api').slice(0, 80),
+      source: sourceText,
       command: 'npm run voice:chat',
     });
     return {
@@ -1967,13 +2020,43 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
       },
     };
   }
+  const now = Date.now();
+  const running = localVoiceLoopRunningSnapshot();
+  const recentlyOpened = now - lastLocalVoiceLoopOpenAt < LOCAL_VOICE_LOOP_DEBOUNCE_MS;
+  if (running.running || recentlyOpened) {
+    const focused = running.running ? focusLocalVoiceLoopTerminal() : false;
+    appendAudit('local_voice_loop.reused', {
+      source: sourceText,
+      runningCount: running.count,
+      recentlyOpened,
+      focused,
+      sample: running.sample,
+    });
+    return {
+      ok: true,
+      executed: false,
+      reusedExisting: true,
+      output: focused
+        ? 'JAVIS local voice/text loop is already open; focused the existing Terminal window.'
+        : 'JAVIS local voice/text loop is already opening or running; skipped opening another Terminal window.',
+      command: 'npm run voice:chat',
+      existingCount: running.count,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        opensTerminal: false,
+      },
+    };
+  }
+  lastLocalVoiceLoopOpenAt = now;
   return {
     ...openTerminalCommand(`cd ${shQuote(process.cwd())} && npm run voice:chat`, {
-    source,
-    auditType: 'local_voice_loop.opened',
-    auditCommand: 'npm run voice:chat',
-    output: 'Opened JAVIS local voice/text loop in Terminal.',
-    displayCommand: 'npm run voice:chat',
+      source: sourceText,
+      auditType: 'local_voice_loop.opened',
+      auditCommand: 'npm run voice:chat',
+      output: 'Opened JAVIS local voice/text loop in Terminal.',
+      displayCommand: 'npm run voice:chat',
     }),
     executed: true,
     safety: {
