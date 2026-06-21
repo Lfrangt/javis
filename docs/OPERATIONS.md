@@ -521,6 +521,8 @@ screenshots, clipboard text, or page bodies.
 Realtime voice can call `get_learning_distillation` for the same information as a compact payload when
 the user asks what JAVIS has learned, what changed recently, or which learned workflows are reusable.
 
+Use option `BR. Show browser readiness`, or `npm run browser:ready`, to inspect the default browser target, current browser context, CDP bridge status, recovery actions, and browser safety contract. This readiness packet is intentionally read-only: it does not start a browser, execute page JavaScript, read page text, click controls, call OpenAI, or ask which window to use. Browser work defaults to the frontmost supported browser tab, then the first running supported browser tab; explicit page text, DOM reads, and actions still go through `/api/browser/page`, `/api/browser/dom`, and `/api/browser/dom-action`.
+
 Use option `31. Show browser activity`, or `npm run config -- --print-browser-activity`, to inspect the local browser activity summary. Realtime voice can ask for the same data through `get_browser_activity`. This is metadata-only: app, host, title, timestamp, and redacted URL context from ambient observations. It does not store page text, and learning exclusions for apps/sites/folders are applied before the activity summary is built.
 
 Use option `28. Show UI demonstrations` to inspect explicit local demonstrations. Demonstrations are user-started records for repeatable UI workflows; they store notes plus sanitized app/browser/screen/accessibility summaries and a manual-preview playbook, not screenshots or raw clipboard text. Completed demonstrations can become replay plans or reviewable local skill drafts; saving a draft to `~/.agents/skills` requires explicit confirmation.
@@ -617,6 +619,8 @@ curl -X POST http://127.0.0.1:3417/api/browser/workflow \
 curl -X POST http://127.0.0.1:3417/api/browser/workflow \
   -H 'Content-Type: application/json' \
   -d '{"intent":"research","query":"OpenAI Realtime API voice agent WebRTC docs","maxPages":2,"mode":"quick"}'
+npm run browser:ready
+curl http://127.0.0.1:3417/api/browser/readiness
 npm run config -- --print-browser-benchmarks
 curl http://127.0.0.1:3417/api/browser/benchmarks
 ```

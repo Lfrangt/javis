@@ -17,6 +17,26 @@ export default {
         : warn('browser.context', 'Browser context', `GET /api/browser/context ${context.status} ${context.error || ''}`),
     );
 
+    const readiness = await ctx.api('/api/browser/readiness');
+    const r = readiness.data?.readiness;
+    out.push(
+      readiness.ok &&
+        r?.version === 1 &&
+        r?.defaultTarget?.asksWhichWindow === false &&
+        r?.defaultTarget?.mode &&
+        r?.safety?.readOnly === true &&
+        r?.safety?.startsBrowser === false &&
+        r?.safety?.executesBrowserActions === false &&
+        r?.safety?.executesPageJavaScript === false &&
+        r?.safety?.readsPageText === false &&
+        r?.capabilities?.context?.endpoint === '/api/browser/context' &&
+        r?.capabilities?.page?.endpoint === '/api/browser/page' &&
+        r?.commands?.readiness === 'npm run browser:ready' &&
+        Array.isArray(r?.nextActions)
+        ? ok('browser.readiness', 'Browser readiness packet', `${r.status || 'unknown'} · default=${r.defaultTarget.mode} · no window picker`)
+        : fail('browser.readiness', 'Browser readiness packet', `GET /api/browser/readiness ${readiness.status}`, readiness.data),
+    );
+
     const javascript = await ctx.api('/api/browser/javascript');
     const js = javascript.data?.javascript;
     out.push(
@@ -337,6 +357,28 @@ export default {
         ? ok('browser.workflow_benchmarks', 'Browser workflow benchmarks', `${bench.counts.pass}/${bench.counts.total} preview fixture(s) passed`)
         : fail('browser.workflow_benchmarks', 'Browser workflow benchmarks', `GET /api/browser/benchmarks ${benchmarks.status}`, benchmarks.data),
     );
+
+    try {
+      const cuiReady = await execFileAsync('npm', ['run', 'browser:ready'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cuiReady.stdout || ''}\n${cuiReady.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Browser Readiness') &&
+          output.includes('Default target:') &&
+          output.includes('asks window=no') &&
+          output.includes('read-only=yes') &&
+          output.includes('executes JS=no') &&
+          output.includes('readiness: npm run browser:ready')
+          ? ok('browser.cui_readiness', 'Browser CUI readiness', 'npm run browser:ready prints default target, capabilities, commands, and safety')
+          : fail('browser.cui_readiness', 'Browser CUI readiness', 'expected CUI readiness output to print no-window-picker safety and commands', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('browser.cui_readiness', 'Browser CUI readiness', error instanceof Error ? error.message : String(error)));
+    }
 
     try {
       const cuiBench = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-browser-benchmarks'], {

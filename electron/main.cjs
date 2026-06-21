@@ -18543,6 +18543,213 @@ async function browserJavaScriptStatusSnapshot(options = {}) {
   }
 }
 
+function browserReadinessStatus({ context = {}, cdp = {}, pagePolicy = {} } = {}) {
+  if (process.platform !== 'darwin') return 'blocked';
+  if (!pagePolicy.enabled) return 'blocked';
+  if (!context.supported) return 'warning';
+  if (!context.available) return 'warning';
+  if (cdp.enabled) return 'ready';
+  return 'limited';
+}
+
+function browserReadinessLabel(status) {
+  if (status === 'ready') return 'Browser ready';
+  if (status === 'limited') return 'Browser context ready, bridge unverified';
+  if (status === 'blocked') return 'Browser blocked';
+  return 'Browser needs attention';
+}
+
+function browserReadinessNextActions({ context = {}, cdp = {}, supportedRunning = [] } = {}) {
+  const actions = [];
+  if (process.platform !== 'darwin') {
+    actions.push({
+      id: 'use_macos',
+      label: 'Run on macOS',
+      summary: 'Browser context and UI automation currently use macOS browser automation bridges.',
+    });
+    return actions;
+  }
+
+  if (!context.available || !context.supported) {
+    const appName = supportedRunning[0] || 'Google Chrome';
+    actions.push({
+      id: 'open_supported_browser',
+      label: 'Open or focus a supported browser',
+      summary: 'JAVIS defaults to the frontmost supported browser tab, then the first running supported browser tab. No window picker is required.',
+      command: `open -a ${JSON.stringify(appName)}`,
+    });
+    actions.push({
+      id: 'check_context',
+      label: 'Check browser context',
+      endpoint: '/api/browser/context',
+      command: 'curl http://127.0.0.1:3417/api/browser/context',
+    });
+    return actions;
+  }
+
+  actions.push({
+    id: 'read_current_page',
+    label: 'Read current page',
+    endpoint: '/api/browser/page',
+    command: 'curl http://127.0.0.1:3417/api/browser/page',
+  });
+
+  if (cdp.enabled) {
+    actions.push({
+      id: 'read_dom_controls',
+      label: 'Read DOM controls',
+      endpoint: '/api/browser/dom?limit=20',
+      command: 'curl "http://127.0.0.1:3417/api/browser/dom?limit=20"',
+    });
+    return actions;
+  }
+
+  actions.push({
+    id: 'verify_javascript_bridge',
+    label: 'Verify JavaScript bridge',
+    summary: 'Runs the existing bridge check only when explicitly requested; the readiness packet itself does not execute page JavaScript.',
+    endpoint: '/api/browser/javascript',
+    command: 'curl http://127.0.0.1:3417/api/browser/javascript',
+  });
+
+  if (['Google Chrome', 'Google Chrome Canary'].includes(context.app)) {
+    const executable = chromeExecutableForApp(context.app) || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+    actions.push({
+      id: 'start_chrome_devtools_bridge',
+      label: 'Start Chrome DevTools bridge',
+      summary: 'Use this only if Apple Events JavaScript is unavailable and DOM reads need CDP.',
+      command: `${JSON.stringify(executable)} --remote-debugging-port=${CHROME_DEBUG_PORT} --user-data-dir=${JSON.stringify(CHROME_CDP_PROFILE_DIR)} --no-first-run --no-default-browser-check`,
+    });
+  }
+
+  if (SAFARI_BROWSER_APPS.has(context.app)) {
+    actions.push({
+      id: 'enable_safari_javascript_events',
+      label: 'Enable Safari JavaScript bridge',
+      summary: 'Safari requires Develop > Allow JavaScript from Apple Events before DOM reads can execute page JavaScript.',
+    });
+  }
+
+  return actions;
+}
+
+async function browserReadinessSnapshot(options = {}) {
+  const frontmost = await frontmostAppSnapshot();
+  const runningNames = await runningApplicationNames();
+  const requestedApp = String(options.app || '').trim();
+  const context = await browserContextSnapshot({ app: requestedApp, frontmost });
+  const cdp = await cdpStatusSnapshot(context.available && context.supported ? context : {});
+  const supportedRunning = browserAppCandidates(runningNames, requestedApp || frontmost.app);
+  const pagePolicy = actionPolicy.allow?.read_browser_page || {};
+  const controlPolicy = actionPolicy.allow?.browser_control || {};
+  const status = browserReadinessStatus({ context, cdp, pagePolicy });
+  const nextActions = browserReadinessNextActions({ context, cdp, supportedRunning });
+  const defaultTarget = {
+    mode: requestedApp ? 'requested_app' : 'active_or_first_supported_browser',
+    app: context.app || requestedApp || '',
+    source: context.source || 'auto',
+    asksWhichWindow: false,
+    selector: requestedApp
+      ? `requested app: ${requestedApp}`
+      : 'frontmost supported browser tab, then first running supported browser tab',
+    summary: requestedApp
+      ? `Using requested browser app ${requestedApp}.`
+      : 'Uses the current supported browser tab by default; if the frontmost app is not a browser, falls back to the first running supported browser.',
+  };
+  const pageReady = Boolean(pagePolicy.enabled && context.available && context.supported);
+  const controlReady = Boolean(controlPolicy.enabled && context.supported && (context.available || context.app));
+  const bridgeReady = Boolean(cdp.enabled);
+  return {
+    version: 1,
+    status,
+    label: browserReadinessLabel(status),
+    summary: status === 'ready'
+      ? `Default browser target is ${context.app || 'browser'} · ${context.title || context.url || 'active tab'}.`
+      : context.available
+        ? `Browser context is available in ${context.app || 'browser'}, but DOM/JavaScript bridge should be verified before webpage actions.`
+        : `No supported browser tab is currently available for the default target (${context.error || 'unknown'}).`,
+    nextAction: nextActions[0] || null,
+    defaultTarget,
+    frontmost: {
+      available: Boolean(frontmost.available),
+      app: frontmost.app || '',
+      windowTitle: frontmost.windowTitle || '',
+      supportedBrowser: isSupportedBrowserApp(frontmost.app || ''),
+      error: frontmost.error || '',
+    },
+    running: {
+      supported: supportedRunning,
+      count: supportedRunning.length,
+    },
+    context,
+    bridges: {
+      cdp: {
+        ...cdp,
+        baseUrl: CHROME_DEBUG_PORT ? cdpBaseUrl() : '',
+        profileDir: CHROME_CDP_PROFILE_DIR,
+      },
+      javascript: {
+        verified: false,
+        status: bridgeReady ? 'ready_via_cdp' : context.available ? 'verify_on_demand' : 'unavailable',
+        endpoint: '/api/browser/javascript',
+        note: 'Readiness does not execute page JavaScript; call the endpoint explicitly when DOM reads or DOM actions are needed.',
+      },
+      appleEvents: {
+        metadataReady: Boolean(context.available && context.supported),
+        javascriptVerified: false,
+        note: 'Context/title/URL are read through Apple Events metadata. JavaScript execution is checked separately.',
+      },
+    },
+    capabilities: {
+      context: {
+        status: context.available ? 'ready' : context.supported ? 'limited' : 'warning',
+        endpoint: '/api/browser/context',
+      },
+      page: {
+        status: pageReady ? 'ready' : pagePolicy.enabled ? 'waiting_for_browser' : 'blocked_by_policy',
+        endpoint: '/api/browser/page',
+      },
+      dom: {
+        status: bridgeReady ? 'ready' : context.available ? 'verify_bridge' : 'waiting_for_browser',
+        endpoint: '/api/browser/dom?limit=20',
+      },
+      control: {
+        status: controlReady ? 'ready' : controlPolicy.enabled ? 'waiting_for_browser' : 'blocked_by_policy',
+        endpoint: '/api/browser/control',
+      },
+    },
+    endpoints: [
+      '/api/browser/context',
+      '/api/browser/page',
+      '/api/browser/javascript',
+      '/api/browser/dom?limit=20',
+      '/api/browser/control',
+      '/api/browser/workflow',
+      '/api/browser/benchmarks',
+    ],
+    commands: {
+      readiness: 'npm run browser:ready',
+      context: 'curl http://127.0.0.1:3417/api/browser/context',
+      page: 'curl http://127.0.0.1:3417/api/browser/page',
+      javascript: 'curl http://127.0.0.1:3417/api/browser/javascript',
+      dom: 'curl "http://127.0.0.1:3417/api/browser/dom?limit=20"',
+      benchmarks: 'npm run config -- --print-browser-benchmarks',
+    },
+    nextActions,
+    safety: {
+      readOnly: true,
+      startsBrowser: false,
+      executesBrowserActions: false,
+      executesPageJavaScript: false,
+      readsPageText: false,
+      storesPageText: false,
+      startsMicrophone: false,
+      callsOpenAi: false,
+      asksWhichWindow: false,
+    },
+  };
+}
+
 function browserDomSnapshotScript(limit) {
   return `
 (() => {
@@ -54870,6 +55077,17 @@ function startApiServer() {
       res.json({ context });
     } catch (error) {
       jsonError(res, 500, 'Browser context failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/browser/readiness', async (req, res) => {
+    try {
+      const readiness = await browserReadinessSnapshot({
+        app: req.query.app,
+      });
+      res.json({ readiness });
+    } catch (error) {
+      jsonError(res, 500, 'Browser readiness failed', error instanceof Error ? error.message : String(error));
     }
   });
 

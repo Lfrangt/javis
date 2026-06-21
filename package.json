@@ -49,6 +49,7 @@
     "voice:local": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
     "voice:chat": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat",
     "wake": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --wake",
+    "browser:ready": "node scripts/config-cui.cjs --print-browser-readiness",
     "autonomy": "node scripts/config-cui.cjs --print-autonomy",
     "autonomy:run": "node scripts/config-cui.cjs --run-autonomy",
     "work:next": "node scripts/config-cui.cjs --print-work-next",

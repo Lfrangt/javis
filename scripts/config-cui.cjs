@@ -267,11 +267,11 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor, autopilotResult, browserJs, shortcutsResult, perceptionResult, collaborationHandoffResult, keepAwakeResult] = await Promise.all([
+    const [status, doctor, autopilotResult, browserReady, shortcutsResult, perceptionResult, collaborationHandoffResult, keepAwakeResult] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
       request('/api/autopilot').catch(() => ({ autopilot: null })),
-      request('/api/browser/javascript').catch((error) => ({ javascript: { enabled: false, error: error instanceof Error ? error.message : String(error) } })),
+      request('/api/browser/readiness').catch((error) => ({ readiness: { status: 'warning', summary: error instanceof Error ? error.message : String(error) } })),
       request('/api/shortcuts?limit=5').catch(() => ({ shortcuts: null })),
       request('/api/perception/consent?limit=3').catch(() => ({ perception: null })),
       request('/api/collaboration/handoff?limit=5').catch(() => ({ handoff: null })),
@@ -371,13 +371,13 @@ async function printStatus() {
       const decisionText = decision?.skipSummary || decision?.reason || decision?.selectedAction?.decision?.reason || decision?.outcome || 'none';
       console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · every ${formatInterval(autopilot.intervalMs)} · ticks ${autopilot.tickCount || 0} · ran ${autopilot.executedCount || 0} · decision ${compact(decisionText, 60)} · last ${compact(autopilot.lastResult || 'none', 80)}${maintenanceText}`);
     }
-    if (browserJs.javascript?.supported && browserJs.javascript?.available) {
-      const bridge = browserJs.javascript.bridge || '';
-      const cdpError = browserJs.javascript.cdpError || browserJs.javascript.cdp?.error || '';
-      const browserDetail = browserJs.javascript.enabled
-        ? `ready${bridge ? ` via ${bridge}` : ''}`
-        : `needs browser bridge${browserJs.javascript.error ? ` · ${browserJs.javascript.error}` : ''}${cdpError && cdpError !== browserJs.javascript.error ? ` · cdp ${cdpError}` : ''}`;
-      console.log(`Browser DOM: ${browserDetail}`);
+    if (browserReady.readiness) {
+      const readiness = browserReady.readiness;
+      const context = readiness.context || {};
+      const dom = readiness.capabilities?.dom || {};
+      const bridge = readiness.bridges?.cdp?.enabled ? 'cdp ready' : readiness.bridges?.javascript?.status || 'bridge unknown';
+      const target = [context.app, context.title || context.url].filter(Boolean).join(' · ') || readiness.defaultTarget?.selector || '-';
+      console.log(`Browser: ${readiness.status || '-'} · ${compact(target, 90)} · DOM ${dom.status || '-'} · ${bridge}`);
     }
     console.log(`Doctor: ${doctor.doctor?.counts?.ready || 0}/${doctor.doctor?.counts?.total || 0} ready · ${doctor.doctor?.overall || 'unknown'}`);
     const issues = issueLines(doctor.doctor);
@@ -431,6 +431,7 @@ async function printStatus() {
   console.log('I. Show permission matrix');
   console.log('CR. Show local control readiness');
   console.log('S. Show routing speed policy');
+  console.log('BR. Show browser readiness');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
   console.log('K. Show knowledge workflow benchmarks');
@@ -2156,6 +2157,55 @@ async function showBrowserActivity() {
   const result = await request('/api/browser/activity?limit=10');
   console.log('');
   printBrowserActivity(result.activity || {});
+}
+
+function printBrowserReadiness(result) {
+  const readiness = result?.readiness || result || {};
+  const context = readiness.context || {};
+  const target = readiness.defaultTarget || {};
+  const cdp = readiness.bridges?.cdp || {};
+  const javascript = readiness.bridges?.javascript || {};
+  const capabilities = readiness.capabilities || {};
+  const nextActions = Array.isArray(readiness.nextActions) ? readiness.nextActions : [];
+  const commands = readiness.commands || {};
+  const safety = readiness.safety || {};
+  console.log('JAVIS Browser Readiness');
+  console.log('=======================');
+  console.log(`Status: ${readiness.status || '-'} · ${readiness.label || '-'}`);
+  if (readiness.summary) console.log(`Summary: ${compact(readiness.summary, 360)}`);
+  console.log(`Default target: ${target.mode || '-'} · app=${target.app || '-'} · source=${target.source || '-'} · asks window=${target.asksWhichWindow ? 'yes' : 'no'}`);
+  if (target.summary) console.log(`Target: ${compact(target.summary, 260)}`);
+  console.log(`Context: ${context.available ? 'available' : 'unavailable'} · supported=${context.supported ? 'yes' : 'no'} · ${context.app || '-'}${context.title ? ` · ${compact(context.title, 120)}` : ''}`);
+  if (context.url) console.log(`URL: ${compact(context.url, 220)}`);
+  if (context.error) console.log(`Context error: ${compact(context.error, 220)}`);
+  console.log(`Bridge: cdp=${cdp.enabled ? 'ready' : 'not-ready'} · port=${cdp.port ?? '-'} · targets=${cdp.targets ?? 0} · js=${javascript.status || '-'}`);
+  if (cdp.error) console.log(`CDP: ${compact(cdp.error, 180)}`);
+  console.log('\nCapabilities');
+  for (const [name, item] of Object.entries(capabilities)) {
+    console.log(`- ${name}: ${item?.status || '-'} · ${item?.endpoint || '-'}`);
+  }
+  if (nextActions.length) {
+    console.log('\nNext actions');
+    for (const [index, action] of nextActions.slice(0, 6).entries()) {
+      const command = action.command ? ` · ${action.command}` : '';
+      const endpoint = action.endpoint ? ` · ${action.endpoint}` : '';
+      console.log(`${index + 1}. ${action.label || action.id || '-'}${endpoint}${command}`);
+      if (action.summary) console.log(`   ${compact(action.summary, 240)}`);
+    }
+  }
+  console.log('\nCommands');
+  console.log(`- readiness: ${commands.readiness || 'npm run browser:ready'}`);
+  console.log(`- page: ${commands.page || 'curl http://127.0.0.1:3417/api/browser/page'}`);
+  console.log(`- DOM: ${commands.dom || 'curl "http://127.0.0.1:3417/api/browser/dom?limit=20"'}`);
+  console.log(`- benchmarks: ${commands.benchmarks || 'npm run config -- --print-browser-benchmarks'}`);
+  console.log('\nSafety');
+  console.log(`- read-only=${safety.readOnly ? 'yes' : 'no'} starts browser=${safety.startsBrowser ? 'yes' : 'no'} executes actions=${safety.executesBrowserActions ? 'yes' : 'no'} executes JS=${safety.executesPageJavaScript ? 'yes' : 'no'} reads page text=${safety.readsPageText ? 'yes' : 'no'} asks window=${safety.asksWhichWindow ? 'yes' : 'no'}`);
+}
+
+async function showBrowserReadiness() {
+  const result = await request('/api/browser/readiness');
+  console.log('');
+  printBrowserReadiness(result);
 }
 
 function printBrowserBenchmarks(result) {
@@ -4285,6 +4335,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-browser-readiness') || process.argv.includes('--browser-readiness')) {
+    await showBrowserReadiness();
+    return;
+  }
+
   if (process.argv.includes('--print-learning-evolution') || process.argv.includes('--learning-evolution')) {
     await showLearningEvolution();
     return;
@@ -4496,6 +4551,8 @@ async function main() {
         await showControlReadiness();
       } else if (answer === 's' || answer === 'speed' || answer === 'speed policy' || answer === 'routing speed') {
         await showRoutingSpeedPolicy();
+      } else if (answer === 'br' || answer === 'browser readiness' || answer === 'browser ready') {
+        await showBrowserReadiness();
       } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {
         await showBrowserBenchmarks();
       } else if (answer === 'f' || answer === 'file benchmark' || answer === 'file benchmarks') {

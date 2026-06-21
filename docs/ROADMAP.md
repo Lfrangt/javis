@@ -41,6 +41,7 @@
 - Add readiness diagnostics for setup, permissions, policy, and runtime state.
 - Add Mac context visibility for frontmost app/window and clipboard state.
 - Add browser context visibility for supported active tabs.
+- Add a read-only browser readiness packet for the default current-browser target, bridge recovery steps, and no-window-picker safety through `/api/browser/readiness`, CUI option `BR`, and `npm run browser:ready`.
 - Add metadata-only local browser activity summaries from ambient observations into presence, Realtime preflight context, Realtime tools, CUI, and API.
 - Add a unified perception consent/status registry for screen, voice, ambient, browser, clipboard, Accessibility/app control, learning, and worker tools through CUI/API/Realtime voice without adding diagnostics to the desktop pet.
 - Add read-only active browser page extraction for webpage-aware tasks.

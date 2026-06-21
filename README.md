@@ -267,6 +267,7 @@ Local Express service on 127.0.0.1:3417
   /api/creative/workflow -> plan/start video-editing or music-composition workflows with stage action packs
   /api/creative/action -> preview or execute one guarded creative workflow action, with verification/recovery hints
   /api/browser/context  -> supported browser tab title and URL
+  /api/browser/readiness -> read-only default browser target, bridge status, recovery actions, and no-window-picker safety
   /api/browser/activity -> metadata-only recent browser host/title activity
   /api/browser/page     -> read-only current browser page text and link extraction
   /api/browser/control  -> guarded current-browser navigation actions
