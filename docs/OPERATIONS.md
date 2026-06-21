@@ -330,6 +330,13 @@ explicit local memory, pause/resume learning, manage exclusions, delete inferred
 the local metadata-only learning evolution snapshot, preview a Codex-style skill draft, or export that
 draft to `~/.agents/skills` after typing `SAVE`.
 
+Treat Record & Replay-style learning as a confirmation workflow, not as silent permission escalation.
+JAVIS may use local ambient metadata to suggest habit candidates and may record an explicit UI
+demonstration when the user starts that flow, but reusable replay, shortcut save, memory promotion, and
+skill export must stay behind the existing preview/confirm gates. The intended path is: observe or record
+sanitized local steps, draft a replay plan or skill, show the user what would be reused, then save/export
+only after confirmation.
+
 Use option `24. Show learning evolution`, or:
 
 ```bash
