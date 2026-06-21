@@ -7798,6 +7798,143 @@ function learningDistillationSnapshot(options = {}) {
   };
 }
 
+function learningHabitWorkNextActionId(candidate = {}) {
+  return `learning_habit:${skillSlug(candidate.id || candidate.label || 'candidate', 'habit-candidate')}`;
+}
+
+function learningHabitWorkNextSafety(candidate = {}) {
+  const candidateSafety = candidate.safety && typeof candidate.safety === 'object' ? candidate.safety : {};
+  return {
+    readOnly: true,
+    localOnly: true,
+    metadataOnly: true,
+    inferenceOnly: true,
+    doesNotExecute: true,
+    doesNotGrantPermission: true,
+    noAutoSave: true,
+    noRawScreenshots: true,
+    noClipboardText: true,
+    noPageBodies: true,
+    confirmationRequiredForPromotion: true,
+    ...candidateSafety,
+  };
+}
+
+function compactLearningHabitCandidate(candidate = {}) {
+  if (!candidate || typeof candidate !== 'object') return null;
+  return {
+    id: compactRecordText(candidate.id || '', 140),
+    kind: compactRecordText(candidate.kind || '', 80),
+    label: compactRecordText(candidate.label || '', 180),
+    summary: compactRecordText(candidate.summary || '', 360),
+    confidence: Number(Math.max(0, Math.min(1, Number(candidate.confidence || 0))).toFixed(2)),
+    source: compactRecordText(candidate.source || '', 80),
+    evidence: Array.isArray(candidate.evidence)
+      ? candidate.evidence.map((item) => compactRecordText(item, 180)).filter(Boolean).slice(0, 4)
+      : [],
+    recommendedAction: candidate.recommendedAction
+      ? {
+        id: compactRecordText(candidate.recommendedAction.id || '', 80),
+        label: compactRecordText(candidate.recommendedAction.label || '', 160),
+        endpoint: compactRecordText(candidate.recommendedAction.endpoint || '', 180),
+        method: compactRecordText(candidate.recommendedAction.method || 'GET', 20),
+        requiresConfirmation: candidate.recommendedAction.requiresConfirmation !== false,
+        previewOnly: candidate.recommendedAction.previewOnly !== false,
+        writesLocalArtifact: candidate.recommendedAction.writesLocalArtifact === true,
+      }
+      : null,
+    safety: learningHabitWorkNextSafety(candidate),
+    boundaries: Array.isArray(candidate.boundaries)
+      ? candidate.boundaries.map((item) => compactRecordText(item, 180)).filter(Boolean).slice(0, 4)
+      : [],
+  };
+}
+
+function learningHabitCandidateWorkNextAction(candidate = {}, options = {}) {
+  const normalized = normalizeLearningHabitCandidate(candidate);
+  const compactCandidate = compactLearningHabitCandidate(normalized);
+  const safety = learningHabitWorkNextSafety(normalized);
+  return {
+    id: learningHabitWorkNextActionId(normalized),
+    priority: Math.max(4, Math.min(8, Number(options.priority || 5))),
+    label: normalized.label || 'Review learning habit candidate',
+    summary: normalized.summary || 'Review a local inferred habit candidate before promoting it into a skill, shortcut, or explicit memory.',
+    source: 'learning_habit',
+    type: 'learning_habit_review',
+    candidateId: normalized.id,
+    candidateKind: normalized.kind,
+    confidence: normalized.confidence,
+    candidate: compactCandidate,
+    recommendedAction: compactCandidate?.recommendedAction || null,
+    safety,
+    boundaries: compactCandidate?.boundaries || [],
+    executable: false,
+    readOnly: true,
+    autoEligible: false,
+    autopilotEligible: false,
+    manualOnly: true,
+    manualOnlyReason: 'Learning habit candidates are suggestions; saving a skill, shortcut, or explicit memory requires explicit confirmation.',
+    requiresUserPresence: false,
+    riskLevel: 0,
+  };
+}
+
+function learningHabitCandidateWorkNextActions(options = {}) {
+  const distillation = learningDistillationSnapshot({
+    source: options.source || 'work_next_learning_habit',
+    candidateLimit: options.limit || options.candidateLimit || 4,
+    skillLimit: options.skillLimit || 4,
+    demonstrationLimit: options.demonstrationLimit || 4,
+    shortcutLimit: options.shortcutLimit || 4,
+    query: options.query || 'local workflow learning demonstration replay',
+  });
+  const candidates = Array.isArray(distillation.habitCandidates?.candidates)
+    ? distillation.habitCandidates.candidates
+    : [];
+  return candidates.map((candidate, index) => learningHabitCandidateWorkNextAction(candidate, {
+    priority: 5 + index,
+  }));
+}
+
+function learningHabitCandidateWorkNextPreview(action = {}, options = {}) {
+  const candidate = compactLearningHabitCandidate(action.candidate || {
+    id: action.candidateId || '',
+    kind: action.candidateKind || '',
+    label: action.label || '',
+    summary: action.summary || '',
+    confidence: action.confidence,
+    recommendedAction: action.recommendedAction,
+    safety: action.safety,
+  });
+  const safety = learningHabitWorkNextSafety(candidate || action);
+  const recommended = candidate?.recommendedAction || action.recommendedAction || null;
+  const executeRequested = options.execute === true;
+  const output = [
+    `Learning habit candidate: ${candidate?.label || action.label || action.id || 'review candidate'}`,
+    'Preview only: this does not save memory, grant permission, or execute computer actions.',
+    recommended?.label
+      ? `Recommended next step: ${recommended.label}${recommended.endpoint ? ` (${recommended.method || 'GET'} ${recommended.endpoint})` : ''}.`
+      : 'Recommended next step: review this with the user before promotion.',
+    executeRequested ? 'Execute was requested but ignored because learning habit reviews are read-only.' : '',
+  ].filter(Boolean).join('\n');
+  return {
+    ok: true,
+    preview: true,
+    executed: false,
+    executeRequested,
+    manualOnly: true,
+    readOnly: true,
+    output,
+    learningHabitCandidate: {
+      actionId: action.id || '',
+      candidate,
+      recommendedAction: recommended,
+      safety,
+      boundaries: Array.isArray(action.boundaries) ? action.boundaries.slice(0, 5) : candidate?.boundaries || [],
+    },
+  };
+}
+
 function learningDistillationVoiceSnapshot(options = {}) {
   const full = learningDistillationSnapshot({
     ...(options || {}),
@@ -29716,6 +29853,8 @@ function realtimeWorkNextToolSummary(name, args = {}, result = {}) {
   const recommended = routeRecovery.recommended || action.routeRecovery?.recommended || {};
   const browserFillRecovery = recommended.browserFillRecovery || resultBody.routeExecution?.browserFillRecovery || resultBody.browserFillRecovery || {};
   const browserFillHandoff = recommended.type === 'browser_fill_sensitive_handoff' || browserFillRecovery.type === 'browser_fill_sensitive_handoff';
+  const learningHabit = resultBody.learningHabitCandidate || output.learningHabitCandidate || {};
+  const learningCandidate = learningHabit.candidate || action.candidate || null;
   const executeRequested = name === REALTIME_RUN_WORK_NEXT_TOOL_NAME || args?.execute === true || String(args?.execute || '').toLowerCase() === 'true';
   const executed = Boolean(output.executed);
   return {
@@ -29743,6 +29882,11 @@ function realtimeWorkNextToolSummary(name, args = {}, result = {}) {
     browserFillBlockedCount: boundedCount(browserFillRecovery.blockedCount, 1000),
     browserFillManualCount: Array.isArray(browserFillRecovery.manual) ? browserFillRecovery.manual.length : 0,
     browserFillStoresSensitiveValue: false,
+    learningHabitCandidateId: compactRecordText(learningCandidate?.id || action.candidateId || '', 140),
+    learningHabitCandidateKind: compactRecordText(learningCandidate?.kind || action.candidateKind || '', 80),
+    learningHabitNoAutoSave: learningHabit.safety?.noAutoSave === true || action.safety?.noAutoSave === true,
+    learningHabitDoesNotExecute: learningHabit.safety?.doesNotExecute === true || action.safety?.doesNotExecute === true,
+    learningHabitDoesNotGrantPermission: learningHabit.safety?.doesNotGrantPermission === true || action.safety?.doesNotGrantPermission === true,
     output: compactRecordText(output.output || resultBody.output || '', 360),
   };
 }
@@ -30466,6 +30610,10 @@ function recordRealtimeToolCall(options = {}) {
     workNextBrowserFillHandoff: Boolean(workNext?.browserFillHandoff),
     workNextBrowserFillSafePreparedCount: workNext?.browserFillSafePreparedCount || 0,
     workNextBrowserFillBlockedCount: workNext?.browserFillBlockedCount || 0,
+    workNextLearningHabitCandidateId: workNext?.learningHabitCandidateId || '',
+    workNextLearningHabitNoAutoSave: Boolean(workNext?.learningHabitNoAutoSave),
+    workNextLearningHabitDoesNotExecute: Boolean(workNext?.learningHabitDoesNotExecute),
+    workNextLearningHabitDoesNotGrantPermission: Boolean(workNext?.learningHabitDoesNotGrantPermission),
     delegateStatus: delegate?.status || '',
     delegateMode: delegate?.mode || '',
     delegateOwner: delegate?.owner || '',
@@ -38479,6 +38627,12 @@ function workflowBriefing(options = {}) {
   const learning = learningStateSnapshot();
   const realtimeWorkbench = realtimeVoiceWorkbenchSnapshot();
   const maintenance = maintenanceStateSnapshot(workflowContext);
+  const learningHabitActions = options.includeLearningHabitCandidates
+    ? learningHabitCandidateWorkNextActions({
+      source: options.source || 'briefing_learning_habit',
+      limit: options.learningHabitLimit || options.candidateLimit || 4,
+    })
+    : [];
   const nextActions = [];
 
   if (readiness.primaryIssue) {
@@ -38675,9 +38829,11 @@ function workflowBriefing(options = {}) {
       resolvedBlockedWorkflows: resolvedBlockedWorkflows.length,
       realtimeVoiceStatus: realtimeWorkbench.status,
       followUps: followUps.length,
+      learningHabitActions: learningHabitActions.length,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
     followUps,
+    availableActions: learningHabitActions,
     realtimeVoice: realtimeWorkbench,
     maintenance,
     routingLedger,
@@ -39415,17 +39571,25 @@ async function runMaintenanceSnapshot(options = {}) {
 
 async function workNextAction(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const requestedActionId = String(options.actionId || options.id || '').trim();
+  const includeLearningHabitCandidates =
+    requestedActionId.startsWith('learning_habit:') ||
+    options.includeLearningHabitCandidates === true ||
+    String(options.includeLearningHabitCandidates || '').toLowerCase() === 'true';
   const briefing = workflowBriefing({
     workflowLimit: options.workflowLimit || 6,
     jobLimit: options.jobLimit || 6,
     includeMaintenance: options.includeMaintenance === true || String(options.includeMaintenance || '').toLowerCase() === 'true' || options.autopilot === true,
     forceMaintenance: options.forceMaintenance,
+    includeLearningHabitCandidates,
+    learningHabitLimit: options.learningHabitLimit || options.candidateLimit,
+    source: options.source || 'work_next',
   });
-  const requestedActionId = String(options.actionId || options.id || '').trim();
   const primaryActions = Array.isArray(briefing.nextActions) ? briefing.nextActions : [];
   const followUpActions = Array.isArray(briefing.followUps) ? briefing.followUps : [];
+  const availableActions = Array.isArray(briefing.availableActions) ? briefing.availableActions : [];
   const actionPool = requestedActionId
-    ? [...primaryActions, ...followUpActions].filter((item, index, list) => item?.id && list.findIndex((candidate) => candidate?.id === item.id) === index)
+    ? [...primaryActions, ...followUpActions, ...availableActions].filter((item, index, list) => item?.id && list.findIndex((candidate) => candidate?.id === item.id) === index)
     : primaryActions;
   let action = requestedActionId ? actionPool.find((item) => item.id === requestedActionId) || null : actionPool[0] || null;
   if (requestedActionId && !action && requestedActionId.startsWith('route:')) {
@@ -39655,6 +39819,13 @@ async function workNextAction(options = {}) {
     });
     executed = Boolean(result.executed);
     output = result.output;
+  } else if (action.source === 'learning_habit') {
+    result = learningHabitCandidateWorkNextPreview(action, {
+      execute,
+      source: options.source || 'work_next',
+    });
+    executed = false;
+    output = result.output;
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
       source: options.source || 'work_next',
@@ -39867,6 +40038,17 @@ function compactWorkNextActionForVoice(action = null) {
           : null,
       }
       : null,
+    learningHabitCandidate: action.source === 'learning_habit' && action.candidate
+      ? {
+        id: compactRecordText(action.candidate.id || action.candidateId || '', 140),
+        kind: compactRecordText(action.candidate.kind || action.candidateKind || '', 80),
+        label: compactRecordText(action.candidate.label || action.label || '', 160),
+        confidence: Number(Math.max(0, Math.min(1, Number(action.candidate.confidence || action.confidence || 0))).toFixed(2)),
+        noAutoSave: action.safety?.noAutoSave !== false,
+        doesNotExecute: action.safety?.doesNotExecute !== false,
+        doesNotGrantPermission: action.safety?.doesNotGrantPermission !== false,
+      }
+      : null,
     dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
     preparableActionCount: Array.isArray(action.preparableActions) ? action.preparableActions.length : 0,
   };
@@ -39904,6 +40086,35 @@ function compactWorkNextResultForVoice(result = null) {
     pendingApprovalCount: Array.isArray(result.pending) ? result.pending.length : 0,
     activeLedgerCount: Array.isArray(result.activeLedger) ? result.activeLedger.length : 0,
     counts: result.counts || null,
+    learningHabitCandidate: result.learningHabitCandidate
+      ? {
+        actionId: compactRecordText(result.learningHabitCandidate.actionId || '', 160),
+        candidate: result.learningHabitCandidate.candidate
+          ? {
+            id: compactRecordText(result.learningHabitCandidate.candidate.id || '', 140),
+            kind: compactRecordText(result.learningHabitCandidate.candidate.kind || '', 80),
+            label: compactRecordText(result.learningHabitCandidate.candidate.label || '', 160),
+            confidence: Number(Math.max(0, Math.min(1, Number(result.learningHabitCandidate.candidate.confidence || 0))).toFixed(2)),
+          }
+          : null,
+        recommendedAction: result.learningHabitCandidate.recommendedAction
+          ? {
+            id: compactRecordText(result.learningHabitCandidate.recommendedAction.id || '', 80),
+            label: compactRecordText(result.learningHabitCandidate.recommendedAction.label || '', 160),
+            endpoint: compactRecordText(result.learningHabitCandidate.recommendedAction.endpoint || '', 160),
+            requiresConfirmation: result.learningHabitCandidate.recommendedAction.requiresConfirmation !== false,
+          }
+          : null,
+        safety: {
+          readOnly: result.learningHabitCandidate.safety?.readOnly !== false,
+          metadataOnly: result.learningHabitCandidate.safety?.metadataOnly !== false,
+          doesNotExecute: result.learningHabitCandidate.safety?.doesNotExecute !== false,
+          doesNotGrantPermission: result.learningHabitCandidate.safety?.doesNotGrantPermission !== false,
+          noAutoSave: result.learningHabitCandidate.safety?.noAutoSave !== false,
+          confirmationRequiredForPromotion: result.learningHabitCandidate.safety?.confirmationRequiredForPromotion !== false,
+        },
+      }
+      : null,
   };
 }
 

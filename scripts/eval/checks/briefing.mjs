@@ -166,6 +166,63 @@ export default {
       );
     }
 
+    const learningDistillation = await ctx.api('/api/learning/distillation?source=briefing_eval&candidateLimit=1&skillLimit=2');
+    const learningCandidate = learningDistillation.data?.distillation?.habitCandidates?.candidates?.[0] || null;
+    if (learningCandidate?.id) {
+      const learningActionId = `learning_habit:${learningCandidate.id}`;
+      const learningPreview = await ctx.api(`/api/work/next?actionId=${encodeURIComponent(learningActionId)}`);
+      const learningNext = learningPreview.data?.next || {};
+      const learningResult = learningNext.result || {};
+      const learningEnvelope = learningResult.learningHabitCandidate || {};
+      out.push(
+        learningDistillation.ok &&
+          learningPreview.ok &&
+          learningNext.ok === true &&
+          learningNext.executed === false &&
+          learningNext.action?.id === learningActionId &&
+          learningNext.action?.source === 'learning_habit' &&
+          learningNext.action?.manualOnly === true &&
+          learningNext.action?.autoEligible === false &&
+          learningNext.action?.autopilotEligible === false &&
+          learningEnvelope.candidate?.id === learningCandidate.id &&
+          learningEnvelope.safety?.readOnly === true &&
+          learningEnvelope.safety?.metadataOnly === true &&
+          learningEnvelope.safety?.doesNotExecute === true &&
+          learningEnvelope.safety?.doesNotGrantPermission === true &&
+          learningEnvelope.safety?.noAutoSave === true &&
+          String(learningNext.output || '').includes('Preview only: this does not save memory') &&
+          Array.isArray(learningNext.briefing?.availableActions) &&
+          learningNext.briefing.availableActions.some((action) => action.id === learningActionId)
+          ? ok('briefing.worknext_learning_habit_preview', 'Work-next learning habit preview', `${learningCandidate.id} is read-only`)
+          : fail('briefing.worknext_learning_habit_preview', 'Work-next learning habit preview', 'explicit learning-habit action did not return a safe read-only preview', {
+            learningDistillation: learningDistillation.data,
+            learningPreview: learningPreview.data,
+          }),
+      );
+
+      const learningExecuteAttempt = await ctx.api('/api/work/next', {
+        method: 'POST',
+        body: {
+          execute: true,
+          actionId: learningActionId,
+          source: 'briefing_eval_learning_execute',
+        },
+      });
+      const learningExecuteNext = learningExecuteAttempt.data?.next || {};
+      out.push(
+        learningExecuteAttempt.ok &&
+          learningExecuteNext.ok === true &&
+          learningExecuteNext.executed === false &&
+          learningExecuteNext.result?.executeRequested === true &&
+          learningExecuteNext.result?.learningHabitCandidate?.candidate?.id === learningCandidate.id &&
+          String(learningExecuteNext.output || '').includes('Execute was requested but ignored')
+          ? ok('briefing.worknext_learning_habit_no_execute', 'Work-next learning habit execute gate', 'execute request stayed read-only')
+          : fail('briefing.worknext_learning_habit_no_execute', 'Work-next learning habit execute gate', 'learning-habit action executed or failed to explain the read-only gate', learningExecuteAttempt.data),
+      );
+    } else {
+      out.push(fail('briefing.worknext_learning_habit_preview', 'Work-next learning habit preview', 'learning distillation returned no habit candidate', learningDistillation.data));
+    }
+
     try {
       const cui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-work-next'], {
         cwd: process.cwd(),
