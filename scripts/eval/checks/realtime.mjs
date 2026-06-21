@@ -2528,6 +2528,33 @@ export default {
             beginPrechecksBeforeScreen: beginAssistantSource.includes('readRealtimeStartupBlock()') && beginAssistantSource.indexOf('readRealtimeStartupBlock()') < beginAssistantSource.indexOf('startScreen({ describe: false })'),
           }),
     );
+    const localFallbackIndex = rendererSource.indexOf('const runLocalVoiceFallback = useCallback');
+    const localFallbackEndIndex = rendererSource.indexOf('  }, [addMessage, fallbackIncludesScreen', localFallbackIndex);
+    const localFallbackSource = localFallbackIndex >= 0 && localFallbackEndIndex >= 0
+      ? rendererSource.slice(localFallbackIndex, localFallbackEndIndex)
+      : '';
+    const localFallbackRouteIndex = localFallbackSource.indexOf("'/api/tasks/route'");
+    const localFallbackQuickIndex = localFallbackSource.indexOf("'/api/chat/quick'");
+    const rendererLocalFallbackRouterFirst =
+      localFallbackRouteIndex >= 0 &&
+      localFallbackQuickIndex >= 0 &&
+      localFallbackRouteIndex < localFallbackQuickIndex &&
+      localFallbackSource.includes("source: 'renderer_voice_fallback_preview'") &&
+      localFallbackSource.includes('execute: false') &&
+      localFallbackSource.includes('noModelLocalRoute(routePreview)') &&
+      localFallbackSource.includes('backgroundRoute(routePreview)') &&
+      localFallbackSource.includes("source: noModelLocalRoute(routePreview) ? 'renderer_voice_fallback_local' : 'renderer_voice_fallback_route'") &&
+      localFallbackSource.includes("source: 'renderer_voice_fallback_quick'");
+    out.push(
+      rendererLocalFallbackRouterFirst
+        ? ok('realtime.renderer_local_fallback_router_first', 'Renderer local fallback router first', 'blocked Realtime voice previews no-model local/background routing before using the quick model lane')
+        : fail('realtime.renderer_local_fallback_router_first', 'Renderer local fallback router first', 'blocked Realtime voice may still call the paid quick model before trying local routing', {
+            hasFallback: Boolean(localFallbackSource),
+            hasRoute: localFallbackRouteIndex >= 0,
+            hasQuick: localFallbackQuickIndex >= 0,
+            routeBeforeQuick: localFallbackRouteIndex >= 0 && localFallbackQuickIndex >= 0 && localFallbackRouteIndex < localFallbackQuickIndex,
+          }),
+    );
     out.push(
       rendererDogfoodListenerStable
         ? ok('realtime.renderer_dogfood_listener_stability', 'Renderer dogfood listener stability', 'renderer dogfood wait survives voice status transitions during startup')

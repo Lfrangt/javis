@@ -29326,6 +29326,11 @@ function summarizeDogfoodActionPlanForAutopilot(plan = null) {
     previewable.find((action) => action?.id === 'prepare_live_run') ||
     previewable[0] ||
     null;
+  const preferredManual =
+    manual.find((action) => action?.requiresLiveVoice || action?.requiresMicConfirmation || action?.startsMicrophone) ||
+    manual.find((action) => action?.requiresUserPresence) ||
+    manual[0] ||
+    null;
   return {
     version: Number(plan.version || 0),
     scope: compactRecordText(plan.scope || '', 80),
@@ -29352,13 +29357,13 @@ function summarizeDogfoodActionPlanForAutopilot(plan = null) {
         startsMicrophone: Boolean(preferredPreviewable.startsMicrophone),
       }
       : null,
-    firstManual: manual[0]
+    firstManual: preferredManual
       ? {
-        id: compactRecordText(manual[0].id || '', 120),
-        label: compactRecordText(manual[0].label || manual[0].id || '', 140),
-        startsMicrophone: Boolean(manual[0].startsMicrophone),
-        requiresMicConfirmation: Boolean(manual[0].requiresMicConfirmation),
-        requiresLiveVoice: Boolean(manual[0].requiresLiveVoice),
+        id: compactRecordText(preferredManual.id || '', 120),
+        label: compactRecordText(preferredManual.label || preferredManual.id || '', 140),
+        startsMicrophone: Boolean(preferredManual.startsMicrophone),
+        requiresMicConfirmation: Boolean(preferredManual.requiresMicConfirmation),
+        requiresLiveVoice: Boolean(preferredManual.requiresLiveVoice),
       }
       : null,
     spokenSummary: compactRecordText(plan.spokenSummary || '', 260),

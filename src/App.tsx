@@ -875,13 +875,22 @@ type TaskRouteResult = {
   executed: boolean
   queued: boolean
   decision: {
-    lane: 'quick' | 'background' | 'codex' | 'claude'
+    lane: 'quick' | 'background' | 'codex' | 'claude' | 'local'
     label: string
     reason: string
     confidence: number
+    requiresOpenAiKey?: boolean
+    requiresLocalExecution?: boolean
+    localCommand?: string
   }
   output: string
   job?: Job
+  localCommand?: {
+    intent?: string
+    label?: string
+    requiresOpenAiKey?: boolean
+    requiresLocalExecution?: boolean
+  }
 }
 
 type ProcessNextInboxResult = {
@@ -1118,6 +1127,17 @@ function mergePetStatusPayload(current: Status | null, next: PetStatusPayload): 
     ...(current || {}),
     ...next,
   } as Status
+}
+
+function noModelLocalRoute(route: TaskRouteResult | null | undefined) {
+  const intent = route?.localCommand?.intent || route?.decision?.localCommand || ''
+  if (!intent) return false
+  return route?.localCommand?.requiresOpenAiKey !== true && route?.decision?.requiresOpenAiKey !== true
+}
+
+function backgroundRoute(route: TaskRouteResult | null | undefined) {
+  const lane = route?.decision?.lane || ''
+  return lane === 'background' || lane === 'codex' || lane === 'claude'
 }
 
 function App() {
@@ -1802,9 +1822,38 @@ function App() {
 
       setQuickInput('')
       addMessage('user', prompt)
+      const routePreview = await apiJson<TaskRouteResult>('/api/tasks/route', {
+        method: 'POST',
+        body: JSON.stringify({
+          message: prompt,
+          includeScreen: fallbackIncludesScreen,
+          execute: false,
+          source: 'renderer_voice_fallback_preview',
+        }),
+      })
+      if (noModelLocalRoute(routePreview) || backgroundRoute(routePreview)) {
+        const routed = await apiJson<TaskRouteResult>('/api/tasks/route', {
+          method: 'POST',
+          body: JSON.stringify({
+            message: prompt,
+            includeScreen: fallbackIncludesScreen,
+            execute: true,
+            source: noModelLocalRoute(routePreview) ? 'renderer_voice_fallback_local' : 'renderer_voice_fallback_route',
+          }),
+        })
+        const routedOutput = routed.output?.trim() || '我已经走本地路由处理了，但没有拿到可朗读结果。'
+        addMessage(routed.ok && !routed.queued ? 'assistant' : 'system', routedOutput)
+        await speakLocal(routedOutput)
+        refreshStatus()
+        return
+      }
       const result = await apiJson<{ output: string }>('/api/chat/quick', {
         method: 'POST',
-        body: JSON.stringify({ message: prompt, includeScreen: fallbackIncludesScreen }),
+        body: JSON.stringify({
+          message: prompt,
+          includeScreen: fallbackIncludesScreen,
+          source: 'renderer_voice_fallback_quick',
+        }),
       })
       const output = result.output?.trim() || '我没有拿到有效回复。'
       addMessage('assistant', output)
@@ -1812,7 +1861,7 @@ function App() {
     } catch (error) {
       addMessage('system', `本地语音兜底失败：${error instanceof Error ? error.message : String(error)}`)
     }
-  }, [addMessage, fallbackIncludesScreen, quickInput, speakLocal])
+  }, [addMessage, fallbackIncludesScreen, quickInput, refreshStatus, speakLocal])
 
   const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
     const intendedScreenLive = options.screenLive ?? screenLive
