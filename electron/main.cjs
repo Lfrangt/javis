@@ -18319,6 +18319,103 @@ function sanitizeBrowserDomPreflight(value = {}) {
   };
 }
 
+function browserDomActionSafetyContract(extra = {}) {
+  return {
+    preflightReobserve: true,
+    reobserveTiming: 'before_execute',
+    formSubmissionDefault: 'approval_required',
+    submitLikeRiskLevel: 4,
+    executesFormSubmitByDefault: false,
+    ...extra,
+  };
+}
+
+function browserDomActionFixtureLabel(element = {}) {
+  return [
+    element.label,
+    element.text,
+    element.placeholder,
+    element.name,
+    element.valuePreview,
+    element.selector,
+  ].map((item) => compactRecordText(item || '', 120)).find(Boolean) || '';
+}
+
+function findBrowserDomActionFixtureElement(plan, dom = {}) {
+  const elements = Array.isArray(dom.elements) ? dom.elements : [];
+  const selector = String(plan.args?.selector || '').trim();
+  if (selector) {
+    const selectorId = selector.startsWith('#') ? selector.slice(1) : '';
+    const exact = elements.find((element) =>
+      String(element.selector || '').trim() === selector ||
+      (selectorId && String(element.id || '').trim() === selectorId));
+    if (exact) return exact;
+  }
+  return findBrowserTaskElement(dom, plan.args?.query || selector, plan.args?.domAction || '');
+}
+
+function reobserveBrowserDomActionTargetFromFixture(plan, fixtureDom = {}) {
+  const dom = normalizeBrowserFillDraftFixtureDom(fixtureDom);
+  if (!dom) throw new Error('browser_dom_fixture_required');
+  const target = findBrowserDomActionFixtureElement(plan, dom);
+  if (!target) throw new Error('browser_dom_target_not_found_in_fixture');
+  if (target.disabled || target.ariaDisabled === true || target['aria-disabled'] === true) {
+    throw new Error('browser_dom_target_disabled_in_fixture');
+  }
+  const selector = String(target.selector || plan.args?.selector || '').trim();
+  const query = String(plan.args?.query || '').trim().toLowerCase();
+  const tag = compactRecordText(target.tag || '', 40).toLowerCase();
+  const type = compactRecordText(target.type || '', 40).toLowerCase();
+  const role = compactRecordText(target.role || '', 60);
+  const label = browserDomActionFixtureLabel(target);
+  const text = compactRecordText(target.text || '', 180);
+  const name = compactRecordText(target.name || '', 80);
+  const riskText = [type, role, label, text, name, selector, query].join(' ');
+  const submitLike = plan.args?.domAction === 'click' && (
+    type === 'submit' ||
+    BROWSER_DOM_DANGEROUS_RE.test(riskText)
+  );
+  const preflight = sanitizeBrowserDomPreflight({
+    ok: true,
+    action: plan.args?.domAction || '',
+    selector,
+    tag,
+    type,
+    role,
+    label,
+    submitLike,
+    title: dom.title,
+    url: dom.url,
+    rect: target.rect || null,
+  });
+  appendAudit('browser_dom.reobserved_fixture', {
+    app: dom.app,
+    action: plan.args?.domAction,
+    selector: preflight.selector,
+    label: compactRecordText(preflight.label, 120),
+    url: preflight.url,
+    submitLike: preflight.submitLike,
+  });
+  return { ...preflight, bridge: dom.bridge || 'fixture', fixture: true };
+}
+
+function promoteBrowserDomActionPlanAfterPreflight(plan, preflight = {}) {
+  if (!preflight.submitLike) return plan;
+  const riskLevel = Math.max(Number(plan.riskLevel || 0), 4);
+  return {
+    ...plan,
+    riskLevel,
+    summary: Number(plan.riskLevel || 0) >= 4
+      ? plan.summary
+      : `${plan.summary} (submit-like browser target requires explicit confirmation)`,
+    metadata: {
+      ...(plan.metadata || {}),
+      submitLikePreflight: true,
+      submitLikeRiskLevel: 4,
+    },
+  };
+}
+
 async function reobserveBrowserDomActionTarget(plan, browser) {
   const snapshot = await executeBrowserJavaScriptBridge(browser, browserDomActionPreflightScript(plan), { timeoutMs: 6000 });
   const preflight = sanitizeBrowserDomPreflight(JSON.parse(snapshot.output || '{}'));
@@ -18485,30 +18582,56 @@ async function executeBrowserDomAction(args = {}, options = {}) {
       output: `Prepared ${plan.summary}${evaluation.needsApproval ? ` (${evaluation.reason})` : ''}.`,
       plan,
       evaluation,
-      safety: {
-        preflightReobserve: true,
-        reobserveTiming: 'before_execute',
-        formSubmissionDefault: 'approval_required',
-        submitLikeRiskLevel: 4,
-        executesFormSubmitByDefault: false,
+      safety: browserDomActionSafetyContract(),
+    };
+  }
+  const fixtureDom = normalizeBrowserFillDraftFixtureDom(args.dom || args.fixtureDom);
+  if (fixtureDom) {
+    const preflight = reobserveBrowserDomActionTargetFromFixture(plan, fixtureDom);
+    plan = promoteBrowserDomActionPlanAfterPreflight(plan, preflight);
+    const evaluation = evaluateMacActionPlan(plan, { ...options, preview: true, approved: false });
+    const gateStatus = evaluation.blocked
+      ? 'blocked'
+      : evaluation.needsApproval ? 'approval_required' : 'fixture_preview_only';
+    appendAudit('browser_dom.fixture_gate', {
+      action: plan.args.domAction,
+      riskLevel: plan.riskLevel,
+      reobserved: true,
+      submitLikePreflight: preflight.submitLike,
+      gateStatus,
+    });
+    return {
+      ok: !evaluation.blocked,
+      executed: false,
+      fixture: true,
+      action: plan.args.domAction,
+      output: evaluation.needsApproval
+        ? `Approval required before ${plan.summary}. Fixture DOM was re-observed and no browser action ran.`
+        : `Fixture DOM was re-observed for ${plan.summary}; no live browser action ran.`,
+      plan,
+      evaluation,
+      preflight,
+      confirmationRequired: Boolean(evaluation.needsApproval),
+      gate: {
+        status: gateStatus,
+        reobserved: true,
+        persistedApproval: false,
+        reason: evaluation.reason || '',
+        browserAction: false,
+        formSubmitted: false,
       },
+      safety: browserDomActionSafetyContract({
+        fixtureExecutionBlocked: true,
+        submitLikePreflight: preflight.submitLike,
+        gateStatus,
+        persistedApproval: false,
+      }),
     };
   }
   const browser = await browserContextSnapshot({ app: plan.args.app });
   if (!browser.supported || !browser.available) throw new Error(browser.error || 'frontmost_app_is_not_supported_browser');
   const preflight = await reobserveBrowserDomActionTarget(plan, browser);
-  if (preflight.submitLike && plan.riskLevel < 4) {
-    plan = {
-      ...plan,
-      riskLevel: 4,
-      summary: `${plan.summary} (submit-like browser target requires explicit confirmation)`,
-      metadata: {
-        ...(plan.metadata || {}),
-        submitLikePreflight: true,
-        submitLikeRiskLevel: 4,
-      },
-    };
-  }
+  plan = promoteBrowserDomActionPlanAfterPreflight(plan, preflight);
   const evaluation = evaluateMacActionPlan(plan, { ...options, preview });
   const output = await runBrowserDomActionPlan(plan, evaluation, { browser, preflight });
   appendAudit('browser_dom.completed', {
@@ -18525,13 +18648,9 @@ async function executeBrowserDomAction(args = {}, options = {}) {
     output,
     plan,
     preflight,
-    safety: {
-      preflightReobserve: true,
-      reobserveTiming: 'before_execute',
-      formSubmissionDefault: 'approval_required',
-      submitLikeRiskLevel: 4,
-      executesFormSubmitByDefault: false,
-    },
+    safety: browserDomActionSafetyContract({
+      submitLikePreflight: preflight.submitLike,
+    }),
   };
 }
 
@@ -21607,6 +21726,7 @@ async function browserWorkflowBenchmarkSnapshot(options = {}) {
       { id: 'email', selector: '#email', tag: 'input', type: 'email', label: 'Email', placeholder: 'Email address', name: 'email', disabled: false },
       { id: 'plan', selector: '#plan', tag: 'select', type: '', label: 'Plan', placeholder: '', name: 'plan', disabled: false },
       { id: 'password', selector: '#password', tag: 'input', type: 'password', label: 'Password', placeholder: 'Password', name: 'password', disabled: false },
+      { id: 'submit', selector: '#submit', tag: 'button', type: 'submit', label: 'Submit', text: 'Create account', name: '', disabled: false },
     ],
   };
 
@@ -21733,6 +21853,43 @@ async function browserWorkflowBenchmarkSnapshot(options = {}) {
       domActionContract.plan?.metadata?.noFormSubmitByDefault === true,
   }));
 
+  const domActionExecuteGate = await executeBrowserDomAction({
+    action: 'click',
+    selector: '#submit',
+    execute: true,
+    dom: formDom,
+    source: `${sourcePrefix}_dom_action_execute_gate`,
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'dom_action_execute_gate_fixture',
+    label: 'DOM action execute gate fixture',
+    intent: 'dom_action',
+    result: domActionExecuteGate,
+    secrets,
+    assertions: {
+      reobservedFixture: domActionExecuteGate.preflight?.fixture === true,
+      submitLikePreflight: domActionExecuteGate.preflight?.submitLike === true,
+      confirmationRequired: domActionExecuteGate.confirmationRequired === true,
+      gateStatus: domActionExecuteGate.gate?.status || '',
+      browserAction: Boolean(domActionExecuteGate.gate?.browserAction),
+      formSubmitted: Boolean(domActionExecuteGate.gate?.formSubmitted),
+      persistedApproval: Boolean(domActionExecuteGate.gate?.persistedApproval),
+    },
+    ok: domActionExecuteGate.executed === false &&
+      domActionExecuteGate.fixture === true &&
+      domActionExecuteGate.preflight?.fixture === true &&
+      domActionExecuteGate.preflight?.submitLike === true &&
+      domActionExecuteGate.plan?.riskLevel === 4 &&
+      domActionExecuteGate.plan?.metadata?.submitLikePreflight === true &&
+      domActionExecuteGate.evaluation?.needsApproval === true &&
+      domActionExecuteGate.confirmationRequired === true &&
+      domActionExecuteGate.gate?.status === 'approval_required' &&
+      domActionExecuteGate.gate?.browserAction === false &&
+      domActionExecuteGate.gate?.formSubmitted === false &&
+      domActionExecuteGate.safety?.fixtureExecutionBlocked === true &&
+      domActionExecuteGate.safety?.executesFormSubmitByDefault === false,
+  }));
+
   const research = await runBrowserWorkflow({
     intent: 'research',
     mode: 'quick',
@@ -21852,6 +22009,7 @@ async function browserWorkflowBenchmarkSnapshot(options = {}) {
       noModelCalls: true,
       noSecretEcho: cases.every((item) => item.assertions?.leakedSecrets === false),
       domReobserveBeforeAction: cases.find((item) => item.id === 'dom_action_contract_fixture')?.assertions?.preflightReobserve === true,
+      domSubmitExecuteGate: cases.find((item) => item.id === 'dom_action_execute_gate_fixture')?.assertions?.confirmationRequired === true,
       noFormSubmitByDefault: cases.find((item) => item.id === 'dom_action_contract_fixture')?.assertions?.noFormSubmitByDefault === true,
       sensitiveFieldsBlocked: cases.find((item) => item.id === 'fill_draft_fixture')?.assertions?.blockedSensitiveFields === 1,
     },

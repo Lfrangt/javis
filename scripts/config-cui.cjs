@@ -1748,7 +1748,7 @@ function printBrowserBenchmarks(result) {
   console.log(`Mode: preview-only=${benchmarks.previewOnly ? 'yes' : 'no'} · starts browser=${benchmarks.startsBrowser ? 'yes' : 'no'} · model calls=${benchmarks.modelCalls ? 'yes' : 'no'}`);
   console.log(`Counts: pass ${counts.pass || 0}/${counts.total || 0} · fail ${counts.fail || 0} · executed ${counts.executed || 0} · queued ${counts.queued || 0}`);
   const safety = benchmarks.safety || {};
-  console.log(`Safety: no browser actions=${safety.noBrowserActions ? 'yes' : 'no'} · no model calls=${safety.noModelCalls ? 'yes' : 'no'} · sensitive fields blocked=${safety.sensitiveFieldsBlocked ? 'yes' : 'no'}`);
+  console.log(`Safety: no browser actions=${safety.noBrowserActions ? 'yes' : 'no'} · no model calls=${safety.noModelCalls ? 'yes' : 'no'} · DOM reobserve=${safety.domReobserveBeforeAction ? 'yes' : 'no'} · no form submit=${safety.noFormSubmitByDefault ? 'yes' : 'no'} · submit execute gate=${safety.domSubmitExecuteGate ? 'yes' : 'no'} · sensitive fields blocked=${safety.sensitiveFieldsBlocked ? 'yes' : 'no'}`);
   const cases = Array.isArray(benchmarks.cases) ? benchmarks.cases : [];
   if (!cases.length) {
     console.log('\nCases: none');

@@ -52,6 +52,7 @@ export default {
         { id: '2', selector: '#email', tag: 'input', type: 'email', label: 'Email', placeholder: 'Email address', name: 'email', disabled: false },
         { id: '3', selector: '#plan', tag: 'select', type: '', label: 'Plan', placeholder: '', name: 'plan', disabled: false },
         { id: '4', selector: '#password', tag: 'input', type: 'password', label: 'Password', placeholder: 'Password', name: 'password', disabled: false },
+        { id: 'submit', selector: '#submit', tag: 'button', type: 'submit', label: 'Submit', text: 'Create account', name: '', disabled: false },
       ],
     };
 
@@ -140,6 +141,36 @@ export default {
         domActionPreview.data?.plan?.metadata?.submitLikeRiskLevel === 4
         ? ok('browser.dom_action_preview_contract', 'Browser DOM action preview contract', 'preview declares DOM re-observe and no-submit default')
         : fail('browser.dom_action_preview_contract', 'Browser DOM action preview contract', `POST /api/browser/dom-action ${domActionPreview.status}`, domActionPreview.data),
+    );
+
+    const domActionExecuteGate = await ctx.api('/api/browser/dom-action', {
+      method: 'POST',
+      body: {
+        action: 'click',
+        selector: '#submit',
+        execute: true,
+        dom: fixtureDom,
+        source: 'eval_browser_dom_action_execute_gate',
+      },
+    });
+    out.push(
+      domActionExecuteGate.ok &&
+        domActionExecuteGate.data?.executed === false &&
+        domActionExecuteGate.data?.fixture === true &&
+        domActionExecuteGate.data?.preflight?.fixture === true &&
+        domActionExecuteGate.data?.preflight?.submitLike === true &&
+        domActionExecuteGate.data?.preflight?.bridge === 'fixture' &&
+        domActionExecuteGate.data?.plan?.riskLevel === 4 &&
+        domActionExecuteGate.data?.plan?.metadata?.submitLikePreflight === true &&
+        domActionExecuteGate.data?.evaluation?.needsApproval === true &&
+        domActionExecuteGate.data?.confirmationRequired === true &&
+        domActionExecuteGate.data?.gate?.status === 'approval_required' &&
+        domActionExecuteGate.data?.gate?.browserAction === false &&
+        domActionExecuteGate.data?.gate?.formSubmitted === false &&
+        domActionExecuteGate.data?.safety?.fixtureExecutionBlocked === true &&
+        domActionExecuteGate.data?.safety?.executesFormSubmitByDefault === false
+        ? ok('browser.dom_action_execute_gate_fixture', 'Browser DOM action execute gate fixture', 'submit-like fixture target re-observed and stopped at confirmation gate')
+        : fail('browser.dom_action_execute_gate_fixture', 'Browser DOM action execute gate fixture', `POST /api/browser/dom-action ${domActionExecuteGate.status}`, domActionExecuteGate.data),
     );
 
     const fixtureExecute = await ctx.api('/api/browser/fill-draft', {
@@ -260,16 +291,17 @@ export default {
         bench?.executesBrowserActions === false &&
         bench?.modelCalls === false &&
         bench?.storesRawPageText === false &&
-        bench?.counts?.total >= 6 &&
+        bench?.counts?.total >= 8 &&
         bench?.counts?.pass === bench.counts.total &&
         bench?.counts?.fail === 0 &&
         bench?.safety?.noBrowserActions === true &&
         bench?.safety?.noModelCalls === true &&
         bench?.safety?.noSecretEcho === true &&
         bench?.safety?.domReobserveBeforeAction === true &&
+        bench?.safety?.domSubmitExecuteGate === true &&
         bench?.safety?.noFormSubmitByDefault === true &&
         bench?.safety?.sensitiveFieldsBlocked === true &&
-        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
+        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'dom_action_execute_gate_fixture', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
         bench.cases.every((item) => item.ok === true && item.modelCall === false && item.browserAction === false)
         ? ok('browser.workflow_benchmarks', 'Browser workflow benchmarks', `${bench.counts.pass}/${bench.counts.total} preview fixture(s) passed`)
         : fail('browser.workflow_benchmarks', 'Browser workflow benchmarks', `GET /api/browser/benchmarks ${benchmarks.status}`, benchmarks.data),
@@ -289,6 +321,8 @@ export default {
           output.includes('starts browser=no') &&
           output.includes('model calls=no') &&
           output.includes('sensitive fields blocked=yes') &&
+          output.includes('submit execute gate=yes') &&
+          output.includes('DOM action execute gate fixture') &&
           output.includes('Research continuation fixture')
           ? ok('browser.cui_workflow_benchmarks', 'Browser CUI workflow benchmarks', 'config CUI prints preview-only benchmark status')
           : fail('browser.cui_workflow_benchmarks', 'Browser CUI workflow benchmarks', 'expected CUI benchmark output to print preview-only safety and benchmark cases', { output: output.slice(0, 2400) }),
