@@ -354,6 +354,7 @@ async function printStatus() {
   console.log('B. Show Realtime dogfood brief');
   console.log('E. Show Realtime dogfood acceptance');
   console.log('A. Save Realtime dogfood archive');
+  console.log('Y. Prepare Realtime dogfood preflight bundle');
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
@@ -2920,6 +2921,32 @@ function printRealtimeShortcutRecallDogfood(result) {
   }
 }
 
+function printRealtimeDogfoodPreflightBundle(result) {
+  const bundle = result?.preflightBundle || result || {};
+  const safety = bundle.safety || {};
+  const acceptance = bundle.acceptance || {};
+  const counts = acceptance.counts || {};
+  const archive = bundle.archive || {};
+  console.log('JAVIS Realtime Dogfood Preflight Bundle');
+  console.log('=======================================');
+  console.log(`Status: ${bundle.status || 'preview'} · ok=${bundle.ok ? 'yes' : 'no'} · confirmed=${bundle.confirmed ? 'yes' : 'no'} · executed=${bundle.executed ? 'yes' : 'no'}`);
+  console.log(`Requires confirmation: ${bundle.requiresConfirmation ? 'yes' : 'no'}`);
+  console.log(`Safety: starts mic=${safety.startsMicrophone ? 'yes' : 'no'} · starts workers=${safety.startsWorkers ? 'yes' : 'no'} · executes task=${safety.executesTask ? 'yes' : 'no'} · writes local json=${safety.writesLocalJson ? 'yes' : 'no'}`);
+  if (bundle.live) {
+    console.log(`Live prep: prompts=${Number(bundle.live.promptCount || 0)} · archive=${bundle.live.archive?.saved ? 'saved' : 'preview'} · session=${bundle.live.session?.sessions?.active?.id || bundle.live.session?.sessions?.active?.title || '-'}`);
+  }
+  if (bundle.shortcutRecall) {
+    console.log(`Shortcut recall: ${bundle.shortcutRecall.recalled ? 'ready' : 'preview'} · phrase=${bundle.shortcutRecall.phrase || '-'} · route=${bundle.shortcutRecall.route?.id || '-'}`);
+  }
+  console.log(`Archive: ${archive.saved ? 'saved' : 'preview'} · ${archive.file?.path || acceptance.archive?.file || '-'}`);
+  console.log(`Acceptance: ${Number(counts.passed || 0)}/${Number(counts.gates || 0)} gates · next=${acceptance.nextGap?.group || '-'}/${acceptance.nextGap?.id || '-'}`);
+  console.log(`Next live command: ${bundle.next?.liveCommand || 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance'}`);
+  if (bundle.output) console.log(`\n${compact(bundle.output, 1200)}`);
+  if (bundle.requiresConfirmation) {
+    console.log('\nNext: npm run config -- --prepare-realtime-dogfood-preflight --confirm');
+  }
+}
+
 async function showRealtimeDogfoodPrompt(options = {}) {
   if (options.copy) {
     const result = await request('/api/realtime/dogfood/prompt/copy', {
@@ -2973,6 +3000,21 @@ async function showRealtimeShortcutRecallDogfood(options = {}) {
     } : undefined,
   });
   printRealtimeShortcutRecallDogfood(result);
+}
+
+async function showRealtimeDogfoodPreflightBundle(options = {}) {
+  const phrase = argvValue('--phrase', '');
+  const task = argvValue('--task', '');
+  const result = await request('/api/realtime/dogfood/preflight-bundle', {
+    method: options.confirm ? 'POST' : 'GET',
+    body: options.confirm ? {
+      confirm: true,
+      source: 'cui_realtime_dogfood_preflight_bundle',
+      ...(phrase ? { phrase } : {}),
+      ...(task ? { task } : {}),
+    } : undefined,
+  });
+  printRealtimeDogfoodPreflightBundle(result);
 }
 
 function printRealtimeDogfoodSession(result) {
@@ -3112,6 +3154,11 @@ async function main() {
 
   if (process.argv.includes('--prepare-realtime-shortcut-recall') || process.argv.includes('--realtime-shortcut-recall')) {
     await showRealtimeShortcutRecallDogfood({ confirm: process.argv.includes('--confirm') });
+    return;
+  }
+
+  if (process.argv.includes('--prepare-realtime-dogfood-preflight') || process.argv.includes('--realtime-dogfood-preflight')) {
+    await showRealtimeDogfoodPreflightBundle({ confirm: process.argv.includes('--confirm') });
     return;
   }
 
@@ -3373,6 +3420,8 @@ async function main() {
         await showRealtimeDogfoodAcceptance();
       } else if (answer === 'a' || answer === 'archive' || answer === 'dogfood archive') {
         await showRealtimeDogfoodArchive({ save: true });
+      } else if (answer === 'y' || answer === 'preflight' || answer === 'dogfood preflight') {
+        await showRealtimeDogfoodPreflightBundle({ confirm: true });
       } else if (answer === 'p' || answer === 'prompt' || answer === 'dogfood prompt') {
         await showRealtimeDogfoodPrompt({ copy: true });
       } else if (answer === 't' || answer === 'track' || answer === 'dogfood session') {

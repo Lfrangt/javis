@@ -1815,6 +1815,83 @@ export default {
         : fail('realtime.shortcut_recall_dogfood_evidence', 'Realtime shortcut recall dogfood evidence', 'expected dogfood drill route recall gate to be ready', shortcutRecallStep),
     );
 
+    const preflightBundlePreview = await ctx.api('/api/realtime/dogfood/preflight-bundle?auditLimit=8');
+    const preflightBundlePreviewData = preflightBundlePreview.data?.preflightBundle;
+    out.push(
+      preflightBundlePreview.ok &&
+        preflightBundlePreviewData?.requiresConfirmation === true &&
+        preflightBundlePreviewData?.confirmed === false &&
+        preflightBundlePreviewData?.executed === false &&
+        preflightBundlePreviewData?.startsMicrophone === false &&
+        preflightBundlePreviewData?.live?.startsMicrophone === false &&
+        preflightBundlePreviewData?.shortcutRecall?.requiresConfirmation === true &&
+        preflightBundlePreviewData?.archive?.saved === false &&
+        preflightBundlePreviewData?.safety?.startsMicrophone === false &&
+        preflightBundlePreviewData?.safety?.startsWorkers === false &&
+        preflightBundlePreviewData?.safety?.executesTask === false &&
+        /--prepare-realtime-dogfood-preflight --confirm/.test(preflightBundlePreviewData?.next?.confirmCommand || '')
+        ? ok('realtime.dogfood_preflight_bundle_preview', 'Realtime dogfood preflight bundle preview', 'previews all no-mic preparation behind a confirmation gate')
+        : fail('realtime.dogfood_preflight_bundle_preview', 'Realtime dogfood preflight bundle preview', 'expected preview to require confirmation and keep mic/workers/tasks off', preflightBundlePreview.data),
+    );
+
+    const preflightBundleRun = await ctx.api('/api/realtime/dogfood/preflight-bundle', {
+      method: 'POST',
+      body: {
+        confirm: true,
+        phrase: 'javis realtime preflight bundle dogfood',
+        source: 'eval_realtime_preflight_bundle',
+        auditLimit: 8,
+      },
+      retries: 0,
+    });
+    const preflightBundleRunData = preflightBundleRun.data?.preflightBundle;
+    const preflightArchiveGate = (preflightBundleRunData?.acceptance?.gates || []).find((gate) => gate.id === 'archive_saved');
+    const preflightRouteGate = (preflightBundleRunData?.acceptance?.gates || []).find((gate) => gate.id === 'route_recalled_shortcut');
+    out.push(
+      preflightBundleRun.ok &&
+        preflightBundleRunData?.ok === true &&
+        preflightBundleRunData?.confirmed === true &&
+        preflightBundleRunData?.executed === true &&
+        preflightBundleRunData?.startsMicrophone === false &&
+        preflightBundleRunData?.requiresMicConfirmationForLiveStart === true &&
+        preflightBundleRunData?.live?.startsMicrophone === false &&
+        preflightBundleRunData?.shortcutRecall?.ok === true &&
+        preflightBundleRunData?.shortcutRecall?.recalled === true &&
+        preflightBundleRunData?.archive?.saved === true &&
+        preflightBundleRunData?.archive?.file?.path &&
+        fs.existsSync(preflightBundleRunData.archive.file.path) &&
+        preflightArchiveGate?.ok === true &&
+        preflightRouteGate?.ok === true &&
+        preflightBundleRunData?.safety?.startsMicrophone === false &&
+        preflightBundleRunData?.safety?.startsWorkers === false &&
+        preflightBundleRunData?.safety?.executesTask === false &&
+        /--execute --confirm-mic/.test(preflightBundleRunData?.next?.liveCommand || '')
+        ? ok('realtime.dogfood_preflight_bundle_prepare', 'Realtime dogfood preflight bundle prepare', preflightBundleRunData.archive.file.path)
+        : fail('realtime.dogfood_preflight_bundle_prepare', 'Realtime dogfood preflight bundle prepare', 'expected confirmed bundle to save local archive, recall shortcut, and keep live mic manual', preflightBundleRun.data),
+    );
+
+    try {
+      const preflightBundleCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--prepare-realtime-dogfood-preflight'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${preflightBundleCui.stdout || ''}\n${preflightBundleCui.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Realtime Dogfood Preflight Bundle') &&
+          output.includes('Requires confirmation: yes') &&
+          output.includes('starts mic=no') &&
+          output.includes('starts workers=no') &&
+          output.includes('executes task=no') &&
+          output.includes('Next: npm run config -- --prepare-realtime-dogfood-preflight --confirm')
+          ? ok('realtime.cui_dogfood_preflight_bundle', 'Realtime CUI dogfood preflight bundle', 'config CUI previews the no-mic preparation bundle')
+          : fail('realtime.cui_dogfood_preflight_bundle', 'Realtime CUI dogfood preflight bundle', 'expected CUI preflight bundle preview and safety markers', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('realtime.cui_dogfood_preflight_bundle', 'Realtime CUI dogfood preflight bundle', error instanceof Error ? error.message : String(error)));
+    }
+
     const handoffTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {

@@ -35096,6 +35096,158 @@ async function prepareRealtimeDogfoodLiveRun(options = {}) {
   };
 }
 
+async function prepareRealtimeDogfoodPreflightBundle(options = {}) {
+  const confirm = options.confirm === true || String(options.confirm || '').toLowerCase() === 'true';
+  const source = compactRecordText(options.source || 'realtime_dogfood_preflight_bundle', 80);
+  const promptLimit = Math.max(1, Math.min(32, Number(options.promptLimit || 32)));
+  const preview = {
+    ok: false,
+    status: 409,
+    requiresConfirmation: true,
+    confirmed: false,
+    executed: false,
+    startsMicrophone: false,
+    requiresMicConfirmationForLiveStart: true,
+    output: 'Confirm before writing local Realtime dogfood preflight evidence. This will not start microphone capture.',
+    safety: {
+      startsMicrophone: false,
+      startsWorkers: false,
+      executesTask: false,
+      routePreviewOnly: true,
+      writesLocalJson: true,
+      rawAudioStored: false,
+      screenImageIncluded: false,
+      actionPolicyBypassed: false,
+      confirmationRequired: true,
+    },
+  };
+  if (!confirm) {
+    const livePreview = await prepareRealtimeDogfoodLiveRun({
+      execute: false,
+      source: `${source}_preview`,
+      promptLimit,
+      sessionLimit: options.sessionLimit || 6,
+      auditLimit: options.auditLimit || 50,
+    });
+    const shortcutPreview = await prepareRealtimeDogfoodShortcutRecall({
+      ...(options || {}),
+      confirm: false,
+      source: `${source}_preview`,
+    });
+    const archive = realtimeDogfoodArchiveSnapshot({
+      source: `${source}_preview`,
+      promptLimit,
+      sessionLimit: options.sessionLimit || 6,
+      auditLimit: options.auditLimit || 50,
+    });
+    const acceptance = realtimeDogfoodAcceptanceSnapshot({
+      archive,
+      source: `${source}_preview`,
+      preflight: livePreview.rendererPreview?.preflight,
+    });
+    return {
+      ...preview,
+      live: livePreview,
+      shortcutRecall: shortcutPreview,
+      archive,
+      acceptance,
+      next: {
+        confirmCommand: 'npm run config -- --prepare-realtime-dogfood-preflight --confirm',
+        liveCommand: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+      },
+    };
+  }
+
+  const live = await prepareRealtimeDogfoodLiveRun({
+    execute: true,
+    source,
+    promptLimit,
+    sessionLimit: options.sessionLimit || 6,
+    auditLimit: options.auditLimit || 50,
+  });
+  const shortcutRecall = await prepareRealtimeDogfoodShortcutRecall({
+    ...(options || {}),
+    confirm: true,
+    source,
+  });
+  const archiveResult = saveRealtimeDogfoodArchive({
+    source,
+    promptLimit,
+    sessionLimit: options.sessionLimit || 6,
+    auditLimit: options.auditLimit || 50,
+    note: 'Realtime dogfood preflight bundle prepared all no-mic evidence before live voice.',
+  });
+  const archive = archiveResult.archive;
+  const acceptance = realtimeDogfoodAcceptanceSnapshot({
+    archive,
+    source,
+    preflight: live.rendererPreview?.preflight,
+  });
+  const liveOk = live.ok !== false && live.startsMicrophone === false;
+  const shortcutOk = shortcutRecall.ok === true && shortcutRecall.recalled === true;
+  const archiveOk = archive?.saved === true && archive.file?.path && fs.existsSync(archive.file.path);
+  const archiveGate = (acceptance.gates || []).find((gate) => gate.id === 'archive_saved');
+  const routeGate = (acceptance.gates || []).find((gate) => gate.id === 'route_recalled_shortcut');
+  const ok = Boolean(liveOk && shortcutOk && archiveOk);
+  const output = [
+    ok
+      ? 'Prepared Realtime dogfood preflight bundle without starting microphone capture.'
+      : 'Realtime dogfood preflight bundle finished with a gap; inspect the included steps.',
+    `Live prep: prompts=${live.promptCount || 0}; session=${live.session?.sessions?.active?.id || live.session?.sessions?.active?.title || 'reused/none'}; archive=${live.archive?.saved ? 'saved' : 'preview'}.`,
+    `Shortcut recall: ${shortcutRecall.recalled ? 'ready' : 'not-ready'}${shortcutRecall.route?.id ? ` route=${shortcutRecall.route.id}` : ''}.`,
+    `Archive: ${archiveOk ? 'saved' : 'not-saved'} ${archive.file?.path || ''}.`,
+    `Acceptance: ${Number(acceptance.counts?.passed || 0)}/${Number(acceptance.counts?.gates || 0)}; archive_gate=${archiveGate?.ok ? 'pass' : 'gap'}; recall_gate=${routeGate?.ok ? 'pass' : 'gap'}; next=${acceptance.nextGap?.group || '-'}/${acceptance.nextGap?.id || '-'}.`,
+    'Next user action: click the desktop pet or press the summon hotkey, then run the live prompt script.',
+  ].filter(Boolean).join('\n');
+
+  appendAudit('realtime.dogfood_preflight_bundle', {
+    source,
+    ok,
+    startsMicrophone: false,
+    liveOk,
+    shortcutOk,
+    archiveOk,
+    shortcutId: shortcutRecall.shortcut?.id || '',
+    routeId: shortcutRecall.route?.id || '',
+    archiveFile: archive.file?.path || '',
+    acceptancePassed: Number(acceptance.counts?.passed || 0),
+    acceptanceGates: Number(acceptance.counts?.gates || 0),
+    nextGap: acceptance.nextGap?.id || '',
+  });
+
+  return {
+    ok,
+    status: ok ? 'ready_for_live_voice' : 'preflight_gap',
+    requiresConfirmation: false,
+    confirmed: true,
+    executed: true,
+    startsMicrophone: false,
+    requiresMicConfirmationForLiveStart: true,
+    output,
+    live,
+    shortcutRecall,
+    archive,
+    acceptance,
+    next: {
+      monitorCommand: 'npm run config -- --print-realtime-evidence',
+      acceptanceCommand: 'npm run dogfood:realtime-acceptance',
+      liveCommand: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+      hotkey: SUMMON_HOTKEY || 'Option+Space',
+    },
+    safety: {
+      startsMicrophone: false,
+      startsWorkers: false,
+      executesTask: false,
+      routePreviewOnly: true,
+      writesLocalJson: true,
+      rawAudioStored: false,
+      screenImageIncluded: false,
+      actionPolicyBypassed: false,
+      confirmationRequired: true,
+    },
+  };
+}
+
 async function prepareRealtimeDogfoodProgressSample(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const { durationMs, command } = realtimeDogfoodProgressSampleCommand(options.durationMs);
@@ -48204,6 +48356,26 @@ function startApiServer() {
       res.status(result.ok === false && result.status !== 409 ? 400 : 200).json({ shortcutRecall: result });
     } catch (error) {
       jsonError(res, 400, 'Realtime dogfood shortcut recall prep failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/dogfood/preflight-bundle', async (req, res) => {
+    try {
+      res.json({ preflightBundle: await prepareRealtimeDogfoodPreflightBundle(req.query || {}) });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime dogfood preflight bundle preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/dogfood/preflight-bundle', express.json({ limit: '128kb' }), async (req, res) => {
+    try {
+      const result = await prepareRealtimeDogfoodPreflightBundle({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_dogfood_preflight_bundle',
+      });
+      res.status(result.ok === false && result.status !== 409 ? 400 : 200).json({ preflightBundle: result });
+    } catch (error) {
+      jsonError(res, 400, 'Realtime dogfood preflight bundle failed', error instanceof Error ? error.message : String(error));
     }
   });
 
