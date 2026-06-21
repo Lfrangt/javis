@@ -297,6 +297,95 @@ export default {
         : fail('voice_command.natural_window_execute', 'Natural pet window execute voice command', 'natural pet/window execute phrase did not stay within JAVIS-only window control', naturalWindowExecute.data),
     );
 
+    const naturalInboxPreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '记一下：明天检查 JAVIS 浏览器接管体验',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_inbox_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalInboxPreviewData = naturalInboxPreview.data || {};
+    const naturalInboxPreviewCapture = naturalInboxPreviewData.route?.data?.inboxCapture || {};
+    out.push(
+      naturalInboxPreview.ok &&
+        naturalInboxPreviewData.ok === true &&
+        naturalInboxPreviewData.executed === false &&
+        naturalInboxPreviewData.route?.decision?.localCommand === 'capture_text' &&
+        naturalInboxPreviewData.route?.localCommand?.intent === 'capture_text' &&
+        naturalInboxPreviewCapture.previewOnly === true &&
+        naturalInboxPreviewCapture.executed === false &&
+        naturalInboxPreviewCapture.safety?.writesInbox === false &&
+        naturalInboxPreviewCapture.safety?.writesMemory === false &&
+        naturalInboxPreviewCapture.bodyPreview?.includes('JAVIS 浏览器接管体验') &&
+        !naturalInboxPreviewCapture.item?.id &&
+        typeof naturalInboxPreviewData.route?.output === 'string' &&
+        naturalInboxPreviewData.route.output.includes('Inbox capture: preview only') &&
+        naturalInboxPreviewData.safety?.startsMicrophone === false &&
+        naturalInboxPreviewData.safety?.usesRealtime === false &&
+        naturalInboxPreviewData.safety?.storesRawAudio === false &&
+        naturalInboxPreviewData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_inbox_preview', 'Natural Inbox capture preview voice command', '记一下 routes to preview-only local Inbox capture without writing memory/inbox')
+        : fail('voice_command.natural_inbox_preview', 'Natural Inbox capture preview voice command', 'natural note-taking phrase did not use preview-only capture_text', naturalInboxPreview.data),
+    );
+
+    const naturalInboxExecute = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '记一下：eval 临时 Inbox capture，测试后删除',
+        execute: true,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_inbox_execute',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalInboxExecuteData = naturalInboxExecute.data || {};
+    const naturalInboxExecuteCapture = naturalInboxExecuteData.route?.data?.inboxCapture || {};
+    const naturalInboxExecuteItemId = naturalInboxExecuteCapture.item?.id || naturalInboxExecuteData.route?.data?.item?.id || '';
+    let naturalInboxCleanupOk = false;
+    if (naturalInboxExecuteItemId) {
+      const cleanup = await ctx.api(`/api/inbox/${encodeURIComponent(naturalInboxExecuteItemId)}`, {
+        method: 'DELETE',
+        retries: 0,
+        timeoutMs: 10000,
+      });
+      naturalInboxCleanupOk = cleanup.ok === true;
+    }
+    out.push(
+      naturalInboxExecute.ok &&
+        naturalInboxExecuteData.ok === true &&
+        naturalInboxExecuteData.requestedExecute === true &&
+        naturalInboxExecuteData.executed === true &&
+        naturalInboxExecuteData.route?.decision?.localCommand === 'capture_text' &&
+        naturalInboxExecuteData.route?.localCommand?.intent === 'capture_text' &&
+        naturalInboxExecuteCapture.previewOnly === false &&
+        naturalInboxExecuteCapture.executed === true &&
+        naturalInboxExecuteCapture.safety?.writesInbox === true &&
+        naturalInboxExecuteCapture.safety?.writesMemory === false &&
+        naturalInboxExecuteCapture.safety?.readsClipboardText === false &&
+        naturalInboxExecuteItemId &&
+        naturalInboxCleanupOk &&
+        typeof naturalInboxExecuteData.route?.output === 'string' &&
+        naturalInboxExecuteData.route.output.includes('Inbox capture: saved') &&
+        naturalInboxExecuteData.safety?.startsMicrophone === false &&
+        naturalInboxExecuteData.safety?.usesRealtime === false &&
+        naturalInboxExecuteData.safety?.storesRawAudio === false &&
+        naturalInboxExecuteData.safety?.callsOpenAIImmediately === false &&
+        naturalInboxExecuteData.safety?.executesLocalCommand === true
+        ? ok('voice_command.natural_inbox_execute', 'Natural Inbox capture execute voice command', '记一下 with execute writes one local Inbox item and cleanup deletes the eval item')
+        : fail('voice_command.natural_inbox_execute', 'Natural Inbox capture execute voice command', 'natural note-taking execute phrase did not create a cleanup-safe local Inbox item', {
+            response: naturalInboxExecute.data,
+            itemId: naturalInboxExecuteItemId,
+            cleanupOk: naturalInboxCleanupOk,
+          }),
+    );
+
     const naturalBrowserReady = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

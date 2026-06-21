@@ -23742,6 +23742,33 @@ function naturalWindowControlLocalCommand(text) {
   };
 }
 
+function naturalInboxCaptureLocalCommand(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const patterns = [
+    /^(?:note this|capture this|save this for later|remember for later|add to inbox|add to my inbox|add to todo|add to to-do)[:：,，-]?\s+([\s\S]+)$/i,
+    /^(?:记一下|帮我记一下|帮我记下来|记下来|备忘一下|备忘|待会处理|稍后处理|放到待办|加入待办|添加到待办|放到收件箱|放进收件箱|放到inbox|添加到inbox)[:：,，-]?\s*([\s\S]+)$/i,
+    /^把\s*([\s\S]+?)\s*(?:记到待办|记到收件箱|记到inbox|放到待办|放进待办|放到收件箱|放进收件箱|放到inbox|添加到待办|添加到收件箱)$/i,
+    /^([\s\S]+?)\s*(?:帮我记一下|帮我记下来|记到待办|放到待办|稍后处理)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = raw.match(pattern);
+    const body = match?.[1]?.trim();
+    if (body && body.length >= 2) {
+      return {
+        intent: 'capture_text',
+        label: 'Capture text',
+        args: {
+          body,
+          captureKind: 'inbox',
+          sourcePhrase: raw.slice(0, 120),
+        },
+      };
+    }
+  }
+  return null;
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
@@ -23912,6 +23939,9 @@ function localCommandDecision(task) {
     return { intent: 'process_next_inbox', label: 'Process next Inbox', args: {} };
   }
 
+  const naturalInboxCapture = naturalInboxCaptureLocalCommand(text);
+  if (naturalInboxCapture) return naturalInboxCapture;
+
   if (/(clipboard|剪贴板).*(inbox|capture|save|later|保存|捕获|稍后|待办)/i.test(text)
     || /(保存|捕获).*(clipboard|剪贴板)/i.test(text)) {
     return { intent: 'capture_clipboard', label: 'Capture clipboard', args: {} };
@@ -24055,7 +24085,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -24307,6 +24337,8 @@ function buildContextPlan(message, options = {}) {
       needs.accessibility = localCommand !== 'open_app';
       needs.screen = localCommand !== 'open_app';
       needs.localExecution = true;
+    } else if (['capture_text'].includes(localCommand)) {
+      needs.residentState = true;
     } else if (['capture_clipboard'].includes(localCommand)) {
       needs.clipboard = true;
       needs.clipboardText = true;
@@ -24394,6 +24426,73 @@ function formatInboxForLocalCommand(items, counts) {
   if (!items.length) return `Inbox 为空。共 ${counts.total} 条，open ${counts.open} 条。`;
   const lines = items.map((item, index) => `${index + 1}. ${item.title} · priority ${item.priority} · ${item.source}`);
   return [`Inbox: ${counts.open} open / ${counts.total} total`, ...lines].join('\n');
+}
+
+function inboxCapturePreviewFromText(command = {}) {
+  const body = String(command.args?.body || '').trim();
+  const title = compactRecordText(body.split('\n').find(Boolean) || 'Untitled inbox item', 160);
+  return {
+    ok: Boolean(body),
+    previewOnly: true,
+    executed: false,
+    title,
+    bodyPreview: compactRecordText(body, 260),
+    bodyLength: body.length,
+    target: 'local_inbox',
+    source: 'local_command',
+    safety: {
+      writesInbox: false,
+      writesMemory: false,
+      readsClipboardText: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+    },
+  };
+}
+
+function inboxCapturePayloadFromItem(item = {}, options = {}) {
+  return {
+    ok: Boolean(item.id),
+    previewOnly: false,
+    executed: true,
+    item: {
+      id: item.id || '',
+      title: item.title || '',
+      status: item.status || '',
+      priority: item.priority || 0,
+      source: item.source || '',
+      bodyLength: String(item.body || '').length,
+      tags: Array.isArray(item.tags) ? item.tags : [],
+    },
+    counts: inboxCounts(),
+    target: 'local_inbox',
+    safety: {
+      writesInbox: true,
+      writesMemory: false,
+      readsClipboardText: Boolean(options.readsClipboardText),
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+    },
+  };
+}
+
+function formatInboxCaptureForLocalCommand(capture = {}) {
+  if (capture.executed) {
+    return [
+      `Inbox capture: saved · ${capture.item?.title || '-'}`,
+      `ID: ${capture.item?.id || '-'}`,
+      `Inbox: open ${capture.counts?.open ?? '-'} / total ${capture.counts?.total ?? '-'}`,
+      '边界: 已写入本地 Inbox；没有写入长期 memory，没有启动麦克风或 Realtime。',
+    ].join('\n');
+  }
+  return [
+    `Inbox capture: preview only · ${capture.title || '-'}`,
+    `长度: ${capture.bodyLength || 0} chars`,
+    capture.bodyPreview ? `内容预览: ${capture.bodyPreview}` : '',
+    '边界: 预览不写入 Inbox，不写入长期 memory，不读取剪贴板正文，不启动麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
 }
 
 function screenAgeLabel(screenSnapshot) {
@@ -25065,22 +25164,67 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'capture_clipboard') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      if (!execute) {
+        const capture = {
+          ok: true,
+          previewOnly: true,
+          executed: false,
+          title: 'Clipboard text',
+          bodyPreview: '',
+          bodyLength: 0,
+          target: 'local_inbox',
+          safety: {
+            writesInbox: false,
+            writesMemory: false,
+            readsClipboardText: false,
+            startsMicrophone: false,
+            usesRealtime: false,
+            storesRawAudio: false,
+          },
+        };
+        return {
+          ok: true,
+          executed: false,
+          localCommand: command,
+          output: [
+            'Inbox capture: preview only · Clipboard text',
+            '边界: 预览不读取剪贴板正文、不写入 Inbox；执行时才读取当前剪贴板并保存到本地 Inbox。',
+          ].join('\n'),
+          data: { inboxCapture: capture },
+        };
+      }
       const item = captureClipboardToInbox('local_command');
+      const capture = inboxCapturePayloadFromItem(item, { readsClipboardText: true });
       return {
         ok: true,
+        executed: true,
         localCommand: command,
-        output: `已把剪贴板保存到 Inbox: ${item.title}`,
-        data: { item, counts: inboxCounts() },
+        output: formatInboxCaptureForLocalCommand(capture),
+        data: { item, counts: capture.counts, inboxCapture: capture },
       };
     }
 
     if (command.intent === 'capture_text') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      if (!execute) {
+        const capture = inboxCapturePreviewFromText(command);
+        return {
+          ok: capture.ok,
+          executed: false,
+          localCommand: command,
+          output: formatInboxCaptureForLocalCommand(capture),
+          data: { inboxCapture: capture },
+        };
+      }
       const item = createInboxItem({ body: command.args.body, source: 'local_command' });
+      const capture = inboxCapturePayloadFromItem(item);
       return {
         ok: true,
+        executed: true,
         localCommand: command,
-        output: `已保存到 Inbox: ${item.title}`,
-        data: { item, counts: inboxCounts() },
+        output: formatInboxCaptureForLocalCommand(capture),
+        data: { item, counts: capture.counts, inboxCapture: capture },
       };
     }
 
@@ -26420,7 +26564,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
