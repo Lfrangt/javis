@@ -40,6 +40,7 @@ export default {
     const recoveryBundleResponse = await ctx.api('/api/setup/recovery-bundle');
     const bundle = recoveryBundleResponse.data?.bundle || {};
     const bundleRaw = JSON.stringify(bundle);
+    const bundleVoiceStandby = bundle.voice?.standby || {};
     const bundleLocalVoice = bundle.voice?.localFallback || {};
     const bundlePolicy = bundle.automation?.policy || {};
     const bundleAllow = bundlePolicy.allow || {};
@@ -52,8 +53,10 @@ export default {
         bundle.endpoints?.setupGuide === '/api/setup/guide' &&
         bundle.endpoints?.doctor === '/api/doctor/report' &&
         bundle.endpoints?.keepAwake === '/api/keep-awake/status' &&
+        bundle.endpoints?.voiceStandby === '/api/voice/standby' &&
         bundle.commands?.bundle?.includes('--print-setup-recovery-bundle') &&
         bundle.commands?.keepAwakeStart?.includes('keepawake:start') &&
+        bundle.commands?.voiceStandby?.includes('voice:standby') &&
         typeof bundle.resident?.installed === 'boolean' &&
         typeof bundle.resident?.loaded === 'boolean' &&
         typeof bundle.resident?.matchesProject === 'boolean' &&
@@ -73,6 +76,13 @@ export default {
         bundleLocalVoice.safety?.startsMicrophone === false &&
         bundleLocalVoice.safety?.usesRealtime === false &&
         bundleLocalVoice.safety?.storesRawAudio === false &&
+        ['realtime_ready', 'local_fallback_ready'].includes(bundleVoiceStandby.mode) &&
+        bundleVoiceStandby.primaryAction?.id &&
+        bundleVoiceStandby.local?.input?.endpoint === '/api/voice/command' &&
+        bundleVoiceStandby.local?.safety?.startsMicrophone === false &&
+        bundleVoiceStandby.local?.safety?.usesRealtime === false &&
+        bundleVoiceStandby.local?.safety?.storesRawAudio === false &&
+        bundleVoiceStandby.safety?.storesRawAudio === false &&
         bundle.voice?.realtime?.recovery?.localFallback?.endpoint === '/api/voice/command' &&
         typeof bundle.automation?.localExecutionEnabled === 'boolean' &&
         typeof bundle.automation?.trustedLocalMode === 'boolean' &&
@@ -92,6 +102,42 @@ export default {
         : fail('resident.setup_recovery_bundle', 'Resident setup recovery bundle', 'expected compact read-only resident recovery bundle with setup, permissions, voice fallback, automation, and safety contract', {
           status: recoveryBundleResponse.status,
           bundle,
+        }),
+    );
+
+    const voiceStandbyResponse = await ctx.api('/api/voice/standby');
+    const voiceStandby = voiceStandbyResponse.data?.standby || {};
+    const voiceStandbyCui = spawnSync('npm', ['run', 'voice:standby'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 15000,
+      env: {
+        ...process.env,
+        ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+      },
+    });
+    out.push(
+      voiceStandbyResponse.ok &&
+        voiceStandby.version === 1 &&
+        ['realtime_ready', 'local_fallback_ready'].includes(voiceStandby.mode) &&
+        voiceStandby.primaryAction?.id &&
+        voiceStandby.local?.available === true &&
+        voiceStandby.local?.input?.endpoint === '/api/voice/command' &&
+        voiceStandby.local?.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
+        voiceStandby.local?.safety?.startsMicrophone === false &&
+        voiceStandby.local?.safety?.usesRealtime === false &&
+        voiceStandby.local?.safety?.storesRawAudio === false &&
+        voiceStandby.safety?.storesRawAudio === false &&
+        voiceStandbyCui.status === 0 &&
+        voiceStandbyCui.stdout.includes('JAVIS Voice Standby') &&
+        voiceStandbyCui.stdout.includes('local loop: npm run voice:chat')
+        ? ok('resident.voice_standby', 'Voice standby/fallback status', `${voiceStandby.mode} · primary=${voiceStandby.primaryAction.id}`)
+        : fail('resident.voice_standby', 'Voice standby/fallback status', 'expected unified voice standby contract plus CUI output', {
+          status: voiceStandbyResponse.status,
+          voiceStandby,
+          cui: voiceStandbyCui.stdout,
+          cuiError: voiceStandbyCui.stderr,
+          cuiStatus: voiceStandbyCui.status,
         }),
     );
 

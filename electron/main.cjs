@@ -24798,6 +24798,111 @@ function wakeHandoffSnapshot(options = {}) {
   };
 }
 
+function voiceStandbySnapshot(options = {}) {
+  const conversation = options.conversation || conversationStateSnapshot();
+  const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const localVoice = options.localVoice || localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const wake = options.wake || wakeHandoffSnapshot({ conversation, voiceHealth, localVoice });
+  const recovery = voiceHealth.recovery || realtimeProviderRecoverySnapshot(null, { source: 'voice_standby' });
+  const realtimeReady = voiceHealth.status === 'ready';
+  const fallbackReady = !realtimeReady && localVoice.available === true;
+  const primaryAction = fallbackReady
+    ? {
+        id: 'open_local_voice_loop',
+        label: 'Open local voice/text loop',
+        summary: 'Use the no-mic local command loop now; it can route tasks with metadata-only Mac context while Realtime is unavailable.',
+        command: 'npm run voice:chat',
+        endpoint: '/api/voice/open-local-loop',
+        method: 'POST',
+        opensTerminal: true,
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+      }
+    : {
+        id: 'start_realtime_voice',
+        label: 'Start Realtime voice',
+        summary: 'Start the renderer WebRTC voice path with explicit microphone intent.',
+        endpoint: '/api/realtime/session',
+        method: 'POST',
+        opensTerminal: false,
+        startsMicrophone: true,
+        usesRealtime: true,
+        storesRawAudio: false,
+      };
+  const recoveryActions = Array.isArray(recovery.steps)
+    ? recovery.steps.slice(0, 5).map((step) => ({
+        id: compactRecordText(step.id || '', 80),
+        label: compactRecordText(step.label || step.id || '', 120),
+        detail: compactRecordText(step.detail || '', 260),
+        command: compactRecordText(step.command || '', 180),
+        url: compactRecordText(step.url || '', 240),
+        action: compactRecordText(step.action || '', 120),
+      }))
+    : [];
+  return {
+    version: 1,
+    mode: realtimeReady ? 'realtime_ready' : 'local_fallback_ready',
+    label: realtimeReady ? 'Realtime ready' : 'Local voice standby',
+    summary: compactRecordText(
+      realtimeReady
+        ? 'Realtime voice is ready; the pet can start the live voice path, and local no-mic intake remains available.'
+        : 'Realtime voice is blocked or unverified; JAVIS can still accept typed/local voice-command turns without microphone capture.',
+      260,
+    ),
+    next: compactRecordText(
+      realtimeReady
+        ? 'Click the pet or use the configured hotkey to start Realtime, or use npm run voice for no-mic intake.'
+        : localVoice.next || 'Use npm run voice:chat now, then restore Realtime after API billing/key/provider recovery.',
+      320,
+    ),
+    primaryAction,
+    recoveryActions,
+    provider: {
+      status: compactRecordText(voiceHealth.status || '', 80),
+      kind: compactRecordText(voiceHealth.kind || '', 80),
+      ok: Boolean(voiceHealth.ok),
+      hasOpenAiKey: Boolean(voiceHealth.hasOpenAiKey),
+      summary: compactRecordText(voiceHealth.summary || '', 260),
+      next: compactRecordText(voiceHealth.next || '', 320),
+      subscriptionBoundary: compactRecordText(recovery.subscriptionBoundary || '', 320),
+      billingLikely: Boolean(recovery.billingLikely),
+      autoProbe: recovery.autoProbe || null,
+      links: recovery.links || {},
+    },
+    local: {
+      available: Boolean(localVoice.available),
+      mode: localVoice.mode,
+      label: localVoice.label,
+      summary: compactRecordText(localVoice.summary || '', 220),
+      next: compactRecordText(localVoice.next || '', 260),
+      input: localVoice.input,
+      interaction: localVoice.interaction,
+      blocker: localVoice.blocker || null,
+      history: localVoice.history,
+      safety: localVoice.safety,
+    },
+    wake: {
+      mode: wake.mode || '',
+      label: wake.label || '',
+      next: compactRecordText(wake.next || '', 220),
+      input: wake.input || localVoice.input,
+      pending: Boolean(wakeState.lastTriggerAt && Date.now() - wakeState.lastTriggerAt <= WAKE_TRIGGER_TTL_MS),
+    },
+    safety: {
+      readOnly: true,
+      startsMicrophone: Boolean(primaryAction.startsMicrophone),
+      usesRealtime: Boolean(primaryAction.usesRealtime),
+      storesRawAudio: false,
+      storesScreenImage: false,
+      storesClipboardText: false,
+      storesAccessibilityNodes: false,
+      localFallbackStartsMicrophone: false,
+      localFallbackUsesRealtime: false,
+    },
+  };
+}
+
 function safeUrlHost(value = '') {
   try {
     return value ? new URL(String(value)).host : '';
@@ -41468,6 +41573,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
   const conversation = conversationStateSnapshot();
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit });
   const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const voiceStandby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
   const pet = petStatusSnapshot();
   const briefing = workflowBriefing({ workflowLimit: 4, jobLimit: 4, includeMaintenance: true });
   const readinessById = new Map((readiness.items || []).map((item) => [item.id, item]));
@@ -41576,6 +41682,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       resident: '/api/resident/status',
       pet: '/api/pet/status',
       keepAwake: '/api/keep-awake/status',
+      voiceStandby: '/api/voice/standby',
       voiceCommand: '/api/voice/command',
       realtimeRecovery: '/api/realtime/provider/recovery',
     },
@@ -41585,6 +41692,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       doctor: 'npm run doctor -- --allow-blocked',
       restart: 'npm run resident:restart',
       realtimeProviderProbe: 'npm run dogfood:realtime-provider-probe',
+      voiceStandby: 'npm run voice:standby',
       localVoiceLoop: 'npm run voice:chat',
       localVoiceOneShot: 'npm run voice -- "..."',
       keepAwakeStatus: 'npm run keepawake',
@@ -41652,6 +41760,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       },
     },
     voice: {
+      standby: voiceStandby,
       realtime: {
         ok: Boolean(voiceHealth.ok),
         status: voiceHealth.status,
@@ -52919,6 +53028,13 @@ function startApiServer() {
     res.json(openLocalVoiceLoop(req.body?.source || 'api', { execute: req.body?.execute !== false }));
   });
 
+  api.get('/api/voice/standby', (_req, res) => {
+    const conversation = conversationStateSnapshot();
+    const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+    const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+    res.json({ standby: voiceStandbySnapshot({ conversation, voiceHealth, localVoice }) });
+  });
+
   api.get('/api/doctor/report', async (_req, res) => {
     try {
       res.json({ doctor: await doctorReportSnapshot() });
@@ -53559,6 +53675,7 @@ function startApiServer() {
     const conversation = presence.conversation || conversationStateSnapshot();
     const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
     const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+    const voiceStandby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
     res.json({
       api: {
         baseUrl: API_BASE,
@@ -53584,6 +53701,7 @@ function startApiServer() {
       conversation,
       voiceHealth,
       localVoice,
+      voiceStandby,
       progressVersion: workProgressSnapshot(),
       ambient: ambientStateSnapshot(5),
       browserActivity: browserActivitySnapshot({ limit: 5 }),

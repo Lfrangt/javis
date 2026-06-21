@@ -68,8 +68,10 @@ curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/readiness
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/config/check
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/recovery-bundle
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/setup/guide
+curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/voice/standby
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/keep-awake/status
 npm run setup:bundle
+npm run voice:standby
 npm run keepawake
 npm run config -- --print-control-readiness
 npm run config -- --print-permissions
@@ -147,6 +149,7 @@ Local voice-command fallback is the no-Realtime intake path. It accepts a transc
 
 ```bash
 npm run voice -- "帮我看一下当前窗口，判断下一步应该怎么做"
+npm run voice:standby
 npm run voice:chat
 npm run config -- --print-local-voice-loop
 npm run wake -- "贾维斯，帮我看一下当前窗口，判断下一步应该怎么做"

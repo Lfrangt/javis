@@ -180,6 +180,7 @@ Local Express service on 127.0.0.1:3417
   /api/config/check     -> setup files, resident mode, permissions, policy, and worker readiness
   /api/config/open-cui  -> open the terminal configuration window
   /api/doctor/report    -> complete maintenance self-check report
+  /api/voice/standby    -> unified voice standby/fallback status: primary action, provider blocker, local intake, and recovery steps
   /api/setup/recovery-bundle -> compact resident landing packet: LaunchAgent, setup, permissions, Realtime recovery, local fallback, policy, workers, next action
   /api/setup/guide      -> setup blocker guide and next local action
   /api/setup/next       -> open the current most important setup target

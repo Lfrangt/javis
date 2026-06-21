@@ -313,6 +313,10 @@ async function printStatus() {
       const voiceHealth = summarizeVoiceHealth(status.voiceHealth, conversation, doctor.doctor);
       console.log(`Voice: ${conversation.status || 'idle'} · mic ${conversation.micMode || 'open'} · screen ${conversation.screenLive ? 'on' : 'off'}${conversation.stale ? ' · stale' : ''}${voiceHealth ? ` · ${voiceHealth}` : ''}`);
     }
+    if (status.voiceStandby) {
+      const standby = status.voiceStandby;
+      console.log(`Voice standby: ${standby.mode || '-'} · ${standby.primaryAction?.label || standby.label || '-'} · mic ${standby.primaryAction?.startsMicrophone ? 'yes' : 'no'}`);
+    }
     if (status.ambient) {
       console.log(`Ambient: ${status.ambient.enabled ? 'on' : 'off'} · screen ${status.ambient.captureScreen ? 'on' : 'off'} · ${status.ambient.count || 0} sample(s)`);
     }
@@ -418,6 +422,7 @@ async function printStatus() {
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('VH. Show local voice command history');
+  console.log('VS. Show voice standby/fallback status');
   console.log('VC. Start local voice command loop (no mic)');
   console.log('AG. Preview bounded autonomy loop');
   console.log('AR. Run bounded autonomy loop');
@@ -1010,6 +1015,54 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('  Type /help to list local loop commands.');
   console.log('  Type /exit or /quit to return to the shell.');
   console.log('\nSafety: starts microphone=no; uses Realtime=no; stores raw audio=no; screen/UI context is metadata-only.');
+}
+
+function printVoiceStandby(result) {
+  const standby = result?.standby || result?.voiceStandby || result || {};
+  const provider = standby.provider || {};
+  const local = standby.local || {};
+  const primary = standby.primaryAction || {};
+  const safety = standby.safety || {};
+  const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
+  const history = local.history || {};
+  console.log('\nJAVIS Voice Standby');
+  console.log('===================');
+  console.log(`Mode: ${standby.mode || '-'} · ${standby.label || '-'}`);
+  if (standby.summary) console.log(`Summary: ${compact(standby.summary, 320)}`);
+  if (standby.next) console.log(`Next: ${compact(standby.next, 320)}`);
+  console.log(`Primary: ${primary.label || primary.id || '-'}${primary.command ? ` · ${primary.command}` : ''}${primary.endpoint ? ` · ${primary.endpoint}` : ''}`);
+  console.log(`Primary safety: starts mic=${primary.startsMicrophone ? 'yes' : 'no'} uses Realtime=${primary.usesRealtime ? 'yes' : 'no'} opens Terminal=${primary.opensTerminal ? 'yes' : 'no'}`);
+  console.log('\nProvider');
+  console.log(`- ${provider.status || '-'} · ${provider.kind || '-'} · key=${provider.hasOpenAiKey ? 'present' : 'missing'} · ok=${provider.ok ? 'yes' : 'no'}`);
+  if (provider.summary) console.log(`- ${compact(provider.summary, 300)}`);
+  if (provider.next) console.log(`- next: ${compact(provider.next, 320)}`);
+  if (provider.subscriptionBoundary) console.log(`- billing: ${compact(provider.subscriptionBoundary, 320)}`);
+  console.log('\nLocal intake');
+  console.log(`- ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · loop=${local.input?.openLoopCommand || 'npm run voice:chat'}`);
+  if (local.summary) console.log(`- ${compact(local.summary, 260)}`);
+  if (history.count !== undefined) console.log(`- history: ${history.count || 0} item(s)${history.latency?.avgMs ? ` · avg ${history.latency.avgMs}ms` : ''}`);
+  if (local.blocker?.active) console.log(`- blocker: ${local.blocker.kind || '-'} · ${compact(local.blocker.summary || '', 220)}`);
+  if (recoveryActions.length) {
+    console.log('\nRecovery actions');
+    for (const [index, action] of recoveryActions.entries()) {
+      const command = action.command ? ` · ${action.command}` : '';
+      const url = action.url ? ` · ${action.url}` : '';
+      console.log(`${index + 1}. ${action.label || action.id}: ${compact(action.detail || '', 240)}${command}${url}`);
+    }
+  }
+  console.log('\nCommands');
+  console.log('- standby: npm run voice:standby');
+  console.log('- local loop: npm run voice:chat');
+  console.log('- one shot: npm run voice -- "..."');
+  console.log('- provider probe: npm run dogfood:realtime-provider-probe');
+  console.log('\nSafety');
+  console.log(`- read-only=${safety.readOnly ? 'yes' : 'no'} starts mic=${safety.startsMicrophone ? 'yes' : 'no'} uses Realtime=${safety.usesRealtime ? 'yes' : 'no'} stores raw audio=${safety.storesRawAudio ? 'yes' : 'no'}`);
+}
+
+async function showVoiceStandby() {
+  const result = await request('/api/voice/standby');
+  printVoiceStandby(result);
+  return result;
 }
 
 async function startLocalVoiceCommandLoopFromCui(rl) {
@@ -3445,6 +3498,7 @@ function printSetupRecoveryBundle(result) {
   console.log(`- doctor: ${commands.doctor || 'npm run doctor -- --allow-blocked'}`);
   console.log(`- restart: ${commands.restart || 'npm run resident:restart'}`);
   console.log(`- local voice: ${commands.localVoiceLoop || 'npm run voice:chat'}`);
+  console.log(`- voice standby: ${commands.voiceStandby || 'npm run voice:standby'}`);
   console.log(`- realtime probe: ${commands.realtimeProviderProbe || 'npm run dogfood:realtime-provider-probe'}`);
   console.log(`- keep awake: ${commands.keepAwakeStatus || 'npm run keepawake'} / ${commands.keepAwakeStart || 'npm run keepawake:start'} / ${commands.keepAwakeStop || 'npm run keepawake:stop'}`);
 
@@ -4211,6 +4265,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-voice-standby') || process.argv.includes('--voice-standby') || process.argv.includes('--standby')) {
+    await showVoiceStandby();
+    return;
+  }
+
   if (process.argv.includes('--print-local-voice-loop') || process.argv.includes('--local-voice-loop')) {
     await showLocalVoiceLoopQuickstart();
     return;
@@ -4418,6 +4477,8 @@ async function main() {
         await showWorkHandoff();
       } else if (answer === 'vh' || answer === 'voice history' || answer === 'local voice history') {
         await showVoiceHistory();
+      } else if (answer === 'vs' || answer === 'voice standby' || answer === 'standby' || answer === 'fallback') {
+        await showVoiceStandby();
       } else if (answer === 'vc' || answer === 'voice chat' || answer === 'local voice loop' || answer === 'local voice command loop') {
         await startLocalVoiceCommandLoopFromCui(rl);
       } else if (answer === 'ag' || answer === 'agent' || answer === 'autonomy' || answer === 'bounded autonomy') {
