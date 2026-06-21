@@ -119,6 +119,36 @@ export default {
         : fail('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `GET/POST /api/realtime/provider/probe ${providerProbe.status}/${providerProbePreview.status}`, { probe, preview: probePreview }),
     );
 
+    const autopilot = await ctx.api('/api/autopilot');
+    const autopilotCandidates = autopilot.data?.decisionPreview?.candidates || [];
+    const providerCandidate = autopilotCandidates.find((candidate) => candidate.id === 'readiness:realtime_voice_provider') || null;
+    const providerCandidateReason = providerCandidate?.decision?.reason || '';
+    const providerCandidateCovered =
+      realtime.voiceHealth?.status === 'ready' ||
+      (
+        providerCandidate?.providerProbe === true &&
+        providerCandidate.startsMicrophone === false &&
+        providerCandidate.requiresMicConfirmation === false &&
+        providerCandidate.requiresUserPresence === false &&
+        providerCandidate.riskLevel <= 1 &&
+        [
+          'eligible_realtime_provider_probe',
+          'realtime_provider_probe_fresh',
+          'realtime_provider_probe_running',
+        ].includes(providerCandidateReason)
+      );
+    out.push(
+      autopilot.ok && providerCandidateCovered
+        ? ok('realtime_preflight.provider_probe_autopilot_candidate', 'No-mic provider probe autopilot candidate', realtime.voiceHealth?.status === 'ready'
+          ? 'provider ready; no recovery candidate needed'
+          : `${providerCandidateReason} · startsMic=${providerCandidate.startsMicrophone}`)
+        : fail('realtime_preflight.provider_probe_autopilot_candidate', 'No-mic provider probe autopilot candidate', 'provider readiness should expose a low-risk no-mic autopilot candidate or cooldown', {
+            voiceHealth: realtime.voiceHealth,
+            candidate: providerCandidate,
+            candidates: autopilotCandidates.slice(0, 6),
+          }),
+    );
+
     const rendererDogfood = renderer.data?.rendererDogfood || {};
     const preflight = rendererDogfood.preflight || {};
     const rendererBlockers = Array.isArray(preflight.blockers) ? preflight.blockers : [];

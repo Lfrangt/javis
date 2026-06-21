@@ -227,6 +227,7 @@ const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000,
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const REALTIME_PREFLIGHT_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PREFLIGHT_FRESH_MS || 900000)));
+const REALTIME_PROVIDER_PROBE_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PROVIDER_PROBE_FRESH_MS || 1800000)));
 const RECORD_REPLAY_TEACHING_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_RECORD_REPLAY_TEACHING_FRESH_MS || 43200000)));
 const PRODUCTIVITY_DOGFOOD_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_PRODUCTIVITY_DOGFOOD_FRESH_MS || 43200000)));
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
@@ -31169,10 +31170,56 @@ function realtimeNoMicPreflightFreshness(options = {}) {
   };
 }
 
+function realtimeProviderProbeFreshness(options = {}) {
+  const cooldownMs = Math.max(0, Number(options.cooldownMs || REALTIME_PROVIDER_PROBE_FRESH_MS));
+  const active = Boolean(realtimeProviderProbeState.active);
+  const activeStartedAt = Number(realtimeProviderProbeState.createdAt || realtimeProviderProbeState.updatedAt || 0);
+  const result = latestRealtimeProviderProbeResultSnapshot({ includeRecentAudit: true });
+  const createdAt = active
+    ? activeStartedAt
+    : Number(result?.createdAt || 0);
+  const latest = createdAt
+    ? {
+      createdAt,
+      at: new Date(createdAt).toISOString(),
+      source: compactRecordText(active ? realtimeProviderProbeState.source || 'active_probe' : result?.source || '', 80),
+      eventType: active ? 'realtime.provider_probe_running' : 'realtime.provider_probe',
+      id: compactRecordText(active ? realtimeProviderProbeState.runId || '' : result?.runId || '', 120),
+      phase: 'provider_probe',
+      status: compactRecordText(active ? realtimeProviderProbeState.status || 'running' : result?.ok ? 'ready' : 'warning', 80),
+    }
+    : null;
+  if (!cooldownMs || !latest) {
+    return {
+      fresh: active,
+      running: active,
+      cooldownMs,
+      ageMs: null,
+      waitMs: active ? cooldownMs : 0,
+      ageLabel: '',
+      waitLabel: active ? 'running' : '',
+      latest,
+    };
+  }
+  const ageMs = Math.max(0, Date.now() - latest.createdAt);
+  const waitMs = active ? cooldownMs : Math.max(0, cooldownMs - ageMs);
+  return {
+    fresh: active || waitMs > 0,
+    running: active,
+    cooldownMs,
+    ageMs,
+    waitMs,
+    ageLabel: autopilotWaitDurationLabel(ageMs),
+    waitLabel: active ? 'running' : autopilotWaitDurationLabel(waitMs),
+    latest,
+  };
+}
+
 function compactRealtimePreflightFreshness(freshness = null) {
   if (!freshness || typeof freshness !== 'object') return null;
   return {
     fresh: Boolean(freshness.fresh),
+    running: Boolean(freshness.running),
     cooldownMs: Math.max(0, Number(freshness.cooldownMs || 0)),
     ageMs: freshness.ageMs === null || freshness.ageMs === undefined ? null : Math.max(0, Number(freshness.ageMs || 0)),
     waitMs: Math.max(0, Number(freshness.waitMs || 0)),
@@ -31280,6 +31327,44 @@ function autopilotEligibilityDecision(action) {
       detail: executable
         ? 'Trusted local mode can retry this blocked app workflow.'
         : 'Workflow retry needs local execution and trusted local mode.',
+    };
+  }
+  if (action.source === 'readiness' && action.providerProbe === true) {
+    const executable = Boolean(
+      action.executable &&
+      action.autoEligible &&
+      action.autopilotEligible !== false &&
+      action.startsMicrophone === false &&
+      action.requiresMicConfirmation === false &&
+      action.requiresUserPresence === false &&
+      Number(action.riskLevel || 0) <= 1,
+    );
+    const freshness = executable ? realtimeProviderProbeFreshness() : null;
+    const compactFreshness = compactRealtimePreflightFreshness(freshness);
+    if (freshness?.running) {
+      return {
+        executable: false,
+        reason: 'realtime_provider_probe_running',
+        detail: 'A no-mic Realtime provider probe is already running; wait for its result before retrying.',
+        freshness: compactFreshness,
+      };
+    }
+    if (freshness?.fresh) {
+      const agePhrase = freshness.ageLabel ? `${freshness.ageLabel} ago` : 'recently';
+      return {
+        executable: false,
+        reason: 'realtime_provider_probe_fresh',
+        detail: `No-mic Realtime provider probe ran ${agePhrase}; wait ${freshness.waitLabel || 'for the cooldown'} before repeating it.`,
+        freshness: compactFreshness,
+      };
+    }
+    return {
+      executable,
+      reason: executable ? 'eligible_realtime_provider_probe' : 'realtime_provider_probe_not_safe_for_autopilot',
+      detail: executable
+        ? 'Autopilot may retry the no-mic Realtime provider probe; live microphone start still requires the user.'
+        : 'Realtime provider probing must prove it starts no microphone, needs no user presence, and stays low-risk before autopilot can run it.',
+      freshness: compactFreshness,
     };
   }
   if (action.source === 'realtime_voice' && action.realtimePreparation === 'preflight_bundle') {
@@ -31406,6 +31491,7 @@ function autopilotActionDecision(action, index = 0) {
     routeRecoveryType: compactRecordText(action.routeRecovery?.recommended?.type || '', 80),
     routeRecoveryLabel: compactRecordText(action.routeRecovery?.recommended?.label || '', 140),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
+    providerProbe: Boolean(action.providerProbe),
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
     productivityPreparation: compactRecordText(action.productivityPreparation || '', 80),
@@ -31540,6 +31626,33 @@ function autopilotWaitingConditions({ reason = '', candidates = [], selectedActi
       status: 'cooldown',
       actionId: freshRealtimePreflight.id,
       actionSource: freshRealtimePreflight.source,
+      waitMs,
+      waitLabel,
+    });
+  }
+
+  const providerProbeWaiting = candidates.find((candidate) => (
+    candidate.decision?.reason === 'realtime_provider_probe_running' ||
+    (
+      candidate.decision?.reason === 'realtime_provider_probe_fresh' &&
+      candidate.decision?.freshness?.fresh === true
+    )
+  ));
+  if (providerProbeWaiting) {
+    const running = providerProbeWaiting.decision?.reason === 'realtime_provider_probe_running' || providerProbeWaiting.decision?.freshness?.running === true;
+    const waitMs = Math.max(0, Number(providerProbeWaiting.decision?.freshness?.waitMs || 0));
+    const waitLabel = providerProbeWaiting.decision?.freshness?.waitLabel || autopilotWaitDurationLabel(waitMs);
+    pushAutopilotWaitingCondition(waiting, {
+      id: running ? 'realtime_provider_probe_running' : 'realtime_provider_probe_fresh',
+      label: running ? 'Realtime provider probe running' : 'Realtime provider probe cooldown',
+      summary: running
+        ? 'A no-mic Realtime provider probe is already running; wait for the renderer result before retrying.'
+        : waitLabel
+          ? `No-mic Realtime provider probe is fresh; wait about ${waitLabel} before repeating it.`
+          : 'No-mic Realtime provider probe is fresh; skip repeating it for now.',
+      status: running ? 'running' : 'cooldown',
+      actionId: providerProbeWaiting.id,
+      actionSource: providerProbeWaiting.source,
       waitMs,
       waitLabel,
     });
@@ -32509,6 +32622,8 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     });
   }
 
+  const providerProbeFreshness = realtimeProviderProbeFreshness();
+
   return {
     version: 1,
     active,
@@ -32528,6 +32643,21 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
       help: 'https://help.openai.com/en/articles/9039756-managing-billing-settings-on-chatgpt-web-and-platform',
     },
     steps,
+    autoProbe: {
+      actionId: 'readiness:realtime_voice_provider',
+      available: Boolean(OPENAI_API_KEY),
+      autopilotEligible: Boolean(OPENAI_API_KEY && active),
+      cooldownMs: REALTIME_PROVIDER_PROBE_FRESH_MS,
+      due: Boolean(OPENAI_API_KEY && active && !providerProbeFreshness.fresh),
+      running: Boolean(providerProbeFreshness.running),
+      freshness: compactRealtimePreflightFreshness(providerProbeFreshness),
+      safety: {
+        startsMicrophone: false,
+        requiresMicConfirmation: false,
+        usesRealtime: true,
+        storesRawAudio: false,
+      },
+    },
     localFallback: {
       available: true,
       command: 'npm run voice:chat',
@@ -42787,7 +42917,22 @@ function workflowBriefing(options = {}) {
       source: 'readiness',
     };
     if (readiness.primaryIssue.id === 'realtime_voice_provider') {
+      const providerProbeFreshness = realtimeProviderProbeFreshness();
       readinessAction.localFallback = realtimeWorkbench.voiceHealth?.fallback || null;
+      readinessAction.providerProbe = true;
+      readinessAction.executable = Boolean(OPENAI_API_KEY);
+      readinessAction.autoEligible = Boolean(OPENAI_API_KEY);
+      readinessAction.autopilotEligible = Boolean(OPENAI_API_KEY);
+      readinessAction.manualOnly = false;
+      readinessAction.requiresUserPresence = false;
+      readinessAction.startsMicrophone = false;
+      readinessAction.requiresMicConfirmation = false;
+      readinessAction.startsRecording = false;
+      readinessAction.startsWorkers = false;
+      readinessAction.executesTask = false;
+      readinessAction.riskLevel = 1;
+      readinessAction.providerProbeFreshness = compactRealtimePreflightFreshness(providerProbeFreshness);
+      readinessAction.cooldown = providerProbeFreshness.waitLabel || autopilotWaitDurationLabel(REALTIME_PROVIDER_PROBE_FRESH_MS);
     }
     nextActions.push(readinessAction);
   }
@@ -43846,6 +43991,7 @@ async function workNextAction(options = {}) {
   let action = requestedActionId ? actionPool.find((item) => item.id === requestedActionId) || null : actionPool[0] || null;
   if (requestedActionId && !action && requestedActionId === 'readiness:realtime_voice_provider') {
     const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
+    const providerProbeFreshness = realtimeProviderProbeFreshness();
     action = {
       id: 'readiness:realtime_voice_provider',
       priority: 2,
@@ -43853,13 +43999,19 @@ async function workNextAction(options = {}) {
       summary: voiceHealth.next || voiceHealth.summary || 'Run the no-mic Realtime provider probe.',
       source: 'readiness',
       providerProbe: true,
-      executable: true,
-      autoEligible: false,
-      autopilotEligible: false,
+      executable: Boolean(OPENAI_API_KEY),
+      autoEligible: Boolean(OPENAI_API_KEY),
+      autopilotEligible: Boolean(OPENAI_API_KEY),
       manualOnly: false,
       requiresUserPresence: false,
       startsMicrophone: false,
       requiresMicConfirmation: false,
+      startsRecording: false,
+      startsWorkers: false,
+      executesTask: false,
+      riskLevel: 1,
+      providerProbeFreshness: compactRealtimePreflightFreshness(providerProbeFreshness),
+      cooldown: providerProbeFreshness.waitLabel || autopilotWaitDurationLabel(REALTIME_PROVIDER_PROBE_FRESH_MS),
       localFallback: voiceHealth.fallback || null,
     };
   }

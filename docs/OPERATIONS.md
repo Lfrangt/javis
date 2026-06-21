@@ -97,7 +97,7 @@ npm run config -- --print-realtime-recovery
 curl http://127.0.0.1:3417/api/realtime/provider/recovery
 ```
 
-In the interactive CUI, option `1B` prints the same plan and can open the OpenAI API billing page after explicit confirmation. The recovery plan never starts microphone capture, never calls Realtime by itself, and keeps `/api/voice/command` / `npm run voice:chat` as the local fallback while billing or key changes are pending.
+In the interactive CUI, option `1B` prints the same plan and can open the OpenAI API billing page after explicit confirmation. The recovery plan never starts microphone capture and keeps `/api/voice/command` / `npm run voice:chat` as the local fallback while billing or key changes are pending. When autopilot is enabled, the `readiness:realtime_voice_provider` work-next action may retry the no-mic provider probe after `JAVIS_REALTIME_PROVIDER_PROBE_FRESH_MS` (30 minutes by default); that probe calls the Realtime provider session endpoint only to verify provider readiness and still never opens the microphone.
 
 Before opening a real microphone session, run the no-mic provider probe. It creates a renderer WebRTC offer without `getUserMedia`, calls the same OpenAI Realtime provider path with `probe=true`, records HTTP status/error evidence, and closes immediately:
 

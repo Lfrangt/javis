@@ -3313,6 +3313,11 @@ function printRealtimeProviderRecovery(result) {
   if (health.summary || recovery.summary) console.log(`Summary: ${compact(health.summary || recovery.summary, 320)}`);
   if (recovery.subscriptionBoundary) console.log(`Billing: ${compact(recovery.subscriptionBoundary, 320)}`);
   if (recovery.next) console.log(`Next: ${compact(recovery.next, 320)}`);
+  if (recovery.autoProbe) {
+    const fresh = recovery.autoProbe.freshness || {};
+    const state = recovery.autoProbe.running ? 'running' : recovery.autoProbe.due ? 'due' : fresh.fresh ? `cooldown ${fresh.waitLabel || ''}`.trim() : 'idle';
+    console.log(`Auto probe: ${state} · action=${recovery.autoProbe.actionId || 'readiness:realtime_voice_provider'} · starts microphone=${recovery.autoProbe.safety?.startsMicrophone ? 'yes' : 'no'}`);
+  }
   if (steps.length) {
     console.log('\nRecovery steps:');
     for (const [index, step] of steps.entries()) {
