@@ -11765,6 +11765,7 @@ function accessibilityTreeOutline(tree, limit = 40) {
 async function accessibilityTreeSnapshot(options = {}) {
   const policy = actionPolicy.allow?.read_accessibility_tree;
   const { maxNodes, maxDepth } = normalizeAccessibilityTreeOptions(options);
+  const requestedApp = String(options.app || options.application || '').trim().slice(0, 120);
   const accessibilityTrusted =
     typeof systemPreferences?.isTrustedAccessibilityClient === 'function'
       ? systemPreferences.isTrustedAccessibilityClient(false)
@@ -11821,6 +11822,7 @@ async function accessibilityTreeSnapshot(options = {}) {
   const script = `
 const maxNodes = ${JSON.stringify(maxNodes)};
 const maxDepth = ${JSON.stringify(maxDepth)};
+const requestedApp = ${JSON.stringify(requestedApp)};
 const systemEvents = Application('System Events');
 
 function readProp(element, name) {
@@ -11991,6 +11993,21 @@ function isChromiumApp(name) {
   return /Google Chrome|Chrome Canary|Chromium|Brave Browser|Microsoft Edge|Arc|Comet/i.test(String(name || ''));
 }
 
+function targetProcesses() {
+  const processes = systemEvents.applicationProcesses();
+  if (requestedApp) {
+    const wanted = requestedApp.toLowerCase();
+    return processes.filter((process) => readProp(process, 'name').toLowerCase() === wanted);
+  }
+  return processes.filter((process) => {
+    try {
+      return process.frontmost();
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
 function readNode(element, depth, parentId, childCount) {
   const id = String(nodes.length + 1);
   const node = {
@@ -12010,9 +12027,21 @@ function readNode(element, depth, parentId, childCount) {
   return node;
 }
 
-const processes = systemEvents.applicationProcesses.whose({ frontmost: true })();
+const processes = targetProcesses();
 if (!processes.length) {
-  JSON.stringify({ available: false, app: '', windowTitle: '', nodes: [], nodeCount: 0, truncated: false, maxNodes, maxDepth, error: 'no_frontmost_app' });
+  JSON.stringify({
+    available: false,
+    app: requestedApp,
+    requestedApp,
+    source: requestedApp ? 'requested_app' : 'frontmost',
+    windowTitle: '',
+    nodes: [],
+    nodeCount: 0,
+    truncated: false,
+    maxNodes,
+    maxDepth,
+    error: requestedApp ? 'requested_app_not_running' : 'no_frontmost_app'
+  });
 } else {
   const process = processes[0];
   const appName = readProp(process, 'name');
@@ -12051,6 +12080,8 @@ if (!processes.length) {
     JSON.stringify({
       available: false,
       app: readProp(process, 'name'),
+      requestedApp,
+      source: requestedApp ? 'requested_app' : 'frontmost',
       windowTitle: '',
       rootRole: readProp(process, 'role'),
       rootSubrole: readProp(process, 'subrole'),
@@ -12081,6 +12112,8 @@ if (!processes.length) {
     JSON.stringify({
       available: nodes.length > 0,
       app: readProp(process, 'name'),
+      requestedApp,
+      source: requestedApp ? 'requested_app' : 'frontmost',
       windowTitle: readProp(root, 'name'),
       rootRole: readProp(root, 'role'),
       rootSubrole: readProp(root, 'subrole'),
@@ -12112,6 +12145,8 @@ if (!processes.length) {
     };
     appendAudit('accessibility_tree.read', {
       app: result.app,
+      requestedApp,
+      source: result.source || '',
       windowTitle: result.windowTitle,
       nodeCount: result.nodeCount,
       truncated: result.truncated,
@@ -12146,9 +12181,11 @@ if (!processes.length) {
 function cachedAccessibilityTreeSnapshot(options = {}) {
   const { maxNodes, maxDepth } = normalizeAccessibilityTreeOptions(options);
   const maxAgeMs = Math.max(0, Math.min(60000, Number(options.maxAgeMs ?? 6000)));
+  const requestedApp = String(options.app || options.application || '').trim();
   if (options.useCache !== false && latestAccessibilityTree?.tree && Date.now() - latestAccessibilityTree.cachedAt <= maxAgeMs) {
     const tree = latestAccessibilityTree.tree;
-    if (Number(tree.maxNodes || 0) >= maxNodes && Number(tree.maxDepth || 0) >= maxDepth) {
+    const appMatches = !requestedApp || String(tree.app || '').toLowerCase() === requestedApp.toLowerCase();
+    if (appMatches && Number(tree.maxNodes || 0) >= maxNodes && Number(tree.maxDepth || 0) >= maxDepth) {
       return Promise.resolve({
         ...tree,
         cached: true,
@@ -12393,6 +12430,7 @@ function scoreAccessibilityNode(node, tokens, matchedTokens = matchedAccessibili
 function accessibilityActionPlan(options = {}) {
   const instruction = String(options.instruction || '').trim();
   const desiredAction = normalizeAccessibilityControlAction(options.action, options.content || options.value || '');
+  const requestedApp = String(options.app || options.application || '').trim().slice(0, 120);
   return accessibilityTreeSnapshot(options).then((tree) => {
     const tokens = accessibilityInstructionTokens(instruction);
     const scored = (tree.nodes || [])
@@ -12426,6 +12464,7 @@ function accessibilityActionPlan(options = {}) {
       ok: tree.available,
       instruction,
       app: tree.app,
+      requestedApp,
       windowTitle: tree.windowTitle,
       tree: {
         available: tree.available,
@@ -12474,12 +12513,13 @@ async function controlCurrentApp(options = {}) {
 
   const content = String(options.content ?? options.value ?? '');
   const action = normalizeAccessibilityControlAction(options.action, content);
+  const requestedApp = String(options.app || options.application || '').trim().slice(0, 120);
   if (action === 'ax_set_value' && !content) throw new Error('Missing content for set_value UI action.');
 
   const treePolicy = actionPolicy.allow?.read_accessibility_tree || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree;
   const maxNodes = options.maxNodes || treePolicy.maxNodes || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxNodes;
   const maxDepth = options.maxDepth || treePolicy.maxDepth || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxDepth;
-  const plan = await accessibilityActionPlan({ instruction, action, content, maxNodes, maxDepth });
+  const plan = await accessibilityActionPlan({ instruction, action, content, app: requestedApp, maxNodes, maxDepth });
   const target = plan.recommended?.nodeId
     ? {
         nodeId: plan.recommended.nodeId,
@@ -12512,6 +12552,7 @@ async function controlCurrentApp(options = {}) {
 
   const actionArgs = {
     action,
+    app: requestedApp || plan.app || '',
     nodeId: target.nodeId,
     expectedRole: target.role,
     expectedLabel: target.label,
@@ -16947,6 +16988,7 @@ async function runAccessibilityNodeAction(plan) {
   const actionConfig = actionPolicy.allow?.[plan.action] || {};
   const maxNodes = Math.max(10, Math.min(actionPolicy.allow?.read_accessibility_tree?.maxNodes || 120, Number(plan.metadata?.maxNodes || 120)));
   const maxDepth = Math.max(1, Math.min(actionPolicy.allow?.read_accessibility_tree?.maxDepth || 6, Number(plan.metadata?.maxDepth || 6)));
+  const targetApp = String(plan.args?.app || plan.metadata?.app || '').trim().slice(0, 120);
   const script = `
 const nodeId = ${JSON.stringify(String(plan.args.nodeId))};
 const action = ${JSON.stringify(plan.action)};
@@ -16956,6 +16998,7 @@ const expectedRole = ${JSON.stringify(String(plan.args.expectedRole || ''))};
 const allowedRoles = ${JSON.stringify(actionConfig.allowedRoles || [])};
 const maxNodes = ${JSON.stringify(maxNodes)};
 const maxDepth = ${JSON.stringify(maxDepth)};
+const targetApp = ${JSON.stringify(targetApp)};
 const systemEvents = Application('System Events');
 
 function readProp(element, name) {
@@ -17005,6 +17048,21 @@ function isChromiumApp(name) {
   return /Google Chrome|Chrome Canary|Chromium|Brave Browser|Microsoft Edge|Arc|Comet/i.test(String(name || ''));
 }
 
+function targetProcesses() {
+  const processes = systemEvents.applicationProcesses();
+  if (targetApp) {
+    const wanted = targetApp.toLowerCase();
+    return processes.filter((process) => readProp(process, 'name').toLowerCase() === wanted);
+  }
+  return processes.filter((process) => {
+    try {
+      return process.frontmost();
+    } catch (_) {
+      return false;
+    }
+  });
+}
+
 function labelOf(element) {
   return [
     readProp(element, 'name'),
@@ -17037,8 +17095,8 @@ function targetIsSettable(element, role) {
   return /(^|[^a-z])true([^a-z]|$)|editable|contenteditable|rich.?textarea|textbox|searchbox|text area|text field|composer|compose|input/.test(editableTextOf(element, role));
 }
 
-const processes = systemEvents.applicationProcesses.whose({ frontmost: true })();
-if (!processes.length) throw new Error('no_frontmost_app');
+const processes = targetProcesses();
+if (!processes.length) throw new Error(targetApp ? 'accessibility_app_not_running:' + targetApp : 'no_frontmost_app');
 const process = processes[0];
 const appName = readProp(process, 'name');
 if (isChromiumApp(appName)) {
@@ -45736,13 +45794,15 @@ function buildMacActionPlan(args = {}) {
     const nodeId = assertValidAccessibilityNodeId(args.nodeId || value);
     const expectedLabel = String(args.expectedLabel || '').trim();
     const expectedRole = String(args.expectedRole || '').trim();
+    const app = String(args.app || args.application || '').trim().slice(0, 120);
     return {
       action,
       riskLevel: 3,
       summary: `Press accessibility node ${nodeId}${expectedLabel ? ` (${expectedLabel})` : ''}`,
       target: nodeId,
-      args: { action, nodeId, expectedLabel, expectedRole },
+      args: { action, app, nodeId, expectedLabel, expectedRole },
       metadata: {
+        app,
         expectedLabel,
         expectedRole,
         maxNodes: Number(args.maxNodes || actionPolicy.allow?.read_accessibility_tree?.maxNodes || 120),
@@ -45760,6 +45820,7 @@ function buildMacActionPlan(args = {}) {
     if (bytes > maxBytes) throw new Error(`Accessibility value content exceeds maxBytes policy (${bytes} > ${maxBytes}).`);
     const expectedLabel = String(args.expectedLabel || '').trim();
     const expectedRole = String(args.expectedRole || '').trim();
+    const app = String(args.app || args.application || '').trim().slice(0, 120);
     const editableEvidence = accessibilitySetValueEvidenceFromArgs(args);
     return {
       action,
@@ -45768,6 +45829,7 @@ function buildMacActionPlan(args = {}) {
       target: nodeId,
       args: {
         action,
+        app,
         nodeId,
         content,
         expectedLabel,
@@ -45778,6 +45840,7 @@ function buildMacActionPlan(args = {}) {
         },
       },
       metadata: {
+        app,
         bytes,
         expectedLabel,
         expectedRole,
@@ -51483,6 +51546,7 @@ function startApiServer() {
   api.get('/api/accessibility/tree', async (req, res) => {
     try {
       const tree = await accessibilityTreeSnapshot({
+        app: req.query.app || req.query.application,
         maxNodes: req.query.maxNodes,
         maxDepth: req.query.maxDepth,
       });

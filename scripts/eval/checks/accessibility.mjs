@@ -29,6 +29,22 @@ export default {
         : warn('ax.tree', 'AX tree read', `no nodes (app="${t.app || '?'}" error=${t.error || ''})`),
     );
 
+    if (t.app) {
+      const targeted = await ctx.api(`/api/accessibility/tree?app=${encodeURIComponent(t.app)}&maxNodes=${smokeMaxNodes}&maxDepth=${smokeMaxDepth}`, { timeoutMs: 30000 });
+      const targetedTree = targeted.data?.tree;
+      out.push(
+        targeted.ok &&
+          targetedTree &&
+          String(targetedTree.app || '').toLowerCase() === String(t.app || '').toLowerCase() &&
+          targetedTree.source === 'requested_app' &&
+          targetedTree.error !== 'requested_app_not_running'
+          ? ok('ax.tree_requested_app', 'AX requested-app tree read', `app="${targetedTree.app}" source=${targetedTree.source} nodes=${targetedTree.nodeCount}`)
+          : fail('ax.tree_requested_app', 'AX requested-app tree read', `GET /api/accessibility/tree?app=${t.app} ${targeted.status}`, targeted.data),
+      );
+    } else {
+      out.push(warn('ax.tree_requested_app', 'AX requested-app tree read', 'skipped because current AX tree did not report an app name'));
+    }
+
     const plan = await ctx.api('/api/accessibility/plan', {
       method: 'POST',
       body: { instruction: 'focus the main input', maxNodes: smokeMaxNodes, maxDepth: smokeMaxDepth },

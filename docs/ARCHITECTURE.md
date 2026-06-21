@@ -97,9 +97,9 @@ Renderer
 - Browser DOM lane: read-only visible control extraction plus guarded one-step click/fill/select actions inside supported active tabs, using browser Apple Events first and Chrome DevTools on `JAVIS_CHROME_DEBUG_PORT` as a fallback.
 - Browser workflow lane: page-aware summarize, action extraction, drafting, Q&A, search/research, and guarded form-fill draft planning routed through quick or background lanes.
 - Browser benchmark lane: preview-only fixture checks for summarize, action extraction, form-fill draft redaction, compare/search preview, review-result preview, and research continuation contracts. It uses `/api/browser/benchmarks` and the CUI without opening live pages, executing browser actions, or calling models.
-- Accessibility tree lane: read-only frontmost App UI structure for operating non-browser Mac apps through the accessibility model.
-- UI planning lane: dry-run target selection and next-action plans from the current accessibility tree.
-- Current-app control lane: voice/API wrapper that plans one UI target and executes a press or value write through the guarded local action path.
+- Accessibility tree lane: read-only frontmost or requested-app UI structure for operating non-browser Mac apps through the accessibility model.
+- UI planning lane: dry-run target selection and next-action plans from the current or requested app accessibility tree.
+- Current-app control lane: voice/API wrapper that plans one UI target in the frontmost or requested app and executes a press or value write through the guarded local action path.
 - App workflow planning lane: observes frontmost app/window, Accessibility tree, and latest screen metadata, then turns natural requests into previewable workflow steps.
 - App workflow lane: short multi-step Mac workflows that sequence app opens, waits, hotkeys, typed text, current-app controls, browser DOM actions, and file/Mac actions into one auditable workflow record.
 - App benchmark lane: preview-only checks for deterministic app planning, typed-text planning, current-app-control planning, explicit multi-step workflow previews, unsafe instruction rejection, and no-history/no-app-launch contracts through `/api/app/benchmarks` and the CUI.

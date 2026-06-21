@@ -765,10 +765,10 @@ curl -X POST http://127.0.0.1:3417/api/accessibility/control \
   -d '{"instruction":"click the OK button","execute":false}'
 curl -X POST http://127.0.0.1:3417/api/accessibility/control \
   -H 'Content-Type: application/json' \
-  -d '{"instruction":"fill the search field","action":"set_value","content":"JAVIS","execute":true}'
+  -d '{"app":"TextEdit","instruction":"fill the main text area","action":"set_value","content":"JAVIS","execute":true}'
 ```
 
-The control endpoint first reads the current Accessibility tree, chooses one target, then executes through the same Level 3 local action policy as `ax_press` and `ax_set_value`. Use `execute:false` to inspect the selected target without clicking or typing.
+The control endpoint first reads the current Accessibility tree, or a specified app's tree when `app` is provided, chooses one target, then executes through the same Level 3 local action policy as `ax_press` and `ax_set_value`. Use `execute:false` to inspect the selected target without clicking or typing.
 For direct `ax_set_value` calls, native text roles such as `AXTextField` can use `expectedRole` and `expectedLabel`; broad web roles such as `AXGroup`, `AXStaticText`, or `AXWebArea` must also include editable evidence observed from `/api/accessibility/plan` or `/api/accessibility/tree`.
 
 For a short multi-step local app workflow:
@@ -1227,10 +1227,11 @@ Browser DOM control can use Chrome/Safari Apple Events JavaScript. For Chrome, e
 
 ## Accessibility UI Tree
 
-Read the current frontmost app UI tree:
+Read the current frontmost app UI tree, or target a specific running app:
 
 ```bash
 curl 'http://127.0.0.1:3417/api/accessibility/tree?maxNodes=240&maxDepth=9'
+curl 'http://127.0.0.1:3417/api/accessibility/tree?app=TextEdit&maxNodes=240&maxDepth=9'
 ```
 
 Create a dry-run UI control plan:
