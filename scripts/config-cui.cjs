@@ -103,7 +103,10 @@ function issueLines(doctor) {
 function summarizeVoiceHealth(voiceHealth, conversation, doctor) {
   const doctorVoice = (doctor?.checks || []).find((check) => check.id === 'realtime_voice_provider');
   if (doctorVoice && doctorVoice.status !== 'ready') {
-    return `${doctorVoice.status} · ${compact(doctorVoice.summary, 130)}`;
+    const next = voiceHealth?.kind === 'quota_or_rate_limit' && voiceHealth.next
+      ? ` · ${compact(voiceHealth.next, 130)}`
+      : '';
+    return `${doctorVoice.status} · ${compact(doctorVoice.summary, 130)}${next}`;
   }
   if (voiceHealth?.status && voiceHealth.status !== 'ready') {
     return `${voiceHealth.status} · ${compact(voiceHealth.summary || voiceHealth.error || '-', 130)}`;
@@ -241,6 +244,9 @@ async function printStatus() {
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
     console.log(`OpenAI key: ${status.api?.hasOpenAiKey ? 'present' : 'missing'}`);
+    if (status.voiceHealth?.kind === 'quota_or_rate_limit') {
+      console.log(`OpenAI provider: quota/rate-limit · ${compact(status.voiceHealth.next || status.voiceHealth.summary || '', 180)}`);
+    }
     console.log(`Local execution: ${status.api?.localExecutionEnabled ? 'enabled' : 'disabled'}`);
     console.log(`Trusted local mode: ${status.api?.trustedLocalMode ? 'enabled' : 'off'}`);
     if (status.actionPolicy) {
@@ -333,7 +339,8 @@ async function printStatus() {
     console.log(error instanceof Error ? error.message : String(error));
   }
   console.log('\nActions');
-  console.log('1. Set OpenAI API key');
+  console.log('1. Set / replace OpenAI API key');
+  console.log('1B. Check OpenAI billing/quota if key is present but provider reports HTTP 429');
   console.log('2. Open .env');
   console.log('M. Open Microphone settings');
   console.log('3. Open Screen Recording settings');

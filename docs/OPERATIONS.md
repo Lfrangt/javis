@@ -88,7 +88,7 @@ npm --silent run doctor -- --json --allow-blocked
 curl http://127.0.0.1:3417/api/doctor/report
 ```
 
-Doctor also reports Realtime voice provider health. A configured `OPENAI_API_KEY` is not enough: recent WebRTC session negotiation failures, including HTTP 429 quota/rate-limit and billing errors, show as a warning for up to `JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS` (24 hours by default). This keeps the desktop pet minimal while the terminal CUI and `/api/doctor/report` explain why live voice is not usable.
+Doctor also reports Realtime voice provider health. A configured `OPENAI_API_KEY` is not enough: recent WebRTC session negotiation failures, including HTTP 429 quota/rate-limit and billing errors, show as a warning for up to `JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS` (24 hours by default). If the error code is `insufficient_quota`, the key has reached OpenAI but the OpenAI project has no usable quota, billing, or rate-limit headroom for Realtime; add billing/credits, raise limits, or replace `OPENAI_API_KEY` with a project key that has Realtime quota, then restart JAVIS. This keeps the desktop pet minimal while the terminal CUI and `/api/doctor/report` explain why live voice is not usable.
 
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
@@ -129,7 +129,7 @@ and the tap/capture hotkeys. The matrix is read-only. It does not grant macOS
 privacy permissions or change `.env`; use the numbered CUI actions below when a
 row tells you what to open or toggle.
 
-Use option `1. Set OpenAI API key` to paste the key locally with hidden input. It writes `OPENAI_API_KEY` to `.env` and can restart the resident service immediately. Do not paste API keys into chat or logs.
+Use option `1. Set / replace OpenAI API key` to paste the key locally with hidden input. It writes `OPENAI_API_KEY` to `.env` and can restart the resident service immediately. Do not paste API keys into chat or logs. If the CUI says `OpenAI key: present` and `OpenAI provider: quota/rate-limit`, the API is already connected locally; check OpenAI billing/limits for that project or replace the key with one that has Realtime quota.
 
 Use option `M. Open Microphone settings` when doctor reports microphone permission denied or voice cannot start. macOS still requires a human toggle in System Settings.
 

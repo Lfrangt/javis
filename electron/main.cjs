@@ -25,6 +25,117 @@ const {
 
 dotenv.config({ path: path.join(process.cwd(), '.env') });
 
+function parseJsonBodyLimit(limit = '1mb') {
+  if (typeof limit === 'number') return Math.max(1, limit);
+  const text = String(limit || '1mb').trim().toLowerCase();
+  const match = text.match(/^(\d+(?:\.\d+)?)\s*(b|kb|mb)?$/);
+  if (!match) return 1024 * 1024;
+  const value = Number(match[1]);
+  const unit = match[2] || 'b';
+  const multiplier = unit === 'mb' ? 1024 * 1024 : unit === 'kb' ? 1024 : 1;
+  return Math.max(1, Math.round(value * multiplier));
+}
+
+function localJsonBodyParser(options = {}) {
+  const limitBytes = parseJsonBodyLimit(options.limit || '100kb');
+  return (req, res, next) => {
+    if (req.body !== undefined || req.method === 'GET' || req.method === 'HEAD') {
+      next();
+      return;
+    }
+    const contentType = String(req.headers['content-type'] || '').toLowerCase();
+    const looksJson = contentType.includes('application/json') || contentType.includes('+json');
+    if (!looksJson) {
+      next();
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    let completed = false;
+    const fail = (status, message) => {
+      if (completed) return;
+      completed = true;
+      res.status(status).json({ ok: false, error: message });
+    };
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limitBytes) {
+        fail(413, 'JSON body is too large.');
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('error', (error) => {
+      fail(400, error instanceof Error ? error.message : String(error));
+    });
+    req.on('end', () => {
+      if (completed) return;
+      completed = true;
+      const text = Buffer.concat(chunks).toString('utf8').trim();
+      if (!text) {
+        req.body = {};
+        next();
+        return;
+      }
+      try {
+        req.body = JSON.parse(text);
+        next();
+      } catch {
+        res.status(400).json({ ok: false, error: 'Invalid JSON request body.' });
+      }
+    });
+  };
+}
+
+function localTextBodyParser(options = {}) {
+  const limitBytes = parseJsonBodyLimit(options.limit || '100kb');
+  const allowedTypes = Array.isArray(options.type)
+    ? options.type.map((item) => String(item).toLowerCase())
+    : [String(options.type || 'text/plain').toLowerCase()];
+  return (req, res, next) => {
+    if (req.body !== undefined || req.method === 'GET' || req.method === 'HEAD') {
+      next();
+      return;
+    }
+    const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
+    const shouldParse = allowedTypes.includes('*/*') || allowedTypes.includes(contentType);
+    if (!shouldParse) {
+      next();
+      return;
+    }
+    const chunks = [];
+    let size = 0;
+    let completed = false;
+    const fail = (status, message) => {
+      if (completed) return;
+      completed = true;
+      res.status(status).send(message);
+    };
+    req.on('data', (chunk) => {
+      size += chunk.length;
+      if (size > limitBytes) {
+        fail(413, 'Text body is too large.');
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('error', (error) => {
+      fail(400, error instanceof Error ? error.message : String(error));
+    });
+    req.on('end', () => {
+      if (completed) return;
+      completed = true;
+      req.body = Buffer.concat(chunks).toString(options.defaultCharset || 'utf8');
+      next();
+    });
+  };
+}
+
+express.json = localJsonBodyParser;
+express.text = localTextBodyParser;
+
 const execFileAsync = promisify(execFile);
 const API_PORT = Number(process.env.JAVIS_API_PORT || 3417);
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
@@ -28992,8 +29103,12 @@ function petStatusSnapshot() {
       return {
         ok: Boolean(health.ok),
         status: health.status || '',
+        kind: health.kind || '',
         summary: compactRecordText(health.summary || health.message || '', 180),
-        lastError: compactRecordText(health.lastError || '', 180),
+        next: compactRecordText(health.next || '', 220),
+        hasOpenAiKey: Boolean(health.hasOpenAiKey),
+        lastStatusCode: boundedCount(health.lastNegotiation?.statusCode, 999),
+        lastError: compactRecordText(health.error || health.lastError || '', 180),
       };
     })(),
     progressVersion: workProgressSnapshot(),
@@ -30149,7 +30264,7 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
     waitingFor: waitingFor.slice(0, 4).map(compactAutopilotWaitingForVoice).filter(Boolean),
     selectedAction: compactAutopilotActionForVoice(status.selectedAction),
     firstAction: compactAutopilotActionForVoice(status.firstAction),
-    candidates: candidates.slice(0, 4).map(compactAutopilotActionForVoice).filter(Boolean),
+    candidates: candidates.slice(0, 2).map(compactAutopilotActionForVoice).filter(Boolean),
     lastDecision: status.lastDecision
       ? {
         generatedAt: compactRecordText(status.lastDecision.generatedAt || '', 80),
@@ -30507,7 +30622,9 @@ function classifyRealtimeProviderIssue(details = {}) {
       summary: statusCode === 429
         ? 'Realtime voice last hit an OpenAI quota/rate-limit error (HTTP 429).'
         : 'Realtime voice last hit an OpenAI quota or billing error.',
-      next: 'Check OpenAI billing/quota, wait for rate-limit recovery, or switch the Realtime model/provider before relying on live voice.',
+      next: OPENAI_API_KEY
+        ? 'OPENAI_API_KEY is loaded, but the OpenAI project is out of usable quota or rate-limited. Add billing/credits, raise limits, or replace OPENAI_API_KEY with a project key that has Realtime quota, then restart JAVIS.'
+        : 'Add OPENAI_API_KEY to .env, confirm the project has Realtime quota, then restart JAVIS.',
     };
   }
   if ([401, 403].includes(statusCode) || /invalid[_ -]?api[_ -]?key|incorrect api key|unauthorized|forbidden|permission denied|not allowed/i.test(text)) {
