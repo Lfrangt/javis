@@ -114,6 +114,12 @@ export default {
     const autopilot = await ctx.api('/api/autopilot');
     const autopilotCandidates = autopilot.data?.decisionPreview?.candidates || [];
     const noMicCandidate = autopilotCandidates.find((candidate) => candidate.id === 'realtime_voice:prepare_preflight_bundle');
+    const noMicAutopilotBeforeCovered =
+      noMicCandidate?.decision?.reason === 'eligible_realtime_no_mic_preflight'
+        ? noMicCandidate?.decision?.executable === true
+        : noMicCandidate?.decision?.reason === 'realtime_preflight_fresh' &&
+          noMicCandidate?.decision?.executable === false &&
+          noMicCandidate?.decision?.freshness?.fresh === true;
     const noMicRun = await ctx.api('/api/work/next', {
       method: 'POST',
       body: {
@@ -127,14 +133,20 @@ export default {
       retries: 0,
     });
     const noMicResult = noMicRun.data?.next?.result || {};
+    const autopilotAfterNoMic = await ctx.api('/api/autopilot');
+    const autopilotCandidatesAfterNoMic = autopilotAfterNoMic.data?.decisionPreview?.candidates || [];
+    const noMicCandidateAfter = autopilotCandidatesAfterNoMic.find((candidate) => candidate.id === 'realtime_voice:prepare_preflight_bundle');
+    const noMicFreshAfter =
+      noMicCandidateAfter?.decision?.reason === 'realtime_preflight_fresh' &&
+      noMicCandidateAfter?.decision?.executable === false &&
+      noMicCandidateAfter?.decision?.freshness?.fresh === true;
     out.push(
       workNext.ok &&
         noMicAction?.autoEligible === true &&
         noMicAction?.manualOnly === false &&
         noMicAction?.startsMicrophone === false &&
         noMicAction?.realtimePreparation === 'preflight_bundle' &&
-        noMicCandidate?.decision?.executable === true &&
-        noMicCandidate?.decision?.reason === 'eligible_realtime_no_mic_preflight' &&
+        noMicAutopilotBeforeCovered &&
         noMicRun.ok &&
         noMicRun.data?.next?.executed === true &&
         noMicResult?.executed === true &&
@@ -144,11 +156,14 @@ export default {
         noMicResult?.safety?.executesTask === false &&
         noMicResult?.requiresMicConfirmationForLiveStart === true &&
         noMicResult?.archive?.saved === true &&
-        noMicResult?.next?.liveCommand?.includes('--confirm-mic')
-        ? ok('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', `${noMicCandidate.label} · archive=${noMicResult.archive.file?.path || 'saved'}`)
+        noMicResult?.next?.liveCommand?.includes('--confirm-mic') &&
+        autopilotAfterNoMic.ok &&
+        noMicFreshAfter
+        ? ok('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', `${noMicCandidateAfter.label} · fresh=${noMicCandidateAfter.decision.freshness.waitLabel || 'cooldown'} · archive=${noMicResult.archive.file?.path || 'saved'}`)
         : fail('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', 'expected auto-safe no-mic preflight candidate and execution result', {
           action: noMicAction,
           candidate: noMicCandidate,
+          candidateAfter: noMicCandidateAfter,
           run: noMicRun.data,
         }),
     );

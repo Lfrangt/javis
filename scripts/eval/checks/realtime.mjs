@@ -1664,6 +1664,12 @@ export default {
           autopilotNoMicPreflightCandidate?.startsMicrophone === false &&
           autopilotNoMicPreflightCandidate?.requiresMicConfirmation === false &&
           autopilotNoMicPreflightCandidate?.realtimePreparation === 'preflight_bundle'
+        ) ||
+        (
+          autopilotNoMicPreflightCandidate?.decision?.executable === false &&
+          autopilotNoMicPreflightCandidate?.decision?.reason === 'realtime_preflight_fresh' &&
+          autopilotNoMicPreflightCandidate?.decision?.freshness?.fresh === true &&
+          autopilotStatusOutput.waitingFor.some((item) => item.id === 'realtime_preflight_fresh')
         )
       )
     );

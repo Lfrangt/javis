@@ -319,6 +319,8 @@ When Realtime live voice is the first manual-only blocker, autopilot may still e
 evidence and acceptance/archive state, but it is explicitly marked `startsMicrophone=false`,
 `startsWorkers=false`, and `executesTask=false`; the actual live voice start remains gated by the
 desktop pet/summon hotkey plus the `--confirm-mic` renderer command.
+Fresh no-mic Realtime preflight evidence is not repeated on every unattended tick; tune that cooldown
+with `JAVIS_REALTIME_PREFLIGHT_FRESH_MS` when a faster or slower dogfood cadence is needed.
 `/api/autopilot` exposes the same structured decision preview so unattended runs leave evidence for
 why an action ran, why it skipped, which candidates were auto-executable, and what condition JAVIS is waiting on.
 If no user-visible action is auto-executable, it can run a cooldown-gated read-only maintenance snapshot

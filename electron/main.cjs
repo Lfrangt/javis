@@ -101,6 +101,7 @@ const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.e
 const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
+const REALTIME_PREFLIGHT_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PREFLIGHT_FRESH_MS || 900000)));
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
 const RENDERER_DOGFOOD_EVENT_NAME = 'javis:realtime-dogfood';
@@ -4887,11 +4888,11 @@ async function localCapabilitySnapshot(options = {}) {
   const recommendedStart = [
     { when: 'User asks why JAVIS is fast/slow or which model/lane to use', tool: 'get_routing_speed_policy', reason: 'Read the routing speed policy before deciding whether to answer, route, or delegate.' },
     { when: 'User asks what you can do or which tool to use', tool: 'get_local_capabilities', reason: 'Read the current capability map and guardrails.' },
+    { when: 'Task may be quick, background, Codex, Claude, browser, file, or app work', tool: 'route_task', reason: 'Keep voice responsive while preserving ownership and recovery evidence.' },
+    { when: 'User asks who owns current agent work or whether Codex/Claude can work in parallel', tool: 'get_collaboration_state', reason: 'Read scoped claims, conflicts, and the collaboration handoff before starting another worker.' },
     { when: 'User asks what you have learned about their habits, preferences, or reusable workflows', tool: 'get_learning_distillation', reason: 'Report local inferred learning, recent changes, reusable workflow artifacts, and safety boundaries without exposing raw screen, clipboard, or page contents.' },
     { when: 'User asks what changed recently in their habits', tool: 'get_learning_evolution', reason: 'Compare recent local metadata against an older local baseline without exposing raw content.' },
     { when: 'User asks where work stands or what is next', tool: 'get_work_handoff', reason: 'Speak a short work handoff from current evidence.' },
-    { when: 'User asks who owns current agent work or whether Codex/Claude can work in parallel', tool: 'get_collaboration_state', reason: 'Read scoped claims, conflicts, and the collaboration handoff before starting another worker.' },
-    { when: 'Task may be quick, background, Codex, Claude, browser, file, or app work', tool: 'route_task', reason: 'Keep voice responsive while preserving ownership and recovery evidence.' },
     { when: 'User asks to split work across agents', tool: 'route_parallel_tasks', reason: 'Create scoped parallel work with collaboration ownership records.' },
     { when: 'User asks what JAVIS can see or control', tool: 'get_perception_consent', reason: 'Report local perception surfaces and consent gates.' },
   ];
@@ -29042,6 +29043,156 @@ function summarizeDogfoodActionPlanForAutopilot(plan = null) {
   };
 }
 
+function realtimePreflightFreshnessSourceAllowed(source = '') {
+  const text = String(source || '').toLowerCase();
+  return /preflight|work_next_realtime|realtime_prepare|dogfood_prepare|eval_autonomy_no_mic/.test(text);
+}
+
+function realtimePreflightFreshnessCandidateFromTime(input = {}) {
+  const createdAt = Number(input.createdAt || 0);
+  if (!createdAt) return null;
+  return {
+    createdAt,
+    at: new Date(createdAt).toISOString(),
+    source: compactRecordText(input.source || '', 80),
+    eventType: compactRecordText(input.eventType || input.type || '', 100),
+    id: compactRecordText(input.id || '', 120),
+    file: compactRecordText(input.file || '', 300),
+    phase: compactRecordText(input.phase || '', 80),
+    status: compactRecordText(input.status || '', 80),
+  };
+}
+
+function realtimeNoMicPreflightFreshness(options = {}) {
+  const cooldownMs = Math.max(0, Number(options.cooldownMs || REALTIME_PREFLIGHT_FRESH_MS));
+  if (!cooldownMs) {
+    return {
+      fresh: false,
+      cooldownMs: 0,
+      ageMs: null,
+      waitMs: 0,
+      ageLabel: '',
+      waitLabel: '',
+      latest: null,
+    };
+  }
+  const candidates = [];
+  const addCandidate = (candidate) => {
+    if (!candidate) return;
+    candidates.push(candidate);
+  };
+
+  try {
+    const archives = realtimeDogfoodArchiveList({ limit: 20 }).items || [];
+    for (const item of archives) {
+      if (item.startsMicrophone === true) continue;
+      if (!realtimePreflightFreshnessSourceAllowed(item.source)) continue;
+      const createdAt = Date.parse(item.savedAt || item.generatedAt || '');
+      addCandidate(realtimePreflightFreshnessCandidateFromTime({
+        createdAt,
+        source: item.source,
+        eventType: 'archive',
+        id: item.id,
+        file: item.file,
+        phase: item.phase,
+        status: item.status,
+      }));
+    }
+  } catch {}
+
+  try {
+    const events = readRecentAudit(200);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index] || {};
+      const data = event.data || {};
+      const createdAt = Date.parse(event.ts || '') || Number(data.createdAt || 0);
+      if (event.type === 'realtime.dogfood_preflight_bundle') {
+        if (data.startsMicrophone === true) continue;
+        addCandidate(realtimePreflightFreshnessCandidateFromTime({
+          createdAt,
+          source: data.source || 'audit',
+          eventType: event.type,
+          id: data.id,
+          file: data.archiveFile,
+          phase: data.nextGap ? 'preflight_bundle' : '',
+          status: data.ok === false ? 'gap' : 'ready',
+        }));
+      } else if (event.type === 'realtime.dogfood_archive_saved') {
+        if (data.startsMicrophone === true) continue;
+        if (!realtimePreflightFreshnessSourceAllowed(data.source)) continue;
+        addCandidate(realtimePreflightFreshnessCandidateFromTime({
+          createdAt,
+          source: data.source,
+          eventType: event.type,
+          id: data.id,
+          file: data.file,
+          phase: data.phase,
+          status: data.status,
+        }));
+      }
+    }
+  } catch {}
+
+  const latest = candidates
+    .filter((candidate) => Number.isFinite(candidate.createdAt) && candidate.createdAt > 0)
+    .sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+  if (!latest) {
+    return {
+      fresh: false,
+      cooldownMs,
+      ageMs: null,
+      waitMs: 0,
+      ageLabel: '',
+      waitLabel: '',
+      latest: null,
+    };
+  }
+  const ageMs = Math.max(0, Date.now() - latest.createdAt);
+  const waitMs = Math.max(0, cooldownMs - ageMs);
+  return {
+    fresh: waitMs > 0,
+    cooldownMs,
+    ageMs,
+    waitMs,
+    ageLabel: autopilotWaitDurationLabel(ageMs),
+    waitLabel: autopilotWaitDurationLabel(waitMs),
+    latest,
+  };
+}
+
+function compactRealtimePreflightFreshness(freshness = null) {
+  if (!freshness || typeof freshness !== 'object') return null;
+  return {
+    fresh: Boolean(freshness.fresh),
+    cooldownMs: Math.max(0, Number(freshness.cooldownMs || 0)),
+    ageMs: freshness.ageMs === null || freshness.ageMs === undefined ? null : Math.max(0, Number(freshness.ageMs || 0)),
+    waitMs: Math.max(0, Number(freshness.waitMs || 0)),
+    ageLabel: compactRecordText(freshness.ageLabel || '', 40),
+    waitLabel: compactRecordText(freshness.waitLabel || '', 40),
+    latest: freshness.latest
+      ? {
+        at: compactRecordText(freshness.latest.at || '', 80),
+        source: compactRecordText(freshness.latest.source || '', 80),
+        eventType: compactRecordText(freshness.latest.eventType || '', 100),
+        id: compactRecordText(freshness.latest.id || '', 120),
+        file: compactRecordText(freshness.latest.file || '', 220),
+        phase: compactRecordText(freshness.latest.phase || '', 80),
+        status: compactRecordText(freshness.latest.status || '', 80),
+      }
+      : null,
+  };
+}
+
+function compactRealtimePreflightFreshnessForVoice(freshness = null) {
+  if (!freshness || typeof freshness !== 'object') return null;
+  return {
+    fresh: Boolean(freshness.fresh),
+    ageLabel: compactRecordText(freshness.ageLabel || '', 40),
+    waitMs: boundedCount(freshness.waitMs, 24 * 60 * 60 * 1000),
+    waitLabel: compactRecordText(freshness.waitLabel || '', 40),
+  };
+}
+
 function autopilotEligibilityDecision(action) {
   if (!action || typeof action !== 'object') {
     return {
@@ -29132,12 +29283,24 @@ function autopilotEligibilityDecision(action) {
       action.requiresUserPresence === false &&
       Number(action.riskLevel || 0) <= 1,
     );
+    const freshness = executable ? realtimeNoMicPreflightFreshness() : null;
+    const compactFreshness = compactRealtimePreflightFreshness(freshness);
+    if (freshness?.fresh) {
+      const agePhrase = freshness.ageLabel ? `${freshness.ageLabel} ago` : 'recently';
+      return {
+        executable: false,
+        reason: 'realtime_preflight_fresh',
+        detail: `No-mic Realtime preflight was prepared ${agePhrase}; wait ${freshness.waitLabel || 'for the cooldown'} before repeating it.`,
+        freshness: compactFreshness,
+      };
+    }
     return {
       executable,
       reason: executable ? 'eligible_realtime_no_mic_preflight' : 'realtime_preflight_not_safe_for_autopilot',
       detail: executable
         ? 'Autopilot may prepare the no-mic Realtime dogfood bundle; live microphone start still requires the user.'
         : 'Realtime preparation must prove it starts no microphone, needs no user presence, and stays low-risk before autopilot can run it.',
+      freshness: compactFreshness,
     };
   }
   if (action.source === 'record_replay' && action.recordReplayPreparation === 'teaching_packet') {
@@ -29206,6 +29369,7 @@ function autopilotActionDecision(action, index = 0) {
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
     phase: compactRecordText(action.phase || '', 80),
+    freshness: compactRealtimePreflightFreshness(eligibility.freshness),
     dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
     decision: eligibility,
   };
@@ -29319,7 +29483,31 @@ function autopilotWaitingConditions({ reason = '', candidates = [], selectedActi
     });
   }
 
-  const dogfoodPrep = candidates.find((candidate) => candidate.dogfoodActionPlan?.firstPreviewable);
+  const freshRealtimePreflight = candidates.find((candidate) => (
+    candidate.decision?.reason === 'realtime_preflight_fresh' &&
+    candidate.decision?.freshness?.fresh === true
+  ));
+  if (freshRealtimePreflight) {
+    const waitMs = Math.max(0, Number(freshRealtimePreflight.decision?.freshness?.waitMs || 0));
+    const waitLabel = freshRealtimePreflight.decision?.freshness?.waitLabel || autopilotWaitDurationLabel(waitMs);
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'realtime_preflight_fresh',
+      label: 'Realtime preflight cooldown',
+      summary: waitLabel
+        ? `No-mic Realtime preflight is fresh; wait about ${waitLabel} before repeating it, or let maintenance run.`
+        : 'No-mic Realtime preflight is fresh; skip repeating it for now.',
+      status: 'cooldown',
+      actionId: freshRealtimePreflight.id,
+      actionSource: freshRealtimePreflight.source,
+      waitMs,
+      waitLabel,
+    });
+  }
+
+  const dogfoodPrep = candidates.find((candidate) => (
+    candidate.dogfoodActionPlan?.firstPreviewable &&
+    candidate.decision?.reason !== 'realtime_preflight_fresh'
+  ));
   if (dogfoodPrep?.dogfoodActionPlan?.firstPreviewable) {
     const prep = dogfoodPrep.dogfoodActionPlan.firstPreviewable;
     pushAutopilotWaitingCondition(waiting, {
@@ -29589,6 +29777,7 @@ function compactAutopilotActionForVoice(action = null) {
         executable: Boolean(action.decision.executable),
         reason: compactRecordText(action.decision.reason || '', 120),
         detail: compactRecordText(action.decision.detail || '', 160),
+        freshness: compactRealtimePreflightFreshnessForVoice(action.decision.freshness),
       }
       : null,
   };
@@ -29690,7 +29879,11 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
         : null,
       candidateCounts: preview.candidateCounts || null,
       waitingFor: Array.isArray(preview.waitingFor)
-        ? preview.waitingFor.slice(0, 4).map(compactAutopilotWaitingForVoice).filter(Boolean)
+        ? preview.waitingFor.slice(0, 4).map((item) => ({
+          id: compactRecordText(item.id || '', 120),
+          status: compactRecordText(item.status || '', 60),
+          waitLabel: compactRecordText(item.waitLabel || '', 40),
+        })).filter((item) => item.id)
         : [],
       skipSummary: compactRecordText(preview.skipSummary || '', 240),
       maintenance: compactAutopilotMaintenanceForVoice(preview.maintenance),
