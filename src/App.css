@@ -261,6 +261,43 @@ select {
   animation-delay: 480ms;
 }
 
+.signal-green .light-green {
+  background: #35f29a;
+  box-shadow:
+    0 0 12px rgba(53, 242, 154, 0.72),
+    0 0 0 1px rgba(53, 242, 154, 0.32);
+  opacity: 1;
+}
+
+.signal-yellow .light-yellow {
+  background: #ffd257;
+  box-shadow:
+    0 0 12px rgba(255, 210, 87, 0.76),
+    0 0 0 1px rgba(255, 210, 87, 0.32);
+  opacity: 1;
+}
+
+.signal-red .light-red {
+  background: #ff5c55;
+  box-shadow:
+    0 0 12px rgba(255, 92, 85, 0.78),
+    0 0 0 1px rgba(255, 92, 85, 0.32);
+  opacity: 1;
+}
+
+.pulse-off .wave-bar {
+  animation: none;
+  opacity: 0.46;
+}
+
+.pulse-slow .wave-bar {
+  animation-duration: 1320ms;
+}
+
+.pulse-attention .wave-bar {
+  animation-duration: 720ms;
+}
+
 .speech {
   display: none;
   width: 190px;

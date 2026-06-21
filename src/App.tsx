@@ -231,6 +231,21 @@ type PresenceMode =
   | 'needs_attention'
   | 'setup_blocked'
 
+type PetTrafficLight = {
+  version: number
+  sourceMode: PresenceMode | string
+  state: 'idle' | 'watching' | 'waking' | 'connecting' | 'listening' | 'working' | 'attention' | 'blocked' | string
+  color: 'red' | 'yellow' | 'green' | string
+  activeLight: 'red' | 'yellow' | 'green' | string
+  urgency: 'quiet' | 'ambient' | 'active' | 'interrupt' | string
+  pulse: 'off' | 'slow' | 'live' | 'attention' | string
+  label: string
+  reason: string
+  accessibleLabel: string
+  startsMicrophone: boolean
+  passiveByDefault: boolean
+}
+
 type PresenceState = {
   ok: boolean
   generatedAt: string
@@ -477,6 +492,7 @@ type PetStatusMeta = {
   summary: string
   next: string
   color: 'red' | 'yellow' | 'green-yellow' | 'green' | string
+  trafficLight?: PetTrafficLight
 }
 
 type Status = {
@@ -2927,9 +2943,14 @@ function App() {
   }, [messages])
 
   const presence = status?.presence
+  const petTrafficLight = status?.pet?.trafficLight
   const hasOpenAiKey = status?.api.hasOpenAiKey
   const mood = useMemo<PetMood>(() => {
     if (hasOpenAiKey === false) return 'needs-key'
+    if (petTrafficLight?.state === 'blocked' || petTrafficLight?.state === 'attention' || petTrafficLight?.color === 'red') return 'attention'
+    if (petTrafficLight?.state === 'listening') return 'listening'
+    if (petTrafficLight?.state === 'working' || petTrafficLight?.state === 'connecting' || petTrafficLight?.state === 'waking') return 'thinking'
+    if (petTrafficLight?.state === 'watching' || petTrafficLight?.state === 'idle') return 'standby'
     if (presence?.mode === 'setup_blocked' || presence?.mode === 'voice_error' || readiness?.overall === 'blocked') return 'attention'
     if (presence?.mode === 'needs_attention' || approvals.length > 0) return 'attention'
     if (voiceStatus === 'connecting' || presence?.mode === 'connecting' || presence?.mode === 'waking') return 'thinking'
@@ -2938,7 +2959,7 @@ function App() {
     if (screenLive || presence?.mode === 'watching') return 'watching'
     if (presence?.mode === 'standby') return 'standby'
     return 'ready'
-  }, [activeJobCount, approvals.length, hasOpenAiKey, presence?.mode, readiness?.overall, screenLive, voiceStatus])
+  }, [activeJobCount, approvals.length, hasOpenAiKey, petTrafficLight?.color, petTrafficLight?.state, presence?.mode, readiness?.overall, screenLive, voiceStatus])
 
   const voiceAction = useCallback(() => {
     if (voiceStatus === 'idle' || voiceStatus === 'error') {
@@ -2956,8 +2977,9 @@ function App() {
   }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
   const petAction = hasOpenAiKey === true ? startAssistantSession : openConfigCui
-  const petStatusLabel = petMoodLabel(mood, presence, talking)
-  const petStatusDetail = presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
+  const petStatusLabel = talking ? 'Hearing you' : petTrafficLight?.label || petMoodLabel(mood, presence, false)
+  const petStatusDetail = petTrafficLight?.reason || presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
+  const petAccessibleLabel = petTrafficLight?.accessibleLabel || `${petStatusLabel}. ${petStatusDetail}`
   const petActionLabel = hasOpenAiKey !== true
     ? 'Open JAVIS config'
     : voiceStatus === 'live' || screenLive
@@ -2967,7 +2989,7 @@ function App() {
         : 'Talk to JAVIS with screen'
 
   return (
-    <main className={`pet-shell ${expanded ? 'expanded' : 'compact'} mood-${mood}`}>
+    <main className={`pet-shell ${expanded ? 'expanded' : 'compact'} mood-${mood} signal-${petTrafficLight?.activeLight || petTrafficLight?.color || 'green'} pulse-${petTrafficLight?.pulse || 'off'}`}>
       <audio ref={audioRef} autoPlay />
 
       <div className="drag-handle" />
@@ -2989,7 +3011,7 @@ function App() {
             void openConfigCui()
           }}
           aria-disabled={voiceStatus === 'connecting'}
-          aria-label={`${petStatusLabel}. ${petActionLabel}`}
+          aria-label={`${petAccessibleLabel}. ${petActionLabel}`}
           title={`${petStatusLabel}. ${petStatusDetail} Drag to move. Click to talk. Right-click for config.`}
         >
           <span className="island-traffic" aria-hidden="true">

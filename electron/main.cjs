@@ -28201,6 +28201,89 @@ function petPresenceStatusSnapshot(presence = {}) {
   };
 }
 
+function petTrafficLightSnapshot(options = {}) {
+  const presence = options.presence || {};
+  const mode = String(presence.mode || 'standby');
+  const intervention = presence.intervention || {};
+  const reason = compactRecordText(
+    intervention.next || presence.summary || presence.label || 'Standing by until you ask for help.',
+    160,
+  );
+  const base = {
+    version: 1,
+    sourceMode: mode,
+    state: 'idle',
+    color: 'green',
+    activeLight: 'green',
+    urgency: 'quiet',
+    pulse: 'off',
+    label: presence.label || 'Standby',
+    reason,
+    accessibleLabel: '',
+    startsMicrophone: false,
+    passiveByDefault: true,
+  };
+
+  if (mode === 'setup_blocked' || mode === 'voice_error') {
+    Object.assign(base, {
+      state: 'blocked',
+      color: 'red',
+      activeLight: 'red',
+      urgency: 'interrupt',
+      pulse: 'attention',
+      label: presence.label || 'Setup blocked',
+    });
+  } else if (mode === 'needs_attention' || intervention.shouldNotify) {
+    Object.assign(base, {
+      state: 'attention',
+      color: 'red',
+      activeLight: 'red',
+      urgency: 'interrupt',
+      pulse: 'attention',
+      label: presence.label || 'Needs attention',
+    });
+  } else if (mode === 'listening') {
+    Object.assign(base, {
+      state: 'listening',
+      color: 'yellow',
+      activeLight: 'yellow',
+      urgency: 'active',
+      pulse: 'live',
+      label: presence.label || 'Listening',
+    });
+  } else if (mode === 'connecting' || mode === 'waking') {
+    Object.assign(base, {
+      state: mode === 'waking' ? 'waking' : 'connecting',
+      color: 'yellow',
+      activeLight: 'yellow',
+      urgency: 'active',
+      pulse: 'slow',
+      label: presence.label || (mode === 'waking' ? 'Wake pending' : 'Connecting'),
+    });
+  } else if (mode === 'working') {
+    Object.assign(base, {
+      state: 'working',
+      color: 'yellow',
+      activeLight: 'yellow',
+      urgency: 'ambient',
+      pulse: 'slow',
+      label: presence.label || 'Working',
+    });
+  } else if (mode === 'watching') {
+    Object.assign(base, {
+      state: 'watching',
+      color: 'green',
+      activeLight: 'green',
+      urgency: 'quiet',
+      pulse: 'off',
+      label: presence.label || 'Watching',
+    });
+  }
+
+  base.accessibleLabel = compactRecordText(`JAVIS ${base.label}: ${base.reason}`, 220);
+  return base;
+}
+
 function petReadinessSummary(readiness = petReadinessSnapshot()) {
   return {
     overall: readiness.overall,
@@ -28227,6 +28310,7 @@ function petStatusSnapshot() {
   const readiness = petReadinessSnapshot();
   const rawPresence = petPresenceSnapshot({ conversation, wake, pendingApprovals, activeJobs, readiness });
   const presence = petPresenceStatusSnapshot(rawPresence);
+  const trafficLight = petTrafficLightSnapshot({ presence });
   const screenFrame = latestScreenSnapshot();
   const allowedTopLevel = [
     'pet',
@@ -28294,13 +28378,8 @@ function petStatusSnapshot() {
       label: presence.label,
       summary: compactRecordText(presence.summary || '', 240),
       next: compactRecordText(presence.intervention?.next || '', 220),
-      color: presence.mode === 'setup_blocked' || presence.mode === 'needs_attention' || presence.mode === 'voice_error'
-        ? 'red'
-        : presence.mode === 'waking' || presence.mode === 'connecting' || presence.mode === 'working'
-          ? 'yellow'
-          : presence.mode === 'watching' || presence.mode === 'listening'
-            ? 'green-yellow'
-            : 'green',
+      color: trafficLight.color,
+      trafficLight,
     },
     api: {
       baseUrl: API_BASE,

@@ -22,7 +22,7 @@
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.
 - Runtime/tool activity log in CUI/API, not on the desktop pet.
-- Desktop pet consumes resident presence as a traffic-light Dynamic Island capsule instead of showing diagnostic chips.
+- Desktop pet consumes resident presence as a stable red/yellow/green traffic-light Dynamic Island capsule instead of showing diagnostic chips.
 - Desktop pet uses a lightweight `/api/pet/status` lane for parked state with no raw screen image, model list, learning profile, routing history, workflow logs, or runtime data directory; full doctor/config/briefing/context checks stay in CUI, manual refresh, or slow expanded-panel refresh.
 
 ## Phase 1: Reliable Resident Server

@@ -44,6 +44,11 @@ export default {
       ? actualTopLevel.filter((key) => !allowedTopLevel.has(key))
       : [];
     const queue = Array.isArray(p.queue) ? p.queue : [];
+    const traffic = p.pet?.trafficLight || {};
+    const trafficColors = new Set(['red', 'yellow', 'green']);
+    const trafficStates = new Set(['idle', 'watching', 'waking', 'connecting', 'listening', 'working', 'attention', 'blocked']);
+    const trafficUrgency = new Set(['quiet', 'ambient', 'active', 'interrupt']);
+    const trafficPulses = new Set(['off', 'slow', 'live', 'attention']);
     const raw = JSON.stringify(p);
     const rawBytes = Buffer.byteLength(raw, 'utf8');
     const hasForbiddenNestedKey = (value, forbidden) => {
@@ -72,6 +77,19 @@ export default {
         contractForbidden.includes('routing') &&
         contractForbidden.includes('workflows') &&
         typeof p.pet?.color === 'string' &&
+        traffic.version === 1 &&
+        trafficColors.has(traffic.color) &&
+        traffic.activeLight === traffic.color &&
+        trafficStates.has(traffic.state) &&
+        trafficUrgency.has(traffic.urgency) &&
+        trafficPulses.has(traffic.pulse) &&
+        typeof traffic.sourceMode === 'string' &&
+        typeof traffic.label === 'string' &&
+        typeof traffic.reason === 'string' &&
+        typeof traffic.accessibleLabel === 'string' &&
+        traffic.accessibleLabel.includes('JAVIS') &&
+        traffic.startsMicrophone === false &&
+        traffic.passiveByDefault === true &&
         p.window?.mode &&
         p.presence?.intervention?.passiveByDefault === true &&
         p.presence?.intervention?.requiresUserIntent === true &&
@@ -83,7 +101,7 @@ export default {
         unexpectedTopLevel.length === 0 &&
         !hasForbiddenNestedKey(p, forbiddenNestedKeys) &&
         queue.every((job) => !Object.prototype.hasOwnProperty.call(job, 'log') && !Object.prototype.hasOwnProperty.call(job, 'result'))
-        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${p.pet.color} · ${p.presence.mode} · ${rawBytes}/${contract.maxTargetBytes} bytes`)
+        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${traffic.color}/${traffic.state} · ${p.presence.mode} · ${rawBytes}/${contract.maxTargetBytes} bytes`)
         : fail('resident.pet_status_lightweight', 'Pet status lightweight payload', `expected slim pet payload, got ${pet.status}`, {
           forbiddenTopLevel,
           unexpectedTopLevel,
@@ -92,6 +110,7 @@ export default {
           rawBytes,
           contract,
           pet: p.pet,
+          traffic,
         }),
     );
 
