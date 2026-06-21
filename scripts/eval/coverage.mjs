@@ -28,6 +28,10 @@ const checksDir = path.join(here, 'checks');
 const argv = process.argv.slice(2);
 const jsonMode = argv.includes('--json');
 const uncoveredOnly = argv.includes('--uncovered');
+// GET routes are read-safe, so an uncovered GET is an actionable smoke-test gap.
+// Uncovered mutation routes (POST/PUT/DELETE) are lower priority — read-only eval
+// lanes legitimately skip them. --get-only narrows the report to actionable gaps.
+const getOnly = argv.includes('--get-only');
 
 // Normalize a route path to a comparable shape: lowercase, strip a trailing
 // slash, replace :param and ${...} template segments and bare numeric/uuid-ish
@@ -137,12 +141,16 @@ function main() {
     return;
   }
 
-  if (uncoveredOnly) {
-    for (const r of uncovered.sort((a, b) => a.path.localeCompare(b.path))) {
+  const uncoveredGet = uncovered.filter((r) => r.method === 'GET');
+  const uncoveredMutation = uncovered.filter((r) => r.method !== 'GET');
+
+  if (uncoveredOnly || getOnly) {
+    const list = getOnly ? uncoveredGet : uncovered;
+    for (const r of list.sort((a, b) => a.path.localeCompare(b.path))) {
       console.log(`${r.method.padEnd(6)} ${r.path}`);
     }
-    console.log(`\n${uncovered.length} uncovered route(s) of ${uniqueRoutes.length}`);
-    if (uncovered.length) process.exitCode = 1;
+    console.log(`\n${list.length} uncovered ${getOnly ? 'read-only GET ' : ''}route(s) of ${uniqueRoutes.length}`);
+    if (list.length) process.exitCode = 1;
     return;
   }
 
@@ -151,6 +159,7 @@ function main() {
   const filled = Math.round(coveragePct * 30);
   console.log(`${'█'.repeat(filled)}${'░'.repeat(30 - filled)} ${(coveragePct * 100).toFixed(1)}%`);
   console.log(`${coveredNorms.size}/${distinctPaths.size} distinct route paths referenced by ${checkFiles.length} eval lane(s) · ${uniqueRoutes.length} total route registrations`);
+  console.log(`${uncoveredGet.length} uncovered read-only GET (actionable) · ${uncoveredMutation.length} uncovered mutation (lower priority)`);
   console.log('');
   if (uncovered.length) {
     console.log(`Uncovered routes (${uncovered.length}):`);
