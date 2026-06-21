@@ -337,6 +337,13 @@ skill export must stay behind the existing preview/confirm gates. The intended p
 sanitized local steps, draft a replay plan or skill, show the user what would be reused, then save/export
 only after confirmation.
 
+Work-next may also offer `record_replay:prepare_teaching_packet`. Running it saves a local JSON teaching
+packet under the runtime directory with the best current habit candidate, suggested voice prompts, relevant
+demonstration/replay/skill endpoints, and the safety boundaries for teaching JAVIS a workflow. It does not
+start microphone capture, start UI demonstration recording, launch workers, replay UI actions, save skills,
+save shortcuts, promote memory, or grant permissions. Autopilot may run this preparation once per freshness
+window because it only writes local evidence; the user still has to explicitly start the real demonstration.
+
 Use option `24. Show learning evolution`, or:
 
 ```bash

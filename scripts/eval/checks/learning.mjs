@@ -236,6 +236,66 @@ export default {
         : warn('learning.skill_draft', 'Skill draft preview', `draft ${draft.status} ${draft.error || draft.data?.error || ''}`),
     );
 
+    const teachingPreview = await ctx.api('/api/work/next?actionId=record_replay%3Aprepare_teaching_packet&forceRecordReplayTeachingPacket=true');
+    const teachingPreviewNext = teachingPreview.data?.next || {};
+    const teachingPreviewResult = teachingPreviewNext.result || {};
+    const teachingPreviewPacket = teachingPreviewResult.packet || teachingPreviewResult;
+    out.push(
+      teachingPreview.ok &&
+        teachingPreviewNext.ok === true &&
+        teachingPreviewNext.executed === false &&
+        teachingPreviewNext.action?.id === 'record_replay:prepare_teaching_packet' &&
+        teachingPreviewNext.action?.source === 'record_replay' &&
+        teachingPreviewNext.action?.autoEligible === true &&
+        teachingPreviewNext.action?.startsMicrophone === false &&
+        teachingPreviewNext.action?.startsRecording === false &&
+        teachingPreviewNext.action?.executesTask === false &&
+        teachingPreviewPacket.kind === 'record_replay_teaching_packet' &&
+        teachingPreviewPacket.safety?.startsMicrophone === false &&
+        teachingPreviewPacket.safety?.startsRecording === false &&
+        teachingPreviewPacket.safety?.startsWorkers === false &&
+        teachingPreviewPacket.safety?.executesTask === false &&
+        teachingPreviewPacket.safety?.confirmationRequiredForRecording === true &&
+        teachingPreviewPacket.safety?.confirmationRequiredForSkillSave === true &&
+        Array.isArray(teachingPreviewPacket.teachingScript) &&
+        teachingPreviewPacket.teachingScript.length >= 4 &&
+        String(teachingPreviewNext.output || '').includes('Preview mode: no teaching packet file was written')
+        ? ok('learning.record_replay_teaching_preview', 'Record & Replay teaching packet preview', `${teachingPreviewPacket.teachingScript.length} safe teaching step(s)`)
+        : fail('learning.record_replay_teaching_preview', 'Record & Replay teaching packet preview', 'work-next did not expose a safe no-recording teaching packet preview', teachingPreview.data),
+    );
+
+    const teachingRun = await ctx.api('/api/work/next', {
+      method: 'POST',
+      body: {
+        execute: true,
+        actionId: 'record_replay:prepare_teaching_packet',
+        forceRecordReplayTeachingPacket: true,
+        source: 'eval_record_replay_teaching_packet',
+      },
+      retries: 0,
+    });
+    const teachingRunNext = teachingRun.data?.next || {};
+    const teachingRunResult = teachingRunNext.result || {};
+    out.push(
+      teachingRun.ok &&
+        teachingRunNext.ok === true &&
+        teachingRunNext.executed === true &&
+        teachingRunNext.action?.id === 'record_replay:prepare_teaching_packet' &&
+        teachingRunNext.autopilotDecision?.reason === 'eligible_record_replay_teaching_packet' &&
+        teachingRunResult.saved === true &&
+        teachingRunResult.packet?.saved === true &&
+        teachingRunResult.packet?.safety?.startsMicrophone === false &&
+        teachingRunResult.packet?.safety?.startsRecording === false &&
+        teachingRunResult.packet?.safety?.startsWorkers === false &&
+        teachingRunResult.packet?.safety?.executesTask === false &&
+        teachingRunResult.metadata?.file &&
+        String(teachingRunResult.metadata.file).includes('/record-replay-teaching-packets/') &&
+        Array.isArray(teachingRunResult.packets?.items) &&
+        teachingRunResult.packets.items.some((item) => item.file === teachingRunResult.metadata.file)
+        ? ok('learning.record_replay_teaching_save', 'Record & Replay teaching packet save', teachingRunResult.metadata.file)
+        : fail('learning.record_replay_teaching_save', 'Record & Replay teaching packet save', 'execute=true should only save a local teaching packet', teachingRun.data),
+    );
+
     let demoId = '';
     let savedSkillPath = '';
     try {

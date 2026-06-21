@@ -56,6 +56,7 @@ const SHORTCUTS_FILE = path.join(DATA_DIR, 'shortcuts.json');
 const REALTIME_DOGFOOD_SESSIONS_FILE = path.join(DATA_DIR, 'realtime-dogfood-sessions.json');
 const REALTIME_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'realtime-dogfood-archives');
 const PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'productivity-dogfood-archives');
+const RECORD_REPLAY_TEACHING_PACKETS_DIR = path.join(DATA_DIR, 'record-replay-teaching-packets');
 const SCREEN_PRIVACY_FILE = path.join(DATA_DIR, 'screen-privacy.json');
 const AMBIENT_FILE = path.join(DATA_DIR, 'ambient.json');
 const LEARNING_FILE = path.join(DATA_DIR, 'learned-profile.json');
@@ -116,6 +117,7 @@ const MAX_PERSISTED_SHORTCUTS = Math.max(20, Math.min(500, Number(process.env.JA
 const MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_REALTIME_DOGFOOD_SESSIONS || 120)));
 const MAX_REALTIME_DOGFOOD_ARCHIVES = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_REALTIME_DOGFOOD_ARCHIVES || 120)));
 const MAX_PRODUCTIVITY_DOGFOOD_ARCHIVES = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PRODUCTIVITY_DOGFOOD_ARCHIVES || 120)));
+const MAX_RECORD_REPLAY_TEACHING_PACKETS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_RECORD_REPLAY_TEACHING_PACKETS || 120)));
 const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 500);
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
@@ -7932,6 +7934,398 @@ function learningHabitCandidateWorkNextPreview(action = {}, options = {}) {
       safety,
       boundaries: Array.isArray(action.boundaries) ? action.boundaries.slice(0, 5) : candidate?.boundaries || [],
     },
+  };
+}
+
+function recordReplayTeachingPacketFilename(generatedAt, id) {
+  const timestamp = String(generatedAt || new Date().toISOString())
+    .replace(/[:.]/g, '-')
+    .replace(/[^0-9A-Za-zTZ_-]/g, '-');
+  const suffix = String(id || crypto.randomUUID()).replace(/[^0-9A-Za-z_-]/g, '').slice(0, 8) || 'packet';
+  return `${timestamp}-${suffix}.json`;
+}
+
+function recordReplayTeachingPacketMetadata(packet = {}, filePath = '') {
+  const safety = packet.safety || {};
+  const candidate = packet.candidate || {};
+  return {
+    id: packet.id || '',
+    kind: packet.kind || 'record_replay_teaching_packet',
+    generatedAt: packet.generatedAt || '',
+    savedAt: packet.savedAt || '',
+    source: packet.source || '',
+    ok: packet.ok !== false,
+    saved: Boolean(packet.saved),
+    summary: compactRecordText(packet.summary || packet.output || '', 420),
+    file: filePath || packet.file?.path || '',
+    filename: filePath ? path.basename(filePath) : packet.file?.filename || '',
+    candidate: {
+      id: compactRecordText(candidate.id || '', 140),
+      kind: compactRecordText(candidate.kind || '', 80),
+      label: compactRecordText(candidate.label || '', 180),
+      confidence: Number(Math.max(0, Math.min(1, Number(candidate.confidence || 0))).toFixed(2)),
+    },
+    counts: {
+      teachingSteps: Array.isArray(packet.teachingScript) ? packet.teachingScript.length : 0,
+      livePrompts: Array.isArray(packet.liveVoicePrompts) ? packet.liveVoicePrompts.length : 0,
+      habitCandidates: Number(packet.distillation?.habitCandidateCount || 0),
+      demonstrationsDone: Number(packet.distillation?.demonstrationsDone || 0),
+      shortcutsEnabled: Number(packet.distillation?.shortcutsEnabled || 0),
+      localSkills: Number(packet.distillation?.localSkills || 0),
+    },
+    safety: {
+      startsMicrophone: Boolean(safety.startsMicrophone),
+      startsRecording: Boolean(safety.startsRecording),
+      startsWorkers: Boolean(safety.startsWorkers),
+      executesTask: Boolean(safety.executesTask),
+      grantsPermission: Boolean(safety.grantsPermission),
+      storesScreenshots: Boolean(safety.storesScreenshots),
+      storesClipboardText: Boolean(safety.storesClipboardText),
+      storesPageBodies: Boolean(safety.storesPageBodies),
+      confirmationRequiredForReplay: safety.confirmationRequiredForReplay !== false,
+      confirmationRequiredForSkillSave: safety.confirmationRequiredForSkillSave !== false,
+    },
+  };
+}
+
+function recordReplayTeachingPacketList(options = {}) {
+  fs.mkdirSync(RECORD_REPLAY_TEACHING_PACKETS_DIR, { recursive: true });
+  const limit = Math.max(1, Math.min(100, Number(options.limit || 10)));
+  const files = fs.readdirSync(RECORD_REPLAY_TEACHING_PACKETS_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => {
+      const filePath = path.join(RECORD_REPLAY_TEACHING_PACKETS_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { name, filePath, mtimeMs: stat.mtimeMs, bytes: stat.size };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs)
+    .slice(0, limit);
+  const items = files.map((file) => {
+    try {
+      const packet = JSON.parse(fs.readFileSync(file.filePath, 'utf8'));
+      return {
+        ...recordReplayTeachingPacketMetadata(packet, file.filePath),
+        bytes: file.bytes,
+      };
+    } catch (error) {
+      return {
+        id: '',
+        kind: 'record_replay_teaching_packet',
+        generatedAt: '',
+        savedAt: '',
+        source: '',
+        ok: false,
+        saved: true,
+        status: 'unreadable',
+        summary: error instanceof Error ? error.message : String(error),
+        file: file.filePath,
+        filename: file.name,
+        candidate: {},
+        counts: {},
+        safety: {},
+        bytes: file.bytes,
+      };
+    }
+  });
+  return {
+    ok: true,
+    packetDir: RECORD_REPLAY_TEACHING_PACKETS_DIR,
+    maxPackets: MAX_RECORD_REPLAY_TEACHING_PACKETS,
+    count: items.length,
+    items,
+  };
+}
+
+function pruneRecordReplayTeachingPackets() {
+  fs.mkdirSync(RECORD_REPLAY_TEACHING_PACKETS_DIR, { recursive: true });
+  const files = fs.readdirSync(RECORD_REPLAY_TEACHING_PACKETS_DIR)
+    .filter((name) => name.endsWith('.json'))
+    .map((name) => {
+      const filePath = path.join(RECORD_REPLAY_TEACHING_PACKETS_DIR, name);
+      const stat = fs.statSync(filePath);
+      return { filePath, mtimeMs: stat.mtimeMs };
+    })
+    .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  const stale = files.slice(MAX_RECORD_REPLAY_TEACHING_PACKETS);
+  for (const file of stale) {
+    try {
+      fs.unlinkSync(file.filePath);
+    } catch {}
+  }
+  return stale.length;
+}
+
+function latestRecordReplayTeachingPacket() {
+  const list = recordReplayTeachingPacketList({ limit: 1 });
+  return list.items[0] || null;
+}
+
+function recordReplayTeachingPacketFresh(maxAgeMs = 12 * 60 * 60 * 1000) {
+  const latest = latestRecordReplayTeachingPacket();
+  if (!latest?.savedAt && !latest?.generatedAt) return null;
+  const timestamp = Date.parse(latest.savedAt || latest.generatedAt);
+  if (!Number.isFinite(timestamp)) return null;
+  return Date.now() - timestamp <= Math.max(60000, Number(maxAgeMs || 0)) ? latest : null;
+}
+
+function recordReplayTeachingPacketSnapshot(options = {}) {
+  const generatedAt = new Date().toISOString();
+  const id = String(options.id || crypto.randomUUID());
+  const distillation = learningDistillationSnapshot({
+    source: options.source || 'record_replay_teaching_packet',
+    candidateLimit: options.candidateLimit || 4,
+    skillLimit: options.skillLimit || 4,
+    demonstrationLimit: options.demonstrationLimit || 4,
+    shortcutLimit: options.shortcutLimit || 4,
+    eventLimit: options.eventLimit,
+    recentLimit: options.recentLimit,
+    baselineLimit: options.baselineLimit,
+    query: options.query || 'local workflow learning demonstration replay',
+  });
+  const candidates = Array.isArray(distillation.habitCandidates?.candidates)
+    ? distillation.habitCandidates.candidates
+    : [];
+  const requestedCandidateId = String(options.candidateId || '').trim();
+  const selected = requestedCandidateId
+    ? candidates.find((candidate) => candidate.id === requestedCandidateId) || candidates[0] || null
+    : candidates[0] || null;
+  const candidate = compactLearningHabitCandidate(selected || {
+    id: 'bootstrap_teach_first_workflow',
+    kind: 'teach_first_workflow',
+    label: 'Teach the first repeatable workflow',
+    summary: 'Start with one explicit user-initiated demonstration of a routine that should become reusable.',
+    confidence: 0.18,
+    recommendedAction: {
+      id: 'record_demonstration',
+      label: 'Record one explicit routine',
+      endpoint: '/api/demonstrations/start',
+      method: 'POST',
+      requiresConfirmation: true,
+      previewOnly: false,
+      writesLocalArtifact: true,
+    },
+  });
+  const candidateLabel = candidate?.label || 'Teach a repeatable workflow';
+  const liveVoicePrompts = [
+    '我来教你一个流程，开始记录这个 UI 流程',
+    `这个流程目标是：${candidateLabel}`,
+    '记录这一步：观察当前窗口，只保存安全摘要，不保存截图或剪贴板原文',
+    '结束记录，并生成回放计划和 skill 草稿',
+    '试着保存这个 skill 草稿，但我还没有确认保存',
+  ];
+  const teachingScript = [
+    {
+      id: 'choose_scope',
+      label: 'Choose one short routine',
+      instruction: 'Pick one repeatable workflow with a clear start, variable inputs, and visible done state.',
+      userPrompt: `Teach JAVIS: ${candidateLabel}`,
+    },
+    {
+      id: 'start_demonstration',
+      label: 'Start explicit recording',
+      instruction: 'Start UI demonstration recording only after the user asks; do not infer consent from passive observation.',
+      endpoint: { method: 'POST', path: '/api/demonstrations/start' },
+      voicePrompt: liveVoicePrompts[0],
+    },
+    {
+      id: 'capture_steps',
+      label: 'Capture sanitized steps',
+      instruction: 'Capture each step as a note plus sanitized app/browser/accessibility metadata. Do not store screenshots, clipboard text, page bodies, passwords, or coordinates.',
+      endpoint: { method: 'POST', path: '/api/demonstrations/:id/capture' },
+      voicePrompt: liveVoicePrompts[2],
+    },
+    {
+      id: 'finish_and_plan',
+      label: 'Finish, replay-plan, and draft skill',
+      instruction: 'Finish the demonstration, generate a replay plan that re-observes the live UI, and draft a local skill for review.',
+      endpoints: [
+        { method: 'POST', path: '/api/demonstrations/:id/finish' },
+        { method: 'POST', path: '/api/demonstrations/:id/replay/plan' },
+        { method: 'POST', path: '/api/demonstrations/:id/skill-draft' },
+      ],
+      voicePrompt: liveVoicePrompts[3],
+    },
+    {
+      id: 'confirmation_gate',
+      label: 'Stop at save/replay confirmation',
+      instruction: 'Require explicit confirmation before saving a skill, saving a shortcut, promoting memory, or replaying any UI action.',
+      endpoints: [
+        { method: 'POST', path: '/api/demonstrations/:id/skill-draft/save', requiresConfirm: true },
+        { method: 'POST', path: '/api/demonstrations/:id/replay/run', requiresConfirm: true },
+      ],
+      voicePrompt: liveVoicePrompts[4],
+    },
+  ];
+  const filename = recordReplayTeachingPacketFilename(generatedAt, id);
+  const demonstrationsDone = Number(distillation.artifacts?.demonstrations?.counts?.done || 0);
+  const shortcutsEnabled = Number(distillation.artifacts?.shortcuts?.counts?.enabled || 0);
+  const localSkills = Number(distillation.artifacts?.skills?.returned || 0);
+  const habitCandidateCount = Number(distillation.habitCandidates?.count || candidates.length || 0);
+  const packet = {
+    ok: true,
+    version: 1,
+    kind: 'record_replay_teaching_packet',
+    recordReplayInspired: true,
+    id,
+    generatedAt,
+    source: String(options.source || 'api').slice(0, 80),
+    saved: false,
+    summary: `Prepared Record & Replay teaching packet for: ${candidateLabel}.`,
+    candidate,
+    distillation: {
+      kind: distillation.kind,
+      summary: compactRecordText(distillation.summary || '', 520),
+      spokenSummary: compactRecordText(distillation.spokenSummary || '', 520),
+      sourceEventCount: Number(distillation.profile?.sourceEventCount || 0),
+      evolutionSummary: compactRecordText(distillation.evolution?.spokenSummary || distillation.evolution?.summary || '', 420),
+      habitCandidateCount,
+      demonstrationsDone,
+      shortcutsEnabled,
+      localSkills,
+    },
+    teachingScript,
+    liveVoicePrompts,
+    endpoints: {
+      start: { method: 'POST', path: '/api/demonstrations/start' },
+      capture: { method: 'POST', path: '/api/demonstrations/:id/capture' },
+      finish: { method: 'POST', path: '/api/demonstrations/:id/finish' },
+      replayPlan: { method: 'POST', path: '/api/demonstrations/:id/replay/plan' },
+      skillDraft: { method: 'POST', path: '/api/demonstrations/:id/skill-draft' },
+      skillSave: { method: 'POST', path: '/api/demonstrations/:id/skill-draft/save', requiresConfirm: true },
+      replayRun: { method: 'POST', path: '/api/demonstrations/:id/replay/run', requiresConfirm: true },
+    },
+    safety: {
+      localOnly: true,
+      previewOnly: true,
+      startsMicrophone: false,
+      startsRecording: false,
+      startsWorkers: false,
+      executesTask: false,
+      grantsPermission: false,
+      storesScreenshots: false,
+      storesClipboardText: false,
+      storesPageBodies: false,
+      storesRawAudio: false,
+      storesCoordinates: false,
+      writesLocalEvidenceOnSave: true,
+      confirmationRequiredForRecording: true,
+      confirmationRequiredForReplay: true,
+      confirmationRequiredForSkillSave: true,
+      confirmationRequiredForShortcutSave: true,
+      confirmationRequiredForMemoryPromotion: true,
+      actionPolicyBypassed: false,
+    },
+    boundaries: [
+      'Passive learning may suggest what to teach, but it never starts recording by itself.',
+      'The user must explicitly start a UI demonstration before steps are captured.',
+      'Replay plans must re-observe the live UI and avoid saved coordinates.',
+      'Skill save, shortcut save, memory promotion, and replay execution require confirmation.',
+      'Sends, deletes, purchases, account changes, exports, and private-data exposure stay behind normal approvals.',
+    ],
+    file: {
+      packetDir: RECORD_REPLAY_TEACHING_PACKETS_DIR,
+      filename,
+      path: path.join(RECORD_REPLAY_TEACHING_PACKETS_DIR, filename),
+    },
+  };
+  packet.output = [
+    packet.summary,
+    'Preview only: no microphone, no recording, no worker, no replay, no skill save.',
+    `First voice prompt: ${liveVoicePrompts[0]}`,
+    `Candidate: ${candidateLabel}`,
+  ].join('\n');
+  return packet;
+}
+
+function saveRecordReplayTeachingPacket(options = {}) {
+  fs.mkdirSync(RECORD_REPLAY_TEACHING_PACKETS_DIR, { recursive: true });
+  const packet = recordReplayTeachingPacketSnapshot({
+    ...(options || {}),
+    source: options.source || 'record_replay_teaching_packet_save',
+  });
+  const savedAt = new Date().toISOString();
+  const filePath = packet.file.path;
+  const nextPacket = {
+    ...packet,
+    saved: true,
+    savedAt,
+    file: {
+      ...packet.file,
+      path: filePath,
+    },
+  };
+  writeJsonAtomic(filePath, nextPacket);
+  const pruned = pruneRecordReplayTeachingPackets();
+  appendAudit('record_replay.teaching_packet_saved', {
+    id: nextPacket.id,
+    source: nextPacket.source,
+    candidateId: nextPacket.candidate?.id || '',
+    file: filePath,
+    pruned,
+    startsMicrophone: false,
+    startsRecording: false,
+    startsWorkers: false,
+    executesTask: false,
+  });
+  return {
+    ok: true,
+    executed: true,
+    saved: true,
+    packet: nextPacket,
+    metadata: recordReplayTeachingPacketMetadata(nextPacket, filePath),
+    packets: recordReplayTeachingPacketList({ limit: options.limit || 5 }),
+    output: [
+      `Saved Record & Replay teaching packet: ${filePath}`,
+      nextPacket.summary,
+      'It did not start microphone capture, start recording, replay UI actions, save a skill, or grant permissions.',
+    ].join('\n'),
+  };
+}
+
+function recordReplayTeachingPacketWorkNextAction(options = {}) {
+  const force = options.force === true || String(options.force || '').toLowerCase() === 'true';
+  const fresh = force ? null : recordReplayTeachingPacketFresh(options.maxAgeMs || 12 * 60 * 60 * 1000);
+  if (fresh) return null;
+  const packet = recordReplayTeachingPacketSnapshot({
+    source: options.source || 'work_next_record_replay_teaching',
+    candidateLimit: options.candidateLimit || 4,
+    skillLimit: options.skillLimit || 4,
+    demonstrationLimit: options.demonstrationLimit || 4,
+    shortcutLimit: options.shortcutLimit || 4,
+  });
+  return {
+    id: 'record_replay:prepare_teaching_packet',
+    priority: Math.max(3.01, Math.min(8, Number(options.priority || 3.05))),
+    label: 'Prepare Record & Replay teaching packet',
+    summary: packet.summary,
+    source: 'record_replay',
+    type: 'record_replay_teaching_packet',
+    recordReplayPreparation: 'teaching_packet',
+    candidateId: packet.candidate?.id || '',
+    candidateKind: packet.candidate?.kind || '',
+    teachingPacket: {
+      id: packet.id,
+      summary: packet.summary,
+      candidate: packet.candidate,
+      distillation: packet.distillation,
+      teachingSteps: packet.teachingScript.length,
+      firstPrompt: packet.liveVoicePrompts[0],
+      boundaries: packet.boundaries.slice(0, 4),
+    },
+    safety: packet.safety,
+    boundaries: packet.boundaries,
+    executable: true,
+    autoEligible: true,
+    autopilotEligible: true,
+    manualOnly: false,
+    requiresUserPresence: false,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    startsRecording: false,
+    startsWorkers: false,
+    executesTask: false,
+    grantsPermission: false,
+    riskLevel: 0,
   };
 }
 
@@ -28746,6 +29140,26 @@ function autopilotEligibilityDecision(action) {
         : 'Realtime preparation must prove it starts no microphone, needs no user presence, and stays low-risk before autopilot can run it.',
     };
   }
+  if (action.source === 'record_replay' && action.recordReplayPreparation === 'teaching_packet') {
+    const executable = Boolean(
+      action.executable &&
+      action.autoEligible &&
+      action.autopilotEligible !== false &&
+      action.startsMicrophone === false &&
+      action.startsRecording === false &&
+      action.startsWorkers === false &&
+      action.executesTask === false &&
+      action.requiresUserPresence === false &&
+      Number(action.riskLevel || 0) <= 1,
+    );
+    return {
+      executable,
+      reason: executable ? 'eligible_record_replay_teaching_packet' : 'record_replay_teaching_packet_not_safe_for_autopilot',
+      detail: executable
+        ? 'Autopilot may save the no-recording Record & Replay teaching packet; actual demonstration recording still requires the user.'
+        : 'Record & Replay preparation must prove it does not start recording, microphone, workers, or UI actions before autopilot can run it.',
+    };
+  }
   return {
     executable: false,
     reason: 'unsupported_action_source',
@@ -28779,6 +29193,9 @@ function autopilotActionDecision(action, index = 0) {
     riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
     startsMicrophone: Boolean(action.startsMicrophone),
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+    startsRecording: Boolean(action.startsRecording),
+    startsWorkers: Boolean(action.startsWorkers),
+    executesTask: Boolean(action.executesTask),
     recoveryType: compactRecordText(action.recoveryType || '', 80),
     trustedAutoEligible: Boolean(action.trustedAutoEligible),
     recoveryAttempts: Math.max(0, Number(action.recoveryAttempts || 0)),
@@ -28787,6 +29204,7 @@ function autopilotActionDecision(action, index = 0) {
     routeRecoveryLabel: compactRecordText(action.routeRecovery?.recommended?.label || '', 140),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
+    recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
     decision: eligibility,
@@ -29151,6 +29569,9 @@ function compactAutopilotActionForVoice(action = null) {
     requiresUserPresence: Boolean(action.requiresUserPresence),
     startsMicrophone: Boolean(action.startsMicrophone),
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+    startsRecording: Boolean(action.startsRecording),
+    startsWorkers: Boolean(action.startsWorkers),
+    executesTask: Boolean(action.executesTask),
     riskLevel: boundedCount(action.riskLevel, 4),
     recoveryType: compactRecordText(action.recoveryType || '', 80),
     trustedAutoEligible: Boolean(action.trustedAutoEligible),
@@ -29160,6 +29581,7 @@ function compactAutopilotActionForVoice(action = null) {
     routeRecoveryLabel: compactRecordText(action.routeRecoveryLabel || '', 140),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
+    recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     dogfoodActionPlan,
     decision: action.decision
@@ -38967,6 +39389,14 @@ function workflowBriefing(options = {}) {
       limit: options.learningHabitLimit || options.candidateLimit || 4,
     })
     : [];
+  const recordReplayTeachingAction = options.includeRecordReplayTeachingPacket === false
+    ? null
+    : recordReplayTeachingPacketWorkNextAction({
+      source: options.source || 'briefing_record_replay_teaching',
+      force: options.forceRecordReplayTeachingPacket,
+      maxAgeMs: options.recordReplayTeachingFreshMs,
+      candidateLimit: options.recordReplayCandidateLimit || options.candidateLimit || 4,
+    });
   const nextActions = [];
 
   if (readiness.primaryIssue) {
@@ -39119,6 +39549,10 @@ function workflowBriefing(options = {}) {
     }
   }
 
+  if (recordReplayTeachingAction) {
+    nextActions.push(recordReplayTeachingAction);
+  }
+
   if (latestDeliverableWorkflow?.result && !nextActions.some((action) => action.id === `copy:${latestDeliverableWorkflow.id}`)) {
     nextActions.push({
       id: `copy:${latestDeliverableWorkflow.id}`,
@@ -39194,6 +39628,7 @@ function workflowBriefing(options = {}) {
       realtimeVoiceStatus: realtimeWorkbench.status,
       followUps: followUps.length,
       learningHabitActions: learningHabitActions.length,
+      recordReplayTeachingPacket: recordReplayTeachingAction ? 1 : 0,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
     followUps,
@@ -39940,6 +40375,13 @@ async function workNextAction(options = {}) {
     requestedActionId.startsWith('learning_habit:') ||
     options.includeLearningHabitCandidates === true ||
     String(options.includeLearningHabitCandidates || '').toLowerCase() === 'true';
+  const includeRecordReplayTeachingPacket =
+    requestedActionId.startsWith('record_replay:') ||
+    (
+      options.includeRecordReplayTeachingPacket !== false &&
+      String(options.includeRecordReplayTeachingPacket || '').toLowerCase() !== 'false'
+    ) ||
+    String(options.includeRecordReplayTeachingPacket || '').toLowerCase() === 'true';
   const briefing = workflowBriefing({
     workflowLimit: options.workflowLimit || 6,
     jobLimit: options.jobLimit || 6,
@@ -39947,6 +40389,10 @@ async function workNextAction(options = {}) {
     forceMaintenance: options.forceMaintenance,
     includeLearningHabitCandidates,
     learningHabitLimit: options.learningHabitLimit || options.candidateLimit,
+    includeRecordReplayTeachingPacket,
+    forceRecordReplayTeachingPacket: requestedActionId.startsWith('record_replay:') || options.forceRecordReplayTeachingPacket === true || String(options.forceRecordReplayTeachingPacket || '').toLowerCase() === 'true',
+    recordReplayTeachingFreshMs: options.recordReplayTeachingFreshMs,
+    recordReplayCandidateLimit: options.recordReplayCandidateLimit || options.candidateLimit,
     source: options.source || 'work_next',
   });
   const primaryActions = Array.isArray(briefing.nextActions) ? briefing.nextActions : [];
@@ -40202,6 +40648,24 @@ async function workNextAction(options = {}) {
     });
     executed = false;
     output = result.output;
+  } else if (action.source === 'record_replay' && action.recordReplayPreparation === 'teaching_packet') {
+    result = execute
+      ? saveRecordReplayTeachingPacket({
+        ...(options || {}),
+        source: options.source || 'work_next_record_replay_teaching',
+        candidateId: action.candidateId,
+      })
+      : recordReplayTeachingPacketSnapshot({
+        ...(options || {}),
+        source: options.source || 'work_next_record_replay_teaching',
+        candidateId: action.candidateId,
+      });
+    executed = Boolean(execute && result.saved);
+    output = [
+      result.output,
+      execute ? '' : 'Preview mode: no teaching packet file was written.',
+      action.teachingPacket?.firstPrompt ? `First prompt: ${action.teachingPacket.firstPrompt}` : '',
+    ].filter(Boolean).join('\n');
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
       source: options.source || 'work_next',
@@ -40398,9 +40862,13 @@ function compactWorkNextActionForVoice(action = null) {
     requiresUserPresence: Boolean(action.requiresUserPresence),
     startsMicrophone: Boolean(action.startsMicrophone),
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+    startsRecording: Boolean(action.startsRecording),
+    startsWorkers: Boolean(action.startsWorkers),
+    executesTask: Boolean(action.executesTask),
     riskLevel: boundedCount(action.riskLevel, 4),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
+    recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
     workflowId: compactRecordText(action.workflowId || '', 120),
     jobId: compactRecordText(action.jobId || '', 120),
     routeId: compactRecordText(action.routeId || '', 120),
@@ -40426,6 +40894,17 @@ function compactWorkNextActionForVoice(action = null) {
         noAutoSave: action.safety?.noAutoSave !== false,
         doesNotExecute: action.safety?.doesNotExecute !== false,
         doesNotGrantPermission: action.safety?.doesNotGrantPermission !== false,
+      }
+      : null,
+    recordReplayTeachingPacket: action.source === 'record_replay' && action.teachingPacket
+      ? {
+        candidateId: compactRecordText(action.teachingPacket.candidate?.id || action.candidateId || '', 140),
+        candidateLabel: compactRecordText(action.teachingPacket.candidate?.label || action.label || '', 180),
+        teachingSteps: boundedCount(action.teachingPacket.teachingSteps, 100),
+        firstPrompt: compactRecordText(action.teachingPacket.firstPrompt || '', 240),
+        startsRecording: Boolean(action.startsRecording),
+        startsMicrophone: Boolean(action.startsMicrophone),
+        executesTask: Boolean(action.executesTask),
       }
       : null,
     dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
@@ -40509,6 +40988,19 @@ function compactWorkNextResultForVoice(result = null) {
           noAutoSave: result.learningHabitCandidate.safety?.noAutoSave !== false,
           confirmationRequiredForPromotion: result.learningHabitCandidate.safety?.confirmationRequiredForPromotion !== false,
         },
+      }
+      : null,
+    recordReplayTeachingPacket: result.packet || result.metadata || result.kind === 'record_replay_teaching_packet'
+      ? {
+        saved: Boolean(result.saved || result.packet?.saved),
+        file: compactRecordText(result.metadata?.file || result.packet?.file?.path || result.file?.path || '', 240),
+        candidateId: compactRecordText(result.metadata?.candidate?.id || result.packet?.candidate?.id || result.candidate?.id || '', 140),
+        candidateLabel: compactRecordText(result.metadata?.candidate?.label || result.packet?.candidate?.label || result.candidate?.label || '', 180),
+        teachingSteps: boundedCount(result.metadata?.counts?.teachingSteps ?? result.teachingScript?.length ?? result.packet?.teachingScript?.length, 100),
+        startsMicrophone: Boolean(result.metadata?.safety?.startsMicrophone || result.safety?.startsMicrophone || result.packet?.safety?.startsMicrophone),
+        startsRecording: Boolean(result.metadata?.safety?.startsRecording || result.safety?.startsRecording || result.packet?.safety?.startsRecording),
+        startsWorkers: Boolean(result.metadata?.safety?.startsWorkers || result.safety?.startsWorkers || result.packet?.safety?.startsWorkers),
+        executesTask: Boolean(result.metadata?.safety?.executesTask || result.safety?.executesTask || result.packet?.safety?.executesTask),
       }
       : null,
   };

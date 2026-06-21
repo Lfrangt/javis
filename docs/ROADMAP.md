@@ -51,6 +51,7 @@
 - Generate reviewable Codex-style skill drafts from local learning, routing, and workflow evidence, with explicit export to user-level `~/.agents/skills`.
 - Expose explicit UI demonstration Record & Replay calls in Realtime evidence and the guided live-voice dogfood drill, including safe preview replay, skill drafting, confirmation gates, and no raw screenshot/clipboard storage.
 - Codex Record & Replay-inspired workflow distillation: let the user show JAVIS a repetitive app/browser/file workflow once, store only sanitized local step metadata, produce a replay plan plus a Codex/Claude-compatible skill draft, and require explicit confirmation before saving a shortcut, exporting a skill, or replaying any action.
+- Record & Replay teaching packet: work-next can prepare and autopilot can save a local no-recording teaching packet that selects the best current habit candidate, lists the exact voice prompts/endpoints/safety gates for the next user-taught workflow, and leaves actual recording, replay, shortcut save, memory promotion, and skill export behind confirmation.
 - Persist confirmed local skill shortcuts so repeated successful workflows can be recalled by phrase and managed from CUI/API/Realtime voice without turning the desktop pet into a dashboard.
 - Persist local Inbox captures for clipboard/manual follow-ups and include them in briefing.
 - Add read-only Inbox triage for priority sorting and lane suggestions.
