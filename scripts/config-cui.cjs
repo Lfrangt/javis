@@ -624,8 +624,27 @@ function printNextAction(next) {
       console.log(`Fallback safety: starts microphone=${fallback.safety.startsMicrophone ? 'yes' : 'no'}; realtime=${fallback.safety.usesRealtime ? 'yes' : 'no'}; raw audio=${fallback.safety.storesRawAudio ? 'yes' : 'no'}`);
     }
   }
+  if (printRouteRecoveryGuide(action)) return true;
   const guide = action.dogfoodGuide || action.guide || {};
   return printDogfoodGuide(guide);
+}
+
+function printRouteRecoveryGuide(action = {}) {
+  if (action.source !== 'routing' || !action.routeRecovery) return false;
+  const recovery = action.routeRecovery || {};
+  const recommended = recovery.recommended || {};
+  const routeId = action.routeId || recommended.routeId || '';
+  console.log(`Guide: Continue routed work via ${recommended.label || 'route recovery'}.`);
+  if (routeId) console.log(`Route: ${routeId}`);
+  if (recommended.type) console.log(`Recovery: ${recommended.type}${recommended.executable ? ' (executable)' : ' (inspect only)'}`);
+  if (recommended.summary) console.log(`Plan: ${compact(recommended.summary, 260)}`);
+  if (recommended.reason) console.log(`Reason: ${compact(recommended.reason, 260)}`);
+  if (recommended.executable && routeId) {
+    console.log(`Run: POST /api/work/next {"actionId":"route:${routeId}","execute":true}`);
+  } else if (recommended.endpoint?.path) {
+    console.log(`Inspect: ${recommended.endpoint.method || 'GET'} ${recommended.endpoint.path}`);
+  }
+  return true;
 }
 
 function printDogfoodGuide(guide = {}) {
@@ -649,8 +668,9 @@ async function showWorkbenchNext() {
   const preview = await request('/api/work/next?workflowLimit=6&jobLimit=6');
   console.log('');
   const printedGuide = printNextAction(preview);
+  const action = preview?.next?.action || preview?.action || null;
   const realtimeGuide = preview?.next?.briefing?.realtimeVoice?.dogfoodGuide || preview?.briefing?.realtimeVoice?.dogfoodGuide || {};
-  if (!printedGuide) printDogfoodGuide(realtimeGuide);
+  if (!printedGuide && (!action || action.source === 'realtime_voice')) printDogfoodGuide(realtimeGuide);
   if (preview.next?.output) console.log(compact(preview.next.output, 700));
 }
 

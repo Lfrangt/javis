@@ -251,6 +251,50 @@ export default {
         : fail('voice_command.wake_command_api', 'Wake + local voice command API', `expected safe wake command envelope, got ${wakeCommand.status}`, wakeCommand.data),
     );
 
+    const routeContinuationPreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '请后台整理这个本地语音预览任务，生成一个三步执行计划，先不要执行。',
+        mode: 'background',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_route_preview_continue',
+      },
+      timeoutMs: 15000,
+    });
+    const routeContinuationData = routeContinuationPreview.data || {};
+    const previewRouteId = routeContinuationData.route?.routing?.id || '';
+    const workNextRoute = previewRouteId
+      ? await ctx.api(`/api/work/next?actionId=route:${encodeURIComponent(previewRouteId)}`, { timeoutMs: 15000 })
+      : { ok: false, status: 0, data: { error: 'missing preview route id' } };
+    const workNextData = workNextRoute.data?.next || {};
+    const recommended = workNextData.result?.routeRecovery?.recommended || workNextData.action?.routeRecovery?.recommended || {};
+    out.push(
+      routeContinuationPreview.ok &&
+        routeContinuationData.ok === true &&
+        routeContinuationData.executed === false &&
+        routeContinuationData.route?.decision?.lane === 'background' &&
+        previewRouteId &&
+        workNextRoute.ok &&
+        workNextData.ok === true &&
+        workNextData.executed === false &&
+        workNextData.action?.id === `route:${previewRouteId}` &&
+        workNextData.action?.source === 'routing' &&
+        workNextData.action?.executable === true &&
+        recommended.type === 'route_preview_execute' &&
+        recommended.executable === true &&
+        recommended.routeId === previewRouteId &&
+        workNextData.output?.includes('预览模式')
+        ? ok('voice_command.route_preview_continue', 'Voice route preview continuation', `${previewRouteId} exposes executable route_preview_execute without running it`)
+        : fail('voice_command.route_preview_continue', 'Voice route preview continuation', `expected route preview continuation candidate, got ${workNextRoute.status}`, {
+            route: routeContinuationData.route,
+            previewRouteId,
+            workNext: workNextRoute.data,
+          }),
+    );
+
     try {
       const { stdout } = await execFileAsync('npm', [
         'run',

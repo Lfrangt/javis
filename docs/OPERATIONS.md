@@ -137,6 +137,18 @@ By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback do
 
 `npm run wake -- "..."` is the one-shot wake path. It records the wake phrase, returns the same read-only handoff evidence as `/api/wake/status`, then routes the transcript through local voice-command intake. It does not start microphone capture or Realtime.
 
+When a local voice or wake command is preview-only, the response includes `route.routing.id`. Continue that prepared route from the terminal/API instead of repeating the request:
+
+```bash
+curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/work/next?actionId=route:$ROUTE_ID"
+curl -X POST http://127.0.0.1:3417/api/work/next \
+  -H "X-JAVIS-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"actionId\":\"route:$ROUTE_ID\",\"execute\":true,\"source\":\"operator_route_continue\"}"
+```
+
+Background, Codex, Claude, and local preview routes expose a `route_preview_execute` recovery candidate. Quick-lane previews remain held locally unless the operator explicitly reroutes them or allows quick cloud execution.
+
 Recent local voice-command intake can be inspected without opening raw logs:
 
 ```bash

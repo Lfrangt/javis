@@ -4177,6 +4177,7 @@ function normalizePersistedRoutingRecord(record) {
   return {
     id: String(record.id),
     taskTitle: compactRecordText(record.taskTitle || record.title || 'Untitled routed task', 180),
+    taskPrompt: compactRecordText(record.taskPrompt || record.task || record.taskTitle || record.title || 'Untitled routed task', 2000),
     lane,
     contractId: String(record.contractId || laneContractIdForLane(lane) || lane).slice(0, 80),
     label: String(record.label || (lane === 'background' ? 'Deep' : lane === 'local' ? 'Local' : lane)).slice(0, 80),
@@ -40097,6 +40098,7 @@ function createRoutingRecord(options = {}) {
   const draft = {
     id,
     taskTitle: compactRecordText(options.task || options.title || 'Untitled routed task', 180),
+    taskPrompt: compactRecordText(options.task || options.title || 'Untitled routed task', 2000),
     lane,
     contractId: laneContractIdForLane(lane) || lane,
     label: decision.label || (lane === 'background' ? 'Deep' : lane === 'local' ? 'Local' : lane),
@@ -40276,6 +40278,30 @@ function activeRoutingSnapshot(limit = 20) {
     .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
 }
 
+function previewRoutingContinuationSnapshot(limit = 5) {
+  return Array.from(routingRecords.values())
+    .filter((record) => (
+      record.status === 'preview'
+      && !record.execute
+      && !isInternalRoutingRecord(record)
+      && routeCandidateFromPreviewRoute(record)?.executable === true
+    ))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 5))));
+}
+
+function routingAttentionSnapshot(limit = 20) {
+  const seen = new Set();
+  return [...activeRoutingSnapshot(limit), ...previewRoutingContinuationSnapshot(limit)]
+    .filter((record) => {
+      if (!record?.id || seen.has(record.id)) return false;
+      seen.add(record.id);
+      return true;
+    })
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
+}
+
 function routingCounts() {
   return Array.from(routingRecords.values()).reduce(
     (counts, record) => {
@@ -40321,6 +40347,11 @@ function routingBlockerForRecord(record) {
 
 function routingNextActionForRecord(record) {
   if (!record) return '';
+  if (record.status === 'preview') {
+    return record.lane === 'quick'
+      ? 'Quick preview is held locally; explicitly allow quick cloud execution or reroute to background.'
+      : `Run this ${record.lane} preview through /api/work/next?actionId=route:${record.id} when user intent is explicit.`;
+  }
   if (record.ownership?.serialized) return `Wait for ${record.ownership.conflicts?.[0]?.owner || record.owner} to finish ${record.ownership.conflicts?.[0]?.key || record.ownership.key}, then reroute this task.`;
   if (record.status === 'queued') return `${record.owner} should start or stay queued in ${record.lane}.`;
   if (record.status === 'running') return `${record.owner} is running; check ${record.resultLink}.`;
@@ -40650,6 +40681,76 @@ function routeCandidateFromBrowserFillDraftReview(workflow) {
   };
 }
 
+function routeTaskPromptForRecord(record) {
+  return compactRecordText(record?.taskPrompt || record?.taskTitle || '', 2000);
+}
+
+function routeCandidateFromPreviewRoute(record) {
+  if (!record || record.status !== 'preview' || record.execute) return null;
+  const taskPrompt = routeTaskPromptForRecord(record);
+  if (!taskPrompt) return null;
+  const lane = normalizeRoutingLane(record.lane);
+  const quickLane = lane === 'quick';
+  const includeScreen = Boolean(
+    record.contextPlan?.needs?.screen
+    || record.contextPlan?.needs?.vision
+    || record.contextPlan?.sources?.screen
+    || record.contextPlan?.sources?.vision,
+  );
+  const useMemory = Boolean(
+    Number(record.memoryMatches || 0) > 0
+    || normalizeSkillRecallPlan(record.skillRecallPlan).applied,
+  );
+  const executable = !quickLane;
+  return {
+    id: `run-preview:${record.id}`,
+    type: 'route_preview_execute',
+    label: executable ? 'Run routed preview' : 'Hold quick preview',
+    summary: executable
+      ? `Run the previewed ${lane} task: ${compactRecordText(record.taskTitle, 140)}`
+      : `Quick preview stays local until the user explicitly allows cloud quick-lane execution or reroutes it.`,
+    reason: executable
+      ? 'This routed task was previewed only; explicit work-next execution can continue it through the original lane and policy gates.'
+      : 'Quick lane execution may call the cloud fast model, so local voice fallback keeps it held by default.',
+    executable,
+    autoEligible: false,
+    trustedAutoEligible: false,
+    requiresUserPresence: lane === 'local' || quickLane,
+    riskLevel: lane === 'local' ? 2 : 1,
+    routeId: record.id,
+    taskPrompt,
+    mode: lane,
+    owner: record.owner,
+    scope: record.scope,
+    parallelGroup: record.parallelGroup,
+    includeScreen,
+    useMemory,
+    endpoint: {
+      method: 'POST',
+      path: '/api/work/next',
+      body: {
+        execute: true,
+        actionId: `route:${record.id}`,
+        source: 'work_next_route_preview_execute',
+      },
+    },
+    routeRequest: {
+      method: 'POST',
+      path: '/api/tasks/route',
+      body: {
+        message: taskPrompt,
+        mode: lane === 'local' ? '' : lane,
+        execute: true,
+        includeScreen,
+        useMemory,
+        source: 'route_preview_execute',
+        scope: record.scope,
+        parallelGroup: record.parallelGroup,
+      },
+    },
+  };
+}
+
 function routeInspectCandidate(record, entry = routingLedgerEntry(record)) {
   if (!record) return null;
   return {
@@ -40682,6 +40783,8 @@ function routingRecoveryEnvelope(record, options = {}) {
   const job = linkedJobForRoute(record);
   const workflow = linkedWorkflowForRoute(record);
   const candidates = [];
+  const previewCandidate = routeCandidateFromPreviewRoute(record);
+  if (previewCandidate) candidates.push(previewCandidate);
 
   if (job?.status === 'failed' && job.recoveryPlan?.nextActions?.length && !completedRecoveryChildJob(job.id)) {
     const jobRecoveryActions = job.recoveryPlan.nextActions
@@ -40748,6 +40851,44 @@ function routingRecoveryEnvelope(record, options = {}) {
 
 async function executeRoutingRecoveryCandidate(candidate, options = {}) {
   if (!candidate?.executable) return null;
+  if (candidate.type === 'route_preview_execute') {
+    const routeId = String(candidate.routeId || '').trim();
+    const original = routeId ? routingRecords.get(routeId) || null : null;
+    const result = await routeTask({
+      message: candidate.taskPrompt,
+      execute: true,
+      mode: candidate.mode === 'local' ? '' : candidate.mode,
+      includeScreen: Boolean(candidate.includeScreen),
+      useMemory: Boolean(candidate.useMemory),
+      owner: candidate.owner || original?.owner,
+      scope: candidate.scope || original?.scope,
+      parallelGroup: candidate.parallelGroup || original?.parallelGroup,
+      source: options.source || 'work_next_route_preview_execute',
+      memoryLimit: options.memoryLimit,
+      skillLimit: options.skillLimit,
+      timeoutMs: options.timeoutMs,
+    });
+    const replacement = result.routing || result.routeRecord || null;
+    if (original) {
+      setRoutingRecord(original.id, {
+        status: result.ok === false ? 'blocked' : 'done',
+        resultSummary: compactRecordText([
+          replacement?.id ? `Continued by route ${replacement.id}.` : 'Preview execution attempted.',
+          result.output || '',
+        ].filter(Boolean).join(' '), 500),
+        resultLink: replacement?.resultLink || original.resultLink,
+      });
+    }
+    return {
+      ...result,
+      continuedRouteId: routeId,
+      replacementRouteId: replacement?.id || '',
+      output: [
+        result.output,
+        replacement?.id ? `Continued preview route ${routeId} as ${replacement.id}.` : '',
+      ].filter(Boolean).join('\n'),
+    };
+  }
   if (candidate.type === 'job_recovery') {
     const job = candidate.jobId ? jobs.get(candidate.jobId) || null : null;
     if (!job) return null;
@@ -41500,7 +41641,7 @@ function workflowBriefing(options = {}) {
   const activeSession = activeSessionSnapshot();
   const pendingApprovals = pendingApprovalSnapshot(10);
   const recentRoutes = routingSnapshot(20).filter((record) => !isInternalRoutingRecord(record)).slice(0, 6);
-  const activeRoutes = activeRoutingSnapshot(12);
+  const activeRoutes = routingAttentionSnapshot(12);
   const routingLedger = activeRoutes.map(routingLedgerEntry).filter(Boolean);
   const collaboration = collaborationSnapshot(6);
   const activeJobs = recentJobs.filter((job) => job.status === 'queued' || job.status === 'running');
@@ -42914,7 +43055,7 @@ async function workNextAction(options = {}) {
     });
     output = result.output;
   } else if (action.source === 'routing') {
-    const record = action.routeId ? routingRecords.get(action.routeId) || null : activeRoutingSnapshot(1)[0] || routingSnapshot(1)[0] || null;
+    const record = action.routeId ? routingRecords.get(action.routeId) || null : routingAttentionSnapshot(1)[0] || routingSnapshot(1)[0] || null;
     const routeRecovery = routingRecoveryEnvelope(record, { source: options.source || 'work_next' });
     let routeExecution = null;
     if (execute && routeRecovery.recommended?.executable) {
@@ -42931,7 +43072,7 @@ async function workNextAction(options = {}) {
       ledgerEntry: routeRecovery.ledgerEntry,
       routeRecovery,
       routeExecution,
-      activeLedger: activeRoutingSnapshot(5).map(routingLedgerEntry).filter(Boolean),
+      activeLedger: routingAttentionSnapshot(5).map(routingLedgerEntry).filter(Boolean),
       counts: routingCounts(),
     };
     output = record
@@ -43034,6 +43175,7 @@ function compactRouteRecoveryCandidateForVoice(candidate = null) {
     trustedAutoEligible: Boolean(candidate.trustedAutoEligible),
     requiresUserPresence: Boolean(candidate.requiresUserPresence),
     riskLevel: boundedCount(candidate.riskLevel, 4),
+    routeId: compactRecordText(candidate.routeId || '', 120),
     workflowId: compactRecordText(candidate.workflowId || '', 120),
     jobId: compactRecordText(candidate.jobId || '', 120),
     recoveryType: compactRecordText(candidate.recoveryType || '', 100),
