@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /next, /history, /agent, /help.
+                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
@@ -347,6 +347,8 @@ function loopHelpText() {
     '  /codex    Shortcut for /delegate codex.',
     '  /claude   Shortcut for /delegate claude.',
     '  /handoff  Read the voice-ready work handoff summary.',
+    '  /jobs     Read active/recent jobs, worker groups, recovery hints, and next action.',
+    '  /progress Alias for /jobs.',
     '  /next     Fast-read the next workbench action preview.',
     '  /history  Read recent sanitized local voice-command turns.',
     '  /agent    Preview a short bounded autonomy loop for a task.',
@@ -976,6 +978,102 @@ function formatLoopHandoff(data = {}) {
   ].join('\n');
 }
 
+function formatProgressAge(timestamp) {
+  const raw = Number(timestamp || 0);
+  const value = Number.isFinite(raw) && raw > 0 ? raw : Date.parse(timestamp || '');
+  if (!Number.isFinite(value) || value <= 0) return '-';
+  const seconds = Math.max(0, Math.round((Date.now() - value) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  const minutes = Math.round(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.round(hours / 24)}d ago`;
+}
+
+function formatWorkerGroupForLoop(group = {}) {
+  const counts = group.statusCounts || {};
+  const pieces = [
+    group.active ? `${group.active} active` : '',
+    group.done ? `${group.done} done` : '',
+    group.failed ? `${group.failed} failed` : '',
+    counts.cancelled ? `${counts.cancelled} cancelled` : '',
+  ].filter(Boolean).join(', ') || `${group.total ?? 0} tracked`;
+  const skills = Array.isArray(group.skills) && group.skills.length
+    ? ` · skills ${group.skills.slice(0, 2).map((item) => compactText(item, 48)).join(', ')}`
+    : '';
+  const next = group.nextAction ? ` · next ${compactText(group.nextAction, 120)}` : '';
+  return `- ${group.owner || '-'} / ${group.lane || '-'} · ${compactText(group.parallelGroup || group.id || '-', 80)} · ${pieces} · ${formatProgressAge(group.latestUpdatedAt)}${skills}${next}`;
+}
+
+function formatProgressJobLine(job = {}) {
+  const title = compactText(job.title || job.command || job.id || '-', 120);
+  const result = compactText(job.result || job.output || job.error || job.log || '', 140);
+  const detail = result ? ` · ${result}` : '';
+  return `- ${job.mode || job.lane || 'job'} / ${job.status || '-'} · ${title} · ${formatProgressAge(job.updatedAt || job.createdAt)}${detail}`;
+}
+
+function formatProgressWorkflowLine(workflow = {}) {
+  const title = compactText(workflow.title || workflow.intent || workflow.id || '-', 120);
+  const result = compactText(workflow.result || workflow.output || workflow.error || workflow.request || '', 140);
+  const detail = result ? ` · ${result}` : '';
+  return `- ${workflow.kind || 'workflow'} / ${workflow.status || '-'} · ${title} · ${formatProgressAge(workflow.updatedAt || workflow.createdAt)}${detail}`;
+}
+
+function formatLoopJobs(data = {}) {
+  const progress = data.progress || data || {};
+  const counts = progress.counts || {};
+  const jobCounts = counts.jobs || {};
+  const workflowCounts = counts.workflows || {};
+  const recoveryCounts = counts.recovery || progress.recovery?.counts || {};
+  const activeJobs = Array.isArray(progress.activeJobs) ? progress.activeJobs : [];
+  const recentJobs = Array.isArray(progress.recentJobs) ? progress.recentJobs : [];
+  const workerGroups = Array.isArray(progress.workerGroups) ? progress.workerGroups : [];
+  const blockedWorkflows = Array.isArray(progress.blockedWorkflows) ? progress.blockedWorkflows : [];
+  const recentWorkflows = Array.isArray(progress.recentWorkflows) ? progress.recentWorkflows : [];
+  const nextActions = Array.isArray(progress.nextActions) ? progress.nextActions : [];
+  const latestDoneJob = progress.latestDone?.job || null;
+  const latestDoneWorkflow = progress.latestDone?.workflow || null;
+  const summary = progress.spokenSummary || progress.output || 'No progress summary available.';
+  const lines = [
+    `Jobs: running ${jobCounts.running ?? 0} · queued ${jobCounts.queued ?? 0} · done ${jobCounts.done ?? 0} · failed ${jobCounts.failed ?? 0} · cancelled ${jobCounts.cancelled ?? 0}`,
+    `Workflows: running ${workflowCounts.running ?? 0} · blocked ${workflowCounts.blocked ?? 0} · failed ${workflowCounts.failed ?? 0} · done ${workflowCounts.done ?? 0}`,
+    `Routes: active ${counts.activeRoutes ?? 0} · recovery ${recoveryCounts.recoverable ?? 0} recoverable · collab ${counts.collaboration?.active ?? 0} active`,
+    `Summary: ${compactText(summary, 520)}`,
+  ];
+
+  if (workerGroups.length) {
+    lines.push(`Workers: ${compactText(progress.workerSummary || `${workerGroups.length} worker group(s)`, 220)}`);
+    lines.push(...workerGroups.slice(0, 3).map(formatWorkerGroupForLoop));
+  } else {
+    lines.push(`Workers: ${compactText(progress.workerSummary || 'No worker groups are active or recent.', 220)}`);
+  }
+
+  if (activeJobs.length) {
+    lines.push('Active jobs:');
+    lines.push(...activeJobs.slice(0, 3).map(formatProgressJobLine));
+  } else if (recentJobs.length) {
+    lines.push('Recent jobs:');
+    lines.push(...recentJobs.slice(0, 2).map(formatProgressJobLine));
+  }
+
+  if (blockedWorkflows.length) {
+    lines.push('Needs attention:');
+    lines.push(...blockedWorkflows.slice(0, 3).map(formatProgressWorkflowLine));
+  } else if (latestDoneJob || latestDoneWorkflow) {
+    lines.push(`Latest done: ${compactText(latestDoneJob?.title || latestDoneWorkflow?.title || latestDoneJob?.id || latestDoneWorkflow?.id || '-', 160)}`);
+  } else if (recentWorkflows.length) {
+    lines.push('Recent workflows:');
+    lines.push(...recentWorkflows.slice(0, 2).map(formatProgressWorkflowLine));
+  }
+
+  if (nextActions.length) {
+    const next = nextActions[0] || {};
+    lines.push(`Next: ${compactText(next.label || next.id || 'next action', 90)} · ${compactText(next.summary || next.instruction || '', 220)}`);
+  }
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopNext(data = {}) {
   const next = data.next || {};
   const action = next.action || {};
@@ -1038,6 +1136,7 @@ function commandOk(response, command) {
   if (command === 'handoff' && data.handoff?.ok === false) return false;
   if (command === 'next' && data.next?.ok === false) return false;
   if (command === 'history' && data.history?.ok === false) return false;
+  if ((command === 'jobs' || command === 'progress') && data.progress?.ok === false) return false;
   if (command === 'agent' && data.autonomy?.ok === false) return false;
   return true;
 }
@@ -1350,6 +1449,14 @@ async function runLoopCommand(transcript) {
       return loopCommandResult(base, response, formatLoopHandoff(response.data || {}), {
         endpoint: '/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900',
         detailLevel: 'full',
+      });
+    }
+    if (command === 'jobs' || command === 'progress') {
+      const endpoint = '/api/work/progress?jobLimit=5&workflowLimit=5';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopJobs(response.data || {}), {
+        endpoint,
+        detailLevel: 'fast',
       });
     }
     if (command === 'next') {

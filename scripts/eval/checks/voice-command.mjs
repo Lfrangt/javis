@@ -225,7 +225,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -249,6 +249,8 @@ export default {
       const browseTurn = commandTurns.find((turn) => turn.command === 'browse') || {};
       const openTurn = commandTurns.find((turn) => turn.command === 'open') || {};
       const delegateTurn = commandTurns.find((turn) => turn.command === 'delegate') || {};
+      const jobsTurn = commandTurns.find((turn) => turn.command === 'jobs') || {};
+      const progressTurn = commandTurns.find((turn) => turn.command === 'progress') || {};
       const nextTurn = commandTurns.find((turn) => turn.command === 'next') || {};
       const agentTurn = commandTurns.find((turn) => turn.command === 'agent') || {};
       const sessionId = turns.find((turn) => turn.session?.sessionId)?.session?.sessionId || '';
@@ -270,13 +272,13 @@ export default {
         loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 14 &&
+          loop.turnCount === 16 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 12 &&
-          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 14 &&
+          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           statusTurn.detailLevel === 'fast' &&
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&
@@ -327,6 +329,14 @@ export default {
           delegateTurn.delegateStatus === 'preview' &&
           delegateTurn.output.includes('Delegate: preview only') &&
           delegateTurn.output.includes('Status: preview') &&
+          jobsTurn.detailLevel === 'fast' &&
+          jobsTurn.endpoint === '/api/work/progress?jobLimit=5&workflowLimit=5' &&
+          jobsTurn.output.includes('Jobs:') &&
+          jobsTurn.output.includes('Workers:') &&
+          progressTurn.detailLevel === 'fast' &&
+          progressTurn.endpoint === '/api/work/progress?jobLimit=5&workflowLimit=5' &&
+          progressTurn.output.includes('Workflows:') &&
+          progressTurn.output.includes('Next:') &&
           nextTurn.detailLevel === 'fast' &&
           nextTurn.endpoint?.includes('compact=true') &&
           agentTurn.detailLevel === 'fast' &&
@@ -422,6 +432,7 @@ export default {
       out.push(
         stdout.includes('JAVIS Local Voice Command Loop') &&
           stdout.includes('npm run voice:chat') &&
+          stdout.includes('/jobs or /progress') &&
           stdout.includes('starts microphone=no') &&
           stdout.includes('uses Realtime=no') &&
           stdout.includes('screen/UI context is metadata-only')
