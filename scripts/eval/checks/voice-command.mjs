@@ -60,6 +60,7 @@ export default {
         transcript: '看一下我当前窗口，告诉我应该走哪个工作通道，先不要执行。',
         execute: false,
         includeScreen: true,
+        includeAccessibility: true,
         useMemory: false,
         speak: false,
         source: 'eval_voice_command_screen_context',
@@ -74,13 +75,19 @@ export default {
         contextData.includeScreenRequested === true &&
         contextData.includesScreenImage === false &&
         contextData.includesClipboardText === false &&
+        contextData.includesAccessibilityNodes === false &&
+        contextData.includeAccessibilityRequested === true &&
         !('imageDataUrl' in (contextData.screen || {})) &&
         !('text' in (contextData.clipboard || {})) &&
+        !('nodes' in (contextData.accessibility || {})) &&
+        typeof contextData.accessibility?.nodeCount === 'number' &&
+        typeof contextData.accessibility?.outline === 'string' &&
         typeof contextData.frontmost?.app === 'string' &&
         typeof contextData.browser?.host === 'string' &&
         typeof contextData.prompt === 'string' &&
+        contextData.prompt.includes('UI outline:') &&
         contextData.prompt.includes('Clipboard:')
-        ? ok('voice_command.context_metadata', 'Voice command context metadata', `${contextData.summary || 'metadata'} · screenImage=no clipboardText=no`)
+        ? ok('voice_command.context_metadata', 'Voice command context metadata', `${contextData.summary || 'metadata'} · screenImage=no clipboardText=no axNodes=no`)
         : fail('voice_command.context_metadata', 'Voice command context metadata', `expected metadata-only context, got ${screenContext.status}`, screenContext.data),
     );
 
@@ -133,7 +140,8 @@ export default {
           dogfood.safety?.usesContextMetadata === true &&
           dogfood.context?.metadataOnly === true &&
           dogfood.context?.includesScreenImage === false &&
-          dogfood.context?.includesClipboardText === false
+          dogfood.context?.includesClipboardText === false &&
+          dogfood.context?.includesAccessibilityNodes === false
           ? ok('voice_command.dogfood_preview', 'Local voice command dogfood', `${dogfood.route?.lane || '-'} preview with spoken ack dry-run`)
           : fail('voice_command.dogfood_preview', 'Local voice command dogfood', 'dogfood preview missing safety markers', dogfood),
       );
@@ -151,6 +159,7 @@ export default {
       out.push(
         fallbackSource.includes("'/api/voice/command'") &&
           fallbackSource.includes('transcript: prompt') &&
+          fallbackSource.includes('includeAccessibility: fallbackIncludesScreen') &&
           fallbackSource.includes('execute: true') &&
           fallbackSource.includes('confirmSpeak: true') &&
           fallbackSource.includes('useMemory: false') &&
@@ -164,6 +173,7 @@ export default {
               hasChatQuick: fallbackSource.includes("'/api/chat/quick'"),
               hasTasksRoute: fallbackSource.includes("'/api/tasks/route'"),
               holdsCloudQuick: fallbackSource.includes('allowCloudQuick: false'),
+              includesAccessibility: fallbackSource.includes('includeAccessibility: fallbackIncludesScreen'),
             }),
       );
     } catch (error) {

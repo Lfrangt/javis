@@ -23633,6 +23633,10 @@ function voiceCommandContextPrompt(context = {}) {
     context.screen?.available
       ? `- Screen: ${context.screen.width || 0}x${context.screen.height || 0}, age ${context.screen.ageMs}ms, privacy ${context.screen.privacyMode || 'unknown'}`
       : '- Screen: no current frame',
+    context.accessibility?.requested
+      ? `- UI outline: ${context.accessibility.available ? `${context.accessibility.nodeCount || 0} node(s)${context.accessibility.truncated ? ', truncated' : ''}` : `unavailable (${context.accessibility.error || 'unknown'})`}`
+      : '',
+    context.accessibility?.outline ? compactRecordText(context.accessibility.outline, 900) : '',
     context.clipboard?.hasText ? `- Clipboard: text present (${context.clipboard.length || 0} chars), content not attached` : '- Clipboard: no text content attached',
     context.pendingApprovals?.count ? `- Pending approvals: ${context.pendingApprovals.count}` : '',
     context.activeJobs?.count ? `- Active jobs: ${context.activeJobs.count}` : '',
@@ -23643,16 +23647,20 @@ function voiceCommandContextPrompt(context = {}) {
 
 async function voiceCommandContextSnapshot(options = {}) {
   const includeScreen = booleanOption(options.includeScreen);
+  const includeAccessibility = booleanOption(options.includeAccessibility || options.includeUi || options.includeUI);
   const context = {
     ok: true,
     metadataOnly: true,
     includesScreenImage: false,
     includesClipboardText: false,
+    includesAccessibilityNodes: false,
     includeScreenRequested: includeScreen,
+    includeAccessibilityRequested: includeAccessibility,
     capturedAt: new Date().toISOString(),
     frontmost: { available: false, app: '', windowTitle: '' },
     browser: { available: false, app: '', title: '', host: '', source: '', supported: false },
     screen: { available: false },
+    accessibility: { requested: includeAccessibility, available: false, nodeCount: 0, truncated: false, outline: '', error: '' },
     clipboard: { hasText: false, length: 0 },
     activeJobs: { count: 0 },
     pendingApprovals: { count: 0 },
@@ -23701,10 +23709,30 @@ async function voiceCommandContextSnapshot(options = {}) {
         displayName: compactRecordText(screen.displayName || '', 80),
       };
     }
+    if (includeAccessibility) {
+      const tree = await accessibilityTreeSnapshot({
+        maxNodes: Math.min(50, Number(options.maxAccessibilityNodes || 50)),
+        maxDepth: Math.min(4, Number(options.maxAccessibilityDepth || 4)),
+      });
+      context.accessibility = {
+        requested: true,
+        available: Boolean(tree.available),
+        app: compactRecordText(tree.app || '', 80),
+        windowTitle: compactRecordText(tree.windowTitle || '', 140),
+        nodeCount: Number(tree.nodeCount || 0),
+        truncated: Boolean(tree.truncated),
+        maxNodes: Number(tree.maxNodes || 0),
+        maxDepth: Number(tree.maxDepth || 0),
+        outline: compactRecordText(tree.outline || '', 1200),
+        error: compactRecordText(tree.error || '', 160),
+        accessibilityTrusted: tree.accessibilityTrusted,
+      };
+    }
     context.summary = [
       context.frontmost.app ? `${context.frontmost.app}${context.frontmost.windowTitle ? ` · ${context.frontmost.windowTitle}` : ''}` : '',
       context.browser.available ? `${context.browser.title || context.browser.app} · ${context.browser.host}` : '',
       context.screen.available ? `screen ${context.screen.width}x${context.screen.height}, ${context.screen.privacyMode || 'privacy unknown'}` : '',
+      context.accessibility.requested ? `ui ${context.accessibility.available ? `${context.accessibility.nodeCount} nodes` : 'unavailable'}` : '',
     ].filter(Boolean).join(' | ') || 'metadata-only local context unavailable';
     context.prompt = voiceCommandContextPrompt(context);
     return context;
@@ -23722,13 +23750,19 @@ async function runVoiceCommand(options = {}) {
   if (!transcript) throw new Error('Missing transcript.');
   const requestedExecute = booleanOption(options.execute);
   const includeScreen = booleanOption(options.includeScreen);
+  const includeAccessibility = booleanOption(options.includeAccessibility || options.includeUi || options.includeUI);
   const allowCloudQuick = booleanOption(options.allowCloudQuick || options.allowOpenAIQuick);
   const useMemory = booleanOption(options.useMemory);
   const speakRequested = options.speak === undefined ? true : booleanOption(options.speak);
   const confirmSpeak = booleanOption(options.confirmSpeak || options.confirmAudio || options.confirmSpeech);
   const mode = options.mode || options.lane;
   const source = String(options.source || 'voice_command').slice(0, 80);
-  const contextSnapshot = await voiceCommandContextSnapshot({ includeScreen });
+  const contextSnapshot = await voiceCommandContextSnapshot({
+    includeScreen,
+    includeAccessibility,
+    maxAccessibilityNodes: options.maxAccessibilityNodes,
+    maxAccessibilityDepth: options.maxAccessibilityDepth,
+  });
   const baseRouteOptions = {
     message: transcript,
     execute: false,
@@ -23748,6 +23782,7 @@ async function runVoiceCommand(options = {}) {
     chars: transcript.length,
     requestedExecute,
     includeScreen,
+    includeAccessibility,
     allowCloudQuick,
     useMemory,
     speakRequested,
@@ -23807,6 +23842,7 @@ async function runVoiceCommand(options = {}) {
       storesRawAudio: false,
       usesMemory: useMemory,
       usesContextMetadata: Boolean(contextSnapshot.prompt),
+      usesAccessibilityMetadata: Boolean(contextSnapshot.accessibility?.requested),
       callsOpenAIImmediately: Boolean(canExecute && previewLane === 'quick' && allowCloudQuick),
       mayQueueCloudModel: Boolean(canExecute && previewLane === 'background'),
       mayQueueLocalWorker: Boolean(canExecute && ['codex', 'claude'].includes(previewLane)),

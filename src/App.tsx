@@ -1846,6 +1846,7 @@ function App() {
         body: JSON.stringify({
           transcript: prompt,
           includeScreen: fallbackIncludesScreen,
+          includeAccessibility: fallbackIncludesScreen,
           execute: true,
           speak: true,
           confirmSpeak: true,

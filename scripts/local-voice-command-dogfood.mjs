@@ -54,6 +54,7 @@ function buildPayload() {
     transcript: argValue('message', argValue('text', '帮我整理当前工作状态，给我一个三步计划，先不要执行。')),
     execute,
     includeScreen: hasFlag('include-screen'),
+    includeAccessibility: hasFlag('include-accessibility') || hasFlag('include-ui'),
     speak: !hasFlag('no-speech'),
     confirmSpeak: confirm,
     allowCloudQuick: hasFlag('allow-cloud-quick'),
@@ -87,11 +88,14 @@ function summarize(data = {}) {
           metadataOnly: Boolean(data.context.metadataOnly),
           includesScreenImage: Boolean(data.context.includesScreenImage),
           includesClipboardText: Boolean(data.context.includesClipboardText),
+          includesAccessibilityNodes: Boolean(data.context.includesAccessibilityNodes),
           includeScreenRequested: Boolean(data.context.includeScreenRequested),
+          includeAccessibilityRequested: Boolean(data.context.includeAccessibilityRequested),
           summary: String(data.context.summary || '').slice(0, 220),
           frontmost: data.context.frontmost || {},
           browser: data.context.browser || {},
           screen: data.context.screen || {},
+          accessibility: data.context.accessibility || {},
         }
       : null,
     speech: data.speech
@@ -121,6 +125,7 @@ async function main() {
     payload: {
       execute: payload.execute,
       includeScreen: payload.includeScreen,
+      includeAccessibility: payload.includeAccessibility,
       speak: payload.speak,
       confirmSpeak: payload.confirmSpeak,
       allowCloudQuick: payload.allowCloudQuick,
@@ -141,6 +146,9 @@ async function main() {
     console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
     console.log(`Speech: ${result.speech?.dryRun ? 'preview' : result.speech?.speaking ? 'speaking' : 'off'} · microphone=no · realtime=no`);
     console.log(`Context: ${result.context?.metadataOnly ? 'metadata-only' : 'unavailable'} · ${result.context?.summary || '-'}`);
+    if (result.context?.accessibility?.requested) {
+      console.log(`UI: ${result.context.accessibility.available ? `${result.context.accessibility.nodeCount || 0} node(s)` : result.context.accessibility.error || 'unavailable'}`);
+    }
     console.log(`Ack: ${result.spokenAck}`);
     if (!response.ok) console.log(`Error: HTTP ${response.status}`);
   }
