@@ -1,4 +1,4 @@
-import { ok, fail } from '../_client.mjs';
+import { ok, warn, fail } from '../_client.mjs';
 import { runRealtimePayloadAudit } from '../../realtime-payload-audit.mjs';
 
 const EXPECTED_ACCEPTANCE_GATES = new Set([
@@ -47,6 +47,18 @@ function acceptanceGaps(acceptance = {}) {
     .filter(Boolean);
 }
 
+function isRecoverableProviderHealth(voiceHealth = {}) {
+  return voiceHealth?.status === 'warning' && ['quota_or_rate_limit', 'provider_unverified'].includes(voiceHealth?.kind);
+}
+
+function providerHealthLabel(voiceHealth = {}) {
+  return voiceHealth?.kind || voiceHealth?.status || 'provider_warning';
+}
+
+function hasProviderNotReadyBlocker(blockers = []) {
+  return blockers.some((blocker) => blocker?.id === 'provider_not_ready');
+}
+
 export default {
   lane: 'realtime-preflight',
   async run(ctx) {
@@ -67,16 +79,26 @@ export default {
 
     const realtime = config.data?.realtime || {};
     const manifest = realtime.toolManifestBudget || {};
+    const configCoreReady = config.ok &&
+      realtime.hasOpenAiKey === true &&
+      realtime.preflightContextEnabled === true &&
+      realtime.screenPrivacy?.realtimeAllowed === true &&
+      manifest.ok === true &&
+      manifest.toolCount <= manifest.maxTools &&
+      manifest.bytes <= manifest.maxBytes;
+    const configQuotaGated = configCoreReady &&
+      isRecoverableProviderHealth(realtime.voiceHealth) &&
+      realtime.voiceHealth?.recovery?.active === true &&
+      realtime.voiceHealth?.recovery?.localFallback?.available === true &&
+      realtime.voiceHealth?.fallback?.available === true &&
+      realtime.voiceHealth?.fallback?.safety?.startsMicrophone === false &&
+      realtime.voiceHealth?.fallback?.safety?.usesRealtime === false;
     out.push(
-      config.ok &&
-        realtime.hasOpenAiKey === true &&
-        realtime.voiceHealth?.status === 'ready' &&
-        realtime.preflightContextEnabled === true &&
-        realtime.screenPrivacy?.realtimeAllowed === true &&
-        manifest.ok === true &&
-        manifest.toolCount <= manifest.maxTools &&
-        manifest.bytes <= manifest.maxBytes
+      configCoreReady &&
+        realtime.voiceHealth?.status === 'ready'
         ? ok('realtime_preflight.config', 'Realtime config preflight', `${realtime.model || 'model?'} · ${manifest.toolCount}/${manifest.maxTools} tools · ${Math.ceil((manifest.bytes || 0) / 1024)}KB manifest`)
+        : configQuotaGated
+          ? warn('realtime_preflight.config', 'Realtime config preflight', `${providerHealthLabel(realtime.voiceHealth)} gated · fallback=${realtime.voiceHealth.fallback.lane} · ${manifest.toolCount}/${manifest.maxTools} tools`)
         : fail('realtime_preflight.config', 'Realtime config preflight', `GET /api/realtime/config ${config.status}`, { realtime }),
     );
 
@@ -100,22 +122,33 @@ export default {
     const rendererDogfood = renderer.data?.rendererDogfood || {};
     const preflight = rendererDogfood.preflight || {};
     const rendererBlockers = Array.isArray(preflight.blockers) ? preflight.blockers : [];
+    const rendererSafetyOk = preflight.manualOnly === true &&
+      preflight.startsMicrophone === false &&
+      preflight.triggerStartsMicrophone === true &&
+      preflight.requiresMicConfirmation === true &&
+      preflight.rendererAvailable === true &&
+      preflight.safety?.preflightStartsMicrophone === false &&
+      preflight.safety?.executeRequiresConfirmMic === true &&
+      preflight.safety?.microphoneOnlyAfterExplicitConfirmation === true;
+    const rendererQuotaGated = renderer.ok &&
+      rendererDogfood.ok === true &&
+      preflight.status === 'blocked' &&
+      preflight.readyToStart === false &&
+      rendererSafetyOk &&
+      preflight.providerReady === false &&
+      isRecoverableProviderHealth(preflight.provider) &&
+      hasProviderNotReadyBlocker(rendererBlockers);
     out.push(
       renderer.ok &&
         rendererDogfood.ok === true &&
         preflight.status === 'ready' &&
         preflight.readyToStart === true &&
-        preflight.manualOnly === true &&
-        preflight.startsMicrophone === false &&
-        preflight.triggerStartsMicrophone === true &&
-        preflight.requiresMicConfirmation === true &&
-        preflight.rendererAvailable === true &&
+        rendererSafetyOk &&
         preflight.providerReady === true &&
-        rendererBlockers.length === 0 &&
-        preflight.safety?.preflightStartsMicrophone === false &&
-        preflight.safety?.executeRequiresConfirmMic === true &&
-        preflight.safety?.microphoneOnlyAfterExplicitConfirmation === true
+        rendererBlockers.length === 0
         ? ok('realtime_preflight.renderer', 'Renderer live-voice preflight', `${preflight.status} · confirmMic required · prompt=${preflight.nextPrompt?.copyText || ''}`)
+        : rendererQuotaGated
+          ? warn('realtime_preflight.renderer', 'Renderer live-voice preflight', `${providerHealthLabel(preflight.provider)} gated · mic blocked until confirmMic · ${preflight.provider?.summary || 'provider not ready'}`)
         : fail('realtime_preflight.renderer', 'Renderer live-voice preflight', `GET /api/realtime/dogfood/renderer ${renderer.status}`, { preflight }),
     );
 
@@ -123,26 +156,39 @@ export default {
     const startStep = Array.isArray(drillPack.operatorSteps)
       ? drillPack.operatorSteps.find((step) => step.id === 'start_live_voice')
       : null;
+    const packBlockers = Array.isArray(drillPack.blockers) ? drillPack.blockers : [];
     const acceptancePassed = Number(drillPack.readiness?.acceptancePassed || 0);
     const acceptanceGates = Number(drillPack.readiness?.acceptanceGates || 0);
+    const packSafetyOk = drillPack.manualOnly === true &&
+      drillPack.startsMicrophone === false &&
+      drillPack.currentActionStartsMicrophone === false &&
+      drillPack.triggerStartsMicrophone === true &&
+      drillPack.requiresMicConfirmation === true &&
+      drillPack.requiresUserPresence === true &&
+      drillPack.readiness?.rendererReady === true &&
+      drillPack.readiness?.nextPromptReady === true &&
+      acceptanceGates >= EXPECTED_ACCEPTANCE_GATES.size &&
+      acceptancePassed < acceptanceGates &&
+      startStep?.startsMicrophone === true &&
+      startStep?.requiresMicConfirmation === true &&
+      String(drillPack.commands?.start || '').includes('--confirm-mic');
+    const packQuotaGated = pack.ok &&
+      drillPack.readyToStart === false &&
+      packSafetyOk &&
+      drillPack.readiness?.providerReady === false &&
+      hasProviderNotReadyBlocker(packBlockers) &&
+      drillPack.safety?.preflightStartsMicrophone === false &&
+      drillPack.safety?.packStartsMicrophone === false &&
+      drillPack.safety?.providerProbeStartsMicrophone === false &&
+      drillPack.safety?.unattendedStartBlocked === true;
     out.push(
       pack.ok &&
         drillPack.readyToStart === true &&
-        drillPack.manualOnly === true &&
-        drillPack.startsMicrophone === false &&
-        drillPack.currentActionStartsMicrophone === false &&
-        drillPack.triggerStartsMicrophone === true &&
-        drillPack.requiresMicConfirmation === true &&
-        drillPack.requiresUserPresence === true &&
-        drillPack.readiness?.rendererReady === true &&
-        drillPack.readiness?.providerReady === true &&
-        drillPack.readiness?.nextPromptReady === true &&
-        acceptanceGates >= EXPECTED_ACCEPTANCE_GATES.size &&
-        acceptancePassed < acceptanceGates &&
-        startStep?.startsMicrophone === true &&
-        startStep?.requiresMicConfirmation === true &&
-        String(drillPack.commands?.start || '').includes('--confirm-mic')
+        packSafetyOk &&
+        drillPack.readiness?.providerReady === true
         ? ok('realtime_preflight.pack', 'Realtime live drill pack preflight', `${acceptancePassed}/${acceptanceGates} acceptance gate(s) already ready`)
+        : packQuotaGated
+          ? warn('realtime_preflight.pack', 'Realtime live drill pack preflight', `provider gated · ${acceptancePassed}/${acceptanceGates} gate(s) ready · start command remains confirmMic-only`)
         : fail('realtime_preflight.pack', 'Realtime live drill pack preflight', `GET /api/realtime/dogfood/pack ${pack.status}`, { pack: drillPack }),
     );
 
@@ -189,6 +235,14 @@ export default {
     );
 
     const evidenceData = evidence.data?.evidence || {};
+    const evidenceQuotaGated = evidence.ok &&
+      evidenceData.checks?.providerReady === false &&
+      evidenceData.checks?.spokenSummaryReady === true &&
+      evidenceData.checks?.sessionNegotiated === false &&
+      evidenceData.blocker?.id === 'provider_ready' &&
+      isRecoverableProviderHealth(evidenceData.voiceHealth) &&
+      evidenceData.voiceHealth?.recovery?.active === true &&
+      evidenceData.voiceHealth?.recovery?.localFallback?.available === true;
     out.push(
       evidence.ok &&
         evidenceData.checks?.providerReady === true &&
@@ -197,6 +251,8 @@ export default {
         evidenceData.blocker?.id === 'session_negotiated' &&
         evidenceData.voiceHealth?.status === 'ready'
         ? ok('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `${evidenceData.status || 'pending'}/${evidenceData.phase || 'needs_live_session'} · blocker=${evidenceData.blocker.id}`)
+        : evidenceQuotaGated
+          ? warn('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `${evidenceData.status || 'pending'}/${evidenceData.phase || 'provider_attention'} · ${providerHealthLabel(evidenceData.voiceHealth)} gated · fallback available`)
         : fail('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),
     );
 

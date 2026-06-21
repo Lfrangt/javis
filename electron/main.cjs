@@ -44475,7 +44475,7 @@ function compactRouteRecoveryForVoice(routeRecovery = null) {
     candidateCount: boundedCount(routeRecovery.candidateCount ?? candidates.length, 1000),
     executableCandidateCount: boundedCount(routeRecovery.executableCandidateCount, 1000),
     recommended: compactRouteRecoveryCandidateForVoice(routeRecovery.recommended),
-    candidates: candidates.slice(0, 4).map(compactRouteRecoveryCandidateForVoice).filter(Boolean),
+    candidates: candidates.slice(0, 2).map(compactRouteRecoveryCandidateForVoice).filter(Boolean),
     linked: {
       job: linked.job
         ? {
@@ -44498,25 +44498,22 @@ function compactRouteRecoveryForVoice(routeRecovery = null) {
         }
         : null,
     },
-    output: compactRecordText(routeRecovery.output || '', 600),
+    output: compactRecordText(routeRecovery.output || '', 300),
   };
 }
 
 function compactWorkNextActionForVoice(action = null) {
   if (!action || typeof action !== 'object') return null;
   return {
-    id: compactRecordText(action.id || '', 180),
-    label: compactRecordText(action.label || action.title || action.id || '', 180),
-    source: compactRecordText(action.source || '', 80),
-    phase: compactRecordText(action.phase || '', 80),
-    status: compactRecordText(action.status || '', 80),
-    summary: compactRecordText(action.summary || '', 420),
+    id: compactRecordText(action.id || '', 140),
+    label: compactRecordText(action.label || action.title || action.id || '', 140),
+    source: compactRecordText(action.source || '', 60),
+    status: compactRecordText(action.status || action.phase || '', 60),
+    summary: compactRecordText(action.summary || '', 260),
     priority: boundedCount(action.priority, 1000),
     executable: Boolean(action.executable),
-    autoEligible: Boolean(action.autoEligible),
-    autopilotEligible: action.autopilotEligible !== false,
     manualOnly: Boolean(action.manualOnly),
-    manualOnlyReason: compactRecordText(action.manualOnlyReason || '', 240),
+    manualOnlyReason: compactRecordText(action.manualOnlyReason || '', 160),
     requiresUserPresence: Boolean(action.requiresUserPresence),
     startsMicrophone: Boolean(action.startsMicrophone),
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
@@ -44529,10 +44526,10 @@ function compactWorkNextActionForVoice(action = null) {
     mutatesUserFiles: Boolean(action.mutatesUserFiles),
     mutatesUserRecords: Boolean(action.mutatesUserRecords),
     riskLevel: boundedCount(action.riskLevel, 4),
-    workflowAction: compactRecordText(action.workflowAction || '', 80),
-    realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
-    recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
-    productivityPreparation: compactRecordText(action.productivityPreparation || '', 80),
+    workflowAction: compactRecordText(action.workflowAction || '', 60),
+    realtimePreparation: compactRecordText(action.realtimePreparation || '', 60),
+    recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 60),
+    productivityPreparation: compactRecordText(action.productivityPreparation || '', 60),
     workflowId: compactRecordText(action.workflowId || '', 120),
     jobId: compactRecordText(action.jobId || '', 120),
     routeId: compactRecordText(action.routeId || '', 120),
@@ -44553,14 +44550,14 @@ function compactWorkNextActionForVoice(action = null) {
         activeWhenRealtimeBlocked: Boolean(action.localFallback.activeWhenRealtimeBlocked),
         lane: compactRecordText(action.localFallback.lane || '', 80),
         endpoint: compactRecordText(action.localFallback.endpoint || '', 120),
-        summary: compactRecordText(action.localFallback.summary || '', 220),
-        next: compactRecordText(action.localFallback.next || '', 220),
+        summary: compactRecordText(action.localFallback.summary || '', 160),
+        next: compactRecordText(action.localFallback.next || '', 160),
         blocker: action.localFallback.blocker
           ? {
             active: Boolean(action.localFallback.blocker.active),
             kind: compactRecordText(action.localFallback.blocker.kind || '', 80),
             status: compactRecordText(action.localFallback.blocker.status || '', 80),
-            summary: compactRecordText(action.localFallback.blocker.summary || '', 180),
+            summary: compactRecordText(action.localFallback.blocker.summary || '', 120),
           }
           : null,
       }
@@ -44617,7 +44614,7 @@ function compactWorkNextResultForVoice(result = null) {
     executed: Boolean(result.executed),
     startsMicrophone: Boolean(result.startsMicrophone),
     requiresMicConfirmationForLiveStart: Boolean(result.requiresMicConfirmationForLiveStart),
-    output: compactRecordText(result.output || '', 800),
+    output: compactRecordText(result.output || '', 360),
     realtimePreflightBundle: result.shortcutRecall || result.archive || result.acceptance
       ? {
         status: compactRecordText(result.status || '', 80),
@@ -44626,11 +44623,11 @@ function compactWorkNextResultForVoice(result = null) {
         livePromptCount: boundedCount(result.live?.promptCount, 100),
         shortcutRecalled: Boolean(result.shortcutRecall?.recalled),
         archiveSaved: Boolean(result.archive?.saved),
-        archiveFile: compactRecordText(result.archive?.file?.path || '', 240),
+        archiveFile: compactRecordText(result.archive?.file?.path || '', 160),
         acceptancePassed: boundedCount(result.acceptance?.counts?.passed, 1000),
         acceptanceGates: boundedCount(result.acceptance?.counts?.gates, 1000),
         nextGap: compactRecordText(result.acceptance?.nextGap?.id || '', 120),
-        nextLiveCommand: compactRecordText(result.next?.liveCommand || '', 240),
+        nextLiveCommand: compactRecordText(result.next?.liveCommand || '', 180),
       }
       : null,
     routeRecovery: compactRouteRecoveryForVoice(routeRecovery),
@@ -44641,8 +44638,8 @@ function compactWorkNextResultForVoice(result = null) {
         providerReady: Boolean(result.providerProbe.providerReady),
         startsMicrophone: Boolean(result.providerProbe.startsMicrophone),
         requiresMicConfirmation: Boolean(result.providerProbe.requiresMicConfirmation),
-        summary: compactRecordText(result.providerProbe.summary || '', 220),
-        next: compactRecordText(result.providerProbe.next || '', 220),
+        summary: compactRecordText(result.providerProbe.summary || '', 160),
+        next: compactRecordText(result.providerProbe.next || '', 160),
         runId: compactRecordText(result.providerProbe.runId || '', 120),
       }
       : null,
@@ -44739,17 +44736,24 @@ function compactWorkNextBriefingForVoice(briefing = null) {
   const nextActions = Array.isArray(briefing.nextActions) ? briefing.nextActions : [];
   const followUps = Array.isArray(briefing.followUps) ? briefing.followUps : [];
   return {
-    summary: compactRecordText(briefing.summary || '', 420),
+    summary: compactRecordText(briefing.summary || '', 240),
     readiness: briefing.readiness
       ? {
         overall: compactRecordText(briefing.readiness.overall || '', 40),
-        summary: compactRecordText(briefing.readiness.summary || '', 240),
+        summary: compactRecordText(briefing.readiness.summary || '', 160),
       }
       : null,
     counts: briefing.counts || null,
     nextActionCount: nextActions.length,
     followUpCount: followUps.length,
-    firstNextActions: nextActions.slice(0, 3).map(compactWorkNextActionForVoice).filter(Boolean),
+    firstNextActions: nextActions.slice(0, 2).map((action) => ({
+      id: compactRecordText(action.id || '', 120),
+      label: compactRecordText(action.label || action.title || action.id || '', 120),
+      source: compactRecordText(action.source || '', 60),
+      startsMicrophone: Boolean(action.startsMicrophone),
+      requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+      riskLevel: boundedCount(action.riskLevel, 4),
+    })),
   };
 }
 
@@ -44767,12 +44771,12 @@ function workNextVoiceToolPayload(result = {}, options = {}) {
         detail: compactRecordText(result.autopilotDecision.detail || '', 240),
       }
       : null,
-    output: compactRecordText(result.output || '', 1400),
+    output: compactRecordText(result.output || '', 600),
     result: compactWorkNextResultForVoice(result.result),
     briefing: compactWorkNextBriefingForVoice(result.briefing),
     responseBudget: {
       compact: true,
-      maxTargetBytes: 20000,
+      maxTargetBytes: 11000,
       omitted: [
         'briefing.nextActions.full',
         'briefing.followUps.full',
