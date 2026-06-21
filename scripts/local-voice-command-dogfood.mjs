@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
+                               Slash commands: /status, /app, /ui, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
@@ -333,6 +333,7 @@ function loopHelpText() {
     'Loop commands:',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /app      Read the current Mac app, screen metadata, and compact UI outline.',
+    '  /ui       Preview a local app/UI workflow plan; add --run to execute through policy.',
     '  /browser  Read the current supported browser tab and page summary.',
     '  /browse   Preview a browser workflow over the current page; add --run to execute.',
     '  /open     Preview opening a URL or web search; add --run to execute through policy.',
@@ -346,6 +347,14 @@ function loopHelpText() {
     'Flags: --full-status, --full-next, --full-agent, or --full for full diagnostics.',
     'Type a normal request without / to route it through /api/voice/command.',
   ].join('\n');
+}
+
+function normalizeUiTask(transcript) {
+  return String(transcript || '').replace(/^\/ui\b/i, '').trim();
+}
+
+function loopUiUseModel() {
+  return hasFlag('allow-cloud-ui') || hasFlag('model-ui') || hasFlag('ui-model');
 }
 
 function formatLoopApp(macData = {}, treeData = {}) {
@@ -499,6 +508,25 @@ function formatLoopBrowse(data = {}, request = {}, execute = false) {
   ];
   if (page.error) lines.push(`Note: ${compactText(page.error, 220)}`);
   if (!execute) lines.push('Next: restart this loop with --run when you want this browser workflow to act or queue.');
+  return lines.join('\n');
+}
+
+function formatLoopUi(data = {}, task = '', execute = false) {
+  const plan = data.plan || data.run?.plan || {};
+  const run = data.run || {};
+  const workflow = data.workflow || run.workflow || {};
+  const steps = Array.isArray(plan.steps) ? plan.steps : [];
+  const stepText = steps.length
+    ? steps.slice(0, 6).map((step, index) => `${index + 1}. ${step.type || '-'} · ${compactText(step.label || step.instruction || step.app || step.url || step.keys || '', 100)}`).join(' | ')
+    : compactText(plan.reason || 'No safe UI steps planned.', 220);
+  const lines = [
+    `UI: ${execute ? 'execute requested' : 'preview only'} · source=${plan.source || '-'} · confidence=${plan.confidence ?? '-'}`,
+    `Task: ${compactText(task || plan.instruction || '-', 220)}`,
+    `Steps: ${stepText}`,
+    `Result: ${compactText(data.output || run.output || workflow.result || plan.output || '-', 420)}`,
+  ];
+  if (workflow.id || workflow.status) lines.push(`Workflow: ${workflow.status || '-'}${workflow.id ? ` · ${workflow.id}` : ''}`);
+  if (!execute) lines.push('Next: restart this loop with --run when you want this UI workflow to execute through normal policy gates.');
   return lines.join('\n');
 }
 
@@ -686,6 +714,46 @@ async function runLoopCommand(transcript) {
         elapsedMs: Math.round(performance.now() - base.startedAt),
         apiElapsedMs: Math.max(macResponse.elapsedMs || 0, treeResponse.elapsedMs || 0),
         output: formatLoopApp(macResponse.data || {}, treeResponse.data || {}),
+      };
+    }
+    if (command === 'ui') {
+      const task = normalizeUiTask(transcript);
+      if (!task) {
+        return {
+          ...publicLoopCommandBase(base),
+          ok: false,
+          elapsedMs: Math.round(performance.now() - base.startedAt),
+          output: 'Usage: /ui <local app/UI task>',
+        };
+      }
+      const execute = loopExecuteRequested();
+      const response = await request('/api/app/plan', {
+        method: 'POST',
+        body: {
+          instruction: task,
+          execute,
+          useModel: loopUiUseModel(),
+          maxNodes: 120,
+          maxDepth: 6,
+          continueOnError: false,
+          source: execute ? 'local_voice_loop_ui_execute' : 'local_voice_loop_ui_preview',
+        },
+      });
+      return {
+        ...publicLoopCommandBase(base),
+        endpoint: '/api/app/plan',
+        detailLevel: execute ? 'execute' : 'preview',
+        previewOnly: !execute,
+        task,
+        ok: Boolean(response.ok && response.data),
+        responseStatus: response.status,
+        elapsedMs: Math.round(performance.now() - base.startedAt),
+        apiElapsedMs: response.elapsedMs,
+        safety: {
+          ...loopSafety(),
+          readOnly: !execute,
+        },
+        output: formatLoopUi(response.data || {}, task, execute),
       };
     }
     if (command === 'browser') {
