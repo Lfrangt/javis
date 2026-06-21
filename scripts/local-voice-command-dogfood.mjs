@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /next, /history, /agent, /help.
+                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /next, /auto, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -352,6 +352,7 @@ function loopHelpText() {
     '  /jobs     Read active/recent jobs, worker groups, recovery hints, and next action.',
     '  /progress Alias for /jobs.',
     '  /next     Fast-read the next workbench action preview.',
+    '  /auto     Read autopilot/agency status and why unattended work is or is not acting.',
     '  /history  Read recent sanitized local voice-command turns.',
     '  /agent    Preview a short bounded autonomy loop for a task.',
     '  /help     Show this help.',
@@ -1133,6 +1134,39 @@ function formatLoopNext(data = {}) {
   return lines.join('\n');
 }
 
+function formatLoopAutopilot(data = {}) {
+  const payload = parseToolJsonOutput(data);
+  const selected = payload.selectedAction || null;
+  const first = payload.firstAction || null;
+  const target = selected || first || {};
+  const counts = payload.candidateCounts || {};
+  const waiting = Array.isArray(payload.waitingFor) ? payload.waitingFor : [];
+  const lines = [
+    `Autopilot: ${payload.enabled ? 'enabled' : 'disabled'} · running=${payload.running ? 'yes' : 'no'} · busy=${payload.busy ? 'yes' : 'no'} · canActNow=${payload.canActNow ? 'yes' : 'no'}`,
+    `Ticks: total ${payload.tickCount ?? 0} · executed ${payload.executedCount ?? 0} · skipped ${payload.skippedCount ?? 0}`,
+    `Summary: ${compactText(payload.spokenSummary || payload.skipSummary || payload.nextWait || payload.output || '-', 520)}`,
+  ];
+  if (target.id || target.label) {
+    lines.push(`Candidate: ${compactText(target.label || target.id, 120)} · source=${target.source || '-'} · executable=${target.executable ? 'yes' : 'no'} · reason=${target.decision?.reason || payload.reason || '-'}`);
+  } else {
+    lines.push('Candidate: none');
+  }
+  if (counts.total !== undefined) {
+    lines.push(`Candidates: total ${counts.total || 0} · auto ${counts.autoExecutable || 0} · manual ${counts.manualOnly || 0} · blocked ${counts.blocked || 0}`);
+  }
+  if (waiting.length) {
+    lines.push('Waiting for:');
+    for (const item of waiting.slice(0, 3)) {
+      lines.push(`- ${item.label || item.id || '-'}: ${compactText(item.summary || item.status || '', 180)}${item.waitLabel ? ` · wait ${item.waitLabel}` : ''}`);
+    }
+  }
+  if (payload.maintenance) {
+    lines.push(`Maintenance: due=${payload.maintenance.due ? 'yes' : 'no'} · runs=${payload.maintenance.runCount || 0}${payload.maintenance.lastSummary ? ` · ${compactText(payload.maintenance.lastSummary, 180)}` : ''}`);
+  }
+  lines.push('Safety: read-only; does not execute work-next, start workers, microphone, or Realtime.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatHistoryTime(timestamp) {
   const time = Date.parse(timestamp || '');
   if (!Number.isFinite(time)) return '-';
@@ -1531,6 +1565,25 @@ async function runLoopCommand(transcript) {
       return loopCommandResult(base, response, formatLoopNext(response.data || {}), {
         endpoint,
         detailLevel: full ? 'full' : 'fast',
+      });
+    }
+    if (command === 'auto' || command === 'autopilot' || command === 'agency') {
+      const response = await request('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'local_voice_loop_autopilot_status',
+          name: 'get_autopilot_status',
+          arguments: {
+            source: 'local_voice_loop',
+            workflowLimit: 6,
+            jobLimit: 6,
+          },
+        },
+      });
+      return loopCommandResult(base, response, formatLoopAutopilot(response.data || {}), {
+        command,
+        endpoint: '/api/tools/execute',
+        detailLevel: 'fast',
       });
     }
     if (command === 'history') {

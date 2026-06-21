@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 
 import { ok, warn, fail } from '../_client.mjs';
@@ -225,6 +226,51 @@ export default {
         voiceOutput?.safety?.usesExistingRouting === true
         ? ok('autonomy.voice_tool', 'Realtime autonomy voice tool', `${voiceOutput.route?.label || voiceOutput.route?.lane} preview exposed through tool execution · agency=${voiceOutput.agencyPlan.status}`)
         : fail('autonomy.voice_tool', 'Realtime autonomy voice tool', `expected run_autonomy_loop tool preview (${voiceTool.status})`, { response: voiceTool.data, output: voiceOutput }),
+    );
+
+    const autopilotVoice = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '你自己现在能不能继续跑，为什么没自动推进？',
+        execute: false,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_autonomy_autopilot_status_voice',
+      },
+      timeoutMs: 15000,
+    });
+    const autopilotRoute = autopilotVoice.data?.route || {};
+    const autopilotLocal = autopilotRoute.localCommand || {};
+    const autopilotPayload = autopilotRoute.data?.autopilot || {};
+    const autopilotContext = autopilotRoute.contextPlan || {};
+    const autopilotNeeds = autopilotContext.needs || {};
+    out.push(
+      autopilotVoice.ok &&
+        autopilotVoice.data?.ok === true &&
+        autopilotLocal.intent === 'autopilot_status' &&
+        autopilotRoute.decision?.localCommand === 'autopilot_status' &&
+        autopilotPayload.responseBudget?.compact === true &&
+        typeof autopilotPayload.spokenSummary === 'string' &&
+        /Autopilot/i.test(String(autopilotRoute.output || '')) &&
+        autopilotNeeds.residentState === true &&
+        autopilotNeeds.screen === false &&
+        autopilotNeeds.accessibility === false &&
+        autopilotVoice.data?.safety?.startsMicrophone === false &&
+        autopilotVoice.data?.safety?.usesRealtime === false &&
+        autopilotVoice.data?.safety?.callsOpenAIImmediately === false
+        ? ok('autonomy.local_voice_autopilot_status', 'Local voice autopilot status', `${autopilotPayload.enabled ? 'enabled' : 'disabled'} · canAct=${autopilotPayload.canActNow ? 'yes' : 'no'} · ${autopilotPayload.reason || autopilotPayload.decisionPreview?.reason || 'status'}`)
+        : fail('autonomy.local_voice_autopilot_status', 'Local voice autopilot status', 'expected natural local voice to read compact autopilot status without model, screen, mic, or Realtime', autopilotVoice.data),
+    );
+
+    const loopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
+    out.push(
+      loopSource.includes("command === 'auto'") &&
+        loopSource.includes("name: 'get_autopilot_status'") &&
+        loopSource.includes('formatLoopAutopilot')
+        ? ok('autonomy.local_voice_loop_autopilot_status', 'Local voice loop autopilot status', '/auto and /autopilot read compact autopilot state through the existing voice tool')
+        : fail('autonomy.local_voice_loop_autopilot_status', 'Local voice loop autopilot status', 'expected voice:chat loop to expose /auto through get_autopilot_status'),
     );
 
     const config = await ctx.api('/api/realtime/config');

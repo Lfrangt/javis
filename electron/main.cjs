@@ -23852,6 +23852,30 @@ function naturalAppUiStatusLocalCommand(text) {
   };
 }
 
+function naturalAutopilotStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const english = /\b(autopilot|autonomous|autonomy|agency|unattended|overnight|self[- ]?run|self[- ]?drive|auto[- ]?run|auto[- ]?continue)\b/i.test(raw)
+    || /\b(can|will|could|should).*(you|javis).*(continue|run|work|act|proceed).*(by yourself|autonomously|automatically|unattended)\b/i.test(raw)
+    || /\bwhy.*(?:did|do|can|will).*(?:not|n't).*(continue|run|act|proceed|execute)\b/i.test(raw)
+    || /\bwhat.*(?:are you|is javis).*(doing|able to do).*(by yourself|automatically|unattended)\b/i.test(raw);
+  const chinese = /(?:自动驾驶|autopilot|自主性|能动性|无人值守|自动推进|自动继续|自动执行|自己继续|自己推进|自己跑|自己执行|你自己跑|你自己继续|你自己推进|你自己执行|为什么没继续|为什么不继续|为什么没自动|为什么不自动|能不能自己|可以自己|会不会自己|能自己)/i.test(compactPlain)
+    || /(?:自动|自主|自己|无人值守).*(?:状态|进度|继续|推进|执行|跑|做|干|原因|为什么|能不能|可以|能否)/i.test(compactPlain)
+    || /(?:你|JAVIS|javis|贾维斯).*(?:能不能|可以|能否|会不会).*(?:自己|自动|无人值守).*(?:继续|推进|执行|跑|做|干)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'autopilot_status',
+    label: 'Autopilot status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalAppUiLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -24014,6 +24038,9 @@ function localCommandDecision(task) {
 
   const appUiStatusCommand = naturalAppUiStatusLocalCommand(text);
   if (appUiStatusCommand) return appUiStatusCommand;
+
+  const autopilotStatusCommand = naturalAutopilotStatusLocalCommand(text);
+  if (autopilotStatusCommand) return autopilotStatusCommand;
 
   const appUiCommand = naturalAppUiLocalCommand(text);
   if (appUiCommand) return appUiCommand;
@@ -24514,7 +24541,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'app_ui_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -24531,6 +24558,11 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
+    } else if (['autopilot_status'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
     } else if (['app_ui_status'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
@@ -24960,6 +24992,38 @@ function formatCapabilityStatusForLocalCommand({ perception = {}, capabilities =
   ].filter(Boolean).join('\n');
 }
 
+function formatAutopilotStatusForLocalCommand(status = {}) {
+  const selected = status.selectedAction || null;
+  const first = status.firstAction || null;
+  const target = selected || first || {};
+  const counts = status.candidateCounts || {};
+  const waitingFor = Array.isArray(status.waitingFor) ? status.waitingFor : [];
+  const waitingLines = waitingFor
+    .slice(0, 3)
+    .map((item) => `- ${item.label || item.id || '-'}: ${compactRecordText(item.summary || item.status || '', 180)}${item.waitLabel ? ` · wait ${item.waitLabel}` : ''}`);
+  const maintenance = status.maintenance || {};
+  const lines = [
+    `Autopilot: ${status.enabled ? 'enabled' : 'disabled'} · running=${status.running ? 'yes' : 'no'} · busy=${status.busy ? 'yes' : 'no'} · canActNow=${status.canActNow ? 'yes' : 'no'}`,
+    `Ticks: total ${status.tickCount ?? 0} · executed ${status.executedCount ?? 0} · skipped ${status.skippedCount ?? 0}`,
+    status.spokenSummary || status.skipSummary || status.nextWait
+      ? `Summary: ${compactRecordText(status.spokenSummary || status.skipSummary || status.nextWait, 420)}`
+      : '',
+    target.id || target.label
+      ? `Next candidate: ${compactRecordText(target.label || target.id, 140)} · source=${target.source || '-'} · executable=${target.executable ? 'yes' : 'no'} · reason=${target.decision?.reason || status.reason || '-'}`
+      : 'Next candidate: none',
+    counts.total !== undefined
+      ? `Candidates: total ${counts.total || 0} · auto ${counts.autoExecutable || 0} · manual ${counts.manualOnly || 0} · blocked ${counts.blocked || 0}`
+      : '',
+    waitingLines.length ? `Waiting for:\n${waitingLines.join('\n')}` : '',
+    maintenance
+      ? `Maintenance: due=${maintenance.due ? 'yes' : 'no'} · runs=${maintenance.runCount || 0}${maintenance.lastSummary ? ` · ${compactRecordText(maintenance.lastSummary, 180)}` : ''}`
+      : '',
+    status.nextAction ? `Next: ${compactRecordText(status.nextAction, 260)}` : '',
+    '边界: 这里只读 autopilot/agency 状态；不执行 work-next，不启动 worker，不启动麦克风或 Realtime。',
+  ];
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatBrowserUrlForLocalCommand(value) {
   const raw = String(value || '').trim();
   if (!raw) return '-';
@@ -25136,6 +25200,21 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatCapabilityStatusForLocalCommand({ perception, capabilities }),
         data: { perception, capabilities },
+      };
+    }
+
+    if (command.intent === 'autopilot_status') {
+      const status = autopilotVoiceStatusSnapshot({
+        source: 'local_command',
+        workflowLimit: 6,
+        jobLimit: 6,
+      });
+      const payload = autopilotStatusVoicePayload(status, { source: 'local_command' });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatAutopilotStatusForLocalCommand(payload),
+        data: { autopilot: payload },
       };
     }
 
@@ -26878,7 +26957,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
