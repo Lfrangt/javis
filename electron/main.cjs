@@ -23517,6 +23517,31 @@ function naturalBrowserLocalCommand(text) {
   return null;
 }
 
+function naturalAppUiStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  const mentionsBrowser = /\b(browser|webpage|web page|page|tab|url|link|website|site)\b/i.test(raw)
+    || /(浏览器|网页|页面|标签页|网址|链接|网站)/.test(compactTextNoSpace);
+  if (mentionsBrowser) return null;
+
+  const english = /\b(app|application|window|ui|interface|screen|view).*(cache|cached|prewarm|prewarmed|warm|ready|readiness|status)\b/i.test(raw)
+    || /\b(cache|cached|prewarm|prewarmed|warm|ready|readiness|status).*(app|application|window|ui|interface|screen|view)\b/i.test(raw)
+    || /\b(is|are).*(current|frontmost|active).*(app|window|ui|interface).*(ready|cached|warm|prewarmed)\b/i.test(raw);
+  const chinese = /(?:应用|软件|窗口|界面|UI|屏幕).*(?:缓存|预热|准备好|准备好了|就绪|状态|ready|cache)/i.test(compactPlain)
+    || /(?:缓存|预热|准备好|准备好了|就绪|状态|ready|cache).*(?:应用|软件|窗口|界面|UI|屏幕)/i.test(compactPlain)
+    || /(?:界面|窗口|UI).*(?:好了吗|好了没|能不能快点|是不是热的)/.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'app_ui_status',
+    label: 'Current app UI cache status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalAppUiLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -23558,6 +23583,9 @@ function localCommandDecision(task) {
 
   const browserCommand = naturalBrowserLocalCommand(text);
   if (browserCommand) return browserCommand;
+
+  const appUiStatusCommand = naturalAppUiStatusLocalCommand(text);
+  if (appUiStatusCommand) return appUiStatusCommand;
 
   const appUiCommand = naturalAppUiLocalCommand(text);
   if (appUiCommand) return appUiCommand;
@@ -24049,7 +24077,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'app_ui_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -24066,6 +24094,11 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
+    } else if (['app_ui_status'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.macContext = false;
+      needs.accessibility = false;
+      needs.screen = false;
     } else if (['app_ui'].includes(localCommand)) {
       needs.macContext = true;
       needs.accessibility = true;
@@ -24307,6 +24340,24 @@ function compactAppUiTreeForLocalCommand(tree = {}) {
   };
 }
 
+function formatAppUiStatusForLocalCommand(status = {}) {
+  const prewarm = status.prewarm || ambientAppUiPrewarmSnapshot();
+  const cache = prewarm.cache || {};
+  const cacheAgeMs = cache.ageMs === null || cache.ageMs === undefined ? null : Math.max(0, Math.round(Number(cache.ageMs || 0)));
+  const cacheFresh = cacheAgeMs !== null && cacheAgeMs <= APP_UI_CACHE_MAX_AGE_MS;
+  const lastCompletedAt = prewarm.lastCompletedAt
+    ? `${Math.max(0, Math.round((Date.now() - Number(prewarm.lastCompletedAt || 0)) / 1000))}s ago`
+    : '-';
+  return [
+    `UI 预热: ${prewarm.enabled ? 'enabled' : 'disabled'} · status=${prewarm.lastStatus || 'idle'} · running=${prewarm.running ? 'yes' : 'no'}`,
+    `当前缓存: ${cache.available ? 'available' : 'unavailable'} · ${cacheFresh ? 'fresh' : 'stale'} · app=${cache.app || prewarm.lastApp || '-'} · age=${cacheAgeMs === null ? '-' : `${cacheAgeMs}ms`}`,
+    cache.windowTitle ? `窗口: ${compactRecordText(cache.windowTitle, 180)}` : '',
+    `节点: ${Number(cache.nodeCount || prewarm.lastNodeCount || 0)} · max=${Number(cache.maxNodes || 0)}/${Number(cache.maxDepth || 0)} · last=${lastCompletedAt}`,
+    prewarm.lastError || cache.error ? `提示: ${compactRecordText(prewarm.lastError || cache.error, 220)}` : '',
+    '边界: 这里只读内存里的 UI 预热/缓存元数据；不触发新的 AX 扫描，不返回完整节点，不启动麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatCapabilityStatusForLocalCommand({ perception = {}, capabilities = {} } = {}) {
   const perceptionCounts = perception.counts || {};
   const capabilityCounts = capabilities.counts || {};
@@ -24514,6 +24565,16 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatScreenCaptureForLocalCommand(screenFrame),
         data: { screen: screenFrame },
+      };
+    }
+
+    if (command.intent === 'app_ui_status') {
+      const prewarm = ambientAppUiPrewarmSnapshot();
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatAppUiStatusForLocalCommand({ prewarm }),
+        data: { prewarm },
       };
     }
 
@@ -25987,7 +26048,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

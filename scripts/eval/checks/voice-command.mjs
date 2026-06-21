@@ -421,6 +421,38 @@ export default {
         : fail('voice_command.natural_app_ui_after_prewarm', 'Natural current-app UI after ambient prewarm', 'natural app UI phrase did not use the prewarmed app_ui cache', naturalAppUiAfterPrewarm.data),
     );
 
+    const naturalAppUiStatus = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '界面预热好了吗？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_app_ui_status',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalAppUiStatusData = naturalAppUiStatus.data || {};
+    out.push(
+      naturalAppUiStatus.ok &&
+        naturalAppUiStatusData.ok === true &&
+        naturalAppUiStatusData.executed === false &&
+        naturalAppUiStatusData.route?.decision?.localCommand === 'app_ui_status' &&
+        naturalAppUiStatusData.route?.localCommand?.intent === 'app_ui_status' &&
+        naturalAppUiStatusData.route?.data?.prewarm?.cache &&
+        !('nodes' in naturalAppUiStatusData.route.data.prewarm.cache) &&
+        typeof naturalAppUiStatusData.route?.output === 'string' &&
+        naturalAppUiStatusData.route.output.includes('UI 预热:') &&
+        naturalAppUiStatusData.route.output.includes('这里只读内存里的 UI 预热/缓存元数据') &&
+        naturalAppUiStatusData.safety?.startsMicrophone === false &&
+        naturalAppUiStatusData.safety?.usesRealtime === false &&
+        naturalAppUiStatusData.safety?.storesRawAudio === false &&
+        naturalAppUiStatusData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_app_ui_status', 'Natural current-app UI status voice command', '界面预热好了吗 routes to read-only app_ui_status metadata without cloud/realtime')
+        : fail('voice_command.natural_app_ui_status', 'Natural current-app UI status voice command', 'natural app UI status phrase did not use the local app_ui_status fast path', naturalAppUiStatus.data),
+    );
+
     const naturalDelegate = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
