@@ -958,6 +958,20 @@ let realtimeRendererDogfoodState = {
   error: '',
   events: [],
 };
+let realtimeProviderProbeState = {
+  active: false,
+  runId: '',
+  status: 'idle',
+  source: '',
+  startsMicrophone: false,
+  requiresMicConfirmation: false,
+  createdAt: 0,
+  updatedAt: 0,
+  completedAt: 0,
+  result: null,
+  error: '',
+  events: [],
+};
 const notificationState = {
   enabled: NOTIFICATIONS_ENABLED,
   sent: 0,
@@ -30536,6 +30550,27 @@ function normalizeRealtimeSessionNegotiation(options = {}) {
   };
 }
 
+function normalizeRealtimeProviderProbe(options = {}) {
+  return {
+    kind: 'provider_probe',
+    source: compactRecordText(options.source || 'api', 80),
+    runId: String(options.runId || realtimeProviderProbeState.runId || '').slice(0, 120),
+    sessionId: String(options.sessionId || '').slice(0, 120),
+    micMode: normalizeConversationMicMode(options.micMode || 'open'),
+    model: compactRecordText(options.model || models.realtime, 80),
+    voice: compactRecordText(options.voice || models.realtimeVoice, 80),
+    offerBytes: boundedCount(options.offerBytes, 10_000_000),
+    answerBytes: boundedCount(options.answerBytes, 10_000_000),
+    statusCode: boundedCount(options.statusCode, 999),
+    ok: Boolean(options.ok),
+    durationMs: boundedCount(options.durationMs, 600000),
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    error: compactRecordText(options.error || '', 300),
+    createdAt: Date.now(),
+  };
+}
+
 function parseRealtimeErrorPayload(value) {
   if (!value) return '';
   if (typeof value === 'string') {
@@ -30610,6 +30645,50 @@ function latestRealtimeNegotiationSnapshot(conversation, options = {}) {
   return Number(audit.createdAt || 0) > Number(current.createdAt || 0) ? audit : current;
 }
 
+function realtimeProviderProbeFromAuditEvent(event = {}) {
+  if (event.type !== 'realtime.provider_probe') return null;
+  const data = event.data || {};
+  const createdAt = Date.parse(event.ts || '') || 0;
+  if (!createdAt || Date.now() - createdAt > REALTIME_PROVIDER_WARNING_MAX_AGE_MS) return null;
+  return {
+    kind: 'provider_probe',
+    source: compactRecordText(data.source || 'audit', 80),
+    runId: String(data.runId || '').slice(0, 120),
+    sessionId: String(data.sessionId || '').slice(0, 120),
+    micMode: normalizeConversationMicMode(data.micMode || 'open'),
+    model: compactRecordText(data.model || models.realtime, 80),
+    voice: compactRecordText(data.voice || models.realtimeVoice, 80),
+    offerBytes: boundedCount(data.offerBytes, 10_000_000),
+    answerBytes: boundedCount(data.answerBytes, 10_000_000),
+    statusCode: boundedCount(data.statusCode, 999),
+    ok: Boolean(data.ok),
+    durationMs: boundedCount(data.durationMs, 600000),
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    error: compactRecordText(data.error || '', 300),
+    createdAt,
+    auditTs: event.ts || '',
+    fromAudit: true,
+  };
+}
+
+function latestRealtimeProviderProbeAuditSnapshot(limit = 300) {
+  const events = readRecentAudit(limit);
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const probe = realtimeProviderProbeFromAuditEvent(events[index]);
+    if (probe) return probe;
+  }
+  return null;
+}
+
+function latestRealtimeProviderProbeResultSnapshot(options = {}) {
+  const current = realtimeProviderProbeState.result || null;
+  const audit = options.includeRecentAudit ? latestRealtimeProviderProbeAuditSnapshot() : null;
+  if (!current) return audit;
+  if (!audit) return current;
+  return Number(audit.createdAt || 0) > Number(current.createdAt || 0) ? audit : current;
+}
+
 function classifyRealtimeProviderIssue(details = {}) {
   const statusCode = Number(details.statusCode || 0);
   const rawError = parseRealtimeErrorPayload(details.error || '');
@@ -30659,37 +30738,48 @@ function realtimeVoiceHealthSnapshot(options = {}) {
   const negotiation = latestRealtimeNegotiationSnapshot(conversation, {
     includeRecentAudit: options.includeRecentAudit === true,
   });
-  const errorText = parseRealtimeErrorPayload([
-    conversation?.error || '',
-    negotiation?.error || '',
-  ]);
+  const providerProbe = latestRealtimeProviderProbeResultSnapshot({
+    includeRecentAudit: options.includeRecentAudit === true,
+  });
+  const providerCheck = !negotiation
+    ? providerProbe
+    : !providerProbe
+      ? negotiation
+      : Number(providerProbe.createdAt || 0) > Number(negotiation.createdAt || 0)
+        ? providerProbe
+        : negotiation;
+  const errorText = parseRealtimeErrorPayload(providerCheck?.error || conversation?.error || '');
   const issue = OPENAI_API_KEY
     ? classifyRealtimeProviderIssue({
-      ok: negotiation?.ok,
-      statusCode: negotiation?.statusCode,
+      ok: providerCheck?.ok,
+      statusCode: providerCheck?.statusCode,
       error: errorText,
     })
     : {
       kind: 'missing_key',
       status: 'blocked',
       summary: 'Realtime voice cannot start because OPENAI_API_KEY is missing.',
-      next: 'Add OPENAI_API_KEY to .env and restart JAVIS.',
-    };
-  const lastSuccess = Boolean(negotiation?.ok && Number(negotiation?.statusCode || 0) >= 200 && Number(negotiation?.statusCode || 0) < 300);
+        next: 'Add OPENAI_API_KEY to .env and restart JAVIS.',
+      };
+  const lastSuccess = Boolean(providerCheck?.ok && Number(providerCheck?.statusCode || 0) >= 200 && Number(providerCheck?.statusCode || 0) < 300);
   const status = issue?.status || 'ready';
   const summary = issue?.summary
     || (lastSuccess
-      ? `Last Realtime WebRTC negotiation succeeded${negotiation.statusCode ? ` (HTTP ${negotiation.statusCode})` : ''}.`
+      ? providerCheck.kind === 'provider_probe'
+        ? `Last no-mic Realtime provider probe succeeded${providerCheck.statusCode ? ` (HTTP ${providerCheck.statusCode})` : ''}.`
+        : `Last Realtime WebRTC negotiation succeeded${providerCheck.statusCode ? ` (HTTP ${providerCheck.statusCode})` : ''}.`
       : 'No Realtime voice provider error recorded.');
   return {
     ok: status !== 'blocked',
     status,
-    kind: issue?.kind || (lastSuccess ? 'last_success' : 'no_provider_error'),
+    kind: issue?.kind || (lastSuccess ? (providerCheck.kind === 'provider_probe' ? 'provider_probe_success' : 'last_success') : 'no_provider_error'),
     summary,
     next: issue?.next || '',
     hasOpenAiKey: Boolean(OPENAI_API_KEY),
     maxAuditAgeMs: REALTIME_PROVIDER_WARNING_MAX_AGE_MS,
     lastNegotiation: negotiation,
+    lastProviderProbe: providerProbe,
+    lastProviderCheck: providerCheck,
     error: compactRecordText(errorText, 300),
   };
 }
@@ -30719,6 +30809,44 @@ function recordRealtimeSessionNegotiation(options = {}) {
     error: negotiation.error,
   });
   return { ok: true, negotiation, conversation: conversationStateSnapshot() };
+}
+
+function recordRealtimeProviderProbe(options = {}) {
+  const probe = normalizeRealtimeProviderProbe(options);
+  if (options.dryRun === true) {
+    return { ok: true, dryRun: true, probe: realtimeProviderProbeSnapshot({ result: probe }) };
+  }
+  const now = Date.now();
+  realtimeProviderProbeState = {
+    ...realtimeProviderProbeState,
+    active: false,
+    runId: probe.runId || realtimeProviderProbeState.runId,
+    status: probe.ok ? 'ok' : 'error',
+    source: probe.source,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    updatedAt: now,
+    completedAt: now,
+    result: probe,
+    error: probe.error,
+  };
+  appendAudit('realtime.provider_probe', {
+    runId: probe.runId,
+    sessionId: probe.sessionId,
+    source: probe.source,
+    micMode: probe.micMode,
+    model: probe.model,
+    voice: probe.voice,
+    offerBytes: probe.offerBytes,
+    answerBytes: probe.answerBytes,
+    statusCode: probe.statusCode,
+    ok: probe.ok,
+    durationMs: probe.durationMs,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    error: probe.error,
+  });
+  return { ok: true, probe: realtimeProviderProbeSnapshot() };
 }
 
 function normalizeRealtimeLatencyTimestamp(value) {
@@ -35834,6 +35962,7 @@ function realtimeRendererDogfoodPreflight(options = {}) {
   const prompt = options.prompt || realtimeDogfoodNextPromptSnapshot({ evidence });
   const rendererAvailable = Boolean(mainWindow && !mainWindow.isDestroyed());
   const providerReady = evidence.checks?.providerReady === true || evidence.voiceHealth?.status === 'ready';
+  const providerProbe = realtimeProviderProbeSnapshot();
   const blockers = [];
   if (!rendererAvailable) {
     blockers.push({
@@ -35877,6 +36006,10 @@ function realtimeRendererDogfoodPreflight(options = {}) {
       kind: evidence.voiceHealth?.kind || '',
       summary: compactRecordText(evidence.voiceHealth?.summary || '', 260),
       next: compactRecordText(evidence.voiceHealth?.next || '', 260),
+      probeStatus: providerProbe.status || '',
+      probeRunId: providerProbe.runId || '',
+      probeReady: Boolean(providerProbe.providerReady),
+      probeStartsMicrophone: false,
     },
     currentEvidence: {
       status: evidence.status || 'pending',
@@ -35909,6 +36042,8 @@ function realtimeRendererDogfoodPreflight(options = {}) {
       scriptPreview: 'npm run dogfood:realtime-renderer',
       scriptExecute: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
       scriptAcceptanceOnly: 'npm run dogfood:realtime-renderer -- --acceptance-only --no-save-archive',
+      providerProbe: 'npm run config -- --run-realtime-provider-probe',
+      providerProbePreview: 'npm run config -- --print-realtime-provider-probe',
       cui: 'npm run config -> R. Run renderer Realtime dogfood',
       monitor: 'npm run config -> V. Watch Realtime voice evidence',
     },
@@ -35933,6 +36068,7 @@ function realtimeRendererDogfoodPreflight(options = {}) {
       archiveIncludesScreenImage: false,
       actionPolicyBypassed: false,
       autopilotEligible: false,
+      providerProbeStartsMicrophone: false,
     },
     nextAction: readyToStart
       ? 'When the user is present, run the renderer trigger with execute:true and confirmMic:true, then monitor option V.'
@@ -35952,6 +36088,199 @@ function realtimeRendererDogfoodSnapshot() {
     startsMicrophone: Boolean(realtimeRendererDogfoodState.startsMicrophone),
     confirmMic: Boolean(realtimeRendererDogfoodState.confirmMic),
     events: (realtimeRendererDogfoodState.events || []).slice(-30),
+  };
+}
+
+function recordRealtimeProviderProbeEvent(options = {}) {
+  const now = Date.now();
+  const runId = String(options.runId || realtimeProviderProbeState.runId || '').slice(0, 120);
+  const event = {
+    runId,
+    type: compactRecordText(options.type || options.event || 'event', 80),
+    status: compactRecordText(options.status || '', 80),
+    detail: compactRecordText(options.detail || options.message || '', 300),
+    sessionId: String(options.sessionId || '').slice(0, 120),
+    createdAt: now,
+    createdAtIso: new Date(now).toISOString(),
+  };
+  const terminal = ['stopped', 'done', 'ok', 'error', 'timeout'].includes(event.type)
+    || ['stopped', 'done', 'ok', 'error', 'timeout'].includes(event.status);
+  realtimeProviderProbeState = {
+    ...realtimeProviderProbeState,
+    active: terminal ? false : realtimeProviderProbeState.active,
+    runId: runId || realtimeProviderProbeState.runId,
+    status: event.status || event.type || realtimeProviderProbeState.status,
+    updatedAt: now,
+    completedAt: terminal ? now : realtimeProviderProbeState.completedAt,
+    error: event.type === 'error' || event.status === 'error' ? event.detail : realtimeProviderProbeState.error,
+    events: [...(realtimeProviderProbeState.events || []), event].slice(-40),
+  };
+  appendAudit('realtime.provider_probe_event', {
+    runId: event.runId,
+    type: event.type,
+    status: event.status,
+    sessionId: event.sessionId,
+    detail: event.detail,
+  });
+  return realtimeProviderProbeSnapshot();
+}
+
+function realtimeProviderProbeSnapshot(options = {}) {
+  const result = options.result || latestRealtimeProviderProbeResultSnapshot({ includeRecentAudit: true });
+  const issue = result
+    ? classifyRealtimeProviderIssue({
+      ok: result.ok,
+      statusCode: result.statusCode,
+      error: result.error,
+    })
+    : null;
+  const providerReady = OPENAI_API_KEY
+    ? result?.ok === true && !issue
+    : false;
+  const status = !OPENAI_API_KEY
+    ? 'blocked'
+    : realtimeProviderProbeState.active
+      ? realtimeProviderProbeState.status || 'running'
+      : issue?.status || (providerReady ? 'ready' : (result ? 'warning' : 'idle'));
+  const summary = !OPENAI_API_KEY
+    ? 'OPENAI_API_KEY is missing, so the no-mic Realtime provider probe cannot run.'
+    : issue?.summary
+      || (providerReady
+        ? `No-mic Realtime provider probe succeeded${result.statusCode ? ` (HTTP ${result.statusCode})` : ''}.`
+        : result
+          ? `No-mic Realtime provider probe has a non-ready result${result.statusCode ? ` (HTTP ${result.statusCode})` : ''}.`
+          : 'No no-mic Realtime provider probe has run yet.');
+  return {
+    ok: status !== 'blocked',
+    generatedAt: new Date().toISOString(),
+    active: Boolean(realtimeProviderProbeState.active),
+    runId: realtimeProviderProbeState.runId,
+    status,
+    source: realtimeProviderProbeState.source || '',
+    rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    providerReady,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    manualOnly: false,
+    requiresUserPresence: false,
+    summary,
+    next: !OPENAI_API_KEY
+      ? 'Add OPENAI_API_KEY to .env and restart JAVIS.'
+      : issue?.next || (providerReady
+        ? 'The provider lane is ready; start the mic-confirmed live Realtime dogfood only when the user is present.'
+        : 'Run the no-mic provider probe before opening a live microphone session.'),
+    result,
+    issue,
+    createdAt: realtimeProviderProbeState.createdAt,
+    updatedAt: realtimeProviderProbeState.updatedAt,
+    completedAt: realtimeProviderProbeState.completedAt,
+    error: realtimeProviderProbeState.error,
+    events: (realtimeProviderProbeState.events || []).slice(-20),
+    commands: {
+      preview: 'npm run config -- --print-realtime-provider-probe',
+      execute: 'npm run config -- --run-realtime-provider-probe',
+      liveVoice: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
+    },
+    endpoint: {
+      method: 'POST',
+      path: '/api/realtime/provider/probe',
+      previewBody: { execute: false },
+      executeBody: { execute: true },
+    },
+    safety: {
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      capturesAudio: false,
+      storesRawAudio: false,
+      startsScreenCapture: false,
+      actionPolicyBypassed: false,
+    },
+  };
+}
+
+async function startRealtimeProviderProbe(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
+  const source = String(options.source || 'api').slice(0, 80);
+  const rendererAvailable = Boolean(mainWindow && !mainWindow.isDestroyed());
+  const preview = {
+    ok: Boolean(OPENAI_API_KEY && rendererAvailable),
+    executed: false,
+    runId,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    manualOnly: false,
+    requiresUserPresence: false,
+    rendererAvailable,
+    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    providerProbe: realtimeProviderProbeSnapshot(),
+    detail: {
+      action: 'probe',
+      runId,
+      source,
+      createdAt: Date.now(),
+    },
+    output: [
+      'Preview no-mic Realtime provider probe.',
+      'This creates a renderer WebRTC offer without getUserMedia, then calls the same Realtime provider session endpoint with probe=true.',
+      `Renderer: ${rendererAvailable ? 'ready' : 'missing'}.`,
+      `OpenAI key: ${OPENAI_API_KEY ? 'present' : 'missing'}.`,
+    ].join('\n'),
+  };
+  if (!execute) return preview;
+  if (!OPENAI_API_KEY) {
+    return {
+      ...preview,
+      ok: false,
+      status: 400,
+      output: 'Cannot run no-mic Realtime provider probe because OPENAI_API_KEY is missing.',
+    };
+  }
+  if (!rendererAvailable) {
+    return {
+      ...preview,
+      ok: false,
+      status: 409,
+      output: 'Cannot run no-mic Realtime provider probe because the renderer window is not available.',
+    };
+  }
+
+  const now = Date.now();
+  realtimeProviderProbeState = {
+    active: true,
+    runId,
+    status: 'dispatching',
+    source,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    createdAt: now,
+    updatedAt: now,
+    completedAt: 0,
+    result: realtimeProviderProbeState.result || null,
+    error: '',
+    events: [],
+  };
+  recordRealtimeProviderProbeEvent({ runId, type: 'created', status: 'dispatching', detail: 'No-mic Realtime provider probe created.' });
+  const dispatch = await dispatchRendererDogfoodCommand(preview.detail);
+  if (!dispatch.ok) {
+    recordRealtimeProviderProbeEvent({ runId, type: 'error', status: 'error', detail: dispatch.error || 'Renderer dispatch failed.' });
+    return {
+      ...preview,
+      ok: false,
+      status: dispatch.status || 409,
+      executed: true,
+      providerProbe: realtimeProviderProbeSnapshot(),
+      output: dispatch.error || 'Renderer dispatch failed.',
+    };
+  }
+  recordRealtimeProviderProbeEvent({ runId, type: 'dispatched', status: 'waiting_for_renderer', detail: 'No-mic provider probe dispatched to renderer.' });
+  return {
+    ...preview,
+    ok: true,
+    executed: true,
+    providerProbe: realtimeProviderProbeSnapshot(),
+    output: 'No-mic Realtime provider probe dispatched. Poll /api/realtime/provider/probe for the provider result.',
   };
 }
 
@@ -36004,6 +36333,15 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
       nextAction: 'Load the full prompt script, start or reuse the operator tracker, and save local prep evidence before the live mic run.',
     },
     {
+      id: 'probe_provider_no_mic',
+      label: 'Probe Realtime provider without mic',
+      command: 'npm run config -- --run-realtime-provider-probe',
+      endpoint: '/api/realtime/provider/probe',
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      nextAction: 'Verify the API key, project quota, model, voice, and Realtime endpoint before opening the microphone.',
+    },
+    {
       id: 'start_live_voice',
       label: 'Start renderer WebRTC voice',
       command: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
@@ -36048,6 +36386,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
   const commands = {
     pack: 'npm run config -- --print-realtime-dogfood-pack',
     preflight: 'npm run dogfood:realtime-renderer',
+    providerProbe: 'npm run config -- --run-realtime-provider-probe',
     start: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
     startRequireAcceptance: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
     monitor: 'npm run config -> V. Watch Realtime voice evidence',
@@ -36093,6 +36432,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
     api: {
       pack: { method: 'GET', path: '/api/realtime/dogfood/pack' },
       preflight: { method: 'GET', path: '/api/realtime/dogfood/renderer' },
+      providerProbe: { method: 'POST', path: '/api/realtime/provider/probe', body: { execute: true } },
       start: {
         method: 'POST',
         path: '/api/realtime/dogfood/renderer/start',
@@ -36162,6 +36502,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
       autopilotEligible: false,
       unattendedStartBlocked: true,
       desktopPetDiagnostics: false,
+      providerProbeStartsMicrophone: false,
     },
     nextAction: preflight.readyToStart
       ? 'Open the monitor, then run the mic-confirmed renderer trigger while the user is present.'
@@ -36973,6 +37314,30 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
   const drill = evidence.drill || {};
   const pending = Array.isArray(drill.pending) ? drill.pending.slice(0, 4) : [];
   const prompts = Array.isArray(drill.prompts) ? drill.prompts.slice(0, promptLimit) : [];
+  const rawGapSummary = evidence.gapSummary || realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
+  const gapSummary = {
+    ok: Boolean(rawGapSummary.ok),
+    status: compactRecordText(rawGapSummary.status || '', 60),
+    phase: compactRecordText(rawGapSummary.phase || '', 80),
+    summary: compactRecordText(rawGapSummary.summary || '', 260),
+    counts: rawGapSummary.counts || {},
+    currentActionStartsMicrophone: Boolean(rawGapSummary.currentActionStartsMicrophone),
+    nextStep: rawGapSummary.nextStep ? {
+      id: compactRecordText(rawGapSummary.nextStep.id || '', 120),
+      label: compactRecordText(rawGapSummary.nextStep.label || '', 140),
+      status: compactRecordText(rawGapSummary.nextStep.status || '', 60),
+      nextAction: compactRecordText(rawGapSummary.nextStep.nextAction || '', 160),
+    } : null,
+    nextPrompt: rawGapSummary.nextPrompt ? {
+      promptType: compactRecordText(rawGapSummary.nextPrompt.promptType || '', 60),
+      copyText: compactRecordText(rawGapSummary.nextPrompt.copyText || rawGapSummary.nextPrompt.prompt || '', 180),
+      reason: compactRecordText(rawGapSummary.nextPrompt.reason || '', 160),
+    } : null,
+    monitor: {
+      cui: 'npm run config -> V. Watch Realtime voice evidence',
+      endpoint: '/api/realtime/evidence',
+    },
+  };
   return {
     ok: true,
     generatedAt: evidence.generatedAt,
@@ -37041,7 +37406,7 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
       requiresUserPresence: true,
       status: drill.status || evidence.status,
       summary: compactRecordText(drill.summary || '', 260),
-      gapSummary: evidence.gapSummary || realtimeDogfoodGapSummaryFromEvidence(evidence, { drill }),
+      gapSummary,
       prompts,
       pending: pending.map((step) => ({
         id: step.id,
@@ -50044,6 +50409,34 @@ function startApiServer() {
     }
   });
 
+  api.get('/api/realtime/provider/probe', (_req, res) => {
+    try {
+      res.json({ probe: realtimeProviderProbeSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime provider probe snapshot failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/provider/probe', express.json({ limit: '128kb' }), async (req, res) => {
+    try {
+      const result = await startRealtimeProviderProbe({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_provider_probe',
+      });
+      res.status(result.ok === false ? (result.status || 409) : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime provider probe failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/provider/probe/event', express.json({ limit: '128kb' }), (req, res) => {
+    try {
+      res.json({ probe: recordRealtimeProviderProbeEvent(req.body || {}) });
+    } catch (error) {
+      jsonError(res, 400, 'Realtime provider probe event failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.get('/api/realtime/dogfood', (_req, res) => {
     try {
       res.json({ dogfood: realtimeDogfoodRunbookSnapshot() });
@@ -51130,12 +51523,32 @@ function startApiServer() {
   });
 
   api.post('/api/realtime/session', express.text({ type: ['application/sdp', 'text/plain'], limit: '4mb' }), async (req, res) => {
-    if (!OPENAI_API_KEY) {
-      recordRealtimeSessionNegotiation({
-        source: 'renderer',
-        sessionId: conversationState.sessionId,
+    const isProviderProbe = req.query.probe === 'true' || String(req.query.micMode || '').toLowerCase() === 'probe';
+    const runId = String(req.query.runId || '').slice(0, 120);
+    const source = isProviderProbe ? 'renderer_provider_probe' : 'renderer';
+    const sessionId = isProviderProbe ? runId : conversationState.sessionId;
+    const offerBytes = Buffer.byteLength(String(req.body || ''), 'utf8');
+    const recordProviderAttempt = (payload = {}) => {
+      if (isProviderProbe) {
+        return recordRealtimeProviderProbe({
+          source,
+          runId,
+          sessionId,
+          micMode: 'open',
+          offerBytes,
+          ...payload,
+        });
+      }
+      return recordRealtimeSessionNegotiation({
+        source,
+        sessionId,
         micMode: req.query.micMode,
-        offerBytes: Buffer.byteLength(String(req.body || ''), 'utf8'),
+        offerBytes,
+        ...payload,
+      });
+    };
+    if (!OPENAI_API_KEY) {
+      recordProviderAttempt({
         answerBytes: 0,
         statusCode: 400,
         ok: false,
@@ -51147,8 +51560,7 @@ function startApiServer() {
     }
 
     const startedAt = Date.now();
-    const micMode = normalizeConversationMicMode(req.query.micMode);
-    const offerBytes = Buffer.byteLength(String(req.body || ''), 'utf8');
+    const micMode = isProviderProbe ? 'open' : normalizeConversationMicMode(req.query.micMode);
     const fd = new FormData();
     fd.set('sdp', req.body);
     fd.set('session', JSON.stringify(createRealtimeSessionConfig({ micMode })));
@@ -51163,11 +51575,8 @@ function startApiServer() {
         body: fd,
       });
       const sdp = await response.text();
-      recordRealtimeSessionNegotiation({
-        source: 'renderer',
-        sessionId: conversationState.sessionId,
+      recordProviderAttempt({
         micMode,
-        offerBytes,
         answerBytes: Buffer.byteLength(sdp, 'utf8'),
         statusCode: response.status,
         ok: response.ok,
@@ -51180,11 +51589,8 @@ function startApiServer() {
       }
       res.type('application/sdp').send(sdp);
     } catch (error) {
-      recordRealtimeSessionNegotiation({
-        source: 'renderer',
-        sessionId: conversationState.sessionId,
+      recordProviderAttempt({
         micMode,
-        offerBytes,
         answerBytes: 0,
         statusCode: 500,
         ok: false,

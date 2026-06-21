@@ -90,6 +90,19 @@ curl http://127.0.0.1:3417/api/doctor/report
 
 Doctor also reports Realtime voice provider health. A configured `OPENAI_API_KEY` is not enough: recent WebRTC session negotiation failures, including HTTP 429 quota/rate-limit and billing errors, show as a warning for up to `JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS` (24 hours by default). If the error code is `insufficient_quota`, the key has reached OpenAI but the OpenAI project has no usable quota, billing, or rate-limit headroom for Realtime; add billing/credits, raise limits, or replace `OPENAI_API_KEY` with a project key that has Realtime quota, then restart JAVIS. This keeps the desktop pet minimal while the terminal CUI and `/api/doctor/report` explain why live voice is not usable.
 
+Before opening a real microphone session, run the no-mic provider probe. It creates a renderer WebRTC offer without `getUserMedia`, calls the same OpenAI Realtime provider path with `probe=true`, records HTTP status/error evidence, and closes immediately:
+
+```bash
+npm run config -- --print-realtime-provider-probe
+npm run config -- --run-realtime-provider-probe
+npm run dogfood:realtime-provider-probe
+curl -X POST http://127.0.0.1:3417/api/realtime/provider/probe \
+  -H 'Content-Type: application/json' \
+  -d '{"execute":true}'
+```
+
+The probe never starts microphone capture, screen capture, raw audio storage, or the live dogfood session. A successful probe proves the key/project/model/voice/provider path is ready; it does not count as a live voice session. The live run still requires `npm run dogfood:realtime-renderer -- --execute --confirm-mic` while the user is present.
+
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
 ```bash

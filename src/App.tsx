@@ -81,6 +81,14 @@ type RealtimeRendererDogfoodCommand = {
   source?: string
 }
 
+type RealtimeProviderProbeEvent = {
+  runId: string
+  type: string
+  status: string
+  detail?: string
+  sessionId?: string
+}
+
 const emptyRealtimeLatencyTimeline = (): RealtimeLatencyTimeline => ({
   startedAt: 0,
   micReadyAt: 0,
@@ -2253,11 +2261,103 @@ function App() {
       return false
     }
 
+    const postProviderProbeEvent = async (payload: RealtimeProviderProbeEvent) => {
+      await apiJson<{ probe: unknown }>('/api/realtime/provider/probe/event', {
+        method: 'POST',
+        body: JSON.stringify({ source: 'renderer', ...payload }),
+      })
+    }
+
     const handleRendererDogfood = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent<RealtimeRendererDogfoodCommand>
       const detail = event.detail || {}
-      if (detail.action !== 'start') return
       const runId = detail.runId || crypto.randomUUID()
+      if (detail.action === 'probe') {
+        void (async () => {
+          let peer: RTCPeerConnection | null = null
+          let dataChannel: RTCDataChannel | null = null
+          const probeSessionId = runId
+          try {
+            await postProviderProbeEvent({
+              runId,
+              type: 'received',
+              status: 'starting',
+              detail: 'Renderer received no-mic Realtime provider probe command.',
+              sessionId: probeSessionId,
+            })
+            peer = new RTCPeerConnection()
+            peer.addTransceiver('audio', { direction: 'recvonly' })
+            dataChannel = peer.createDataChannel('oai-events')
+            const offer = await peer.createOffer()
+            await peer.setLocalDescription(offer)
+            const offerSdp = offer.sdp || ''
+            await postProviderProbeEvent({
+              runId,
+              type: 'offer_created',
+              status: 'negotiating',
+              detail: `No-mic probe offer created (${utf8Bytes(offerSdp)}B).`,
+              sessionId: probeSessionId,
+            })
+            const params = new URLSearchParams({ micMode: 'open', probe: 'true', runId })
+            const response = await fetch(`${API_BASE}/api/realtime/session?${params.toString()}`, {
+              method: 'POST',
+              body: offerSdp,
+              headers: apiHeaders(undefined, 'application/sdp'),
+            })
+            const answerSdp = await response.text()
+            if (!response.ok) {
+              await postProviderProbeEvent({
+                runId,
+                type: 'error',
+                status: 'error',
+                detail: answerSdp || response.statusText,
+                sessionId: probeSessionId,
+              })
+              return
+            }
+            await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp })
+            const opened = await new Promise<boolean>((resolve) => {
+              if (dataChannel?.readyState === 'open') {
+                resolve(true)
+                return
+              }
+              let resolved = false
+              const finish = (value: boolean) => {
+                if (resolved) return
+                resolved = true
+                resolve(value)
+              }
+              const timeout = window.setTimeout(() => finish(false), 2500)
+              dataChannel?.addEventListener('open', () => {
+                window.clearTimeout(timeout)
+                finish(true)
+              }, { once: true })
+            })
+            await postProviderProbeEvent({
+              runId,
+              type: 'done',
+              status: 'ok',
+              detail: opened
+                ? 'No-mic provider probe negotiated and data channel opened.'
+                : 'No-mic provider probe negotiated; data channel did not open before the short close timeout.',
+              sessionId: probeSessionId,
+            })
+          } catch (error) {
+            await postProviderProbeEvent({
+              runId,
+              type: 'error',
+              status: 'error',
+              detail: error instanceof Error ? error.message : String(error),
+              sessionId: probeSessionId,
+            }).catch(() => null)
+          } finally {
+            dataChannel?.close()
+            peer?.close()
+          }
+        })()
+        return
+      }
+      if (detail.action !== 'start') return
       const prompts = Array.isArray(detail.prompts) ? detail.prompts.map((item) => String(item || '').trim()).filter(Boolean).slice(0, 8) : []
       const promptDelayMs = Math.max(0, Math.min(180000, Number(detail.promptDelayMs || 35000)))
       const betweenPromptsMs = Math.max(1000, Math.min(60000, Number(detail.betweenPromptsMs || 9000)))

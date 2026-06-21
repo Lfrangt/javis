@@ -357,6 +357,7 @@ async function printStatus() {
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
   console.log('R. Run renderer Realtime dogfood (starts mic)');
+  console.log('RP. Probe Realtime provider (no mic)');
   console.log('O. Show Realtime live drill pack');
   console.log('B. Show Realtime dogfood brief');
   console.log('E. Show Realtime dogfood acceptance');
@@ -2926,6 +2927,68 @@ function printRendererDogfood(result) {
   }
 }
 
+function printRealtimeProviderProbe(result) {
+  const probe = result?.probe || result?.providerProbe || result || {};
+  const providerResult = probe.result || result?.result || {};
+  console.log('JAVIS Realtime Provider Probe');
+  console.log('=============================');
+  console.log(`Run: ${probe.runId || result?.runId || providerResult.runId || '-'}`);
+  console.log(`Status: ${probe.status || (result?.executed ? 'dispatched' : 'preview')} · renderer=${probe.rendererAvailable ? 'ready' : 'unknown'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'} · starts microphone=${probe.startsMicrophone ? 'yes' : 'no'}`);
+  console.log(`Provider: ${probe.providerReady ? 'ready' : 'not-ready'}${providerResult.statusCode ? ` · HTTP ${providerResult.statusCode}` : ''}${providerResult.durationMs ? ` · ${providerResult.durationMs}ms` : ''}`);
+  if (probe.summary) console.log(`Summary: ${compact(probe.summary, 300)}`);
+  if (probe.next) console.log(`Next: ${compact(probe.next, 300)}`);
+  if (providerResult.error) console.log(`Error: ${compact(providerResult.error, 360)}`);
+  if (result?.output) console.log(`\n${compact(result.output, 1200)}`);
+  const events = Array.isArray(probe.events) ? probe.events : [];
+  if (events.length) {
+    console.log('\nRecent probe events:');
+    for (const event of events.slice(-8)) {
+      console.log(`- ${event.createdAtIso || event.createdAt || '-'} · ${event.type || '-'} · ${event.status || '-'}${event.detail ? ` · ${compact(event.detail, 180)}` : ''}`);
+    }
+  }
+}
+
+async function showRealtimeProviderProbe(options = {}) {
+  const run = options.run === true;
+  let result = run
+    ? await request('/api/realtime/provider/probe', {
+        method: 'POST',
+        body: { execute: true, source: 'cui' },
+      })
+    : await request('/api/realtime/provider/probe');
+
+  if (run && result.executed) {
+    const runId = result.runId || result.providerProbe?.runId || '';
+    const endAt = Date.now() + Number(options.timeoutMs || 20000);
+    while (Date.now() < endAt) {
+      await sleep(1000);
+      const current = await request('/api/realtime/provider/probe');
+      const probe = current.probe || {};
+      const done = probe.active === false && (probe.completedAt || probe.result);
+      const sameRun = !runId || probe.runId === runId || probe.result?.runId === runId;
+      result = { ...result, probe };
+      if (done && sameRun) break;
+    }
+  }
+
+  printRealtimeProviderProbe(result);
+  return result;
+}
+
+async function runRealtimeProviderProbeFromCui(rl) {
+  const preview = await showRealtimeProviderProbe();
+  if (preview.probe?.startsMicrophone) {
+    console.log('\nUnexpected safety state: probe claims it starts microphone. Refusing.');
+    return;
+  }
+  const answer = (await rl.question('\nRun no-mic provider probe now? Type RUN to call OpenAI Realtime without microphone capture: ')).trim();
+  if (answer !== 'RUN') {
+    console.log('\nNo provider probe started.');
+    return;
+  }
+  await showRealtimeProviderProbe({ run: true });
+}
+
 function printRealtimeDogfoodPack(result) {
   const pack = result?.pack || result || {};
   const readiness = pack.readiness || {};
@@ -3410,6 +3473,16 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-realtime-provider-probe') || process.argv.includes('--realtime-provider-probe')) {
+    await showRealtimeProviderProbe();
+    return;
+  }
+
+  if (process.argv.includes('--run-realtime-provider-probe')) {
+    await showRealtimeProviderProbe({ run: true });
+    return;
+  }
+
   if (process.argv.includes('--start-renderer-realtime-dogfood')) {
     const confirmMic = process.argv.includes('--confirm-mic');
     const result = await request('/api/realtime/dogfood/renderer/start', {
@@ -3669,6 +3742,8 @@ async function main() {
         await startRealtimeDogfoodDrillFromCui(rl);
       } else if (answer === 'r' || answer === 'renderer dogfood' || answer === 'realtime renderer') {
         await startRendererRealtimeDogfoodFromCui(rl);
+      } else if (answer === 'rp' || answer === 'provider probe' || answer === 'realtime provider probe') {
+        await runRealtimeProviderProbeFromCui(rl);
       } else if (answer === 'o' || answer === 'pack' || answer === 'drill pack' || answer === 'live drill pack') {
         await showRealtimeDogfoodPack();
       } else if (answer === 'b' || answer === 'brief' || answer === 'dogfood brief') {

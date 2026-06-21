@@ -51,9 +51,15 @@ export default {
   lane: 'realtime-preflight',
   async run(ctx) {
     const out = [];
-    const [config, renderer, pack, acceptanceResponse, evidence] = await Promise.all([
+    const [config, renderer, providerProbe, providerProbePreview, pack, acceptanceResponse, evidence] = await Promise.all([
       ctx.api('/api/realtime/config?micMode=open', { timeoutMs: 30000 }),
       ctx.api('/api/realtime/dogfood/renderer', { timeoutMs: 30000 }),
+      ctx.api('/api/realtime/provider/probe', { timeoutMs: 30000 }),
+      ctx.api('/api/realtime/provider/probe', {
+        method: 'POST',
+        body: { execute: false, source: 'eval_realtime_preflight' },
+        timeoutMs: 30000,
+      }),
       ctx.api('/api/realtime/dogfood/pack', { timeoutMs: 30000 }),
       ctx.api('/api/realtime/dogfood/acceptance', { timeoutMs: 30000 }),
       ctx.api('/api/realtime/evidence', { timeoutMs: 30000 }),
@@ -72,6 +78,23 @@ export default {
         manifest.bytes <= manifest.maxBytes
         ? ok('realtime_preflight.config', 'Realtime config preflight', `${realtime.model || 'model?'} · ${manifest.toolCount}/${manifest.maxTools} tools · ${Math.ceil((manifest.bytes || 0) / 1024)}KB manifest`)
         : fail('realtime_preflight.config', 'Realtime config preflight', `GET /api/realtime/config ${config.status}`, { realtime }),
+    );
+
+    const probe = providerProbe.data?.probe || {};
+    const probePreview = providerProbePreview.data || {};
+    out.push(
+      providerProbe.ok &&
+        providerProbePreview.ok &&
+        probe.startsMicrophone === false &&
+        probe.requiresMicConfirmation === false &&
+        probe.safety?.startsMicrophone === false &&
+        probe.safety?.capturesAudio === false &&
+        probePreview.executed === false &&
+        probePreview.startsMicrophone === false &&
+        probePreview.requiresMicConfirmation === false &&
+        probePreview.detail?.action === 'probe'
+        ? ok('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `${probe.status || 'idle'} · renderer=${probe.rendererAvailable ? 'ready' : 'missing'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'}`)
+        : fail('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `GET/POST /api/realtime/provider/probe ${providerProbe.status}/${providerProbePreview.status}`, { probe, preview: probePreview }),
     );
 
     const rendererDogfood = renderer.data?.rendererDogfood || {};
