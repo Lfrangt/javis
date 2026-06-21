@@ -1911,7 +1911,7 @@ function menuBarStatusLabel(readiness) {
 
 function updateMenuBarMenu() {
   if (!menuBarAvailable()) return;
-  const readiness = readinessSnapshot();
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
   const briefing = workflowBriefing({ workflowLimit: 3, jobLimit: 3 });
   const firstAction = briefing.nextActions?.[0] || null;
   const inbox = inboxCounts();
@@ -4964,7 +4964,7 @@ async function localCapabilitySnapshot(options = {}) {
   const workNext = !includeNext
     ? null
     : await workNextAction({ execute: false, source: options.source || 'capability_map' });
-  const readiness = readinessSnapshot();
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
   const contracts = laneContractSnapshot({ lane: requested }).contracts
     .map((contract) => {
       const tools = capabilityToolHintsForContract(contract);
@@ -37208,6 +37208,12 @@ async function startRealtimeProviderProbe(options = {}) {
     rendererAvailable,
     hasOpenAiKey: Boolean(OPENAI_API_KEY),
     providerProbe: realtimeProviderProbeSnapshot(),
+    endpoint: {
+      method: 'POST',
+      path: '/api/realtime/provider/probe',
+      previewBody: { execute: false },
+      executeBody: { execute: true },
+    },
     detail: {
       action: 'probe',
       runId,
@@ -41768,7 +41774,7 @@ function workflowBriefing(options = {}) {
   const jobLimit = Math.max(1, Math.min(20, Number(options.jobLimit || 6)));
   const includeMaintenance = options.includeMaintenance === true || String(options.includeMaintenance || '').toLowerCase() === 'true';
   const forceMaintenance = options.forceMaintenance === true || String(options.forceMaintenance || '').toLowerCase() === 'true';
-  const readiness = readinessSnapshot();
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
   const workflowContext = workflowSnapshot(Math.max(workflowLimit, 50));
   const recentWorkflows = workflowContext.slice(0, workflowLimit);
   const recentJobs = jobSnapshot(Math.max(jobLimit, 50)).filter((job) => !isInternalJob(job)).slice(0, jobLimit);
@@ -42881,6 +42887,25 @@ async function workNextAction(options = {}) {
     ? [...primaryActions, ...followUpActions, ...availableActions].filter((item, index, list) => item?.id && list.findIndex((candidate) => candidate?.id === item.id) === index)
     : primaryActions;
   let action = requestedActionId ? actionPool.find((item) => item.id === requestedActionId) || null : actionPool[0] || null;
+  if (requestedActionId && !action && requestedActionId === 'readiness:realtime_voice_provider') {
+    const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
+    action = {
+      id: 'readiness:realtime_voice_provider',
+      priority: 2,
+      label: 'Realtime voice provider',
+      summary: voiceHealth.next || voiceHealth.summary || 'Run the no-mic Realtime provider probe.',
+      source: 'readiness',
+      providerProbe: true,
+      executable: true,
+      autoEligible: false,
+      autopilotEligible: false,
+      manualOnly: false,
+      requiresUserPresence: false,
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      localFallback: voiceHealth.fallback || null,
+    };
+  }
   if (requestedActionId && !action && requestedActionId.startsWith('route:')) {
     const routeId = requestedActionId.replace(/^route:/, '');
     const record = routingRecords.get(routeId) || null;
@@ -42910,7 +42935,20 @@ async function workNextAction(options = {}) {
   let executed = false;
 
   if (action.source === 'readiness') {
-    if (execute) {
+    if (action.id === 'readiness:realtime_voice_provider') {
+      result = await startRealtimeProviderProbe({
+        execute,
+        source: options.source || 'work_next_realtime_provider',
+      });
+      executed = Boolean(execute && result.executed);
+      output = [
+        result.output,
+        execute
+          ? 'Work-next executed the no-mic provider probe; inspect providerProbe/result for the latest API status.'
+          : 'Preview mode: no provider request was sent and no microphone was started.',
+        'Fallback remains /api/voice/command while Realtime is unavailable.',
+      ].filter(Boolean).join('\n');
+    } else if (execute) {
       result = await runNextSetupAction({ source: options.source || 'work_next' });
       executed = true;
       output = result.output;
@@ -43395,6 +43433,24 @@ function compactWorkNextActionForVoice(action = null) {
     workflowId: compactRecordText(action.workflowId || '', 120),
     jobId: compactRecordText(action.jobId || '', 120),
     routeId: compactRecordText(action.routeId || '', 120),
+    localFallback: action.localFallback
+      ? {
+        available: Boolean(action.localFallback.available),
+        activeWhenRealtimeBlocked: Boolean(action.localFallback.activeWhenRealtimeBlocked),
+        lane: compactRecordText(action.localFallback.lane || '', 80),
+        endpoint: compactRecordText(action.localFallback.endpoint || '', 120),
+        summary: compactRecordText(action.localFallback.summary || '', 220),
+        next: compactRecordText(action.localFallback.next || '', 220),
+        blocker: action.localFallback.blocker
+          ? {
+            active: Boolean(action.localFallback.blocker.active),
+            kind: compactRecordText(action.localFallback.blocker.kind || '', 80),
+            status: compactRecordText(action.localFallback.blocker.status || '', 80),
+            summary: compactRecordText(action.localFallback.blocker.summary || '', 180),
+          }
+          : null,
+      }
+      : null,
     routeRecovery: action.routeRecovery
       ? {
         candidateCount: boundedCount(action.routeRecovery.candidateCount, 1000),
@@ -43465,6 +43521,17 @@ function compactWorkNextResultForVoice(result = null) {
       : null,
     routeRecovery: compactRouteRecoveryForVoice(routeRecovery),
     browserFillRecovery: compactBrowserFillRecoveryForVoice(browserFillRecovery),
+    realtimeProviderProbe: result.providerProbe
+      ? {
+        status: compactRecordText(result.providerProbe.status || '', 80),
+        providerReady: Boolean(result.providerProbe.providerReady),
+        startsMicrophone: Boolean(result.providerProbe.startsMicrophone),
+        requiresMicConfirmation: Boolean(result.providerProbe.requiresMicConfirmation),
+        summary: compactRecordText(result.providerProbe.summary || '', 220),
+        next: compactRecordText(result.providerProbe.next || '', 220),
+        runId: compactRecordText(result.providerProbe.runId || '', 120),
+      }
+      : null,
     workflow: result.workflow
       ? {
         id: compactRecordText(result.workflow.id || '', 120),

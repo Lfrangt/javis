@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 
-import { ok, warn, fail } from '../_client.mjs';
+import { ok, warn, fail, skip } from '../_client.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -166,6 +166,29 @@ export default {
         })
         : fail('briefing.worknext', 'Work-next', `GET /api/work/next did not return a coherent preview envelope (${wn.status})`, wn.data),
     );
+
+    const realtimeProviderAction = workNextActions.find((action) => action?.id === 'readiness:realtime_voice_provider') || next.find((action) => action?.id === 'readiness:realtime_voice_provider') || null;
+    if (realtimeProviderAction) {
+      const providerProbePreview = await ctx.api(`/api/work/next?actionId=${encodeURIComponent(realtimeProviderAction.id)}`);
+      const providerProbeNext = providerProbePreview.data?.next || {};
+      const providerProbeResult = providerProbeNext.result || {};
+      out.push(
+        providerProbePreview.ok &&
+          providerProbeNext.ok === true &&
+          providerProbeNext.executed === false &&
+          providerProbeNext.action?.id === 'readiness:realtime_voice_provider' &&
+          providerProbeResult.executed === false &&
+          providerProbeResult.startsMicrophone === false &&
+          providerProbeResult.requiresMicConfirmation === false &&
+          providerProbeResult.endpoint?.path === '/api/realtime/provider/probe' &&
+          String(providerProbeNext.output || '').includes('Preview no-mic Realtime provider probe') &&
+          String(providerProbeNext.output || '').includes('Preview mode: no provider request was sent')
+          ? ok('briefing.worknext_realtime_provider_probe_preview', 'Work-next Realtime provider probe preview', 'readiness action previews a no-mic provider probe without calling OpenAI')
+          : fail('briefing.worknext_realtime_provider_probe_preview', 'Work-next Realtime provider probe preview', 'explicit realtime provider readiness action did not return a safe no-mic probe preview', providerProbePreview.data),
+      );
+    } else {
+      out.push(skip('briefing.worknext_realtime_provider_probe_preview', 'Work-next Realtime provider probe preview', 'Realtime provider is ready, so no provider-probe readiness action is present.'));
+    }
 
     if (realtimeAction?.id) {
       const realtimePreparePreview = await ctx.api(`/api/work/next?actionId=${encodeURIComponent(realtimeAction.id)}`);
