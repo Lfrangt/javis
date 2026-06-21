@@ -63,7 +63,7 @@ Examples:
   npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
   npm run voice -- --session "把这次本地语音指令写入工作会话"
   npm run voice:chat -- --session
-  printf "状态\\n继续刚才那个\\n/exit\\n" | npm run voice:chat -- --json
+  printf "/status\\n/next\\n状态\\n/exit\\n" | npm run voice:chat -- --json
   npm run voice -- --json --no-speech "当前状态怎么样？"
 
 Flags:
@@ -78,6 +78,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
+                               Slash commands: /status, /handoff, /next, /history, /help.
   --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
   --no-speech                 Disable the acknowledgement preview.
   --mode <lane>               Hint quick/background/codex/claude.
@@ -259,6 +260,169 @@ function printResult(result, payload, userCli) {
   if (!result.ok) console.log(`Error: HTTP ${result.responseStatus}`);
 }
 
+function compactText(value, max = 220) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  if (text.length <= max) return text;
+  return `${text.slice(0, Math.max(0, max - 3))}...`;
+}
+
+function loopSafety() {
+  return {
+    startsMicrophone: false,
+    usesRealtime: false,
+    storesRawAudio: false,
+    readOnly: true,
+  };
+}
+
+function loopHelpText() {
+  return [
+    'Loop commands:',
+    '  /status   Read resident readiness, Realtime blocker, and local fallback state.',
+    '  /handoff  Read the voice-ready work handoff summary.',
+    '  /next     Read the next workbench action preview.',
+    '  /history  Read recent sanitized local voice-command turns.',
+    '  /help     Show this help.',
+    '  /exit     Leave the loop.',
+    '',
+    'Type a normal request without / to route it through /api/voice/command.',
+  ].join('\n');
+}
+
+function formatLoopStatus(data = {}) {
+  const readiness = data.readiness || {};
+  const counts = readiness.counts || {};
+  const voiceHealth = data.voiceHealth || {};
+  const localVoice = data.localVoice || {};
+  const routing = data.routing?.counts || data.routing || {};
+  const latest = localVoice.history?.latest || null;
+  const lines = [
+    `Status: ${readiness.label || readiness.overall || 'unknown'} · ready ${counts.ready ?? '-'} / ${counts.total ?? '-'} · warning ${counts.warning ?? 0} · blocked ${counts.blocked ?? 0}`,
+    `Realtime: ${voiceHealth.status || 'unknown'} · ${compactText(voiceHealth.summary || '-', 260)}`,
+    `Local voice: ${localVoice.mode || 'unknown'} · ${localVoice.input?.endpoint || '/api/voice/command'}`,
+    `Routing: total ${routing.total ?? '-'} · running ${routing.running ?? 0} · blocked ${routing.blocked ?? 0}`,
+  ];
+  if (latest) {
+    lines.push(`Latest voice: ${latest.lane || '-'} · ${compactText(latest.transcriptPreview || '-', 140)}`);
+  }
+  return lines.join('\n');
+}
+
+function formatLoopHandoff(data = {}) {
+  const handoff = data.handoff || {};
+  const counts = handoff.progress?.counts || {};
+  const jobCounts = counts.jobs || {};
+  const workflowCounts = counts.workflows || {};
+  const followUps = Array.isArray(handoff.followUps) ? handoff.followUps : [];
+  const nextActions = Array.isArray(handoff.briefing?.nextActions) ? handoff.briefing.nextActions : [];
+  const nextActionCount = nextActions.length || 'see summary';
+  return [
+    `Handoff: ${compactText(handoff.spokenSummary || handoff.output || '-', 520)}`,
+    `Work: jobs running ${jobCounts.running ?? 0} / queued ${jobCounts.queued ?? 0} · workflows running ${workflowCounts.running ?? 0} / blocked ${workflowCounts.blocked ?? 0}`,
+    `Next actions: ${nextActionCount} · follow-ups: ${followUps.length}`,
+  ].join('\n');
+}
+
+function formatLoopNext(data = {}) {
+  const next = data.next || {};
+  const action = next.action || {};
+  const localFallback = action.localFallback || {};
+  const lines = [
+    `Next: ${action.label || action.id || 'none'} · source=${action.source || '-'} · executable=${action.executable ? 'yes' : 'no'} · executed=${next.executed ? 'yes' : 'no'}`,
+    `Summary: ${compactText(action.summary || next.output || '-', 520)}`,
+  ];
+  if (localFallback.endpoint) {
+    lines.push(`Fallback: ${localFallback.endpoint} · ${compactText(localFallback.summary || '', 220)}`);
+  }
+  return lines.join('\n');
+}
+
+function formatHistoryTime(timestamp) {
+  const time = Date.parse(timestamp || '');
+  if (!Number.isFinite(time)) return '-';
+  return new Date(time).toISOString().replace('T', ' ').slice(0, 16);
+}
+
+function formatLoopHistory(data = {}) {
+  const history = data.history || {};
+  const items = Array.isArray(history.items) ? history.items : [];
+  if (!items.length) return 'History: 0 local voice turn(s).';
+  const lines = [`History: ${history.count ?? items.length} local voice turn(s), transcript-preview-only.`];
+  for (const item of items.slice(0, 5)) {
+    const state = item.queued ? 'queued' : item.executed ? 'executed' : 'preview';
+    const route = item.routeId ? ` · route ${item.routeId}` : '';
+    lines.push(`- ${formatHistoryTime(item.timestamp)} · ${item.lane || '-'} · ${state}${route} · ${compactText(item.transcriptPreview || '-', 160)}`);
+  }
+  return lines.join('\n');
+}
+
+function commandOk(response, command) {
+  if (!response.ok) return false;
+  const data = response.data || {};
+  if (data.ok === false) return false;
+  if (command === 'handoff' && data.handoff?.ok === false) return false;
+  if (command === 'next' && data.next?.ok === false) return false;
+  if (command === 'history' && data.history?.ok === false) return false;
+  return true;
+}
+
+function loopCommandResult(base, response, output) {
+  return {
+    ...base,
+    ok: commandOk(response, base.command),
+    responseStatus: response.status,
+    output,
+  };
+}
+
+async function runLoopCommand(transcript) {
+  const [rawCommand] = String(transcript || '').trim().split(/\s+/);
+  const name = String(rawCommand || '').toLowerCase();
+  if (!name.startsWith('/')) return null;
+  const command = name.slice(1);
+  const base = {
+    transcript,
+    kind: 'loop_command',
+    command,
+    ok: true,
+    responseStatus: 0,
+    previewOnly: true,
+    output: '',
+    safety: loopSafety(),
+  };
+
+  try {
+    if (command === 'help') return { ...base, output: loopHelpText() };
+    if (command === 'status') {
+      const response = await request('/api/status');
+      return loopCommandResult(base, response, formatLoopStatus(response.data || {}));
+    }
+    if (command === 'handoff') {
+      const response = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
+      return loopCommandResult(base, response, formatLoopHandoff(response.data || {}));
+    }
+    if (command === 'next') {
+      const response = await request('/api/work/next?workflowLimit=6&jobLimit=6');
+      return loopCommandResult(base, response, formatLoopNext(response.data || {}));
+    }
+    if (command === 'history') {
+      const response = await request('/api/voice/history?limit=5');
+      return loopCommandResult(base, response, formatLoopHistory(response.data || {}));
+    }
+    return {
+      ...base,
+      ok: false,
+      output: `Unknown loop command: ${name}\n\n${loopHelpText()}`,
+    };
+  } catch (error) {
+    return {
+      ...base,
+      ok: false,
+      output: `${name} failed: ${error instanceof Error ? error.message : String(error)}`,
+    };
+  }
+}
+
 async function runLoop() {
   const userCli = userCliMode();
   const wake = hasFlag('wake') || hasFlag('summon');
@@ -272,7 +436,7 @@ async function runLoop() {
   if (!json) {
     console.log('JAVIS Local Voice Command Loop');
     console.log('==============================');
-    console.log('Type /exit or /quit to stop. This loop starts no microphone and no Realtime session.');
+    console.log('Type /help for commands, or /exit to stop. This loop starts no microphone and no Realtime session.');
   }
 
   if (process.stdin.isTTY && !json) rl.setPrompt('JAVIS> ');
@@ -284,6 +448,17 @@ async function runLoop() {
       continue;
     }
     if (['/exit', '/quit', 'exit', 'quit'].includes(transcript.toLowerCase())) break;
+    const loopCommand = await runLoopCommand(transcript);
+    if (loopCommand) {
+      turns.push(loopCommand);
+      if (!json) {
+        console.log(loopCommand.output);
+        console.log('Safety: read-only=yes · microphone=no · realtime=no · raw audio=no');
+        if (process.stdin.isTTY) rl.prompt();
+      }
+      if (!loopCommand.ok && hasFlag('stop-on-error')) break;
+      continue;
+    }
     const payload = buildPayload({ loop: true, transcript });
     const result = await runCommand(payload, wake, userCli);
     turns.push({
@@ -316,7 +491,7 @@ async function runLoop() {
   }
   rl.close();
 
-  const okAll = turns.length > 0 && turns.every((turn) => turn.ok);
+  const okAll = turns.every((turn) => turn.ok);
   if (json) {
     console.log(JSON.stringify({
       ok: okAll,
@@ -329,6 +504,7 @@ async function runLoop() {
         startsMicrophone: false,
         usesRealtime: false,
         storesRawAudio: false,
+        readOnly: !(hasFlag('execute') || hasFlag('run')),
       },
       turns,
     }, null, 2));

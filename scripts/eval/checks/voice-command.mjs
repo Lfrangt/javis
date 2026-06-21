@@ -218,7 +218,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '状态\\n继续刚才那个\\n/exit\\n' | npm run voice:chat -- --json --no-speech",
+        "printf '/status\\n/next\\n/history\\n状态\\n继续刚才那个\\n/exit\\n' | npm run voice:chat -- --json --no-speech",
       ], {
         cwd: process.cwd(),
         env: {
@@ -226,11 +226,13 @@ export default {
           JAVIS_API_BASE: ctx.baseUrl,
           ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
         },
-        timeout: 45000,
+        timeout: 60000,
         maxBuffer: 1024 * 1024,
       });
       const loop = parseJson(stdout);
       const turns = Array.isArray(loop.turns) ? loop.turns : [];
+      const commandTurns = turns.filter((turn) => turn.kind === 'loop_command');
+      const voiceTurns = turns.filter((turn) => turn.kind !== 'loop_command');
       const sessionId = turns.find((turn) => turn.session?.sessionId)?.session?.sessionId || '';
       if (sessionId) {
         await ctx.api(`/api/sessions/${encodeURIComponent(sessionId)}/end`, {
@@ -250,12 +252,25 @@ export default {
         loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 2 &&
+          loop.turnCount === 5 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          turns.every((turn) => (
+          commandTurns.length === 3 &&
+          ['status', 'next', 'history'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.every((turn) => (
+            turn.ok === true &&
+            turn.previewOnly === true &&
+            typeof turn.output === 'string' &&
+            turn.output.length > 0 &&
+            turn.safety?.readOnly === true &&
+            turn.safety?.startsMicrophone === false &&
+            turn.safety?.usesRealtime === false &&
+            turn.safety?.storesRawAudio === false
+          )) &&
+          voiceTurns.length === 2 &&
+          voiceTurns.every((turn) => (
             turn.ok === true &&
             turn.previewOnly === true &&
             turn.safety?.startsMicrophone === false &&
@@ -269,7 +284,7 @@ export default {
             turn.session?.privacy?.transcriptPreviewOnly === true &&
             turn.session?.privacy?.noRawAudio === true
           ))
-          ? ok('voice_command.local_cli_loop', 'Local voice command loop CLI', `${loop.turnCount} safe no-mic local turns with session ledger`)
+          ? ok('voice_command.local_cli_loop', 'Local voice command loop CLI', `${loop.turnCount} safe no-mic turns with read-only slash commands and session ledger`)
           : fail('voice_command.local_cli_loop', 'Local voice command loop CLI', 'npm run voice:chat did not keep the safe local loop envelope', loop),
       );
     } catch (error) {
