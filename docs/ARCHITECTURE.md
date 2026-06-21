@@ -70,6 +70,7 @@ Renderer
 - Push-to-talk lane: keeps resident voice from becoming an always-open microphone.
 - Global hotkey lane: brings the desktop pet back without requiring app focus.
 - Tap-to-summon hotkey lane: global `JAVIS_SUMMON_HOTKEY`/`JAVIS_TAP_HOTKEY` wakes JAVIS, parks the capsule at the notch, starts the same pending wake path used by local wake engines, and exposes a read-only wake handoff that tells the pet/CUI whether to try Realtime or route the next request through local voice-command fallback.
+- Wake-command lane: `/api/wake/command` and `npm run wake -- "..."` trigger wake, attach the same read-only handoff, then run local voice-command intake without starting microphone capture or Realtime.
 - Capture hotkey lane: saves current clipboard text into local Inbox without opening desktop UI.
 - Menu bar lane: resident macOS status item for opening the terminal CUI, parking the pet, seeing current blockers, and jumping to setup locations.
 - Config CUI lane: terminal-first setup surface for `.env`, permissions, doctor output, and parking the pet.

@@ -367,6 +367,7 @@ async function printStatus() {
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('VH. Show local voice command history');
+  console.log('WH. Show wake handoff');
   console.log('L. Show local capability map');
   console.log('I. Show permission matrix');
   console.log('CR. Show local control readiness');
@@ -719,6 +720,23 @@ async function showVoiceHistory() {
     console.log(`${index + 1}. ${formatTime(Date.parse(item.timestamp || '') || 0)} · ${item.lane || '-'} · ${state}${ids ? ` · ${ids}` : ''}`);
     console.log(`   ${compact(item.transcriptPreview || '(no transcript preview)', 220)}${context}`);
   }
+}
+
+async function showWakeHandoff() {
+  const result = await request('/api/wake/status');
+  const wake = result.wake || {};
+  const handoff = wake.handoff || {};
+  const input = handoff.input || {};
+  const safety = handoff.safety || {};
+  console.log('\nJAVIS Wake Handoff');
+  console.log('==================');
+  console.log(`Pending: ${wake.pending ? 'yes' : 'no'} · phrase: ${wake.lastPhrase || '-'} · source: ${wake.lastSource || '-'}`);
+  console.log(`Mode: ${handoff.mode || '-'} · local voice: ${handoff.localVoiceMode || '-'}`);
+  if (handoff.summary) console.log(`Summary: ${compact(handoff.summary, 260)}`);
+  if (handoff.next) console.log(`Next: ${compact(handoff.next, 260)}`);
+  console.log(`Command: ${input.cliCommand || 'npm run voice -- "..."'}`);
+  console.log(`Endpoint: ${input.endpoint || '/api/voice/command'}`);
+  console.log(`Safety: read-only=${safety.readOnly !== false ? 'yes' : 'no'} · mic=${safety.startsMicrophone ? 'yes' : 'no'} · realtime=${safety.usesRealtime ? 'yes' : 'no'} · rawAudio=${safety.storesRawAudio ? 'yes' : 'no'}`);
 }
 
 function printLocalCapabilities(result) {
@@ -3616,6 +3634,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-wake-handoff') || process.argv.includes('--wake-handoff')) {
+    await showWakeHandoff();
+    return;
+  }
+
   if (process.argv.includes('--print-browser-activity') || process.argv.includes('--browser-activity')) {
     await showBrowserActivity();
     return;
@@ -3799,6 +3822,8 @@ async function main() {
         await showWorkHandoff();
       } else if (answer === 'vh' || answer === 'voice history' || answer === 'local voice history') {
         await showVoiceHistory();
+      } else if (answer === 'wh' || answer === 'wake handoff' || answer === 'wake') {
+        await showWakeHandoff();
       } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {
         await showLocalCapabilities({ includeNext: true });
       } else if (answer === 'i' || answer === 'permissions' || answer === 'permission matrix') {

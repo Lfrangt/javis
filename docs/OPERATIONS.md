@@ -120,15 +120,22 @@ Local voice-command fallback is the no-Realtime intake path. It accepts a transc
 
 ```bash
 npm run voice -- "帮我看一下当前窗口，判断下一步应该怎么做"
+npm run wake -- "贾维斯，帮我看一下当前窗口，判断下一步应该怎么做"
 npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
 npm run dogfood:voice-command
 curl -X POST http://127.0.0.1:3417/api/voice/command \
   -H "X-JAVIS-Token: $TOKEN" \
   -H 'Content-Type: application/json' \
   -d '{"transcript":"帮我整理当前工作状态，给我一个三步计划，先不要执行。","execute":false,"speak":true,"includeAccessibility":true}'
+curl -X POST http://127.0.0.1:3417/api/wake/command \
+  -H "X-JAVIS-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"phrase":"贾维斯","transcript":"帮我看一下当前窗口，判断下一步应该怎么做","execute":false,"includeScreen":true,"includeAccessibility":true}'
 ```
 
 By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback does not attach local memory or inferred learning unless `useMemory:true` is explicit. The user-facing `npm run voice -- "..."` command defaults to metadata-only screen plus bounded UI outline context; add `--no-screen` or `--no-ui` to make it lighter. Its context snapshot is metadata-only: frontmost app/window, browser title/host, screen frame freshness/privacy when `includeScreen:true`, clipboard presence/length only, active-job count, approval count, and, when `includeAccessibility:true`, a compact UI outline capped by the existing Accessibility read policy. It does not attach screenshots, raw screen pixels, clipboard text, raw audio, browser page body, full Accessibility nodes, or local learning profile by default. Add `confirmSpeak:true` or CLI `--confirm-speak` only when you intentionally want local audio. If `execute:true` or CLI `--run` is used on a quick-lane question, `/api/voice/command` holds the cloud call unless `allowCloudQuick:true` is also set; background/Codex/Claude/local routes can still be queued through the normal policy gates.
+
+`npm run wake -- "..."` is the one-shot wake path. It records the wake phrase, returns the same read-only handoff evidence as `/api/wake/status`, then routes the transcript through local voice-command intake. It does not start microphone capture or Realtime.
 
 Recent local voice-command intake can be inspected without opening raw logs:
 
@@ -708,7 +715,7 @@ curl -X POST http://127.0.0.1:3417/api/screen/describe \
 curl -X DELETE http://127.0.0.1:3417/api/screen/frame
 ```
 
-`/api/wake/status` includes a read-only `handoff` object. It does not start the microphone; it tells the renderer/CUI whether wake should try Realtime or use the local no-mic `/api/voice/command` path, including the `npm run voice -- "..."` command when Realtime is blocked. The handoff keeps the desktop pet minimal: no logs, screenshots, clipboard text, raw audio, or full Accessibility nodes are returned.
+`/api/wake/status` includes a read-only `handoff` object. It does not start the microphone; it tells the renderer/CUI whether wake should try Realtime or use the local no-mic `/api/voice/command` path, including the `npm run voice -- "..."` command when Realtime is blocked. Use `npm run config -- --print-wake-handoff` for the terminal view. The handoff keeps the desktop pet minimal: no logs, screenshots, clipboard text, raw audio, or full Accessibility nodes are returned.
 
 Realtime can also call `get_attention_explanation` through `/api/tools/execute` when the user asks why the pet is green/yellow/red, why JAVIS stayed quiet, or what the last attention notification did. That tool returns a short Chinese `spokenSummary` plus read-only policy/history evidence; it does not add any diagnostics to the desktop pet. Realtime can call `get_perception_consent` when the user asks what JAVIS can currently see, read, hear, control, store, or why a permission/action is allowed or blocked.
 

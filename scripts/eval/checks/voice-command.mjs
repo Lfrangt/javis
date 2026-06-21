@@ -215,6 +215,81 @@ export default {
       out.push(fail('voice_command.local_cli', 'Local voice command CLI', error instanceof Error ? error.message : String(error)));
     }
 
+    const wakeCommand = await ctx.api('/api/wake/command', {
+      method: 'POST',
+      body: {
+        transcript: '贾维斯，唤起后走本地语音指挥，先不要执行。',
+        phrase: '贾维斯',
+        execute: false,
+        includeScreen: true,
+        includeAccessibility: true,
+        speak: false,
+        useMemory: false,
+        source: 'eval_wake_voice_command',
+      },
+      timeoutMs: 15000,
+    });
+    const wakeCommandData = wakeCommand.data || {};
+    out.push(
+      wakeCommand.ok &&
+        wakeCommandData.ok === true &&
+        wakeCommandData.channel === 'wake_voice_command' &&
+        wakeCommandData.wake?.pending === true &&
+        ['local_voice_fallback', 'realtime_or_local'].includes(wakeCommandData.handoff?.mode) &&
+        wakeCommandData.handoff?.input?.endpoint === '/api/voice/command' &&
+        wakeCommandData.requestedExecute === false &&
+        wakeCommandData.executed === false &&
+        wakeCommandData.safety?.startsMicrophone === false &&
+        wakeCommandData.safety?.usesRealtime === false &&
+        wakeCommandData.safety?.storesRawAudio === false &&
+        wakeCommandData.safety?.usesWakeTrigger === true &&
+        wakeCommandData.context?.metadataOnly === true &&
+        wakeCommandData.context?.includesScreenImage === false &&
+        wakeCommandData.context?.includesClipboardText === false &&
+        wakeCommandData.context?.includesAccessibilityNodes === false
+        ? ok('voice_command.wake_command_api', 'Wake + local voice command API', `${wakeCommandData.handoff?.mode || '-'} · ${wakeCommandData.route?.decision?.lane || '-'} · no mic/realtime/raw audio`)
+        : fail('voice_command.wake_command_api', 'Wake + local voice command API', `expected safe wake command envelope, got ${wakeCommand.status}`, wakeCommand.data),
+    );
+
+    try {
+      const { stdout } = await execFileAsync('npm', [
+        'run',
+        'wake',
+        '--',
+        '--json',
+        '贾维斯，命令行唤起后看当前窗口，先不要执行。',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 20000,
+        maxBuffer: 1024 * 1024,
+      });
+      const wakeCli = parseJson(stdout);
+      out.push(
+        wakeCli.ok === true &&
+          wakeCli.cliMode === 'local' &&
+          wakeCli.payload?.wake === true &&
+          wakeCli.previewOnly === true &&
+          wakeCli.wake?.pending === true &&
+          ['local_voice_fallback', 'realtime_or_local'].includes(wakeCli.wake?.handoffMode) &&
+          wakeCli.safety?.startsMicrophone === false &&
+          wakeCli.safety?.usesRealtime === false &&
+          wakeCli.safety?.storesRawAudio === false &&
+          wakeCli.context?.metadataOnly === true &&
+          wakeCli.context?.includesScreenImage === false &&
+          wakeCli.context?.includesClipboardText === false &&
+          wakeCli.context?.includesAccessibilityNodes === false
+          ? ok('voice_command.wake_command_cli', 'Wake + local voice command CLI', `${wakeCli.wake?.handoffMode || '-'} preview through npm run wake`)
+          : fail('voice_command.wake_command_cli', 'Wake + local voice command CLI', 'npm run wake did not produce the safe wake intake envelope', wakeCli),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.wake_command_cli', 'Wake + local voice command CLI', error instanceof Error ? error.message : String(error)));
+    }
+
     const history = await ctx.api('/api/voice/history?limit=12', { timeoutMs: 10000 });
     const historyData = history.data?.history || {};
     const historyItems = Array.isArray(historyData.items) ? historyData.items : [];
@@ -273,6 +348,29 @@ export default {
       );
     } catch (error) {
       out.push(fail('voice_command.history_cui', 'Local voice history CUI', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-wake-handoff'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 10000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('JAVIS Wake Handoff') &&
+          stdout.includes('Command: npm run voice') &&
+          stdout.includes('mic=no') &&
+          stdout.includes('realtime=no')
+          ? ok('voice_command.wake_handoff_cui', 'Wake handoff CUI', 'CUI prints read-only wake handoff and local intake command')
+          : fail('voice_command.wake_handoff_cui', 'Wake handoff CUI', 'CUI did not print the expected wake handoff summary', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.wake_handoff_cui', 'Wake handoff CUI', error instanceof Error ? error.message : String(error)));
     }
 
     try {

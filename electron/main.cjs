@@ -24045,6 +24045,47 @@ async function runVoiceCommand(options = {}) {
   return result;
 }
 
+async function runWakeCommand(options = {}) {
+  const source = String(options.source || 'wake_command').slice(0, 80);
+  const phrase = String(options.phrase || options.wakePhrase || '贾维斯').slice(0, 120);
+  const wake = triggerWake({
+    source,
+    phrase,
+  });
+  const voice = await runVoiceCommand({
+    ...options,
+    source: `${source}_voice`,
+  });
+  const result = {
+    ...voice,
+    ok: voice.ok !== false,
+    channel: 'wake_voice_command',
+    wake,
+    handoff: wake.handoff || wakeHandoffSnapshot(),
+    voice,
+    safety: {
+      ...(voice.safety || {}),
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      wakeStatusReadOnly: false,
+      usesWakeTrigger: true,
+    },
+  };
+  appendAudit('wake.command.completed', {
+    source,
+    phrase,
+    ok: result.ok,
+    transcriptLength: String(voice.transcript || '').length,
+    lane: voice.route?.decision?.lane || '',
+    queued: Boolean(voice.route?.queued || voice.route?.job?.id),
+    executed: Boolean(voice.executed),
+    wakePending: Boolean(wake.pending),
+    handoffMode: result.handoff?.mode || '',
+  });
+  return result;
+}
+
 async function routeTask(options = {}) {
   const task = String(options.message || options.task || '').trim();
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
@@ -52089,6 +52130,15 @@ function startApiServer() {
 
   api.post('/api/wake/trigger', express.json({ limit: '64kb' }), (req, res) => {
     res.json({ ok: true, wake: triggerWake({ ...(req.body || {}), source: req.body?.source || 'api' }) });
+  });
+
+  api.post('/api/wake/command', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await runWakeCommand({ ...(req.body || {}), source: req.body?.source || 'api_wake_command' });
+      res.status(result.ok === false ? 400 : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Wake command failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.post('/api/wake/engine/restart', express.json({ limit: '64kb' }), (_req, res) => {

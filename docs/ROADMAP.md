@@ -21,6 +21,7 @@
 - Global pet hotkey.
 - Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch.
 - Wake handoff status that tells the pet/CUI whether the next invited turn should try Realtime or use local no-mic voice-command fallback, without starting the microphone from the status read.
+- Wake-command intake that combines wake plus local no-mic voice-command routing through `npm run wake -- "..."` and `/api/wake/command`.
 - Global clipboard-to-Inbox capture hotkey.
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.

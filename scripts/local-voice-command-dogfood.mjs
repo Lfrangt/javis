@@ -58,10 +58,13 @@ Use this when Realtime voice is unavailable or when you want a no-mic local inta
 
 Examples:
   npm run voice -- "帮我看一下当前窗口，判断下一步该怎么做"
+  npm run voice -- --wake "贾维斯，帮我看当前窗口下一步做什么"
   npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
   npm run voice -- --json --no-speech "当前状态怎么样？"
 
 Flags:
+  --wake                       Trigger wake first, then send the transcript through local intake.
+  --wake-phrase <phrase>       Phrase stored in wake state. Default: 贾维斯.
   --run, --execute             Queue/execute non-quick routes through normal policy gates.
   --include-screen, --screen   Attach metadata-only screen context. No screenshot is sent.
   --include-ui, --include-accessibility
@@ -91,6 +94,7 @@ async function request(apiPath, options = {}) {
 function buildPayload() {
   const userCli = userCliMode();
   const execute = hasFlag('execute') || hasFlag('run');
+  const wake = hasFlag('wake') || hasFlag('summon');
   const confirm = hasFlag('confirm') || hasFlag('confirm-speak') || hasFlag('confirm-audio');
   const includeScreen = hasFlag('include-screen') || hasFlag('screen') || (userCli && !hasFlag('no-screen'));
   const includeAccessibility =
@@ -108,9 +112,14 @@ function buildPayload() {
     allowCloudQuick: hasFlag('allow-cloud-quick'),
     useMemory: hasFlag('use-memory'),
     mode: argValue('mode', ''),
+    phrase: argValue('wake-phrase', '贾维斯'),
     source: userCli
-      ? execute ? 'local_voice_command_cli_execute' : 'local_voice_command_cli_preview'
-      : execute ? 'dogfood_voice_command_execute' : 'dogfood_voice_command_preview',
+      ? wake
+        ? execute ? 'local_wake_voice_command_cli_execute' : 'local_wake_voice_command_cli_preview'
+        : execute ? 'local_voice_command_cli_execute' : 'local_voice_command_cli_preview'
+      : wake
+        ? execute ? 'dogfood_wake_voice_command_execute' : 'dogfood_wake_voice_command_preview'
+        : execute ? 'dogfood_voice_command_execute' : 'dogfood_voice_command_preview',
   };
 }
 
@@ -157,6 +166,14 @@ function summarize(data = {}) {
           textLength: data.speech.textLength || 0,
         }
       : null,
+    wake: data.wake
+      ? {
+          pending: Boolean(data.wake.pending),
+          lastPhrase: data.wake.lastPhrase || '',
+          handoffMode: data.handoff?.mode || data.wake.handoff?.mode || '',
+          localVoiceMode: data.handoff?.localVoiceMode || data.wake.handoff?.localVoiceMode || '',
+        }
+      : null,
     safety: data.safety || {},
   };
 }
@@ -169,7 +186,8 @@ async function main() {
 
   const userCli = userCliMode();
   const payload = buildPayload();
-  const response = await request('/api/voice/command', {
+  const wake = hasFlag('wake') || hasFlag('summon');
+  const response = await request(wake ? '/api/wake/command' : '/api/voice/command', {
     method: 'POST',
     body: payload,
   });
@@ -180,6 +198,7 @@ async function main() {
     cliMode: userCli ? 'local' : 'dogfood',
     previewOnly: !payload.execute,
     payload: {
+      wake,
       execute: payload.execute,
       includeScreen: payload.includeScreen,
       includeAccessibility: payload.includeAccessibility,
@@ -200,6 +219,7 @@ async function main() {
     console.log(userCli ? '=========================' : '=================================');
     console.log(`API: ${API_BASE}`);
     console.log(`Mode: ${payload.execute ? 'execute' : 'preview'} · ok=${result.ok ? 'yes' : 'no'}`);
+    if (result.wake) console.log(`Wake: ${result.wake.pending ? 'pending' : 'recorded'} · ${result.wake.handoffMode || '-'} · ${result.wake.lastPhrase || '-'}`);
     console.log(`Task: ${payload.transcript}`);
     console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
     if (result.route.jobId) console.log(`Job: ${result.route.jobId}`);
