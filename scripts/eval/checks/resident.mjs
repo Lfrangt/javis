@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+
 import { ok, warn, fail } from '../_client.mjs';
 
 // Resident control surface (README: wake state, setup guide + one-step fix,
@@ -182,6 +184,21 @@ export default {
       resident.ok && res
         ? ok('resident.launchagent', 'LaunchAgent status', `installed=${res.installed} loaded=${res.loaded}${res.pid ? ` pid=${res.pid}` : ''} matchesProject=${res.matchesProject}`)
         : warn('resident.launchagent', 'LaunchAgent status', `GET /api/resident/status ${resident.status} ${resident.error || ''}`),
+    );
+
+    const appSource = fs.readFileSync('src/App.tsx', 'utf8');
+    const startupCheckIndex = appSource.indexOf('const startupBlock = await readRealtimeStartupBlock().catch');
+    const getUserMediaIndex = appSource.indexOf('navigator.mediaDevices.getUserMedia');
+    out.push(
+      appSource.includes('runRealtimeProviderRecoveryProbe') &&
+        appSource.includes('shouldRetryRealtimeProviderBeforeMic') &&
+        appSource.includes("source: 'renderer_startup_recovery'") &&
+        appSource.includes('/api/realtime/provider/probe') &&
+        appSource.includes('成功后才会打开麦克风') &&
+        startupCheckIndex >= 0 &&
+        getUserMediaIndex > startupCheckIndex
+        ? ok('resident.pet_realtime_startup_probe_gate', 'Pet Realtime startup recovery gate', 'renderer retries a no-mic provider probe before getUserMedia when provider health is recoverable')
+        : fail('resident.pet_realtime_startup_probe_gate', 'Pet Realtime startup recovery gate', 'expected renderer startup to verify provider with a no-mic probe before opening the microphone'),
     );
 
     return out;

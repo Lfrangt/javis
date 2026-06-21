@@ -165,6 +165,34 @@ type RealtimeProviderProbeEvent = {
   sessionId?: string
 }
 
+type RealtimeProviderProbeSnapshot = {
+  active?: boolean
+  status?: string
+  providerReady?: boolean
+  summary?: string
+  next?: string
+  issue?: Partial<LocalVoiceBlocker>
+  result?: {
+    ok?: boolean
+    statusCode?: number
+    error?: string
+  } | null
+  safety?: {
+    startsMicrophone?: boolean
+    requiresMicConfirmation?: boolean
+    capturesAudio?: boolean
+    storesRawAudio?: boolean
+  }
+}
+
+type RealtimeProviderProbeApiResponse = {
+  ok?: boolean
+  executed?: boolean
+  output?: string
+  providerProbe?: RealtimeProviderProbeSnapshot
+  probe?: RealtimeProviderProbeSnapshot
+}
+
 const emptyRealtimeLatencyTimeline = (): RealtimeLatencyTimeline => ({
   startedAt: 0,
   micReadyAt: 0,
@@ -1134,6 +1162,8 @@ const PET_STATUS_POLL_MS = 5000
 const PANEL_DETAIL_POLL_MS = 30000
 const SCREEN_CONTEXT_LIVE_POLL_MS = 15000
 const SCREEN_CONTEXT_IDLE_POLL_MS = 120000
+const REALTIME_PROVIDER_RECOVERY_POLL_MS = 500
+const REALTIME_PROVIDER_RECOVERY_TIMEOUT_MS = 15000
 const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   version: 1,
   mode: 'private',
@@ -1258,6 +1288,31 @@ function mergePetStatusPayload(current: Status | null, next: PetStatusPayload): 
   } as Status
 }
 
+function shouldRetryRealtimeProviderBeforeMic(health: RealtimeVoiceHealth | null | undefined) {
+  if (!health) return false
+  const status = String(health.status || '').toLowerCase()
+  if (status === 'ready') return false
+  const kind = String(health.kind || '').toLowerCase()
+  if (kind === 'missing_key' || health.hasOpenAiKey === false) return false
+  return status === 'warning' || status === 'blocked' || [
+    'provider_unverified',
+    'quota_or_rate_limit',
+    'auth_or_permission',
+    'provider_error',
+    'network',
+  ].includes(kind)
+}
+
+function realtimeProviderProbeBlockMessage(probe: RealtimeProviderProbeSnapshot | null | undefined, fallback = '') {
+  if (!probe) return fallback
+  if (probe.providerReady) return ''
+  const issue = probe.issue || {}
+  const statusCode = Number(probe.result?.statusCode || 0)
+  const summary = issue.summary || probe.summary || (statusCode ? `Realtime provider probe failed with HTTP ${statusCode}.` : '')
+  const next = issue.next || probe.next || fallback
+  return `${summary} ${next}`.trim() || fallback
+}
+
 function App() {
   const [expanded, setExpanded] = useState(false)
   const [status, setStatus] = useState<Status | null>(null)
@@ -1340,6 +1395,7 @@ function App() {
   const realtimeLatencyRef = useRef<RealtimeLatencyTimeline>(emptyRealtimeLatencyTimeline())
   const voiceStatusRef = useRef<VoiceStatus>('idle')
   const screenLiveRef = useRef(false)
+  const realtimeProviderRecoveryProbeRef = useRef<Promise<RealtimeProviderProbeSnapshot | null> | null>(null)
 
   const jobs = status?.queue || []
   const workflows = status?.workflows || []
@@ -1922,12 +1978,79 @@ function App() {
     return `${summary} ${next}`.trim()
   }, [])
 
+  const runRealtimeProviderRecoveryProbe = useCallback(async (fallbackBlock = '') => {
+    if (realtimeProviderRecoveryProbeRef.current) {
+      return realtimeProviderRecoveryProbeRef.current
+    }
+    addMessage('system', '正在先做一次无麦克风 Realtime provider 验证；成功后才会打开麦克风。')
+    const run = (async () => {
+      try {
+        const started = await apiJson<RealtimeProviderProbeApiResponse>('/api/realtime/provider/probe', {
+          method: 'POST',
+          body: JSON.stringify({ execute: true, source: 'renderer_startup_recovery' }),
+        })
+        if (started.ok === false) {
+          return started.providerProbe || started.probe || null
+        }
+        const deadline = Date.now() + REALTIME_PROVIDER_RECOVERY_TIMEOUT_MS
+        let latest = started.providerProbe || started.probe || null
+        while (Date.now() < deadline) {
+          const snapshot = await apiJson<RealtimeProviderProbeApiResponse>('/api/realtime/provider/probe')
+          latest = snapshot.probe || snapshot.providerProbe || latest
+          if (latest?.providerReady || latest?.active === false || ['ok', 'ready', 'error', 'warning', 'blocked'].includes(String(latest?.status || '').toLowerCase())) {
+            return latest
+          }
+          await sleep(REALTIME_PROVIDER_RECOVERY_POLL_MS)
+        }
+        return latest
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        return {
+          active: false,
+          status: 'error',
+          providerReady: false,
+          summary: `Realtime provider recovery probe failed: ${message}`,
+          next: fallbackBlock,
+          safety: {
+            startsMicrophone: false,
+            requiresMicConfirmation: false,
+            capturesAudio: false,
+            storesRawAudio: false,
+          },
+        } satisfies RealtimeProviderProbeSnapshot
+      } finally {
+        realtimeProviderRecoveryProbeRef.current = null
+      }
+    })()
+    realtimeProviderRecoveryProbeRef.current = run
+    return run
+  }, [addMessage])
+
   const readRealtimeStartupBlock = useCallback(async () => {
-    const configuredBlock = realtimeStartupBlockMessage(status?.voiceHealth)
-    if (configuredBlock) return configuredBlock
+    const configuredHealth = status?.voiceHealth
+    const configuredBlock = realtimeStartupBlockMessage(configuredHealth)
+    if (configuredBlock) {
+      if (shouldRetryRealtimeProviderBeforeMic(configuredHealth)) {
+        const probe = await runRealtimeProviderRecoveryProbe(configuredBlock)
+        await refreshStatus()
+        const probeBlock = realtimeProviderProbeBlockMessage(probe, configuredBlock)
+        if (!probeBlock) return ''
+        return probeBlock
+      }
+      return configuredBlock
+    }
     const result = await apiJson<{ realtime: { voiceHealth?: RealtimeVoiceHealth } }>('/api/realtime/config?micMode=open')
-    return realtimeStartupBlockMessage(result.realtime?.voiceHealth)
-  }, [realtimeStartupBlockMessage, status?.voiceHealth])
+    const health = result.realtime?.voiceHealth
+    const block = realtimeStartupBlockMessage(health)
+    if (block && shouldRetryRealtimeProviderBeforeMic(health)) {
+      const probe = await runRealtimeProviderRecoveryProbe(block)
+      await refreshStatus()
+      const probeBlock = realtimeProviderProbeBlockMessage(probe, block)
+      if (!probeBlock) return ''
+      return probeBlock
+    }
+    return block
+  }, [refreshStatus, realtimeStartupBlockMessage, runRealtimeProviderRecoveryProbe, status?.voiceHealth])
 
   const runLocalVoiceFallback = useCallback(async (reason = '') => {
     const prompt = quickInput.trim()

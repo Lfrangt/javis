@@ -22,6 +22,7 @@
 - Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch.
 - Wake handoff status that tells the pet/CUI whether the next invited turn should try Realtime or use local no-mic voice-command fallback, without starting the microphone from the status read.
 - Wake-command intake that combines wake plus local no-mic voice-command routing through `npm run wake -- "..."` and `/api/wake/command`.
+- Pet startup recovery probe: when provider health is warning/blocked and `OPENAI_API_KEY` is loaded, the pet first runs the no-mic Realtime provider probe and waits for a ready result before calling `getUserMedia`; failed recovery keeps the local voice-command fallback active.
 - Global clipboard-to-Inbox capture hotkey.
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.
