@@ -334,7 +334,7 @@ function loopHelpText() {
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /app      Read the current Mac app, screen metadata, and compact UI outline.',
     '  /ui       Preview a local app/UI workflow plan; add --run to execute through policy.',
-    '  /file     List, search, or read allowed local files through the file policy.',
+    '  /file     List, search, read, or preview organize/rename/convert file workflows.',
     '  /browser  Read the current supported browser tab and page summary.',
     '  /browse   Preview a browser workflow over the current page; add --run to execute.',
     '  /open     Preview opening a URL or web search; add --run to execute through policy.',
@@ -358,6 +358,7 @@ function normalizeFileRequest(transcript) {
   const raw = String(transcript || '').replace(/^\/files?\b/i, '').trim();
   if (!raw) {
     return {
+      kind: 'action',
       action: 'list_directory',
       path: '.',
       maxEntries: 12,
@@ -380,6 +381,7 @@ function normalizeFileRequest(transcript) {
       };
     }
     return {
+      kind: 'action',
       action: 'search_files',
       path: targetPath,
       query: rest,
@@ -395,6 +397,7 @@ function normalizeFileRequest(transcript) {
       };
     }
     return {
+      kind: 'action',
       action: 'read_file',
       path: targetPath,
       maxBytes: 6000,
@@ -404,17 +407,120 @@ function normalizeFileRequest(transcript) {
   if (['list', 'ls', 'dir'].includes(command)) {
     const targetPath = raw.replace(/^\S+\s*/u, '').trim() || '.';
     return {
+      kind: 'action',
       action: 'list_directory',
       path: targetPath,
       maxEntries: 12,
       label: 'list',
     };
   }
+  if (['organize', 'organise', 'sort'].includes(command)) {
+    const targetPath = raw.replace(/^\S+\s*/u, '').trim() || '.';
+    return {
+      kind: 'workflow',
+      intent: 'organize',
+      path: targetPath,
+      maxEntries: 80,
+      maxMoves: 12,
+      label: 'organize',
+    };
+  }
+  if (['rename', 'batch-rename', 'batch_rename'].includes(command)) {
+    const request = normalizeFileRenameRequest(raw.replace(/^\S+\s*/u, '').trim());
+    if (request.error) return request;
+    return {
+      kind: 'workflow',
+      intent: 'rename',
+      label: 'rename',
+      maxFiles: 12,
+      ...request,
+    };
+  }
+  if (['convert', 'copy-convert', 'copy_convert'].includes(command)) {
+    const request = normalizeFileConvertRequest(raw.replace(/^\S+\s*/u, '').trim(), command);
+    if (request.error) return request;
+    return {
+      kind: 'workflow',
+      intent: 'convert',
+      label: 'convert',
+      maxFiles: 8,
+      ...request,
+    };
+  }
   return {
+    kind: 'action',
     action: 'list_directory',
     path: raw,
     maxEntries: 12,
     label: 'list',
+  };
+}
+
+function extractFileTextOption(text, names) {
+  let nextText = String(text || '');
+  let value = '';
+  for (const name of names) {
+    const pattern = new RegExp(`\\s+${name}\\s+(.+?)(?=\\s+(?:prefix|suffix|case|style|ext|extension|extensions|to|as|target)\\b|$)`, 'i');
+    const match = nextText.match(pattern);
+    if (match) {
+      value = String(match[1] || '').trim();
+      nextText = `${nextText.slice(0, match.index)} ${nextText.slice(match.index + match[0].length)}`.replace(/\s+/g, ' ').trim();
+      break;
+    }
+  }
+  return { text: nextText, value };
+}
+
+function normalizeFileExtensions(value) {
+  const items = String(value || '')
+    .split(/[,，\s]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => (item.startsWith('.') ? item : `.${item}`));
+  return Array.from(new Set(items)).slice(0, 12);
+}
+
+function normalizeFileRenameRequest(input) {
+  let rest = String(input || '').trim();
+  if (!rest) return { error: 'Usage: /file rename <path> [prefix <text>] [suffix <text>] [case kebab|snake|lower|upper] [ext .txt,.md]' };
+  let extracted = extractFileTextOption(rest, ['prefix']);
+  rest = extracted.text;
+  const prefix = extracted.value;
+  extracted = extractFileTextOption(rest, ['suffix']);
+  rest = extracted.text;
+  const suffix = extracted.value;
+  extracted = extractFileTextOption(rest, ['case', 'style']);
+  rest = extracted.text;
+  const caseStyle = extracted.value.toLowerCase();
+  extracted = extractFileTextOption(rest, ['ext', 'extension', 'extensions']);
+  rest = extracted.text;
+  const extensions = normalizeFileExtensions(extracted.value);
+  const pathValue = rest || '.';
+  return {
+    path: pathValue,
+    prefix: prefix || (!suffix && !caseStyle ? 'renamed-' : ''),
+    suffix,
+    caseStyle: ['kebab', 'snake', 'lower', 'upper'].includes(caseStyle) ? caseStyle : '',
+    extensions,
+  };
+}
+
+function normalizeFileConvertRequest(input, command = 'convert') {
+  let rest = String(input || '').trim();
+  if (!rest) return { error: 'Usage: /file convert <path> to <.extension> [ext .txt,.md]' };
+  const target = extractFileTextOption(rest, ['to', 'as', 'target']);
+  rest = target.text;
+  const targetExtension = normalizeFileExtensions(target.value)[0] || '';
+  if (!targetExtension) return { error: 'Usage: /file convert <path> to <.extension>' };
+  const source = extractFileTextOption(rest, ['ext', 'extension', 'extensions']);
+  rest = source.text;
+  const extensions = normalizeFileExtensions(source.value);
+  const pathValue = rest || '.';
+  return {
+    path: pathValue,
+    targetExtension,
+    extensions,
+    conversionMode: command.startsWith('copy') ? 'copy' : 'semantic',
   };
 }
 
@@ -472,6 +578,31 @@ function formatLoopFile(data = {}, request = {}) {
   }
   if (data.error) lines.push(`Note: ${compactText(data.error, 220)}`);
   lines.push('Next: ask normally to summarize, organize, or hand this file context to a worker.');
+  return lines.filter(Boolean).join('\n');
+}
+
+function formatLoopFileWorkflow(data = {}, request = {}) {
+  const workflow = data.workflow || {};
+  const routing = data.routing || {};
+  const plan = data.plan || {};
+  const counts = plan.counts || {};
+  const pathLabel = plan.path || data.target?.path || request.path || '.';
+  const optionText = [
+    request.prefix ? `prefix=${request.prefix}` : '',
+    request.suffix ? `suffix=${request.suffix}` : '',
+    request.caseStyle ? `case=${request.caseStyle}` : '',
+    request.targetExtension ? `to=${request.targetExtension}` : '',
+    Array.isArray(request.extensions) && request.extensions.length ? `ext=${request.extensions.join(',')}` : '',
+  ].filter(Boolean).join(' · ');
+  const lines = [
+    `File workflow: preview only · ${request.intent || data.intent || '-'} · path=${compactText(pathLabel, 220)}`,
+  ];
+  if (optionText) lines.push(`Options: ${compactText(optionText, 220)}`);
+  lines.push(`Plan: steps ${counts.steps ?? 0} · blocked ${counts.blocked ?? 0} · approvals ${counts.approvals ?? 0}`);
+  if (workflow.id || workflow.status) lines.push(`Workflow: ${workflow.status || '-'}${workflow.id ? ` · ${workflow.id}` : ''}`);
+  if (routing.status || routing.lane || routing.mode) lines.push(`Route: ${routing.status || '-'} · ${routing.lane || routing.mode || '-'}`);
+  lines.push(`Result: ${compactText(data.output || plan.output || plan.summary || '-', 700)}`);
+  lines.push('Next: use /file read/search for evidence, or ask normally to execute a confirmed plan through policy.');
   return lines.filter(Boolean).join('\n');
 }
 
@@ -888,6 +1019,36 @@ async function runLoopCommand(transcript) {
           elapsedMs: Math.round(performance.now() - base.startedAt),
           output: fileRequest.error,
         };
+      }
+      if (fileRequest.kind === 'workflow') {
+        const response = await request('/api/files/workflow', {
+          method: 'POST',
+          body: {
+            intent: fileRequest.intent,
+            path: fileRequest.path,
+            mode: 'quick',
+            instruction: `Preview ${fileRequest.intent} for ${fileRequest.path}`,
+            maxEntries: fileRequest.maxEntries,
+            maxMoves: fileRequest.maxMoves,
+            maxFiles: fileRequest.maxFiles,
+            prefix: fileRequest.prefix,
+            suffix: fileRequest.suffix,
+            caseStyle: fileRequest.caseStyle,
+            extensions: fileRequest.extensions,
+            targetExtension: fileRequest.targetExtension,
+            conversionMode: fileRequest.conversionMode,
+            source: 'local_voice_loop_file_workflow_preview',
+            scope: `local_voice_loop:file:${fileRequest.intent}`,
+            parallelGroup: 'local_voice_loop:file',
+          },
+        });
+        return loopCommandResult(base, response, formatLoopFileWorkflow(response.data || {}, fileRequest), {
+          command: 'file',
+          endpoint: '/api/files/workflow',
+          detailLevel: 'preview',
+          workflowIntent: fileRequest.intent,
+          filePath: fileRequest.path,
+        });
       }
       const response = await request('/api/files/execute', {
         method: 'POST',

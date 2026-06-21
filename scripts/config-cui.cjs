@@ -990,6 +990,7 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('  Type /status, /app, /file, /browser, /handoff, /next, or /history for read-only resident checks.');
   console.log('  Type /ui <task> to preview a local app/UI workflow; start the loop with --run to execute.');
   console.log('  Type /file list|search|read ... to inspect allowed local files through policy.');
+  console.log('  Type /file organize|rename|convert ... to preview file workflow plans without moving files.');
   console.log('  Type /browse [intent] <task> to preview a browser workflow over the current page.');
   console.log('  Type /open <url or search> to preview opening a page; start the loop with --run to execute.');
   console.log('  Type /agent <task> to preview a bounded autonomy loop without execution.');
