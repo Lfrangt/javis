@@ -339,6 +339,7 @@ function loopHelpText() {
   return [
     'Loop commands:',
     '  /voice    Read Realtime/live voice blocker, local fallback, and next recovery step.',
+    '  /see      Read screen/privacy/ambient perception status without capturing a new frame.',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /app      Fast-read recent Mac app and screen metadata; add --full-app for live UI outline.',
     '  /ui       Preview a local app/UI workflow plan; add --run to execute through policy.',
@@ -1036,6 +1037,30 @@ function formatLoopVoiceStatus(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopPerceptionStatus(data = {}) {
+  const perception = data.perception || {};
+  const counts = perception.counts || {};
+  const surfaces = Array.isArray(perception.surfaces) ? perception.surfaces : [];
+  const byId = new Map(surfaces.map((surface) => [surface.id, surface]));
+  const screen = byId.get('screen_context') || {};
+  const ambient = byId.get('ambient_observer') || {};
+  const browser = byId.get('browser_activity') || {};
+  const ax = byId.get('accessibility_tree') || {};
+  const screenEvidence = screen.evidence || {};
+  const ambientEvidence = ambient.evidence || {};
+  const lines = [
+    `Perception: enabled ${counts.enabled ?? 0}/${counts.total ?? 0} · active ${counts.active ?? 0} · limited ${counts.limited ?? 0} · blocked ${counts.blocked ?? 0}`,
+    `Screen: ${screen.status || '-'} · cached=${screen.available ? 'yes' : 'no'} · privacy=${screenEvidence.privacyMode || '-'}${screenEvidence.width ? ` · ${screenEvidence.width}x${screenEvidence.height} · age=${screenEvidence.ageMs ?? '-'}ms` : ''}`,
+    `Ambient: ${ambient.status || '-'} · samples=${ambientEvidence.count ?? 0} · interval=${ambientEvidence.intervalMs ?? '-'}ms · latestApp=${ambientEvidence.latestApp || '-'}`,
+    `Browser metadata: ${browser.status || '-'} · ${compactText(browser.summary || '-', 260)}`,
+    `Accessibility: ${ax.status || '-'} · ${compactText(ax.summary || '-', 220)}`,
+  ];
+  if (screenEvidence.rulesSummary) lines.push(`Privacy rules: ${compactText(screenEvidence.rulesSummary, 260)}`);
+  if (perception.summary) lines.push(`Summary: ${compactText(perception.summary, 260)}`);
+  lines.push('Safety: read-only; does not capture a new screen frame, return images, read page text, read clipboard text, start microphone, or use Realtime.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopHandoff(data = {}) {
   const handoff = data.handoff || {};
   const counts = handoff.progress?.counts || {};
@@ -1302,6 +1327,14 @@ async function runLoopCommand(transcript) {
       const endpoint = '/api/voice/standby';
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopVoiceStatus(response.data || {}), {
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'see' || command === 'perception' || command === 'watch' || command === 'screen-status') {
+      const endpoint = '/api/perception/consent?limit=5';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopPerceptionStatus(response.data || {}), {
         endpoint,
         detailLevel: 'fast',
       });

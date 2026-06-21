@@ -23806,6 +23806,27 @@ function naturalVoiceStatusLocalCommand(text) {
   };
 }
 
+function naturalPerceptionStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  if (!raw) return null;
+  const mentionsPerception = /\b(screen|display|window|desktop|visible|visibility|watch|watching|observe|observing|perception|ambient|monitor|monitoring|browser window|current window)\b/i.test(raw)
+    || /(屏幕|桌面|窗口|当前窗口|浏览器窗口|可见|看见|看到|观察|感知|监控|监听电脑|环境感知|ambient|前台应用|当前应用)/i.test(compact);
+  if (!mentionsPerception) return null;
+
+  const statusSignal = /\b(status|ready|available|enabled|disabled|on|off|working|watching|observing|can you see|what can you see|what are you watching|what did you see|recent window|current window)\b/i.test(raw)
+    || /(状态|开着吗|开了吗|开启|关闭|准备好|准备好了|能看|能看到|看得到|看到什么|看见什么|在看什么|监控什么|观察什么|最近看到|当前窗口|现在窗口|默认窗口|哪些窗口|哪些屏幕|隐私规则|隐私模式|屏幕权限)/i.test(compact);
+  if (!statusSignal) return null;
+
+  return {
+    intent: 'perception_status',
+    label: 'Perception status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalCapabilityStatusCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24072,6 +24093,9 @@ function localCommandDecision(task) {
 
   const voiceStatusCommand = naturalVoiceStatusLocalCommand(text);
   if (voiceStatusCommand) return voiceStatusCommand;
+
+  const perceptionStatusCommand = naturalPerceptionStatusLocalCommand(text);
+  if (perceptionStatusCommand) return perceptionStatusCommand;
 
   const capabilityCommand = naturalCapabilityStatusCommand(text);
   if (capabilityCommand) return capabilityCommand;
@@ -24584,7 +24608,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -24606,6 +24630,14 @@ function buildContextPlan(message, options = {}) {
       needs.macContext = false;
       needs.screen = false;
       needs.accessibility = false;
+    } else if (['perception_status'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
+      needs.browserContext = false;
+      needs.browserPage = false;
+      needs.browserDom = false;
     } else if (['autopilot_status'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
@@ -25067,6 +25099,116 @@ function formatVoiceStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function perceptionStatusSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(12, Number(options.limit || 5)));
+  const perception = perceptionConsentSnapshot({
+    limit,
+    auditLimit: options.auditLimit || 120,
+  });
+  const ambient = ambientStateSnapshot(limit);
+  const screen = latestScreenSnapshot();
+  const privacy = screenPrivacySnapshot();
+  const browserActivity = ambient.browserActivity || browserActivitySnapshot({ limit });
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    perception,
+    screen: screen
+      ? {
+          available: true,
+          width: Number(screen.width || 0),
+          height: Number(screen.height || 0),
+          ageMs: Number.isFinite(latestScreenAgeMs()) ? Math.max(0, Math.round(latestScreenAgeMs())) : null,
+          source: compactRecordText(screen.source || '', 80),
+          displayId: compactRecordText(screen.displayId || '', 120),
+          displayName: compactRecordText(screen.displayName || '', 160),
+          privacyMode: compactRecordText(screen.privacy?.mode || privacy.mode || '', 40),
+          regionMask: screen.regionMask || null,
+        }
+      : {
+          available: false,
+          ageMs: null,
+          privacyMode: privacy.mode || 'private',
+        },
+    privacy: {
+      mode: privacy.mode,
+      label: privacy.label,
+      rulesSummary: privacy.rulesSummary,
+      ruleCounts: privacy.ruleCounts,
+      enforcement: privacy.enforcement,
+      realtimeAllowed: privacy.realtimeAllowed,
+    },
+    ambient: {
+      enabled: ambient.enabled,
+      captureScreen: ambient.captureScreen,
+      intervalMs: ambient.intervalMs,
+      learningEnabled: ambient.learningEnabled,
+      count: ambient.count,
+      recent: Array.isArray(ambient.recent)
+        ? ambient.recent.slice(0, limit).map((event) => ({
+            id: compactRecordText(event.id || '', 80),
+            ageMs: presenceAgeMs(event.createdAt),
+            source: compactRecordText(event.source || '', 80),
+            app: compactRecordText(event.frontmost?.app || '', 120),
+            windowTitle: compactRecordText(event.frontmost?.windowTitle || '', 180),
+            browserApp: compactRecordText(event.browser?.app || '', 120),
+            browserTitle: compactRecordText(event.browser?.title || '', 180),
+            browserHost: browserHostFromAmbientEvent(event),
+            hasScreen: Boolean(event.screen?.available || event.screen?.width || event.hasScreen),
+          }))
+        : [],
+      browserActivity: {
+        enabled: browserActivity.enabled,
+        count: browserActivity.count,
+        current: browserActivity.current || null,
+        summary: compactRecordText(browserActivity.summary || '', 260),
+        privacy: browserActivity.privacy || {},
+      },
+    },
+    safety: {
+      readOnly: true,
+      capturesScreenNow: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      opensTerminal: false,
+      storesClipboardText: false,
+      returnsScreenImage: false,
+      returnsBrowserPageText: false,
+      returnsFullAccessibilityTree: false,
+    },
+  };
+}
+
+function formatPerceptionStatusForLocalCommand(status = {}) {
+  const perception = status.perception || {};
+  const counts = perception.counts || {};
+  const surfaces = Array.isArray(perception.surfaces) ? perception.surfaces : [];
+  const surfaceById = new Map(surfaces.map((surface) => [surface.id, surface]));
+  const screenSurface = surfaceById.get('screen_context') || {};
+  const ambientSurface = surfaceById.get('ambient_observer') || {};
+  const browserSurface = surfaceById.get('browser_activity') || {};
+  const axSurface = surfaceById.get('accessibility_tree') || {};
+  const latest = Array.isArray(status.ambient?.recent) ? status.ambient.recent[0] : null;
+  const latestPieces = latest
+    ? [
+        latest.app || latest.browserApp,
+        latest.browserHost || latest.browserTitle || latest.windowTitle,
+      ].filter(Boolean).join(' · ')
+    : '';
+  return [
+    `Perception: enabled ${counts.enabled ?? 0}/${counts.total ?? 0} · active ${counts.active ?? 0} · limited ${counts.limited ?? 0} · blocked ${counts.blocked ?? 0}`,
+    `Screen: ${screenSurface.status || (status.screen?.available ? 'active' : 'waiting')} · cached=${status.screen?.available ? 'yes' : 'no'} · privacy=${status.privacy?.mode || status.screen?.privacyMode || '-'}${status.screen?.available ? ` · ${status.screen.width}x${status.screen.height} · age=${status.screen.ageMs ?? '-'}ms` : ''}`,
+    `Ambient: ${ambientSurface.status || (status.ambient?.enabled ? 'active' : 'disabled')} · enabled=${status.ambient?.enabled ? 'yes' : 'no'} · samples=${status.ambient?.count ?? 0} · interval=${status.ambient?.intervalMs ?? '-'}ms`,
+    latestPieces ? `Latest metadata: ${compactRecordText(latestPieces, 220)}` : '',
+    `Browser metadata: ${browserSurface.status || '-'} · ${compactRecordText(status.ambient?.browserActivity?.summary || browserSurface.summary || '', 260)}`,
+    `Accessibility: ${axSurface.status || '-'} · ${compactRecordText(axSurface.summary || '', 220)}`,
+    status.privacy?.rulesSummary ? `Privacy rules: ${compactRecordText(status.privacy.rulesSummary, 260)}` : '',
+    perception.summary ? `Summary: ${compactRecordText(perception.summary, 260)}` : '',
+    '边界: 这里只读感知/隐私/ambient 元数据；不主动截屏，不返回图片，不读取网页正文，不读剪贴板文本，不启动麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatAutopilotStatusForLocalCommand(status = {}) {
   const selected = status.selectedAction || null;
   const first = status.firstAction || null;
@@ -25302,6 +25444,19 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatVoiceStatusForLocalCommand(voiceStatus),
         data: { voiceStatus },
+      };
+    }
+
+    if (command.intent === 'perception_status') {
+      const perceptionStatus = perceptionStatusSnapshot({
+        limit: 5,
+        source: 'local_command',
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatPerceptionStatusForLocalCommand(perceptionStatus),
+        data: { perceptionStatus },
       };
     }
 

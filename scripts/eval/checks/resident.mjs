@@ -180,6 +180,49 @@ export default {
         }),
     );
 
+    const perceptionStatusCommandResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '你现在在看我的屏幕吗，最近看到什么窗口？',
+        execute: true,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_perception_status_local_command',
+      },
+      timeoutMs: 10000,
+    });
+    const perceptionStatusCommand = perceptionStatusCommandResponse.data || {};
+    const perceptionStatusRoute = perceptionStatusCommand.route || {};
+    const perceptionStatus = perceptionStatusRoute.data?.perceptionStatus || {};
+    out.push(
+      perceptionStatusCommandResponse.ok &&
+        perceptionStatusCommand.ok === true &&
+        perceptionStatusRoute.localCommand?.intent === 'perception_status' &&
+        perceptionStatusRoute.decision?.localCommand === 'perception_status' &&
+        String(perceptionStatusRoute.output || '').includes('Perception:') &&
+        perceptionStatus.version === 1 &&
+        perceptionStatus.perception?.ok === true &&
+        typeof perceptionStatus.perception?.counts?.total === 'number' &&
+        perceptionStatus.safety?.readOnly === true &&
+        perceptionStatus.safety?.capturesScreenNow === false &&
+        perceptionStatus.safety?.startsMicrophone === false &&
+        perceptionStatus.safety?.usesRealtime === false &&
+        perceptionStatus.safety?.returnsScreenImage === false &&
+        perceptionStatus.safety?.returnsBrowserPageText === false &&
+        perceptionStatus.safety?.returnsFullAccessibilityTree === false &&
+        perceptionStatusRoute.contextPlan?.needs?.residentState === true &&
+        perceptionStatusRoute.contextPlan?.needs?.screen === false &&
+        perceptionStatusRoute.contextPlan?.needs?.accessibility === false &&
+        perceptionStatusRoute.contextPlan?.needs?.browserPage === false
+        ? ok('resident.perception_status_local_command', 'Perception status local command', `${perceptionStatus.perception.counts.active || 0} active surface(s) · screen=${perceptionStatus.screen?.available ? 'cached' : 'waiting'}`)
+        : fail('resident.perception_status_local_command', 'Perception status local command', 'expected natural screen/watch status question to route to a read-only perception_status fast path', {
+          status: perceptionStatusCommandResponse.status,
+          body: perceptionStatusCommand,
+        }),
+    );
+
     const voiceStandbyPrimaryPreview = await ctx.api('/api/voice/standby', {
       method: 'POST',
       body: {
@@ -665,6 +708,17 @@ export default {
       hasVoiceStatusLoop
         ? ok('resident.local_voice_loop_voice_status', 'Local voice loop voice-status command', '/voice reads standby state without microphone, Realtime, or Terminal')
         : fail('resident.local_voice_loop_voice_status', 'Local voice loop voice-status command', 'expected /voice slash command to read /api/voice/standby with read-only safety copy'),
+    );
+
+    const hasPerceptionStatusLoop =
+      loopSource.includes("command === 'see'") &&
+      loopSource.includes('/api/perception/consent?limit=5') &&
+      loopSource.includes('formatLoopPerceptionStatus') &&
+      loopSource.includes('does not capture a new screen frame');
+    out.push(
+      hasPerceptionStatusLoop
+        ? ok('resident.local_voice_loop_perception_status', 'Local voice loop perception-status command', '/see reads perception consent without screen capture, images, page text, or microphone')
+        : fail('resident.local_voice_loop_perception_status', 'Local voice loop perception-status command', 'expected /see slash command to read /api/perception/consent with read-only safety copy'),
     );
 
     const petStandbyNoTerminal =
