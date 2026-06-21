@@ -183,7 +183,7 @@ Each routing record also stores `contextPlan`, which explains the planned contex
 
 Running jobs keep their latest log in `jobs.json`. Jobs launched from a routed task also retain `skillRecallPlan` when one was available, and worker prompts/logs include that plan as reusable procedure context without turning it into permission. Codex and Claude workers are launched in their own process group so cancellation can stop the worker tree instead of only the shell wrapper.
 
-`audit.jsonl` records structured process, job, tool, and local-action events for debugging and later replay/audit work. Realtime tool-call evidence is intentionally shorter-lived in memory; only compact audit metadata is persisted.
+`audit.jsonl` records structured process, job, tool, and local-action events for debugging and later replay/audit work. The resident keeps the current audit log bounded by rotating oversized logs into timestamped local archives and retaining only a recent tail in the active file; `/api/audit/status` reports the current size, limit, retained tail size, and archive count. Realtime tool-call evidence is intentionally shorter-lived in memory; only compact audit metadata is persisted.
 
 `action-policy.json` controls which local actions can run automatically, which require approval, and whether actions should run in dry-run mode.
 

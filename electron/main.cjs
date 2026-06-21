@@ -140,6 +140,16 @@ const execFileAsync = promisify(execFile);
 const API_PORT = Number(process.env.JAVIS_API_PORT || 3417);
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+function boundedRuntimeNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+  const number = Number.isFinite(parsed) ? parsed : fallback;
+  return Math.max(min, Math.min(max, number));
+}
+
+function boundedRuntimeInteger(value, fallback, min, max) {
+  return Math.floor(boundedRuntimeNumber(value, fallback, min, max));
+}
+
 const WAKE_WORDS = (process.env.JAVIS_WAKE_WORDS || 'JAVIS,Jarvis,贾维斯,小贾')
   .split(',')
   .map((item) => item.trim())
@@ -155,6 +165,10 @@ const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
 const COLLABORATION_FILE = path.join(DATA_DIR, 'collaboration.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
+const AUDIT_MAX_BYTES = boundedRuntimeNumber(process.env.JAVIS_AUDIT_MAX_BYTES, 64 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024);
+const AUDIT_RETAIN_BYTES = boundedRuntimeNumber(process.env.JAVIS_AUDIT_RETAIN_BYTES, 4 * 1024 * 1024, 256 * 1024, AUDIT_MAX_BYTES);
+const AUDIT_ARCHIVE_LIMIT = boundedRuntimeInteger(process.env.JAVIS_AUDIT_ARCHIVE_LIMIT, 3, 0, 20);
+let auditLastRotationCheckAt = 0;
 const ACTION_POLICY_FILE = path.join(DATA_DIR, 'action-policy.json');
 const CONTROL_MODE_FILE = path.join(DATA_DIR, 'control-mode.json');
 const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, 'api-token');
@@ -3457,18 +3471,161 @@ async function captureResidentScreen(options = {}) {
 }
 
 function appendAudit(type, data = {}) {
+  const rotation = rotateAuditIfNeeded();
   const record = {
     ts: new Date().toISOString(),
     type,
     data,
   };
   try {
+    if (rotation.rotated) {
+      fs.appendFileSync(AUDIT_FILE, `${JSON.stringify({
+        ts: new Date().toISOString(),
+        type: 'audit.rotated',
+        data: rotation,
+      })}\n`, 'utf8');
+    }
     fs.appendFileSync(AUDIT_FILE, `${JSON.stringify(record)}\n`, 'utf8');
   } catch (error) {
     fs.appendFileSync(
       path.join(process.cwd(), 'javis-error.log'),
       `${new Date().toISOString()} audit_write_failed ${error.stack || error}\n`,
     );
+  }
+}
+
+function auditArchiveTimestamp(date = new Date()) {
+  return date.toISOString().replace(/[:.]/g, '-');
+}
+
+function auditArchiveFiles() {
+  try {
+    return fs.readdirSync(DATA_DIR)
+      .filter((name) => /^audit-\d{4}-\d{2}-\d{2}T.*\.jsonl$/.test(name))
+      .map((name) => {
+        const file = path.join(DATA_DIR, name);
+        let stat = null;
+        try {
+          stat = fs.statSync(file);
+        } catch {}
+        return stat ? { name, file, size: stat.size, mtimeMs: stat.mtimeMs } : null;
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch {
+    return [];
+  }
+}
+
+function readAuditTailFromFile(file, retainBytes = AUDIT_RETAIN_BYTES) {
+  let fd = null;
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.size) return Buffer.alloc(0);
+    const bytesToRead = Math.min(stat.size, Math.max(0, Number(retainBytes || 0)));
+    const start = Math.max(0, stat.size - bytesToRead);
+    const buffer = Buffer.allocUnsafe(bytesToRead);
+    fd = fs.openSync(file, 'r');
+    const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, start);
+    let tail = buffer.subarray(0, bytesRead);
+    if (start > 0) {
+      const newline = tail.indexOf(10);
+      tail = newline >= 0 ? tail.subarray(newline + 1) : Buffer.alloc(0);
+    }
+    return tail;
+  } catch {
+    return Buffer.alloc(0);
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+}
+
+function pruneAuditArchives(limit = AUDIT_ARCHIVE_LIMIT) {
+  const archives = auditArchiveFiles();
+  const keep = Math.max(0, Math.min(20, Number(limit || 0)));
+  const removed = [];
+  for (const archive of archives.slice(keep)) {
+    try {
+      fs.unlinkSync(archive.file);
+      removed.push({ name: archive.name, size: archive.size });
+    } catch {}
+  }
+  return { archives: archives.slice(0, keep), removed };
+}
+
+function auditStorageSnapshot() {
+  let currentBytes = 0;
+  let currentMtimeMs = 0;
+  try {
+    const stat = fs.statSync(AUDIT_FILE);
+    currentBytes = stat.size;
+    currentMtimeMs = stat.mtimeMs;
+  } catch {}
+  const archives = auditArchiveFiles();
+  return {
+    file: AUDIT_FILE,
+    currentBytes,
+    currentMtimeMs,
+    maxBytes: AUDIT_MAX_BYTES,
+    retainBytes: AUDIT_RETAIN_BYTES,
+    archiveLimit: AUDIT_ARCHIVE_LIMIT,
+    archiveCount: archives.length,
+    archiveBytes: archives.reduce((total, archive) => total + Number(archive.size || 0), 0),
+    archives: archives.slice(0, AUDIT_ARCHIVE_LIMIT).map((archive) => ({
+      name: archive.name,
+      size: archive.size,
+      mtimeMs: archive.mtimeMs,
+    })),
+    bounded: currentBytes <= AUDIT_MAX_BYTES,
+  };
+}
+
+function rotateAuditIfNeeded(options = {}) {
+  const force = options.force === true;
+  const now = Date.now();
+  if (!force && now - auditLastRotationCheckAt < 15000) {
+    return { checked: false, rotated: false };
+  }
+  auditLastRotationCheckAt = now;
+  try {
+    if (!fs.existsSync(AUDIT_FILE)) return { checked: true, rotated: false, size: 0, maxBytes: AUDIT_MAX_BYTES };
+    const stat = fs.statSync(AUDIT_FILE);
+    if (stat.size <= AUDIT_MAX_BYTES) {
+      return { checked: true, rotated: false, size: stat.size, maxBytes: AUDIT_MAX_BYTES };
+    }
+    const archiveName = `audit-${auditArchiveTimestamp()}.jsonl`;
+    const archiveFile = path.join(DATA_DIR, archiveName);
+    fs.renameSync(AUDIT_FILE, archiveFile);
+    const retainedTail = readAuditTailFromFile(archiveFile, AUDIT_RETAIN_BYTES);
+    fs.writeFileSync(AUDIT_FILE, retainedTail.length ? retainedTail : '', 'utf8');
+    const prune = pruneAuditArchives();
+    const currentBytes = fs.existsSync(AUDIT_FILE) ? fs.statSync(AUDIT_FILE).size : 0;
+    return {
+      checked: true,
+      rotated: true,
+      archive: archiveName,
+      previousBytes: stat.size,
+      retainedBytes: currentBytes,
+      maxBytes: AUDIT_MAX_BYTES,
+      retainBytes: AUDIT_RETAIN_BYTES,
+      prunedArchives: prune.removed.length,
+    };
+  } catch (error) {
+    try {
+      fs.appendFileSync(
+        path.join(process.cwd(), 'javis-error.log'),
+        `${new Date().toISOString()} audit_rotate_failed ${error.stack || error}\n`,
+      );
+    } catch {}
+    return {
+      checked: true,
+      rotated: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
   }
 }
 
@@ -45920,6 +46077,7 @@ function healthSnapshot() {
       routingFile: ROUTING_FILE,
       collaborationFile: COLLABORATION_FILE,
       auditFile: AUDIT_FILE,
+      audit: auditStorageSnapshot(),
       actionPolicyFile: ACTION_POLICY_FILE,
       controlModeFile: CONTROL_MODE_FILE,
       approvalsFile: APPROVALS_FILE,
@@ -52497,6 +52655,10 @@ function startApiServer() {
   api.get('/api/audit/recent', (req, res) => {
     const limit = Number(req.query.limit || 80);
     res.json({ events: readRecentAudit(limit) });
+  });
+
+  api.get('/api/audit/status', (_req, res) => {
+    res.json({ audit: auditStorageSnapshot() });
   });
 
   api.get('/api/status', (_req, res) => {

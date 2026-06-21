@@ -23,6 +23,19 @@ export default {
           }),
     );
 
+    const auditStatus = await ctx.api('/api/audit/status');
+    const audit = auditStatus.data?.audit || health.data?.storage?.audit || {};
+    out.push(
+      auditStatus.ok &&
+        audit.file &&
+        audit.bounded === true &&
+        Number(audit.currentBytes || 0) <= Number(audit.maxBytes || 0) &&
+        Number(audit.retainBytes || 0) > 0 &&
+        Number(audit.archiveCount || 0) <= Number(audit.archiveLimit || 0)
+        ? ok('health.audit_storage', 'Audit storage retention', `current=${Math.round(Number(audit.currentBytes || 0) / 1024)}KB · archives=${audit.archiveCount}/${audit.archiveLimit}`)
+        : fail('health.audit_storage', 'Audit storage retention', 'audit log is not bounded or status is unavailable', audit),
+    );
+
     const doctor = await ctx.api('/api/doctor/report', { timeoutMs: 45000 });
     const report = doctor.data?.doctor;
     if (report) {

@@ -1068,7 +1068,7 @@ Files:
 - `workflows.json`: recent user-level workflow history with linked jobs and results.
 - `sessions.json`: local focus sessions with goals, notes, and deterministic summaries.
 - `inbox.json`: local capture inbox for clipboard/manual follow-ups.
-- `audit.jsonl`: structured process, job, tool, and action events.
+- `audit.jsonl`: structured process, job, tool, and action events. It is bounded by `JAVIS_AUDIT_MAX_BYTES` (default 64MB), keeps a recent tail in the active file with `JAVIS_AUDIT_RETAIN_BYTES` (default 4MB), and retains timestamped local archives up to `JAVIS_AUDIT_ARCHIVE_LIMIT` (default 3). Check `/api/audit/status` or `GET /api/health` storage details for current size and archive count.
 - `action-policy.json`: local automation policy.
 - `approvals.json`: pending and historical local action approvals.
 
