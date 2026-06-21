@@ -240,6 +240,9 @@ export default {
       const turns = Array.isArray(loop.turns) ? loop.turns : [];
       const commandTurns = turns.filter((turn) => turn.kind === 'loop_command');
       const voiceTurns = turns.filter((turn) => turn.kind !== 'loop_command');
+      const statusTurn = commandTurns.find((turn) => turn.command === 'status') || {};
+      const nextTurn = commandTurns.find((turn) => turn.command === 'next') || {};
+      const agentTurn = commandTurns.find((turn) => turn.command === 'agent') || {};
       const sessionId = turns.find((turn) => turn.session?.sessionId)?.session?.sessionId || '';
       if (sessionId) {
         await ctx.api(`/api/sessions/${encodeURIComponent(sessionId)}/end`, {
@@ -266,6 +269,13 @@ export default {
           loop.safety?.storesRawAudio === false &&
           commandTurns.length === 4 &&
           ['status', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          statusTurn.detailLevel === 'fast' &&
+          statusTurn.endpoint === '/api/pet/status' &&
+          statusTurn.output.includes('Pet:') &&
+          nextTurn.detailLevel === 'fast' &&
+          nextTurn.endpoint?.includes('compact=true') &&
+          agentTurn.detailLevel === 'fast' &&
+          agentTurn.agentSteps === 4 &&
           commandTurns.every((turn) => (
             turn.ok === true &&
             turn.previewOnly === true &&

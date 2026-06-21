@@ -43631,6 +43631,63 @@ async function workNextAction(options = {}) {
   };
 }
 
+function compactWorkNextActionPayload(action = null) {
+  if (!action || typeof action !== 'object') return null;
+  const localFallback = action.localFallback && typeof action.localFallback === 'object'
+    ? {
+        available: Boolean(action.localFallback.available),
+        activeWhenRealtimeBlocked: Boolean(action.localFallback.activeWhenRealtimeBlocked),
+        lane: compactRecordText(action.localFallback.lane || '', 80),
+        endpoint: compactRecordText(action.localFallback.endpoint || '', 120),
+        summary: compactRecordText(action.localFallback.summary || '', 220),
+        next: compactRecordText(action.localFallback.next || '', 220),
+      }
+    : null;
+  return {
+    id: compactRecordText(action.id || '', 120),
+    label: compactRecordText(action.label || '', 140),
+    summary: compactRecordText(action.summary || '', 420),
+    source: compactRecordText(action.source || '', 80),
+    executable: Boolean(action.executable),
+    autoEligible: Boolean(action.autoEligible),
+    autopilotEligible: Boolean(action.autopilotEligible),
+    manualOnly: Boolean(action.manualOnly),
+    requiresUserPresence: Boolean(action.requiresUserPresence),
+    startsMicrophone: Boolean(action.startsMicrophone),
+    requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+    riskLevel: boundedCount(action.riskLevel, 10),
+    localFallback,
+  };
+}
+
+function compactWorkNextPayload(next = {}) {
+  const briefing = next.briefing && typeof next.briefing === 'object' ? next.briefing : {};
+  const result = next.result && typeof next.result === 'object'
+    ? {
+        ok: next.result.ok !== false,
+        executed: Boolean(next.result.executed),
+        queued: Boolean(next.result.queued),
+        saved: Boolean(next.result.saved),
+        output: compactRecordText(next.result.output || '', 700),
+      }
+    : null;
+  return {
+    ok: next.ok !== false,
+    executed: Boolean(next.executed),
+    action: compactWorkNextActionPayload(next.action),
+    output: compactRecordText(next.output || '', 900),
+    result,
+    briefing: {
+      compact: true,
+      nextActionCount: Array.isArray(briefing.nextActions) ? briefing.nextActions.length : 0,
+      followUpCount: Array.isArray(briefing.followUps) ? briefing.followUps.length : 0,
+      availableActionCount: Array.isArray(briefing.availableActions) ? briefing.availableActions.length : 0,
+      workflowCounts: briefing.progress?.counts?.workflows || briefing.workflowCounts || {},
+      jobCounts: briefing.progress?.counts?.jobs || briefing.jobCounts || {},
+    },
+  };
+}
+
 function compactBrowserFillRecoveryForVoice(plan = null) {
   if (!plan || typeof plan !== 'object') return null;
   const blocked = Array.isArray(plan.blocked) ? plan.blocked : [];
@@ -51394,12 +51451,15 @@ function startApiServer() {
 
   api.get('/api/work/next', async (req, res) => {
     try {
+      const next = await workNextAction({
+        ...(req.query || {}),
+        execute: false,
+        source: 'api',
+      });
+      const compact = String(req.query?.compact || '').toLowerCase() === 'true';
       res.json({
-        next: await workNextAction({
-          ...(req.query || {}),
-          execute: false,
-          source: 'api',
-        }),
+        next: compact ? compactWorkNextPayload(next) : next,
+        ...(compact ? { compact: true } : {}),
       });
     } catch (error) {
       jsonError(res, 500, 'Work next failed', error instanceof Error ? error.message : String(error));

@@ -35,7 +35,9 @@ function hasFlag(name) {
 }
 
 function numericArg(name, fallback, options = {}) {
-  const value = Number(argValue(name, ''));
+  const raw = argValue(name, '');
+  if (raw === '') return fallback;
+  const value = Number(raw);
   if (!Number.isFinite(value)) return fallback;
   const min = Number.isFinite(options.min) ? options.min : 0;
   const max = Number.isFinite(options.max) ? options.max : Number.MAX_SAFE_INTEGER;
@@ -88,6 +90,10 @@ Flags:
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
                                Slash commands: /status, /handoff, /next, /history, /agent, /help.
+  --full-status               In chat mode, make /status use the full diagnostics payload.
+  --full-next                 In chat mode, make /next use the full workbench payload.
+  --full-agent                In chat mode, make /agent run the full autonomy preview.
+  --agent-steps <n>           In chat mode, override fast /agent step count. Default: 4.
   --request-timeout-ms <ms>    Bound each local API call. Default: 30000.
   --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
   --no-speech                 Disable the acknowledgement preview.
@@ -296,6 +302,15 @@ function compactText(value, max = 220) {
   return `${text.slice(0, Math.max(0, max - 3))}...`;
 }
 
+function loopFullMode(command) {
+  return hasFlag('full') || hasFlag(`full-${command}`);
+}
+
+function loopAgentStepLimit() {
+  if (loopFullMode('agent')) return 8;
+  return numericArg('agent-steps', 4, { min: 2, max: 10 });
+}
+
 function loopSafety() {
   return {
     startsMicrophone: false,
@@ -308,19 +323,39 @@ function loopSafety() {
 function loopHelpText() {
   return [
     'Loop commands:',
-    '  /status   Read resident readiness, Realtime blocker, and local fallback state.',
+    '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /handoff  Read the voice-ready work handoff summary.',
-    '  /next     Read the next workbench action preview.',
+    '  /next     Fast-read the next workbench action preview.',
     '  /history  Read recent sanitized local voice-command turns.',
-    '  /agent    Preview a bounded autonomy loop for a task.',
+    '  /agent    Preview a short bounded autonomy loop for a task.',
     '  /help     Show this help.',
     '  /exit     Leave the loop.',
     '',
+    'Flags: --full-status, --full-next, --full-agent, or --full for full diagnostics.',
     'Type a normal request without / to route it through /api/voice/command.',
   ].join('\n');
 }
 
 function formatLoopStatus(data = {}) {
+  if (data.pet?.lightweight) {
+    const pet = data.pet || {};
+    const readiness = data.readiness || {};
+    const counts = readiness.counts || {};
+    const voiceHealth = data.voiceHealth || {};
+    const localVoice = data.localVoice || {};
+    const fallback = voiceHealth.fallback || {};
+    const queue = Array.isArray(data.queue) ? data.queue : [];
+    const approvals = Array.isArray(data.approvals) ? data.approvals : [];
+    const lines = [
+      `Status: ${readiness.label || pet.label || pet.mode || 'unknown'} · ready ${counts.ready ?? '-'} / ${counts.total ?? '-'} · warning ${counts.warning ?? 0} · blocked ${counts.blocked ?? 0}`,
+      `Pet: ${pet.color || pet.trafficLight?.color || '-'} · ${pet.label || pet.mode || '-'} · ${compactText(pet.summary || '-', 220)}`,
+      `Realtime: ${voiceHealth.status || 'unknown'} · ${compactText(voiceHealth.summary || '-', 220)}`,
+      `Local voice: ${localVoice.mode || localVoice.status || 'unknown'} · ${localVoice.input?.endpoint || fallback.endpoint || '/api/voice/command'}`,
+      `Queue: active ${queue.length} · approvals ${approvals.length} · sessions ${data.sessions?.counts?.active ?? 0}`,
+    ];
+    if (pet.next || voiceHealth.next) lines.push(`Next: ${compactText(pet.next || voiceHealth.next, 220)}`);
+    return lines.join('\n');
+  }
   const readiness = data.readiness || {};
   const counts = readiness.counts || {};
   const voiceHealth = data.voiceHealth || {};
@@ -420,9 +455,10 @@ function commandOk(response, command) {
   return true;
 }
 
-function loopCommandResult(base, response, output) {
+function loopCommandResult(base, response, output, details = {}) {
   return {
     ...base,
+    ...details,
     ok: commandOk(response, base.command),
     responseStatus: response.status,
     output,
@@ -448,20 +484,39 @@ async function runLoopCommand(transcript) {
   try {
     if (command === 'help') return { ...base, output: loopHelpText() };
     if (command === 'status') {
-      const response = await request('/api/status');
-      return loopCommandResult(base, response, formatLoopStatus(response.data || {}));
+      const full = loopFullMode('status');
+      const endpoint = full ? '/api/status' : '/api/pet/status';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopStatus(response.data || {}), {
+        endpoint,
+        detailLevel: full ? 'full' : 'fast',
+      });
     }
     if (command === 'handoff') {
       const response = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
-      return loopCommandResult(base, response, formatLoopHandoff(response.data || {}));
+      return loopCommandResult(base, response, formatLoopHandoff(response.data || {}), {
+        endpoint: '/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900',
+        detailLevel: 'full',
+      });
     }
     if (command === 'next') {
-      const response = await request('/api/work/next?workflowLimit=6&jobLimit=6');
-      return loopCommandResult(base, response, formatLoopNext(response.data || {}));
+      const full = loopFullMode('next');
+      const endpoint = full
+        ? '/api/work/next?workflowLimit=6&jobLimit=6'
+        : '/api/work/next?workflowLimit=2&jobLimit=2&compact=true';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopNext(response.data || {}), {
+        endpoint,
+        detailLevel: full ? 'full' : 'fast',
+      });
     }
     if (command === 'history') {
-      const response = await request('/api/voice/history?limit=5');
-      return loopCommandResult(base, response, formatLoopHistory(response.data || {}));
+      const endpoint = '/api/voice/history?limit=5';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopHistory(response.data || {}), {
+        endpoint,
+        detailLevel: 'fast',
+      });
     }
     if (command === 'agent') {
       const task = String(transcript || '').replace(/^\/agent\b/i, '').trim();
@@ -481,11 +536,15 @@ async function runLoopCommand(transcript) {
           includeAccessibility: false,
           captureScreen: false,
           useMemory: hasFlag('use-memory'),
-          maxSteps: 8,
+          maxSteps: loopAgentStepLimit(),
           source: 'local_voice_loop_agent_preview',
         },
       });
-      return loopCommandResult(base, response, formatAutonomyLoop(response.data || {}));
+      return loopCommandResult(base, response, formatAutonomyLoop(response.data || {}), {
+        endpoint: '/api/autonomy/run',
+        detailLevel: loopFullMode('agent') ? 'full' : 'fast',
+        agentSteps: loopAgentStepLimit(),
+      });
     }
     return {
       ...base,
