@@ -617,6 +617,7 @@ function printNextAction(next) {
   if (action.manualOnlyReason) console.log(`Manual reason: ${compact(action.manualOnlyReason, 220)}`);
   const fallback = action.localFallback || action.fallback || action.voiceHealth?.fallback || {};
   if (fallback.available) {
+    console.log(`Guide: Use local fallback while this work-next item is blocked.`);
     console.log(`Local fallback: ${fallback.endpoint || '/api/voice/command'} (${fallback.lane || 'local_voice_command'})`);
     if (fallback.dogfoodCommand) console.log(`Fallback command: ${fallback.dogfoodCommand}`);
     if (fallback.summary) console.log(`Fallback summary: ${compact(fallback.summary, 260)}`);
@@ -672,6 +673,39 @@ async function showWorkbenchNext() {
   const realtimeGuide = preview?.next?.briefing?.realtimeVoice?.dogfoodGuide || preview?.briefing?.realtimeVoice?.dogfoodGuide || {};
   if (!printedGuide && (!action || action.source === 'realtime_voice')) printDogfoodGuide(realtimeGuide);
   if (preview.next?.output) console.log(compact(preview.next.output, 700));
+}
+
+function workNextActionIdFromArgv() {
+  const explicit = argvValue('--action-id') || argvValue('--id');
+  if (explicit) return explicit;
+  const routeId = argvValue('--route-id');
+  return routeId ? `route:${routeId.replace(/^route:/, '')}` : '';
+}
+
+async function runWorkbenchNextDirect(options = {}) {
+  const actionId = options.actionId || workNextActionIdFromArgv();
+  const workflowLimit = Number(argvValue('--workflow-limit', '6') || 6);
+  const jobLimit = Number(argvValue('--job-limit', '6') || 6);
+  const result = await request('/api/work/next', {
+    method: 'POST',
+    body: {
+      source: options.source || argvValue('--source', 'cui_cli'),
+      execute: true,
+      workflowLimit,
+      jobLimit,
+      ...(actionId ? { actionId } : {}),
+    },
+  });
+  const next = result.next || {};
+  console.log('');
+  printNextAction(result);
+  if (actionId) console.log(`Action: ${actionId}`);
+  console.log(`Work item ${next.executed ? 'executed' : 'reviewed'}.`);
+  if (next.output) console.log(compact(next.output, 1200));
+  if (next.ok === false) {
+    throw new Error(next.output || `Work-next action failed${actionId ? `: ${actionId}` : ''}.`);
+  }
+  return result;
 }
 
 async function runWorkbenchNext(rl) {
@@ -3646,6 +3680,11 @@ async function main() {
 
   if (process.argv.includes('--print-work-next') || process.argv.includes('--work-next')) {
     await showWorkbenchNext();
+    return;
+  }
+
+  if (process.argv.includes('--run-work-next') || process.argv.includes('--execute-work-next')) {
+    await runWorkbenchNextDirect();
     return;
   }
 

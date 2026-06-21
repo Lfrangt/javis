@@ -43,6 +43,8 @@
     "voice": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
     "voice:local": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
     "wake": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --wake",
+    "work:next": "node scripts/config-cui.cjs --print-work-next",
+    "work:run": "node scripts/config-cui.cjs --run-work-next",
     "verify:ax": "node scripts/verify-ax-targeting.mjs",
     "config": "node scripts/config-cui.cjs",
     "config:cui": "node scripts/config-cui.cjs",

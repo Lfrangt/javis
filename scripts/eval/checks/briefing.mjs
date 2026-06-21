@@ -299,11 +299,11 @@ export default {
         output.includes('Monitor: npm run config -> V. Watch Realtime voice evidence') &&
         output.includes('现在做到哪了') &&
         output.includes('get_work_handoff') &&
-        (hasRealtimePrepareGuide || hasProviderFallbackGuide);
+        hasRealtimePrepareGuide;
       out.push(
         output.includes('Next action:') &&
           output.includes('Guide:') &&
-          (hasRouteRecoveryGuide || hasRealtimeWorkbenchGuide)
+          (hasRouteRecoveryGuide || hasProviderFallbackGuide || hasRealtimeWorkbenchGuide)
           ? ok('briefing.cui_worknext', 'CUI work-next guide', hasRouteRecoveryGuide
             ? 'config CUI prints routed preview continuation guide'
             : hasProviderFallbackGuide
@@ -313,6 +313,58 @@ export default {
       );
     } catch (error) {
       out.push(fail('briefing.cui_worknext', 'CUI work-next guide', error instanceof Error ? error.message : String(error)));
+    }
+
+    const localRoutePreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '状态',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_cui_route_continue',
+      },
+      timeoutMs: 15000,
+    });
+    const localRouteId = localRoutePreview.data?.route?.routing?.id || '';
+    const localRouteLane = localRoutePreview.data?.route?.routing?.lane || localRoutePreview.data?.route?.lane || '';
+    try {
+      const cuiRun = await execFileAsync('node', [
+        'scripts/config-cui.cjs',
+        '--run-work-next',
+        '--action-id',
+        `route:${localRouteId}`,
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 20000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cuiRun.stdout || ''}\n${cuiRun.stderr || ''}`;
+      out.push(
+        localRoutePreview.ok &&
+          localRouteId &&
+          localRouteLane === 'local' &&
+          output.includes(`Action: route:${localRouteId}`) &&
+          output.includes('Recovery: route_preview_execute (executable)') &&
+          output.includes('Work item executed.')
+          ? ok('briefing.cui_worknext_run_route', 'CUI run route work-next', `executed local preview route ${localRouteId}`)
+          : fail('briefing.cui_worknext_run_route', 'CUI run route work-next', 'expected CUI to execute a targeted local route preview', {
+            routePreview: localRoutePreview.data,
+            localRouteLane,
+            output: output.slice(0, 2200),
+          }),
+      );
+    } catch (error) {
+      out.push(fail('briefing.cui_worknext_run_route', 'CUI run route work-next', error instanceof Error ? error.message : String(error), {
+        routePreview: localRoutePreview.data,
+        routeId: localRouteId,
+      }));
     }
 
     const routeSeed = await ctx.api('/api/tasks/parallel', {
