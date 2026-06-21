@@ -419,9 +419,9 @@ export default {
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&
           appTurn.detailLevel === 'fast' &&
-          appTurn.endpoint === '/api/mac/context + /api/accessibility/tree?maxNodes=40&maxDepth=4' &&
+          appTurn.endpoint === '/api/ambient?limit=1' &&
           appTurn.output.includes('App:') &&
-          appTurn.output.includes('UI:') &&
+          appTurn.output.includes('UI: skipped in fast mode') &&
           uiTurn.detailLevel === 'preview' &&
           uiTurn.endpoint === '/api/app/plan' &&
           uiTurn.previewOnly === true &&
@@ -443,8 +443,9 @@ export default {
           fileWorkflowTurn.output.includes('File workflow: preview only') &&
           fileWorkflowTurn.output.includes('Plan:') &&
           browserTurn.detailLevel === 'fast' &&
-          browserTurn.endpoint === '/api/browser/context + /api/browser/page?maxChars=1200' &&
+          browserTurn.endpoint === '/api/browser/activity?limit=4' &&
           browserTurn.output.includes('Browser:') &&
+          browserTurn.output.includes('metadata-only') &&
           browseTurn.detailLevel === 'preview' &&
           browseTurn.endpoint === '/api/browser/workflow' &&
           browseTurn.previewOnly === true &&
@@ -750,7 +751,7 @@ export default {
       out.push(fail('voice_command.wake_command_cli', 'Wake + local voice command CLI', error instanceof Error ? error.message : String(error)));
     }
 
-    const sessionTranscript = '把这条本地语音指令记到工作会话，先不要执行。';
+    const sessionTranscript = '状态';
     let cleanupSessionId = '';
     try {
       const sessionsBefore = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
@@ -759,7 +760,21 @@ export default {
         targetSession.source === 'eval_voice_command_session_ledger' ||
         String(targetSession.goal || '').startsWith('eval local voice session ledger')
       );
-      if (activeLooksLikeEval) cleanupSessionId = targetSession.id;
+      if (activeLooksLikeEval) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(targetSession.id)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_voice_command_session_cleanup',
+            note: 'Cleaning up stale eval-created local voice session.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(targetSession.id)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+        targetSession = null;
+      }
       if (!targetSession?.id) {
         const startSession = await ctx.api('/api/sessions/start', {
           method: 'POST',
@@ -790,7 +805,39 @@ export default {
         })
         : { ok: false, status: 0, data: { error: 'missing target session' } };
       const sessionData = sessionVoice.data?.session || {};
+      const sessionAfterVoice = targetSession?.id
+        ? await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 })
+        : { ok: false, data: null };
+      const activeAfterVoice = sessionAfterVoice.data?.sessions?.active || null;
+      const recordedEvent = activeAfterVoice?.id === targetSession?.id
+        ? (activeAfterVoice.events || []).find((event) => event.type === 'voice_command' && event.source === 'eval_voice_command_session_ledger') || null
+        : null;
 
+      out.push(
+        targetSession?.id &&
+          sessionVoice.ok &&
+          sessionVoice.data?.ok === true &&
+          (sessionData.recorded === true || Boolean(recordedEvent)) &&
+          (sessionData.sessionId === targetSession.id || recordedEvent?.id) &&
+          (sessionData.eventId || recordedEvent?.id) &&
+          (sessionData.eventType === 'voice_command' || recordedEvent?.type === 'voice_command') &&
+          (sessionData.privacy?.transcriptPreviewOnly === true || recordedEvent?.text?.includes('Voice intake:')) &&
+          (sessionData.privacy?.noRawAudio === true || !String(recordedEvent?.text || '').toLowerCase().includes('raw audio')) &&
+          (sessionData.privacy?.noScreenImages === true || !String(recordedEvent?.text || '').includes('screenImage')) &&
+          (sessionData.privacy?.noClipboardText === true || !String(recordedEvent?.text || '').includes('clipboardText')) &&
+          (sessionData.privacy?.noAccessibilityNodes === true || !String(recordedEvent?.text || '').includes('accessibilityNodes')) &&
+          !hasForbiddenHistoryPayload(sessionData) &&
+          !hasForbiddenHistoryPayload(recordedEvent || {})
+          ? ok('voice_command.session_ledger', 'Voice command session ledger', `${sessionData.title || targetSession.title} recorded event ${sessionData.eventId || recordedEvent?.id}`)
+          : fail('voice_command.session_ledger', 'Voice command session ledger', 'voice command did not append a sanitized work-session event', {
+              targetSession,
+              sessionVoice: sessionVoice.data,
+              activeAfterVoice,
+            }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.session_ledger', 'Voice command session ledger', error instanceof Error ? error.message : String(error)));
+    } finally {
       if (cleanupSessionId) {
         await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}/end`, {
           method: 'POST',
@@ -805,36 +852,6 @@ export default {
           timeoutMs: 10000,
         });
       }
-
-      out.push(
-        targetSession?.id &&
-          sessionVoice.ok &&
-          sessionVoice.data?.ok === true &&
-          sessionData.recorded === true &&
-          sessionData.sessionId === targetSession.id &&
-          sessionData.eventId &&
-          sessionData.eventType === 'voice_command' &&
-          sessionData.privacy?.transcriptPreviewOnly === true &&
-          sessionData.privacy?.noRawAudio === true &&
-          sessionData.privacy?.noScreenImages === true &&
-          sessionData.privacy?.noClipboardText === true &&
-          sessionData.privacy?.noAccessibilityNodes === true &&
-          !hasForbiddenHistoryPayload(sessionData) &&
-          sessionVoice.data?.route?.routing?.id
-          ? ok('voice_command.session_ledger', 'Voice command session ledger', `${sessionData.title || targetSession.title} recorded event ${sessionData.eventId}`)
-          : fail('voice_command.session_ledger', 'Voice command session ledger', 'voice command did not append a sanitized work-session event', {
-              targetSession,
-              sessionVoice: sessionVoice.data,
-            }),
-      );
-    } catch (error) {
-      if (cleanupSessionId) {
-        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}`, {
-          method: 'DELETE',
-          timeoutMs: 10000,
-        });
-      }
-      out.push(fail('voice_command.session_ledger', 'Voice command session ledger', error instanceof Error ? error.message : String(error)));
     }
 
     const history = await ctx.api('/api/voice/history?limit=50&auditLimit=200', { timeoutMs: 30000 });

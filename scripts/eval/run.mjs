@@ -26,6 +26,10 @@ const jsonMode = argv.includes('--json');
 const listMode = argv.includes('--list');
 const onlyArg = argv.find((a) => a.startsWith('--only='));
 const only = onlyArg ? onlyArg.slice('--only='.length).split(',').map((s) => s.trim()).filter(Boolean) : null;
+const configuredLaneTimeoutMs = Number(process.env.JAVIS_EVAL_LANE_TIMEOUT_MS || 300000);
+const LANE_TIMEOUT_MS = Number.isFinite(configuredLaneTimeoutMs)
+  ? Math.max(30000, Math.min(600000, configuredLaneTimeoutMs))
+  : 300000;
 
 async function loadChecks() {
   let files = [];
@@ -50,6 +54,22 @@ function icon(status) {
 function bar(score) {
   const filled = Math.round(score * 20);
   return `${'█'.repeat(filled)}${'░'.repeat(20 - filled)} ${(score * 10).toFixed(1)}/10`;
+}
+
+async function runLaneWithTimeout(mod, ctx) {
+  let timer;
+  try {
+    return await Promise.race([
+      mod.run(ctx),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error(`lane timed out after ${LANE_TIMEOUT_MS}ms`));
+        }, LANE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function main() {
@@ -102,7 +122,7 @@ async function main() {
   for (const mod of modules) {
     let results = [];
     try {
-      results = await mod.run(ctx);
+      results = await runLaneWithTimeout(mod, ctx);
     } catch (error) {
       results = [{ id: `${mod.lane}.error`, label: `${mod.lane} crashed`, status: 'fail', detail: error instanceof Error ? error.message : String(error) }];
     }
@@ -131,3 +151,8 @@ async function main() {
 }
 
 await main();
+
+// Node's built-in fetch can keep an idle local HTTP socket alive long enough to
+// make the eval CLI appear hung after all checks have printed. This runner is a
+// terminal/test-gate entrypoint, so exit explicitly once the scorecard is done.
+setImmediate(() => process.exit(process.exitCode || 0));

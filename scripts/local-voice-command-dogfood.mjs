@@ -91,6 +91,8 @@ Flags:
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
                                Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
+  --full-app                  Make /app read live Mac context and Accessibility outline.
+  --full-browser              Make /browser read live browser page text.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
   --agent-steps <n>           In chat mode, override fast /agent step count. Default: 4.
@@ -337,10 +339,10 @@ function loopHelpText() {
   return [
     'Loop commands:',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
-    '  /app      Read the current Mac app, screen metadata, and compact UI outline.',
+    '  /app      Fast-read recent Mac app and screen metadata; add --full-app for live UI outline.',
     '  /ui       Preview a local app/UI workflow plan; add --run to execute through policy.',
     '  /file     List, search, read, or preview organize/rename/convert file workflows.',
-    '  /browser  Read the current supported browser tab and page summary.',
+    '  /browser  Fast-read recent browser metadata; add --full-browser for live page summary.',
     '  /browse   Preview a browser workflow over the current page; add --run to execute.',
     '  /open     Preview opening a URL or web search; add --run to execute through policy.',
     '  /delegate Preview a scoped background/Codex/Claude handoff; --run stops at a confirmation gate.',
@@ -355,7 +357,7 @@ function loopHelpText() {
     '  /help     Show this help.',
     '  /exit     Leave the loop.',
     '',
-    'Flags: --full-status, --full-next, --full-agent, --full, or --confirm-delegate.',
+    'Flags: --full-status, --full-app, --full-browser, --full-next, --full-agent, --full, or --confirm-delegate.',
     'Type a normal request without / to route it through /api/voice/command.',
   ].join('\n');
 }
@@ -772,6 +774,29 @@ function formatLoopApp(macData = {}, treeData = {}) {
   return lines.join('\n');
 }
 
+function ambientLatestEvent(data = {}) {
+  const recent = Array.isArray(data.ambient?.recent) ? data.ambient.recent : [];
+  return recent[0] || {};
+}
+
+function formatLoopAppAmbient(data = {}) {
+  const ambient = data.ambient || {};
+  const event = ambientLatestEvent(data);
+  const frontmost = event.frontmost || {};
+  const browser = event.browser || {};
+  const screen = event.screen || {};
+  const ageMs = event.createdAt ? Math.max(0, Date.now() - Number(event.createdAt || 0)) : null;
+  const lines = [
+    `App: ${frontmost.app || '-'} · ${compactText(frontmost.windowTitle || '-', 180)}`,
+    `Screen: ${screen.width && screen.height ? `${screen.width}x${screen.height}` : 'metadata-only'}${screen.privacyMode ? ` · ${screen.privacyMode}` : ''}${ageMs !== null ? ` · cached ${ageMs}ms` : ''}`,
+    `Browser: ${browser.available ? 'available' : 'unavailable'} · ${browser.title ? compactText(browser.title, 120) : browser.app || '-'}`,
+    'Clipboard: not read in fast mode',
+    'UI: skipped in fast mode · add --full-app for live Accessibility outline',
+  ];
+  if (!ambient.enabled) lines.push('Note: ambient observation is disabled; add --full-app for a live read.');
+  return lines.join('\n');
+}
+
 function normalizeBrowserWorkflowIntentForLoop(value) {
   const raw = String(value || '').trim().toLowerCase();
   const aliases = {
@@ -846,6 +871,26 @@ function formatLoopBrowser(contextData = {}, pageData = {}) {
   lines.push(`Length: ${Number(page.textLength || 0)} char(s)${page.truncated ? ' · truncated' : ''}`);
   if (error) lines.push(`Note: ${compactText(error, 180)}`);
   if (!available || !supported) lines.push('Next: bring Chrome, Safari, Arc, Edge, or Brave to the front, then run /browser again.');
+  return lines.join('\n');
+}
+
+function formatLoopBrowserActivity(data = {}) {
+  const activity = data.activity || {};
+  const current = activity.current || {};
+  const recent = Array.isArray(activity.recent) ? activity.recent : [];
+  const topHosts = Array.isArray(activity.topHosts) ? activity.topHosts : [];
+  const lines = [
+    `Browser: ${current.app ? 'recent' : 'unavailable'} · metadata-only · ${current.app || '-'}`,
+    `Page: ${current.title ? compactText(current.title, 180) : '-'} · ${current.host || '-'}`,
+    `Recent: ${recent.length} page context(s) · hosts ${topHosts.length}`,
+    'Text: not read in fast mode',
+    'Length: 0 char(s) · metadata-only',
+  ];
+  if (recent.length) {
+    lines.push(`Pages: ${recent.slice(0, 3).map((item) => compactText([item.host, item.title].filter(Boolean).join(' · '), 90)).join(' | ')}`);
+  }
+  if (activity.summary) lines.push(`Summary: ${compactText(activity.summary, 220)}`);
+  lines.push(current.app ? 'Next: add --full-browser when a task needs visible page text.' : 'Next: bring Chrome, Safari, Arc, Edge, or Brave to the front, then run /browser again.');
   return lines.join('\n');
 }
 
@@ -1193,6 +1238,15 @@ async function runLoopCommand(transcript) {
       });
     }
     if (command === 'app') {
+      const full = loopFullMode('app');
+      if (!full) {
+        const endpoint = '/api/ambient?limit=1';
+        const response = await request(endpoint);
+        return loopCommandResult(base, response, formatLoopAppAmbient(response.data || {}), {
+          endpoint,
+          detailLevel: 'fast',
+        });
+      }
       const [macResponse, treeResponse] = await Promise.all([
         request('/api/mac/context'),
         request('/api/accessibility/tree?maxNodes=40&maxDepth=4'),
@@ -1200,7 +1254,7 @@ async function runLoopCommand(transcript) {
       return {
         ...publicLoopCommandBase(base),
         endpoint: '/api/mac/context + /api/accessibility/tree?maxNodes=40&maxDepth=4',
-        detailLevel: 'fast',
+        detailLevel: 'full',
         ok: Boolean(macResponse.ok && treeResponse.ok && macResponse.data && treeResponse.data),
         responseStatus: macResponse.ok ? treeResponse.status : macResponse.status,
         elapsedMs: Math.round(performance.now() - base.startedAt),
@@ -1310,6 +1364,15 @@ async function runLoopCommand(transcript) {
       });
     }
     if (command === 'browser') {
+      const full = loopFullMode('browser');
+      if (!full) {
+        const endpoint = '/api/browser/activity?limit=4';
+        const response = await request(endpoint);
+        return loopCommandResult(base, response, formatLoopBrowserActivity(response.data || {}), {
+          endpoint,
+          detailLevel: 'fast',
+        });
+      }
       const [contextResponse, pageResponse] = await Promise.all([
         request('/api/browser/context'),
         request('/api/browser/page?maxChars=1200'),
@@ -1318,7 +1381,7 @@ async function runLoopCommand(transcript) {
       return {
         ...publicLoopCommandBase(base),
         endpoint: '/api/browser/context + /api/browser/page?maxChars=1200',
-        detailLevel: 'fast',
+        detailLevel: 'full',
         ok: Boolean(contextResponse.ok && pageResponse.ok && contextResponse.data && pageResponse.data),
         responseStatus: contextResponse.ok ? pageResponse.status : contextResponse.status,
         elapsedMs: Math.round(performance.now() - base.startedAt),
