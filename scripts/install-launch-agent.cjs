@@ -5,13 +5,14 @@ const path = require('node:path');
 
 const repoRoot = path.resolve(__dirname, '..');
 const label = 'com.haoge.javis';
-const launchAgentsDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
+const homeDir = process.env.HOME || os.homedir();
+const launchAgentsDir = path.join(homeDir, 'Library', 'LaunchAgents');
 const plistPath = path.join(launchAgentsDir, `${label}.plist`);
 const outLog = path.join(repoRoot, 'logs', 'resident.out.log');
 const errLog = path.join(repoRoot, 'logs', 'resident.err.log');
 const stopScript = path.join(repoRoot, 'scripts', 'stop-resident-processes.cjs');
 const uid = process.getuid?.();
-const launchAgentWorkingDirectory = os.homedir();
+const launchAgentWorkingDirectory = repoRoot;
 
 function xmlEscape(value) {
   return String(value)
@@ -20,10 +21,6 @@ function xmlEscape(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
-}
-
-function shQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
 
 function run(command, args, options = {}) {
@@ -42,7 +39,7 @@ fs.mkdirSync(path.join(repoRoot, 'logs'), { recursive: true });
 console.log('Building JAVIS renderer...');
 run('npm', ['run', 'resident:prepare'], { stdio: 'inherit' });
 
-const command = `cd ${shQuote(repoRoot)} && npm run start:desktop`;
+const command = 'npm run start:desktop';
 const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -52,7 +49,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <key>ProgramArguments</key>
   <array>
     <string>/bin/zsh</string>
-    <string>-lc</string>
+    <string>-c</string>
     <string>${xmlEscape(command)}</string>
   </array>
   <key>WorkingDirectory</key>
@@ -69,6 +66,10 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <dict>
     <key>PATH</key>
     <string>${xmlEscape(process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')}</string>
+    <key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>
+    <string>false</string>
+    <key>JAVIS_RESIDENT_LAUNCH_AGENT</key>
+    <string>true</string>
   </dict>
 </dict>
 </plist>

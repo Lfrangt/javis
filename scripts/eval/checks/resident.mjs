@@ -765,6 +765,8 @@ export default {
 
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
     const loopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
+    const installSource = fs.readFileSync('scripts/install-launch-agent.cjs', 'utf8');
+    const stopSource = fs.readFileSync('scripts/stop-resident-processes.cjs', 'utf8');
     const hasLocalLoopDedupe =
       mainSource.includes('localVoiceLoopRunningSnapshot') &&
       mainSource.includes('localVoiceLoopTerminalWindowSnapshot') &&
@@ -784,6 +786,22 @@ export default {
       hasLocalLoopDedupe
         ? ok('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'existing, visible, or just-opened voice loop is reused instead of opening another Terminal window')
         : fail('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'expected /api/voice/open-local-loop to reuse existing voice loop windows and persisted recent opens'),
+    );
+
+    const hasResidentLaunchNoTerminalLoop =
+      installSource.includes('const launchAgentWorkingDirectory = repoRoot') &&
+      installSource.includes("const command = 'npm run start:desktop'") &&
+      installSource.includes('<string>-c</string>') &&
+      !installSource.includes('<string>-lc</string>') &&
+      installSource.includes('<key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>') &&
+      installSource.includes('<string>false</string>') &&
+      stopSource.includes('isProjectLocalVoiceLoopProcess') &&
+      stopSource.includes('npm run voice:chat') &&
+      stopSource.includes('local-voice-command-dogfood\\.mjs.*--chat');
+    out.push(
+      hasResidentLaunchNoTerminalLoop
+        ? ok('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'resident startup uses project cwd, non-login shell, and clears stale local voice loops')
+        : fail('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'expected launch agent install/stop scripts to prevent runaway voice:chat Terminal loops'),
     );
 
     const hasVoiceStatusLoop =
@@ -854,16 +872,19 @@ export default {
     const launchAgentPlist = fs.existsSync(launchAgentPath) ? fs.readFileSync(launchAgentPath, 'utf8') : '';
     const launchAgentWorkingDirectory = launchAgentPlist.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || '';
     const launchAgentUsesSafeWorkingDirectory =
-      launchAgentWorkingDirectory === os.homedir() &&
-      launchAgentPlist.includes(`cd &apos;${process.cwd()}&apos; &amp;&amp; npm run start:desktop`);
+      launchAgentWorkingDirectory === process.cwd() &&
+      launchAgentPlist.includes('<string>-c</string>') &&
+      launchAgentPlist.includes('<string>npm run start:desktop</string>') &&
+      launchAgentPlist.includes('<key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>') &&
+      launchAgentPlist.includes('<string>false</string>');
     out.push(
       launchAgentUsesSafeWorkingDirectory
-        ? ok('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'plist starts from the home directory before cd-ing into the project to avoid protected-folder getcwd loops')
-        : fail('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'expected LaunchAgent WorkingDirectory to be home, not the protected project directory', {
+        ? ok('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'plist starts directly in the project cwd with Terminal voice loop disabled')
+        : fail('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'expected LaunchAgent WorkingDirectory to be the project directory with Terminal voice loop disabled', {
             launchAgentPath,
             installed: fs.existsSync(launchAgentPath),
             workingDirectory: launchAgentWorkingDirectory,
-            expectedWorkingDirectory: os.homedir(),
+            expectedWorkingDirectory: process.cwd(),
           }),
     );
 

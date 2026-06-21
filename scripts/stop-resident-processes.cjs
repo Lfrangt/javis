@@ -59,6 +59,14 @@ function isProjectResidentProcess(processInfo) {
   return processCwd(processInfo.pid) === repoRoot;
 }
 
+function isProjectLocalVoiceLoopProcess(processInfo) {
+  if (!processInfo || processInfo.pid === selfPid) return false;
+  const command = processInfo.command || '';
+  if (!/(npm run voice:chat|local-voice-command-dogfood\.mjs.*--chat)/i.test(command)) return false;
+  if (command.includes(repoRoot)) return true;
+  return processCwd(processInfo.pid) === repoRoot;
+}
+
 function descendantPids(processes, parentPids) {
   const childrenByParent = new Map();
   for (const item of processes) {
@@ -98,6 +106,7 @@ function main() {
   }
   for (const processInfo of processes) {
     if (isProjectResidentProcess(processInfo)) targets.add(processInfo.pid);
+    if (isProjectLocalVoiceLoopProcess(processInfo)) targets.add(processInfo.pid);
   }
   for (const pid of descendantPids(processes, targets)) {
     const processInfo = byPid.get(pid);
