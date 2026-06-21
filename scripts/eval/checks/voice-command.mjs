@@ -383,7 +383,117 @@ export default {
             response: naturalInboxExecute.data,
             itemId: naturalInboxExecuteItemId,
             cleanupOk: naturalInboxCleanupOk,
-          }),
+        }),
+    );
+
+    const naturalKeepAwakePreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '今晚别睡，保持后台运行，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_keep_awake_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalKeepAwakePreviewData = naturalKeepAwakePreview.data || {};
+    const naturalKeepAwakePreviewControl = naturalKeepAwakePreviewData.route?.data?.keepAwakeControl || {};
+    out.push(
+      naturalKeepAwakePreview.ok &&
+        naturalKeepAwakePreviewData.ok === true &&
+        naturalKeepAwakePreviewData.executed === false &&
+        naturalKeepAwakePreviewData.route?.decision?.localCommand === 'keep_awake' &&
+        naturalKeepAwakePreviewData.route?.localCommand?.intent === 'keep_awake' &&
+        naturalKeepAwakePreviewControl.action === 'start' &&
+        naturalKeepAwakePreviewControl.preview === true &&
+        naturalKeepAwakePreviewControl.executed === false &&
+        naturalKeepAwakePreviewControl.safety?.changesLaunchdJob === true &&
+        naturalKeepAwakePreviewControl.safety?.startsMicrophone === false &&
+        naturalKeepAwakePreviewControl.safety?.usesRealtime === false &&
+        typeof naturalKeepAwakePreviewData.route?.output === 'string' &&
+        naturalKeepAwakePreviewData.route.output.includes('Keep-awake: start preview') &&
+        naturalKeepAwakePreviewData.safety?.startsMicrophone === false &&
+        naturalKeepAwakePreviewData.safety?.usesRealtime === false &&
+        naturalKeepAwakePreviewData.safety?.storesRawAudio === false &&
+        naturalKeepAwakePreviewData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_keep_awake_preview', 'Natural keep-awake preview voice command', '今晚别睡 routes to no-side-effect keep_awake start preview')
+        : fail('voice_command.natural_keep_awake_preview', 'Natural keep-awake preview voice command', 'natural keep-awake phrase did not use preview-only keep_awake start', naturalKeepAwakePreview.data),
+    );
+
+    const naturalKeepAwakeExecute = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '今晚别睡，保持后台运行',
+        execute: true,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_keep_awake_execute',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalKeepAwakeExecuteData = naturalKeepAwakeExecute.data || {};
+    const naturalKeepAwakeExecuteControl = naturalKeepAwakeExecuteData.route?.data?.keepAwakeControl || {};
+    out.push(
+      naturalKeepAwakeExecute.ok &&
+        naturalKeepAwakeExecuteData.ok === true &&
+        naturalKeepAwakeExecuteData.requestedExecute === true &&
+        naturalKeepAwakeExecuteData.route?.decision?.localCommand === 'keep_awake' &&
+        naturalKeepAwakeExecuteData.route?.localCommand?.intent === 'keep_awake' &&
+        naturalKeepAwakeExecuteControl.action === 'start' &&
+        naturalKeepAwakeExecuteControl.preview === false &&
+        (naturalKeepAwakeExecuteControl.executed === true || naturalKeepAwakeExecuteControl.alreadyRunning === true) &&
+        naturalKeepAwakeExecuteControl.running === true &&
+        naturalKeepAwakeExecuteControl.screenMaySleep === true &&
+        naturalKeepAwakeExecuteControl.safety?.changesLaunchdJob === true &&
+        naturalKeepAwakeExecuteControl.safety?.startsMicrophone === false &&
+        naturalKeepAwakeExecuteControl.safety?.usesRealtime === false &&
+        typeof naturalKeepAwakeExecuteData.route?.output === 'string' &&
+        (naturalKeepAwakeExecuteData.route.output.includes('start executed') || naturalKeepAwakeExecuteData.route.output.includes('already running')) &&
+        naturalKeepAwakeExecuteData.safety?.startsMicrophone === false &&
+        naturalKeepAwakeExecuteData.safety?.usesRealtime === false &&
+        naturalKeepAwakeExecuteData.safety?.storesRawAudio === false &&
+        naturalKeepAwakeExecuteData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_keep_awake_execute', 'Natural keep-awake execute voice command', '今晚别睡 starts or reuses JAVIS-managed keep-awake without mic/realtime')
+        : fail('voice_command.natural_keep_awake_execute', 'Natural keep-awake execute voice command', 'natural keep-awake execute phrase did not start/reuse JAVIS-managed keep-awake safely', naturalKeepAwakeExecute.data),
+    );
+
+    const naturalKeepAwakeStopPreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '可以睡了，停止防睡眠，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_keep_awake_stop_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalKeepAwakeStopPreviewData = naturalKeepAwakeStopPreview.data || {};
+    const naturalKeepAwakeStopPreviewControl = naturalKeepAwakeStopPreviewData.route?.data?.keepAwakeControl || {};
+    out.push(
+      naturalKeepAwakeStopPreview.ok &&
+        naturalKeepAwakeStopPreviewData.ok === true &&
+        naturalKeepAwakeStopPreviewData.executed === false &&
+        naturalKeepAwakeStopPreviewData.route?.decision?.localCommand === 'keep_awake' &&
+        naturalKeepAwakeStopPreviewData.route?.localCommand?.intent === 'keep_awake' &&
+        naturalKeepAwakeStopPreviewControl.action === 'stop' &&
+        naturalKeepAwakeStopPreviewControl.preview === true &&
+        naturalKeepAwakeStopPreviewControl.executed === false &&
+        naturalKeepAwakeStopPreviewControl.safety?.changesLaunchdJob === true &&
+        naturalKeepAwakeStopPreviewControl.safety?.startsMicrophone === false &&
+        naturalKeepAwakeStopPreviewControl.safety?.usesRealtime === false &&
+        typeof naturalKeepAwakeStopPreviewData.route?.output === 'string' &&
+        naturalKeepAwakeStopPreviewData.route.output.includes('Keep-awake: stop preview') &&
+        naturalKeepAwakeStopPreviewData.safety?.startsMicrophone === false &&
+        naturalKeepAwakeStopPreviewData.safety?.usesRealtime === false &&
+        naturalKeepAwakeStopPreviewData.safety?.storesRawAudio === false &&
+        naturalKeepAwakeStopPreviewData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_keep_awake_stop_preview', 'Natural keep-awake stop preview voice command', '可以睡了 routes to stop preview without disabling current keep-awake')
+        : fail('voice_command.natural_keep_awake_stop_preview', 'Natural keep-awake stop preview voice command', 'natural keep-awake stop phrase did not use preview-only stop gate', naturalKeepAwakeStopPreview.data),
     );
 
     const naturalBrowserReady = await ctx.api('/api/voice/command', {

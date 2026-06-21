@@ -178,6 +178,7 @@ const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const DEMONSTRATIONS_FILE = path.join(DATA_DIR, 'demonstrations.json');
 const SHORTCUTS_FILE = path.join(DATA_DIR, 'shortcuts.json');
+const LOCAL_VOICE_LOOP_STATE_FILE = path.join(DATA_DIR, 'local-voice-loop.json');
 const REALTIME_DOGFOOD_SESSIONS_FILE = path.join(DATA_DIR, 'realtime-dogfood-sessions.json');
 const REALTIME_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'realtime-dogfood-archives');
 const PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'productivity-dogfood-archives');
@@ -1958,12 +1959,12 @@ function openTerminalCommand(command, options = {}) {
   };
 }
 
-const LOCAL_VOICE_LOOP_DEBOUNCE_MS = 5000;
+const LOCAL_VOICE_LOOP_DEBOUNCE_MS = 60000;
 let lastLocalVoiceLoopOpenAt = 0;
 
 function localVoiceLoopRunningSnapshot() {
   try {
-    const output = execFileSync('/usr/bin/pgrep', ['-af', 'local-voice-command-dogfood\\.mjs --chat'], {
+    const output = execFileSync('/usr/bin/pgrep', ['-af', '(local-voice-command-dogfood\\.mjs.*--chat|npm run voice:chat)'], {
       encoding: 'utf8',
       timeout: 1000,
     });
@@ -1986,8 +1987,93 @@ function localVoiceLoopRunningSnapshot() {
   }
 }
 
+function localVoiceLoopStateSnapshot() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(LOCAL_VOICE_LOOP_STATE_FILE, 'utf8'));
+    return {
+      lastOpenedAt: Math.max(0, Number(parsed.lastOpenedAt || 0)),
+      source: compactRecordText(parsed.source || '', 80),
+      command: compactRecordText(parsed.command || '', 120),
+      pid: Number(parsed.pid || 0) || null,
+    };
+  } catch {
+    return {
+      lastOpenedAt: 0,
+      source: '',
+      command: '',
+      pid: null,
+    };
+  }
+}
+
+function rememberLocalVoiceLoopOpen(sourceText) {
+  const state = {
+    lastOpenedAt: Date.now(),
+    source: compactRecordText(sourceText || 'api', 80),
+    command: 'npm run voice:chat',
+    pid: process.pid,
+  };
+  lastLocalVoiceLoopOpenAt = state.lastOpenedAt;
+  try {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+    writeJsonAtomic(LOCAL_VOICE_LOOP_STATE_FILE, state);
+  } catch (error) {
+    appendAudit('local_voice_loop.state_write_failed', {
+      source: state.source,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return state;
+}
+
+function localVoiceLoopTerminalWindowSnapshot() {
+  const script = [
+    'tell application "System Events"',
+    '  set terminalRunning to exists process "Terminal"',
+    'end tell',
+    'if terminalRunning is false then return "0"',
+    'tell application "Terminal"',
+    '  set matches to {}',
+    '  repeat with w in windows',
+    '    set shouldMatch to false',
+    '    try',
+    '      if (name of w contains "npm run voice:chat") or (name of w contains "local-voice-command-dogfood") then set shouldMatch to true',
+    '    end try',
+    '    try',
+    '      if (contents of selected tab of w contains "JAVIS Local Voice Command Loop") or (contents of selected tab of w contains "npm run voice:chat") then set shouldMatch to true',
+    '    end try',
+    '    if shouldMatch then set end of matches to (name of w as text)',
+    '  end repeat',
+    '  set AppleScript\'s text item delimiters to linefeed',
+    '  return ((count of matches) as text) & linefeed & (matches as text)',
+    'end tell',
+  ].join('\n');
+  try {
+    const output = execFileSync('/usr/bin/osascript', ['-e', script], {
+      encoding: 'utf8',
+      timeout: 2000,
+    });
+    const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
+    const count = Math.max(0, Number(lines[0] || 0) || 0);
+    return {
+      count,
+      sample: compactRecordText(lines.slice(1).join(' | '), 180),
+    };
+  } catch (error) {
+    return {
+      count: 0,
+      sample: '',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function focusLocalVoiceLoopTerminal() {
   const script = [
+    'tell application "System Events"',
+    '  set terminalRunning to exists process "Terminal"',
+    'end tell',
+    'if terminalRunning is false then return false',
     'tell application "Terminal"',
     '  repeat with w in windows',
     '    if (name of w contains "npm run voice:chat") or (name of w contains "local-voice-command-dogfood") then',
@@ -2008,6 +2094,40 @@ function focusLocalVoiceLoopTerminal() {
   } catch {
     return false;
   }
+}
+
+function openLocalVoiceInput(source = 'api', options = {}) {
+  const sourceText = String(source || 'api').slice(0, 80);
+  if (options.execute === false) {
+    appendAudit('local_voice_input.previewed', { source: sourceText });
+    return {
+      ok: true,
+      executed: false,
+      output: 'Prepared JAVIS local input inside the desktop pet.',
+      command: '',
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        opensTerminal: false,
+      },
+    };
+  }
+  const window = applyWindowMode('compose', { source: sourceText, focus: true });
+  appendAudit('local_voice_input.opened', { source: sourceText, mode: window?.mode || 'compose' });
+  return {
+    ok: true,
+    executed: true,
+    output: 'Opened JAVIS local input inside the desktop pet.',
+    command: '',
+    window,
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      opensTerminal: false,
+    },
+  };
 }
 
 function openConfigCui(source = 'api') {
@@ -2042,15 +2162,23 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
   }
   const now = Date.now();
   const running = localVoiceLoopRunningSnapshot();
-  const recentlyOpened = now - lastLocalVoiceLoopOpenAt < LOCAL_VOICE_LOOP_DEBOUNCE_MS;
-  if (running.running || recentlyOpened) {
-    const focused = running.running ? focusLocalVoiceLoopTerminal() : false;
+  const terminalWindows = localVoiceLoopTerminalWindowSnapshot();
+  const persisted = localVoiceLoopStateSnapshot();
+  const memoryRecentlyOpened = now - lastLocalVoiceLoopOpenAt < LOCAL_VOICE_LOOP_DEBOUNCE_MS;
+  const stateRecentlyOpened = now - persisted.lastOpenedAt < LOCAL_VOICE_LOOP_DEBOUNCE_MS;
+  const recentlyOpened = memoryRecentlyOpened || stateRecentlyOpened;
+  if (running.running || terminalWindows.count > 0 || recentlyOpened) {
+    const focused = running.running || terminalWindows.count > 0 ? focusLocalVoiceLoopTerminal() : false;
     appendAudit('local_voice_loop.reused', {
       source: sourceText,
       runningCount: running.count,
+      terminalWindowCount: terminalWindows.count,
       recentlyOpened,
+      memoryRecentlyOpened,
+      stateRecentlyOpened,
       focused,
       sample: running.sample,
+      terminalSample: terminalWindows.sample,
     });
     return {
       ok: true,
@@ -2061,6 +2189,7 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
         : 'JAVIS local voice/text loop is already opening or running; skipped opening another Terminal window.',
       command: 'npm run voice:chat',
       existingCount: running.count,
+      existingWindowCount: terminalWindows.count,
       safety: {
         startsMicrophone: false,
         usesRealtime: false,
@@ -2069,7 +2198,7 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
       },
     };
   }
-  lastLocalVoiceLoopOpenAt = now;
+  rememberLocalVoiceLoopOpen(sourceText);
   return {
     ...openTerminalCommand(`cd ${shQuote(process.cwd())} && npm run voice:chat`, {
       source: sourceText,
@@ -23769,6 +23898,49 @@ function naturalInboxCaptureLocalCommand(text) {
   return null;
 }
 
+function naturalKeepAwakeLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  if (!raw) return null;
+  const statusSignal = /\b(keep[- ]?awake|caffeinate|sleep prevention|stay awake|awake status)\b.*\b(status|running|active|on|off|ready)\b/i.test(raw)
+    || /\b(status|running|active|on|off|ready)\b.*\b(keep[- ]?awake|caffeinate|sleep prevention|stay awake)\b/i.test(raw)
+    || /(防睡眠|保持运行|保持唤醒|别睡|不要睡|不睡眠|常驻运行).*(状态|开着吗|开了吗|是否|有没有|了吗|吗)/.test(compact);
+  if (statusSignal) {
+    return {
+      intent: 'keep_awake',
+      label: 'Keep-awake status',
+      args: { action: 'status' },
+    };
+  }
+
+  const stopSignal = /\b(stop|disable|turn off|end|cancel).*(keep[- ]?awake|caffeinate|sleep prevention|stay awake)\b/i.test(raw)
+    || /\b(allow|resume|normal).*(sleep|system sleep)\b/i.test(raw)
+    || /(停止|关闭|取消|结束).*(防睡眠|保持运行|保持唤醒|别睡|不睡眠|常驻运行)/.test(compact)
+    || /(可以睡了|恢复睡眠|正常睡眠|让电脑睡|允许睡眠)/.test(compact);
+  if (stopSignal) {
+    return {
+      intent: 'keep_awake',
+      label: 'Stop keep-awake',
+      requiresLocalExecution: true,
+      args: { action: 'stop' },
+    };
+  }
+
+  const startSignal = /\b(start|enable|turn on|keep|stay|remain|continue).*(keep[- ]?awake|awake|running|resident|background|overnight|unattended|caffeinate)\b/i.test(raw)
+    || /\b(keep[- ]?awake|caffeinate|sleep prevention)\b/i.test(raw)
+    || /(今晚|睡觉|过夜|常驻运行|继续跑|一直跑|无人值守|别睡|不要睡|不睡眠|保持唤醒|保持运行|防睡眠|防止睡眠|别让电脑睡|不要让电脑睡)/.test(compact);
+  if (startSignal) {
+    return {
+      intent: 'keep_awake',
+      label: 'Start keep-awake',
+      requiresLocalExecution: true,
+      args: { action: 'start' },
+    };
+  }
+
+  return null;
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
@@ -23793,6 +23965,9 @@ function localCommandDecision(task) {
 
   const windowCommand = naturalWindowControlLocalCommand(text);
   if (windowCommand) return windowCommand;
+
+  const keepAwakeCommand = naturalKeepAwakeLocalCommand(text);
+  if (keepAwakeCommand) return keepAwakeCommand;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
     || /^(状态|当前状态|系统状态|下一步|有什么待办|现在该做什么|简报)$/.test(text)) {
@@ -24085,7 +24260,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -24339,6 +24514,8 @@ function buildContextPlan(message, options = {}) {
       needs.localExecution = true;
     } else if (['capture_text'].includes(localCommand)) {
       needs.residentState = true;
+    } else if (['keep_awake'].includes(localCommand)) {
+      needs.residentState = true;
     } else if (['capture_clipboard'].includes(localCommand)) {
       needs.clipboard = true;
       needs.clipboardText = true;
@@ -24492,6 +24669,57 @@ function formatInboxCaptureForLocalCommand(capture = {}) {
     `长度: ${capture.bodyLength || 0} chars`,
     capture.bodyPreview ? `内容预览: ${capture.bodyPreview}` : '',
     '边界: 预览不写入 Inbox，不写入长期 memory，不读取剪贴板正文，不启动麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
+}
+
+function keepAwakeControlAction(command = {}) {
+  const action = String(command.args?.action || '').trim().toLowerCase();
+  return ['start', 'stop', 'status'].includes(action) ? action : 'status';
+}
+
+function keepAwakeControlPayload(result = {}, action = 'status') {
+  const keepAwake = result.keepAwake || result;
+  const plan = result.plan || keepAwake.plan || keepAwakePlanSnapshot();
+  return {
+    ok: result.ok !== false,
+    action,
+    executed: Boolean(result.executed),
+    preview: Boolean(result.preview),
+    alreadyRunning: Boolean(result.alreadyRunning),
+    alreadyStopped: Boolean(result.alreadyStopped),
+    active: Boolean(keepAwake.active),
+    running: Boolean(keepAwake.running),
+    pid: keepAwake.pid || null,
+    label: keepAwake.label || KEEP_AWAKE_LABEL,
+    commandLine: plan.commandLine || keepAwakeCommandSummary(),
+    screenMaySleep: plan.screenMaySleep !== false,
+    summary: compactRecordText(keepAwake.summary || result.output || '', 260),
+    next: compactRecordText(keepAwake.next || '', 260),
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAi: false,
+      mutatesProjectFiles: false,
+      changesLaunchdJob: action !== 'status',
+      allowsDisplaySleep: plan.screenMaySleep !== false,
+    },
+  };
+}
+
+function formatKeepAwakeForLocalCommand(control = {}) {
+  const status = control.running ? 'running' : control.active ? 'active' : 'off';
+  const actionLabel = control.action === 'start'
+    ? (control.executed ? 'start executed' : control.alreadyRunning ? 'already running' : 'start preview')
+    : control.action === 'stop'
+      ? (control.executed ? 'stop executed' : control.alreadyStopped ? 'already stopped' : 'stop preview')
+      : 'status';
+  return [
+    `Keep-awake: ${actionLabel} · ${status}`,
+    `Command: ${control.commandLine || keepAwakeCommandSummary()}`,
+    `Display may sleep: ${control.screenMaySleep ? 'yes' : 'no'}`,
+    control.summary ? `Summary: ${control.summary}` : '',
+    control.next ? `Next: ${control.next}` : '',
+    '边界: 只控制 JAVIS 管理的 launchd/caffeinate 防睡眠任务；不启动麦克风、不使用 Realtime、不读写项目文件。',
   ].filter(Boolean).join('\n');
 }
 
@@ -25026,6 +25254,36 @@ async function runLocalCommand(command, options = {}) {
 
     if (command.intent === 'window_control') {
       return runWindowControlLocalCommand(command, options);
+    }
+
+    if (command.intent === 'keep_awake') {
+      const action = keepAwakeControlAction(command);
+      let result;
+      if (action === 'start') {
+        result = await startKeepAwake({
+          execute: options.execute === true,
+          source: 'local_command_keep_awake',
+        });
+      } else if (action === 'stop') {
+        result = await stopKeepAwake({
+          execute: options.execute === true,
+          source: 'local_command_keep_awake',
+        });
+      } else {
+        result = {
+          ok: true,
+          executed: false,
+          keepAwake: await keepAwakeStatusSnapshot(),
+        };
+      }
+      const control = keepAwakeControlPayload(result, action);
+      return {
+        ok: result.ok !== false,
+        executed: Boolean(result.executed),
+        localCommand: command,
+        output: formatKeepAwakeForLocalCommand(control),
+        data: { keepAwakeControl: control, result },
+      };
     }
 
     if (command.intent === 'browser_control') {
@@ -25967,13 +26225,13 @@ function voiceStandbySnapshot(options = {}) {
   const fallbackReady = !realtimeReady && localVoice.available === true;
   const primaryAction = fallbackReady
     ? {
-        id: 'open_local_voice_loop',
-        label: 'Open local voice/text loop',
-        summary: 'Use the no-mic local command loop now; it can route tasks with metadata-only Mac context while Realtime is unavailable.',
-        command: 'npm run voice:chat',
-        endpoint: '/api/voice/open-local-loop',
+        id: 'open_local_input',
+        label: 'Open local input',
+        summary: 'Use the no-mic local input inside the desktop pet; it can route tasks with metadata-only Mac context while Realtime is unavailable.',
+        command: '',
+        endpoint: '/api/voice/standby',
         method: 'POST',
-        opensTerminal: true,
+        opensTerminal: false,
         startsMicrophone: false,
         usesRealtime: false,
         storesRawAudio: false,
@@ -26012,7 +26270,7 @@ function voiceStandbySnapshot(options = {}) {
     next: compactRecordText(
       realtimeReady
         ? 'Click the pet or use the configured hotkey to start Realtime, or use npm run voice for no-mic intake.'
-        : localVoice.next || 'Use npm run voice:chat now, then restore Realtime after API billing/key/provider recovery.',
+        : localVoice.next || 'Use the pet local input now, then restore Realtime after API billing/key/provider recovery.',
       320,
     ),
     primaryAction,
@@ -26071,8 +26329,8 @@ function runVoiceStandbyPrimaryAction(options = {}) {
   const execute = options.execute === true;
   const source = options.source || 'api_voice_standby';
 
-  if (primaryAction.id === 'open_local_voice_loop') {
-    const action = openLocalVoiceLoop(source, { execute });
+  if (primaryAction.id === 'open_local_input') {
+    const action = openLocalVoiceInput(source, { execute });
     return {
       ok: action.ok !== false,
       executed: Boolean(action.executed),
@@ -26564,7 +26822,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

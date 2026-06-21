@@ -517,14 +517,30 @@ export default {
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
     const hasLocalLoopDedupe =
       mainSource.includes('localVoiceLoopRunningSnapshot') &&
+      mainSource.includes('localVoiceLoopTerminalWindowSnapshot') &&
+      mainSource.includes('LOCAL_VOICE_LOOP_STATE_FILE') &&
       mainSource.includes('LOCAL_VOICE_LOOP_DEBOUNCE_MS') &&
       mainSource.includes("appendAudit('local_voice_loop.reused'") &&
       mainSource.includes('reusedExisting: true') &&
+      mainSource.includes('terminalWindowCount') &&
+      mainSource.includes('stateRecentlyOpened') &&
       mainSource.includes('opensTerminal: false');
     out.push(
       hasLocalLoopDedupe
-        ? ok('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'existing or just-opened voice loop is reused instead of opening another Terminal window')
-        : fail('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'expected /api/voice/open-local-loop to reuse existing voice loop and debounce repeat opens'),
+        ? ok('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'existing, visible, or just-opened voice loop is reused instead of opening another Terminal window')
+        : fail('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'expected /api/voice/open-local-loop to reuse existing voice loop windows and persisted recent opens'),
+    );
+
+    const petStandbyNoTerminal =
+      mainSource.includes("id: 'open_local_input'") &&
+      mainSource.includes('openLocalVoiceInput') &&
+      mainSource.includes("appendAudit('local_voice_input.opened'") &&
+      mainSource.includes("applyWindowMode('compose'") &&
+      !mainSource.includes("id: 'open_local_voice_loop',");
+    out.push(
+      petStandbyNoTerminal
+        ? ok('resident.voice_standby_no_terminal_default', 'Voice standby no-Terminal default', 'fallback standby opens the pet local input instead of launching a Terminal loop')
+        : fail('resident.voice_standby_no_terminal_default', 'Voice standby no-Terminal default', 'expected fallback standby primary action to open compose/pet local input without Terminal'),
     );
 
     const resident = await ctx.api('/api/resident/status');
