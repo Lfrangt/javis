@@ -130,6 +130,7 @@ export default {
       const dogfood = parseJson(stdout);
       out.push(
         dogfood.ok === true &&
+          dogfood.cliMode === 'dogfood' &&
           dogfood.previewOnly === true &&
           dogfood.executed === false &&
           dogfood.speech?.dryRun === true &&
@@ -147,6 +148,47 @@ export default {
       );
     } catch (error) {
       out.push(fail('voice_command.dogfood_preview', 'Local voice command dogfood', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync('npm', [
+        'run',
+        'voice',
+        '--',
+        '--json',
+        '看一下当前窗口，判断下一步应该交给哪个本地通道，先不要执行。',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 20000,
+        maxBuffer: 1024 * 1024,
+      });
+      const localCli = parseJson(stdout);
+      out.push(
+        localCli.ok === true &&
+          localCli.cliMode === 'local' &&
+          localCli.previewOnly === true &&
+          localCli.payload?.includeScreen === true &&
+          localCli.payload?.includeAccessibility === true &&
+          localCli.executed === false &&
+          localCli.safety?.startsMicrophone === false &&
+          localCli.safety?.usesRealtime === false &&
+          localCli.safety?.storesRawAudio === false &&
+          localCli.context?.metadataOnly === true &&
+          localCli.context?.includesScreenImage === false &&
+          localCli.context?.includesClipboardText === false &&
+          localCli.context?.includesAccessibilityNodes === false &&
+          localCli.context?.includeScreenRequested === true &&
+          localCli.context?.includeAccessibilityRequested === true
+          ? ok('voice_command.local_cli', 'Local voice command CLI', `${localCli.route?.lane || '-'} preview with default screen/UI metadata and no mic/realtime`)
+          : fail('voice_command.local_cli', 'Local voice command CLI', 'npm run voice did not produce the safe local intake envelope', localCli),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.local_cli', 'Local voice command CLI', error instanceof Error ? error.message : String(error)));
     }
 
     try {

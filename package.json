@@ -40,6 +40,8 @@
     "dogfood:productivity-live": "node scripts/productivity-dogfood.mjs",
     "dogfood:workers-live": "JAVIS_EVAL_LIVE_WORKERS=true node scripts/eval/run.mjs --only=workers-live",
     "dogfood:realtime-live": "JAVIS_EVAL_REALTIME_DOGFOOD=true node scripts/eval/run.mjs --only=realtime-live-dogfood",
+    "voice": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
+    "voice:local": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
     "verify:ax": "node scripts/verify-ax-targeting.mjs",
     "config": "node scripts/config-cui.cjs",
     "config:cui": "node scripts/config-cui.cjs",

@@ -32,6 +32,47 @@ function hasFlag(name) {
   return process.argv.includes(`--${name}`);
 }
 
+function positionalMessage() {
+  const valueFlags = new Set(['--message', '--text', '--mode']);
+  const parts = [];
+  const args = process.argv.slice(2);
+  for (let index = 0; index < args.length; index += 1) {
+    const item = args[index];
+    if (!item || item.startsWith('--')) {
+      if (valueFlags.has(item) && args[index + 1] && !args[index + 1].startsWith('--')) index += 1;
+      continue;
+    }
+    parts.push(item);
+  }
+  return parts.join(' ').trim();
+}
+
+function userCliMode() {
+  return process.env.JAVIS_LOCAL_VOICE_CLI === 'true' || hasFlag('user') || hasFlag('local');
+}
+
+function printHelp() {
+  console.log(`JAVIS Local Voice Command
+=========================
+Use this when Realtime voice is unavailable or when you want a no-mic local intake path.
+
+Examples:
+  npm run voice -- "帮我看一下当前窗口，判断下一步该怎么做"
+  npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
+  npm run voice -- --json --no-speech "当前状态怎么样？"
+
+Flags:
+  --run, --execute             Queue/execute non-quick routes through normal policy gates.
+  --include-screen, --screen   Attach metadata-only screen context. No screenshot is sent.
+  --include-ui, --include-accessibility
+                               Attach a bounded Accessibility outline. No full node payload is sent.
+  --no-screen, --no-ui         Disable default local CLI screen/UI metadata.
+  --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
+  --no-speech                 Disable the acknowledgement preview.
+  --mode <lane>               Hint quick/background/codex/claude.
+  --json                      Print machine-readable output.`);
+}
+
 async function request(apiPath, options = {}) {
   const token = readApiToken();
   const headers = {
@@ -48,19 +89,28 @@ async function request(apiPath, options = {}) {
 }
 
 function buildPayload() {
-  const execute = hasFlag('execute');
+  const userCli = userCliMode();
+  const execute = hasFlag('execute') || hasFlag('run');
   const confirm = hasFlag('confirm') || hasFlag('confirm-speak') || hasFlag('confirm-audio');
+  const includeScreen = hasFlag('include-screen') || hasFlag('screen') || (userCli && !hasFlag('no-screen'));
+  const includeAccessibility =
+    hasFlag('include-accessibility') ||
+    hasFlag('include-ui') ||
+    hasFlag('ui') ||
+    (userCli && includeScreen && !hasFlag('no-ui'));
   return {
-    transcript: argValue('message', argValue('text', '帮我整理当前工作状态，给我一个三步计划，先不要执行。')),
+    transcript: argValue('message', argValue('text', positionalMessage() || '帮我整理当前工作状态，给我一个三步计划，先不要执行。')),
     execute,
-    includeScreen: hasFlag('include-screen'),
-    includeAccessibility: hasFlag('include-accessibility') || hasFlag('include-ui'),
+    includeScreen,
+    includeAccessibility,
     speak: !hasFlag('no-speech'),
     confirmSpeak: confirm,
     allowCloudQuick: hasFlag('allow-cloud-quick'),
     useMemory: hasFlag('use-memory'),
     mode: argValue('mode', ''),
-    source: execute ? 'dogfood_voice_command_execute' : 'dogfood_voice_command_preview',
+    source: userCli
+      ? execute ? 'local_voice_command_cli_execute' : 'local_voice_command_cli_preview'
+      : execute ? 'dogfood_voice_command_execute' : 'dogfood_voice_command_preview',
   };
 }
 
@@ -112,6 +162,12 @@ function summarize(data = {}) {
 }
 
 async function main() {
+  if (hasFlag('help') || process.argv.includes('-h')) {
+    printHelp();
+    return;
+  }
+
+  const userCli = userCliMode();
   const payload = buildPayload();
   const response = await request('/api/voice/command', {
     method: 'POST',
@@ -121,6 +177,7 @@ async function main() {
   const result = {
     ok: Boolean(response.ok && response.data?.ok),
     apiBase: API_BASE,
+    cliMode: userCli ? 'local' : 'dogfood',
     previewOnly: !payload.execute,
     payload: {
       execute: payload.execute,
@@ -139,17 +196,20 @@ async function main() {
   if (hasFlag('json')) {
     console.log(JSON.stringify(result, null, 2));
   } else {
-    console.log('JAVIS Local Voice Command Dogfood');
-    console.log('=================================');
+    console.log(userCli ? 'JAVIS Local Voice Command' : 'JAVIS Local Voice Command Dogfood');
+    console.log(userCli ? '=========================' : '=================================');
     console.log(`API: ${API_BASE}`);
     console.log(`Mode: ${payload.execute ? 'execute' : 'preview'} · ok=${result.ok ? 'yes' : 'no'}`);
+    console.log(`Task: ${payload.transcript}`);
     console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
+    if (result.route.jobId) console.log(`Job: ${result.route.jobId}`);
     console.log(`Speech: ${result.speech?.dryRun ? 'preview' : result.speech?.speaking ? 'speaking' : 'off'} · microphone=no · realtime=no`);
     console.log(`Context: ${result.context?.metadataOnly ? 'metadata-only' : 'unavailable'} · ${result.context?.summary || '-'}`);
     if (result.context?.accessibility?.requested) {
       console.log(`UI: ${result.context.accessibility.available ? `${result.context.accessibility.nodeCount || 0} node(s)` : result.context.accessibility.error || 'unavailable'}`);
     }
     console.log(`Ack: ${result.spokenAck}`);
+    if (userCli && !payload.execute) console.log('Next: add --run to queue non-quick work through normal policy gates.');
     if (!response.ok) console.log(`Error: HTTP ${response.status}`);
   }
 

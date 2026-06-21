@@ -119,6 +119,8 @@ To intentionally hear the fallback, run `npm run dogfood:local-speech -- --execu
 Local voice-command fallback is the no-Realtime intake path. It accepts a transcript, attaches metadata-only Mac context, optionally adds a bounded Accessibility outline, routes it through the normal quick/background/Codex/Claude/local router, and prepares a local spoken acknowledgement without starting a microphone:
 
 ```bash
+npm run voice -- "帮我看一下当前窗口，判断下一步应该怎么做"
+npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
 npm run dogfood:voice-command
 curl -X POST http://127.0.0.1:3417/api/voice/command \
   -H "X-JAVIS-Token: $TOKEN" \
@@ -126,7 +128,7 @@ curl -X POST http://127.0.0.1:3417/api/voice/command \
   -d '{"transcript":"帮我整理当前工作状态，给我一个三步计划，先不要执行。","execute":false,"speak":true,"includeAccessibility":true}'
 ```
 
-By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback does not attach local memory or inferred learning unless `useMemory:true` is explicit. Its context snapshot is metadata-only: frontmost app/window, browser title/host, screen frame freshness/privacy when `includeScreen:true`, clipboard presence/length only, active-job count, approval count, and, when `includeAccessibility:true`, a compact UI outline capped by the existing Accessibility read policy. It does not attach screenshots, raw screen pixels, clipboard text, raw audio, browser page body, full Accessibility nodes, or local learning profile by default. Add `confirmSpeak:true` only when you intentionally want local audio. If `execute:true` is used on a quick-lane question, `/api/voice/command` holds the cloud call unless `allowCloudQuick:true` is also set; background/Codex/Claude/local routes can still be queued through the normal policy gates.
+By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback does not attach local memory or inferred learning unless `useMemory:true` is explicit. The user-facing `npm run voice -- "..."` command defaults to metadata-only screen plus bounded UI outline context; add `--no-screen` or `--no-ui` to make it lighter. Its context snapshot is metadata-only: frontmost app/window, browser title/host, screen frame freshness/privacy when `includeScreen:true`, clipboard presence/length only, active-job count, approval count, and, when `includeAccessibility:true`, a compact UI outline capped by the existing Accessibility read policy. It does not attach screenshots, raw screen pixels, clipboard text, raw audio, browser page body, full Accessibility nodes, or local learning profile by default. Add `confirmSpeak:true` or CLI `--confirm-speak` only when you intentionally want local audio. If `execute:true` or CLI `--run` is used on a quick-lane question, `/api/voice/command` holds the cloud call unless `allowCloudQuick:true` is also set; background/Codex/Claude/local routes can still be queued through the normal policy gates.
 
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
