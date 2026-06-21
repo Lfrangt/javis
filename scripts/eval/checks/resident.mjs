@@ -339,7 +339,7 @@ export default {
             traffic.color === 'yellow' &&
             traffic.urgency === 'ambient' &&
             traffic.pulse === 'off' &&
-            /local no-mic voice\/text loop is ready/i.test(String(traffic.reason || '')) &&
+            /local no-mic input is ready/i.test(String(traffic.reason || '')) &&
             !/^Routed work needs attention:/i.test(String(traffic.reason || '')))) &&
         localVoice.input?.endpoint === '/api/voice/command' &&
         localVoice.input?.historyEndpoint === '/api/voice/history' &&
@@ -347,16 +347,17 @@ export default {
         String(localVoice.input?.cliCommand || '').includes('npm run voice') &&
         String(localVoice.input?.openLoopCommand || '').includes('npm run voice:chat') &&
         String(localVoice.input?.historyCommand || '').includes('--print-voice-history') &&
-        ['open_local_voice_loop', 'start_realtime_voice'].includes(localVoiceInteraction.capsuleClick) &&
+        ['open_local_input', 'open_local_voice_loop', 'start_realtime_voice'].includes(localVoiceInteraction.capsuleClick) &&
         localVoiceInteraction.keepsPetCompact === true &&
         (localVoice.mode === 'fallback_ready'
-          ? localVoiceInteraction.opensTerminal === true &&
+          ? localVoiceInteraction.opensTerminal === false &&
             localVoiceInteraction.startsMicrophone === false &&
             localVoiceInteraction.usesRealtime === false &&
-            localVoiceInteraction.endpoint === '/api/voice/standby' &&
+            localVoiceInteraction.endpoint === '/api/voice/command' &&
             localVoiceInteraction.method === 'POST' &&
-            localVoiceInteraction.actionId === 'voice:standby_primary' &&
-            localVoiceInteraction.primaryActionEndpoint === '/api/voice/open-local-loop'
+            !localVoiceInteraction.actionId &&
+            localVoiceInteraction.primaryActionEndpoint === '/api/voice/command' &&
+            localVoiceInteraction.terminalLoopEndpoint === '/api/voice/open-local-loop'
           : localVoiceInteraction.startsMicrophone === true &&
             localVoiceInteraction.usesRealtime === true) &&
         localVoice.privacy?.localOnly === true &&

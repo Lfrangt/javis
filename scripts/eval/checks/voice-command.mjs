@@ -1258,21 +1258,23 @@ export default {
             }),
       );
 
-      const openLoopIndex = rendererSource.indexOf('const openLocalVoiceLoop = useCallback');
-      const openLoopEndIndex = rendererSource.indexOf('  }, [addMessage, focusLocalInputPanel]', openLoopIndex);
+      const openLoopIndex = rendererSource.indexOf('const openLocalVoiceEntry = useCallback');
+      const openLoopEndIndex = rendererSource.indexOf('  }, [focusLocalInputPanel]', openLoopIndex);
       const openLoopSource = openLoopIndex >= 0 && openLoopEndIndex >= 0
         ? rendererSource.slice(openLoopIndex, openLoopEndIndex)
         : '';
       out.push(
         openLoopSource.includes("'/api/voice/standby'") &&
-          openLoopSource.includes('execute: true') &&
-          openLoopSource.includes("source: 'pet_voice_standby_primary'") &&
+          openLoopSource.includes('execute: false') &&
+          openLoopSource.includes("source: 'pet_voice_entry_preview'") &&
+          openLoopSource.includes('focusLocalInputPanel') &&
           !openLoopSource.includes("'/api/voice/open-local-loop'")
-          ? ok('voice_command.renderer_standby_primary', 'Renderer pet standby primary wiring', 'pet fallback click uses /api/voice/standby primary action instead of hardcoded local loop endpoint')
-          : fail('voice_command.renderer_standby_primary', 'Renderer pet standby primary wiring', 'expected pet fallback click to use the voice standby primary contract', {
+          ? ok('voice_command.renderer_standby_primary', 'Renderer pet standby primary wiring', 'pet fallback click previews voice standby and opens local input without hardcoded terminal loop execution')
+          : fail('voice_command.renderer_standby_primary', 'Renderer pet standby primary wiring', 'expected pet fallback click to preview voice standby and open local input without launching Terminal', {
               hasOpenLoop: Boolean(openLoopSource),
               hasVoiceStandby: openLoopSource.includes("'/api/voice/standby'"),
-              hasExecuteTrue: openLoopSource.includes('execute: true'),
+              hasExecuteFalse: openLoopSource.includes('execute: false'),
+              hasLocalInput: openLoopSource.includes('focusLocalInputPanel'),
               hardcodedOpenLoop: openLoopSource.includes("'/api/voice/open-local-loop'"),
             }),
       );

@@ -126,7 +126,7 @@ type LocalVoiceStatus = {
     historyCommand: string
   }
   interaction?: {
-    capsuleClick?: 'open_local_voice_loop' | 'start_realtime_voice' | string
+    capsuleClick?: 'open_local_input' | 'open_local_voice_loop' | 'start_realtime_voice' | string
     label?: string
     endpoint?: string
     opensTerminal?: boolean
@@ -1779,23 +1779,23 @@ function App() {
     }
   }, [addMessage, loadPanelDetails, setWindowMode])
 
-  const openLocalVoiceLoop = useCallback(async (reason = '') => {
+  const openLocalVoiceEntry = useCallback(async (reason = '') => {
     try {
       const result = await apiJson<{ ok: boolean; output: string; action?: { output?: string }; primaryAction?: { id?: string } }>('/api/voice/standby', {
         method: 'POST',
         body: JSON.stringify({
-          execute: true,
-          source: 'pet_voice_standby_primary',
+          execute: false,
+          source: 'pet_voice_entry_preview',
         }),
       })
-      addMessage('system', result.output || result.action?.output || 'Opened JAVIS local voice/text loop in Terminal.')
+      await focusLocalInputPanel(reason || result.output || result.action?.output || 'Realtime 暂不可用，已打开本地输入。')
       setLastError('')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setLastError(message)
       await focusLocalInputPanel(reason || message)
     }
-  }, [addMessage, focusLocalInputPanel])
+  }, [focusLocalInputPanel])
 
   const updateResidentConversation = useCallback((patch: Partial<ConversationState> & Record<string, unknown>) => {
     return apiJson<{ conversation: ConversationState }>('/api/conversation/state', {
@@ -2102,9 +2102,9 @@ function App() {
     try {
       if (!prompt) {
         const reasonText = reason ? `原因：${reason.slice(0, 240)}` : ''
-        const notice = `实时语音暂时连不上。我已打开本地语音/文本终端 loop。${reasonText}`
+        const notice = `实时语音暂时连不上。我已打开本地输入。${reasonText}`
         addMessage('assistant', notice)
-        await openLocalVoiceLoop(reason)
+        await openLocalVoiceEntry(reason)
         await speakLocal(notice)
         return
       }
@@ -2132,7 +2132,7 @@ function App() {
     } catch (error) {
       addMessage('system', `本地语音兜底失败：${error instanceof Error ? error.message : String(error)}`)
     }
-  }, [addMessage, fallbackIncludesScreen, openLocalVoiceLoop, quickInput, refreshStatus, speakLocal])
+  }, [addMessage, fallbackIncludesScreen, openLocalVoiceEntry, quickInput, refreshStatus, speakLocal])
 
   const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
     const intendedScreenLive = options.screenLive ?? screenLive
@@ -3477,7 +3477,8 @@ function App() {
   }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
   const localVoiceInteraction = status?.localVoice?.interaction
-  const petLocalLoopReady = hasOpenAiKey === true && localVoiceInteraction?.capsuleClick === 'open_local_voice_loop'
+  const petLocalInputReady = hasOpenAiKey === true &&
+    (localVoiceInteraction?.capsuleClick === 'open_local_input' || localVoiceInteraction?.capsuleClick === 'open_local_voice_loop')
   const petAction = useCallback(() => {
     if (voiceStatus === 'live' || screenLive) {
       stopVoice()
@@ -3488,12 +3489,12 @@ function App() {
       void openConfigCui()
       return
     }
-    if (petLocalLoopReady) {
-      void openLocalVoiceLoop(status?.localVoice?.blocker?.summary || status?.voiceHealth?.summary || '')
+    if (petLocalInputReady) {
+      void openLocalVoiceEntry(status?.localVoice?.blocker?.summary || status?.voiceHealth?.summary || '')
       return
     }
     void startAssistantSession()
-  }, [hasOpenAiKey, openConfigCui, openLocalVoiceLoop, petLocalLoopReady, screenLive, startAssistantSession, status?.localVoice?.blocker?.summary, status?.voiceHealth?.summary, stopScreen, stopVoice, voiceStatus])
+  }, [hasOpenAiKey, openConfigCui, openLocalVoiceEntry, petLocalInputReady, screenLive, startAssistantSession, status?.localVoice?.blocker?.summary, status?.voiceHealth?.summary, stopScreen, stopVoice, voiceStatus])
   const petStatusLabel = talking ? 'Hearing you' : petTrafficLight?.label || petMoodLabel(mood, presence, false)
   const petStatusDetail = petTrafficLight?.reason || presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
   const petAccessibleLabel = petTrafficLight?.accessibleLabel || `${petStatusLabel}. ${petStatusDetail}`
@@ -3503,8 +3504,8 @@ function App() {
       ? 'Stop JAVIS voice and screen'
       : voiceStatus === 'connecting'
         ? 'Connecting JAVIS'
-        : petLocalLoopReady
-          ? 'Open local voice/text loop'
+        : petLocalInputReady
+          ? 'Open local input'
           : 'Talk to JAVIS with screen'
 
   return (

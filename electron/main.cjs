@@ -25569,13 +25569,14 @@ function localVoiceStatusSnapshot(options = {}) {
       historyCommand: 'npm run config -- --print-voice-history',
     },
     interaction: {
-      capsuleClick: fallbackReady ? 'open_local_voice_loop' : 'start_realtime_voice',
-      label: fallbackReady ? 'Open local voice/text loop' : 'Start Realtime voice',
-      endpoint: fallbackReady ? '/api/voice/standby' : '/api/realtime/session',
+      capsuleClick: fallbackReady ? 'open_local_input' : 'start_realtime_voice',
+      label: fallbackReady ? 'Open local typed intake' : 'Start Realtime voice',
+      endpoint: fallbackReady ? '/api/voice/command' : '/api/realtime/session',
       method: 'POST',
-      actionId: fallbackReady ? 'voice:standby_primary' : '',
-      primaryActionEndpoint: fallbackReady ? '/api/voice/open-local-loop' : '',
-      opensTerminal: fallbackReady,
+      actionId: '',
+      primaryActionEndpoint: fallbackReady ? '/api/voice/command' : '',
+      terminalLoopEndpoint: fallbackReady ? '/api/voice/open-local-loop' : '',
+      opensTerminal: false,
       startsMicrophone: !fallbackReady,
       usesRealtime: !fallbackReady,
       keepsPetCompact: true,
@@ -31967,7 +31968,7 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'ambient',
       pulse: 'off',
       label: presence.label || 'Local fallback ready',
-      reason: 'Realtime voice is recovering; local no-mic voice/text loop is ready.',
+      reason: 'Realtime voice is recovering; local no-mic input is ready.',
     });
   } else if (mode === 'needs_attention' || intervention.shouldNotify) {
     Object.assign(base, {
