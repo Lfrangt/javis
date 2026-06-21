@@ -23,6 +23,47 @@ export default {
           }),
     );
 
+    const rendererStatus = await ctx.api('/api/renderer/status', { timeoutMs: 5000 });
+    const renderer = rendererStatus.data?.renderer || {};
+    const healthRenderer = health.data?.renderer || {};
+    const rendererRaw = JSON.stringify({ renderer, healthRenderer });
+    const rendererStatuses = new Set(['ready', 'loading', 'recovering', 'degraded', 'missing_window', 'unknown']);
+    out.push(
+      rendererStatus.ok &&
+        renderer.version === 1 &&
+        healthRenderer.version === 1 &&
+        rendererStatuses.has(renderer.status) &&
+        healthRenderer.status === renderer.status &&
+        typeof renderer.windowPresent === 'boolean' &&
+        typeof renderer.loaded === 'boolean' &&
+        typeof renderer.recoveryPending === 'boolean' &&
+        typeof renderer.recoveryAttempts === 'number' &&
+        typeof renderer.loadAttemptCount === 'number' &&
+        renderer.timestamps &&
+        renderer.agesMs &&
+        !rendererRaw.includes('javisApiToken') &&
+        !rendererRaw.includes('OPENAI_API_KEY')
+        ? ok('health.renderer_status_contract', 'Renderer health contract', `${renderer.status} · attempts=${renderer.loadAttemptCount} · recoveryPending=${renderer.recoveryPending}`)
+        : fail('health.renderer_status_contract', 'Renderer health contract', 'expected renderer health in /api/health and /api/renderer/status without token leakage', {
+            status: rendererStatus.status,
+            renderer,
+            healthRenderer,
+          }),
+    );
+    out.push(
+      rendererStatus.ok &&
+        renderer.ok === true &&
+        renderer.status === 'ready' &&
+        renderer.windowPresent === true &&
+        renderer.loaded === true &&
+        renderer.recoveryPending === false
+        ? ok('health.renderer_ready', 'Renderer ready', `${renderer.mode || '-'} · loaded=${renderer.timestamps?.loadedAt || '-'}`)
+        : fail('health.renderer_ready', 'Renderer ready', 'expected current resident renderer to be loaded and not recovering', {
+            status: rendererStatus.status,
+            renderer,
+          }),
+    );
+
     const auditStatus = await ctx.api('/api/audit/status');
     const audit = auditStatus.data?.audit || health.data?.storage?.audit || {};
     out.push(

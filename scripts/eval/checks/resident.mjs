@@ -634,11 +634,15 @@ export default {
       mainSource.includes("scheduleRendererRecovery('process_gone'") &&
       mainSource.includes('function resetRendererRecovery') &&
       mainSource.includes("resetRendererRecovery('did_finish_load'") &&
+      mainSource.includes('function rendererHealthSnapshot') &&
+      mainSource.includes("api.get('/api/renderer/status'") &&
+      mainSource.includes('rendererState.lastLoadStartedAt') &&
+      mainSource.includes('rendererState.lastLoadedAt') &&
       mainSource.includes('loadRendererIntoWindow');
     out.push(
       rendererRecoveryGuard
-        ? ok('resident.renderer_recovery_guard', 'Renderer recovery guard', 'load failures and renderer crashes schedule a bounded reload and reset after successful load')
-        : fail('resident.renderer_recovery_guard', 'Renderer recovery guard', 'expected renderer load failure/process-gone recovery with reset on did-finish-load'),
+        ? ok('resident.renderer_recovery_guard', 'Renderer recovery guard', 'load failures and renderer crashes schedule bounded reloads, reset after load, and expose health')
+        : fail('resident.renderer_recovery_guard', 'Renderer recovery guard', 'expected renderer load failure/process-gone recovery plus renderer health exposure'),
     );
 
     const status = await ctx.api('/api/status');

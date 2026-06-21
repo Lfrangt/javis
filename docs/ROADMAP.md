@@ -19,7 +19,7 @@
 - Login-start resident mode.
 - Visible resident LaunchAgent status and install helper.
 - Electron single-instance guard for resident mode, so repeated launches reuse the existing process and summon the pet instead of starting duplicate API servers or windows.
-- Renderer self-recovery for resident mode, so load failures and renderer crashes schedule bounded reloads while keeping the pet parked and minimal.
+- Renderer self-recovery for resident mode, so load failures and renderer crashes schedule bounded reloads while keeping the pet parked and minimal, with `/api/renderer/status` and `/api/health` exposing current load/recovery state without renderer URL or token leakage.
 - macOS menu bar resident controls.
 - Global pet hotkey.
 - Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch, opening the compact compose input immediately when Realtime is blocked or unverified.
@@ -32,7 +32,7 @@
 - Runtime/tool activity log in CUI/API, not on the desktop pet.
 - Sanitized voice-command history in CUI/API for recovery/debugging without putting logs on the desktop pet.
 - Lightweight local voice standby state in `/api/pet/status` so the notch capsule can reflect no-mic fallback readiness without becoming a dashboard.
-- Quota-aware local entry: `/api/pet/status` now tells the compact capsule to open the quiet local input path when Realtime is blocked or warning. The renderer uses a temporary 520x56 `compose` strip for that local turn and returns to the 148x40 pet after sending, avoiding repeated microphone startup attempts and preventing surprise Terminal windows. Explicit CUI/CLI terminal-loop starts still open or reuse `npm run voice:chat` through `/api/voice/open-local-loop`.
+- Quota-aware local entry: `/api/pet/status` now tells the compact capsule to open the quiet local input path when Realtime is blocked or warning. The renderer uses a temporary 520x56 `compose` strip for that local turn and returns to the 148x40 pet after sending, avoiding repeated microphone startup attempts and preventing surprise Terminal windows. Explicit CUI/CLI terminal-loop starts still use `npm run voice:chat`; API-triggered loop starts require explicit terminal confirmation before `/api/voice/open-local-loop` can spawn Terminal.
 - Natural pet-window control from local voice/no-mic intake: phrases such as `把你挪到左下角` preview a JAVIS-only park target, while `回到刘海并变小` executes only the resident capsule mode/park change and restores the compact Dynamic Island presence without touching other apps or files.
 - Natural Inbox capture from local voice/no-mic intake: phrases such as `记一下：...` preview a local Inbox item without writing, and explicit execution saves one cleanup-safe Inbox capture while keeping long-term memory, clipboard text, microphone, and Realtime out of the path.
 - Natural keep-awake control from local voice/no-mic intake: phrases such as `今晚别睡，保持后台运行` preview or start the JAVIS-managed launchd/caffeinate job, while `可以睡了` previews stopping it without touching microphone, Realtime, user files, or project files.

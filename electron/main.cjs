@@ -881,6 +881,24 @@ let apiServer;
 let mainWindow;
 let rendererRecoveryTimer = null;
 let rendererRecoveryAttempts = 0;
+const rendererState = {
+  loadAttemptCount: 0,
+  lastLoadStartedAt: 0,
+  lastLoadedAt: 0,
+  lastLoadFailedAt: 0,
+  lastProcessGoneAt: 0,
+  lastRecoveryScheduledAt: 0,
+  lastRecoveryReloadAt: 0,
+  lastRecoveryDelayMs: 0,
+  lastRecoveryAttempt: 0,
+  lastSource: '',
+  lastMode: '',
+  lastHasDist: false,
+  lastFailureKind: '',
+  lastFailureUrlKind: '',
+  lastErrorCode: 0,
+  lastError: '',
+};
 let speechProcess = null;
 let actionPolicy;
 let controlModeState;
@@ -48596,6 +48614,7 @@ function configCheckSnapshot(options = {}) {
       effectiveActionPolicy: effectiveActionPolicySnapshot(),
       launchAgentInstalled,
       window: windowStateSnapshot(),
+      renderer: rendererHealthSnapshot(),
       menuBar: menuBarSnapshot(),
       notifications: notificationSnapshot(),
       screenPrivacy: screenPrivacySnapshot(),
@@ -48692,6 +48711,7 @@ function healthSnapshot() {
       effective: effectiveActionPolicySnapshot(),
     },
     window: windowStateSnapshot(),
+    renderer: rendererHealthSnapshot(),
     menuBar: menuBarSnapshot(),
     notifications: notificationSnapshot(),
     screenPrivacy: screenPrivacySnapshot(),
@@ -54618,6 +54638,10 @@ function startApiServer() {
     res.json(healthSnapshot());
   });
 
+  api.get('/api/renderer/status', (_req, res) => {
+    res.json({ renderer: rendererHealthSnapshot() });
+  });
+
   api.get('/api/readiness', (_req, res) => {
     res.json({ readiness: readinessSnapshot({ includeRecentAudit: true }) });
   });
@@ -57635,19 +57659,128 @@ function rendererLoadFileOptions() {
     : undefined;
 }
 
+function timestampOrNull(value) {
+  const number = Number(value || 0);
+  return number > 0 ? new Date(number).toISOString() : null;
+}
+
+function ageMsOrNull(value, now = Date.now()) {
+  const number = Number(value || 0);
+  return number > 0 ? Math.max(0, now - number) : null;
+}
+
+function rendererUrlKind(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (text.startsWith('file:')) return 'file';
+  try {
+    const url = new URL(text);
+    if (['127.0.0.1', 'localhost'].includes(url.hostname)) return 'local_dev';
+    return 'custom_url';
+  } catch {
+    return 'unknown';
+  }
+}
+
+function rendererHealthSnapshot() {
+  const now = Date.now();
+  const windowPresent = Boolean(mainWindow && !mainWindow.isDestroyed());
+  const latestProblemAt = Math.max(Number(rendererState.lastLoadFailedAt || 0), Number(rendererState.lastProcessGoneAt || 0));
+  const loaded = Boolean(
+    windowPresent &&
+      rendererState.lastLoadedAt > 0 &&
+      rendererState.lastLoadedAt >= rendererState.lastLoadStartedAt &&
+      rendererState.lastLoadedAt >= latestProblemAt,
+  );
+  const loading = Boolean(
+    windowPresent &&
+      rendererState.lastLoadStartedAt > 0 &&
+      rendererState.lastLoadStartedAt > rendererState.lastLoadedAt &&
+      latestProblemAt < rendererState.lastLoadStartedAt,
+  );
+  const recoveryPending = Boolean(rendererRecoveryTimer);
+  const status = !windowPresent
+    ? 'missing_window'
+    : recoveryPending
+      ? 'recovering'
+      : loaded
+        ? 'ready'
+        : loading
+          ? 'loading'
+          : latestProblemAt > rendererState.lastLoadedAt
+            ? 'degraded'
+            : 'unknown';
+  const summary = status === 'ready'
+    ? 'Renderer is loaded.'
+    : status === 'recovering'
+      ? 'Renderer failed and a bounded reload is scheduled.'
+      : status === 'loading'
+        ? 'Renderer load is in progress.'
+        : status === 'missing_window'
+          ? 'Renderer window is missing.'
+          : rendererState.lastError || 'Renderer readiness is not yet proven.';
+  return {
+    version: 1,
+    ok: status === 'ready',
+    status,
+    summary: compactRecordText(summary, 220),
+    windowPresent,
+    loaded,
+    recoveryPending,
+    recoveryAttempts: rendererRecoveryAttempts,
+    lastRecoveryAttempt: rendererState.lastRecoveryAttempt,
+    lastRecoveryDelayMs: rendererState.lastRecoveryDelayMs,
+    loadAttemptCount: rendererState.loadAttemptCount,
+    source: compactRecordText(rendererState.lastSource || '', 80),
+    mode: compactRecordText(rendererState.lastMode || '', 40),
+    hasDist: Boolean(rendererState.lastHasDist),
+    lastFailureKind: compactRecordText(rendererState.lastFailureKind || '', 80),
+    lastFailureUrlKind: compactRecordText(rendererState.lastFailureUrlKind || '', 40),
+    lastErrorCode: Number(rendererState.lastErrorCode || 0),
+    lastError: compactRecordText(rendererState.lastError || '', 220),
+    timestamps: {
+      loadStartedAt: timestampOrNull(rendererState.lastLoadStartedAt),
+      loadedAt: timestampOrNull(rendererState.lastLoadedAt),
+      loadFailedAt: timestampOrNull(rendererState.lastLoadFailedAt),
+      processGoneAt: timestampOrNull(rendererState.lastProcessGoneAt),
+      recoveryScheduledAt: timestampOrNull(rendererState.lastRecoveryScheduledAt),
+      recoveryReloadAt: timestampOrNull(rendererState.lastRecoveryReloadAt),
+    },
+    agesMs: {
+      loadStarted: ageMsOrNull(rendererState.lastLoadStartedAt, now),
+      loaded: ageMsOrNull(rendererState.lastLoadedAt, now),
+      loadFailed: ageMsOrNull(rendererState.lastLoadFailedAt, now),
+      processGone: ageMsOrNull(rendererState.lastProcessGoneAt, now),
+      recoveryScheduled: ageMsOrNull(rendererState.lastRecoveryScheduledAt, now),
+      recoveryReload: ageMsOrNull(rendererState.lastRecoveryReloadAt, now),
+    },
+  };
+}
+
 function loadRendererIntoWindow(source = 'startup') {
   if (!mainWindow || mainWindow.isDestroyed()) return;
   const rendererUrl = process.env.JAVIS_RENDERER_URL;
   const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
+  const hasDist = fs.existsSync(distIndex);
+  const mode = rendererUrl ? 'url' : hasDist ? 'file' : 'dev_url';
+  rendererState.loadAttemptCount += 1;
+  rendererState.lastLoadStartedAt = Date.now();
+  rendererState.lastSource = compactRecordText(source, 80);
+  rendererState.lastMode = mode;
+  rendererState.lastHasDist = hasDist;
+  rendererState.lastFailureKind = '';
+  rendererState.lastFailureUrlKind = '';
+  rendererState.lastErrorCode = 0;
+  rendererState.lastError = '';
   appendAudit('renderer.load_started', {
     source,
-    mode: rendererUrl ? 'url' : fs.existsSync(distIndex) ? 'file' : 'dev_url',
+    mode,
     rendererUrl: rendererUrl ? compactRecordText(rendererUrl, 180) : '',
-    hasDist: fs.existsSync(distIndex),
+    hasDist,
   });
   if (rendererUrl) {
     mainWindow.loadURL(rendererUrlWithApiToken(rendererUrl));
-  } else if (fs.existsSync(distIndex)) {
+  } else if (hasDist) {
     mainWindow.loadFile(distIndex, rendererLoadFileOptions());
   } else {
     mainWindow.loadURL(rendererUrlWithApiToken('http://127.0.0.1:5173'));
@@ -57659,6 +57792,9 @@ function scheduleRendererRecovery(reason = 'unknown', details = {}) {
   if (rendererRecoveryTimer) return;
   rendererRecoveryAttempts += 1;
   const delayMs = Math.min(30000, 750 * (2 ** Math.min(5, rendererRecoveryAttempts - 1)));
+  rendererState.lastRecoveryScheduledAt = Date.now();
+  rendererState.lastRecoveryDelayMs = delayMs;
+  rendererState.lastRecoveryAttempt = rendererRecoveryAttempts;
   appendAudit('renderer.recovery_scheduled', {
     reason,
     attempt: rendererRecoveryAttempts,
@@ -57668,6 +57804,7 @@ function scheduleRendererRecovery(reason = 'unknown', details = {}) {
   rendererRecoveryTimer = setTimeout(() => {
     rendererRecoveryTimer = null;
     if (!mainWindow || mainWindow.isDestroyed()) return;
+    rendererState.lastRecoveryReloadAt = Date.now();
     appendAudit('renderer.recovery_reload', {
       reason,
       attempt: rendererRecoveryAttempts,
@@ -57717,19 +57854,34 @@ function createWindow() {
   scheduleWindowSizeEnforcement('startup_enforce');
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
+    rendererState.lastLoadFailedAt = Date.now();
+    rendererState.lastFailureKind = 'load_failed';
+    rendererState.lastFailureUrlKind = rendererUrlKind(validatedURL);
+    rendererState.lastErrorCode = Number(errorCode || 0);
+    rendererState.lastError = compactRecordText(errorDescription || 'Renderer load failed.', 220);
     const details = {
       errorCode,
       errorDescription,
-      url: validatedURL,
+      urlKind: rendererState.lastFailureUrlKind,
     };
     appendAudit('renderer.load_failed', details);
     scheduleRendererRecovery('load_failed', details);
   });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    rendererState.lastProcessGoneAt = Date.now();
+    rendererState.lastFailureKind = 'process_gone';
+    rendererState.lastFailureUrlKind = '';
+    rendererState.lastErrorCode = 0;
+    rendererState.lastError = compactRecordText(JSON.stringify(details || {}), 220);
     appendAudit('renderer.process_gone', details || {});
     scheduleRendererRecovery('process_gone', details || {});
   });
   mainWindow.webContents.on('did-finish-load', () => {
+    rendererState.lastLoadedAt = Date.now();
+    rendererState.lastFailureKind = '';
+    rendererState.lastFailureUrlKind = '';
+    rendererState.lastErrorCode = 0;
+    rendererState.lastError = '';
     resetRendererRecovery('did_finish_load');
     scheduleWindowSizeEnforcement('renderer_ready');
   });
