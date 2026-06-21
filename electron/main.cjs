@@ -212,6 +212,7 @@ const WINDOW_NOTCH_TOP_OFFSET = Math.max(0, Math.min(40, Number(process.env.JAVI
 const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_CHROME_DEBUG_PORT || 9222)));
 const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR || path.join(DATA_DIR, 'chrome-cdp-profile');
 const AX_TREE_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_TREE_TIMEOUT_MS || 25000)));
+const APP_UI_CACHE_MAX_AGE_MS = Math.max(1000, Math.min(60000, Number(process.env.JAVIS_APP_UI_CACHE_MAX_AGE_MS || 15000)));
 const AX_ACTION_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_ACTION_TIMEOUT_MS || 25000)));
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
 const ATTENTION_NOTIFICATION_COOLDOWN_MS = Math.max(60000, Math.min(3600000, Number(process.env.JAVIS_ATTENTION_NOTIFICATION_COOLDOWN_MS || 600000)));
@@ -12725,10 +12726,12 @@ function cachedAccessibilityTreeSnapshot(options = {}) {
   const { maxNodes, maxDepth } = normalizeAccessibilityTreeOptions(options);
   const maxAgeMs = Math.max(0, Math.min(60000, Number(options.maxAgeMs ?? 6000)));
   const requestedApp = String(options.app || options.application || '').trim();
+  const requestedWindowTitle = String(options.windowTitle || '').trim();
   if (options.useCache !== false && latestAccessibilityTree?.tree && Date.now() - latestAccessibilityTree.cachedAt <= maxAgeMs) {
     const tree = latestAccessibilityTree.tree;
     const appMatches = !requestedApp || String(tree.app || '').toLowerCase() === requestedApp.toLowerCase();
-    if (appMatches && Number(tree.maxNodes || 0) >= maxNodes && Number(tree.maxDepth || 0) >= maxDepth) {
+    const windowMatches = !requestedWindowTitle || String(tree.windowTitle || '').trim() === requestedWindowTitle;
+    if (appMatches && windowMatches && Number(tree.maxNodes || 0) >= maxNodes && Number(tree.maxDepth || 0) >= maxDepth) {
       return Promise.resolve({
         ...tree,
         cached: true,
@@ -24116,8 +24119,11 @@ function formatAppUiForLocalCommand(tree = {}) {
   const actionable = nodes
     .filter((node) => VOICE_UI_ACTIONABLE_AX_ROLES.has(node.role))
     .slice(0, 12);
+  const cacheLabel = tree.cached
+    ? `hit ${Math.max(0, Math.round(Number(tree.cacheAgeMs || 0)))}ms`
+    : 'live';
   const lines = [
-    `当前应用 UI: ${tree.available ? 'available' : 'unavailable'} · app=${tree.app || '-'} · source=${tree.source || 'frontmost'}`,
+    `当前应用 UI: ${tree.available ? 'available' : 'unavailable'} · app=${tree.app || '-'} · source=${tree.source || 'frontmost'} · cache=${cacheLabel}`,
     tree.windowTitle ? `窗口: ${compactRecordText(tree.windowTitle, 180)}` : '',
     `控件: ${actionable.length}/${Number(tree.nodeCount || nodes.length || 0)} actionable${tree.truncated ? ' · truncated' : ''}`,
   ];
@@ -24159,6 +24165,8 @@ function compactAppUiTreeForLocalCommand(tree = {}) {
     nodeCount: Number(tree.nodeCount || nodes.length || 0),
     actionableCount: controls.length,
     truncated: Boolean(tree.truncated),
+    cached: Boolean(tree.cached),
+    cacheAgeMs: Math.max(0, Math.round(Number(tree.cacheAgeMs || 0))),
     maxNodes: Number(tree.maxNodes || 0),
     maxDepth: Number(tree.maxDepth || 0),
     outline: compactRecordText(tree.outline || '', 1200),
@@ -24378,16 +24386,38 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'app_ui') {
-      const tree = await accessibilityTreeSnapshot({
-        app: command.args?.app,
+      const frontmost = command.args?.app
+        ? null
+        : await frontmostAppSnapshot().catch((error) => ({
+            available: false,
+            app: '',
+            windowTitle: '',
+            error: error instanceof Error ? error.message : String(error),
+          }));
+      const targetApp = command.args?.app || frontmost?.app || '';
+      const tree = await cachedAccessibilityTreeSnapshot({
+        app: targetApp,
+        windowTitle: command.args?.windowTitle || frontmost?.windowTitle || '',
         maxNodes: command.args?.maxNodes || 80,
         maxDepth: command.args?.maxDepth || 6,
+        maxAgeMs: command.args?.maxAgeMs || APP_UI_CACHE_MAX_AGE_MS,
+        useCache: targetApp ? command.args?.useCache !== false : false,
       });
       return {
         ok: true,
         localCommand: command,
         output: formatAppUiForLocalCommand(tree),
-        data: { tree: compactAppUiTreeForLocalCommand(tree) },
+        data: {
+          tree: compactAppUiTreeForLocalCommand(tree),
+          frontmost: frontmost
+            ? {
+                available: Boolean(frontmost.available),
+                app: frontmost.app || '',
+                windowTitle: frontmost.windowTitle || '',
+                error: frontmost.error || '',
+              }
+            : null,
+        },
       };
     }
 

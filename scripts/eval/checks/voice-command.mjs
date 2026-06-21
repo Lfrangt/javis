@@ -335,6 +335,38 @@ export default {
         : fail('voice_command.natural_app_ui', 'Natural current-app UI voice command', 'natural current-app UI phrase did not use the local app_ui fast path', naturalAppUi.data),
     );
 
+    const naturalAppUiCached = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '当前窗口有哪些按钮？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_app_ui_cached',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalAppUiCachedData = naturalAppUiCached.data || {};
+    out.push(
+      naturalAppUiCached.ok &&
+        naturalAppUiCachedData.ok === true &&
+        naturalAppUiCachedData.executed === false &&
+        naturalAppUiCachedData.route?.decision?.localCommand === 'app_ui' &&
+        naturalAppUiCachedData.route?.localCommand?.intent === 'app_ui' &&
+        naturalAppUiCachedData.route?.data?.tree?.cached === true &&
+        typeof naturalAppUiCachedData.route.data.tree.cacheAgeMs === 'number' &&
+        !('nodes' in naturalAppUiCachedData.route.data.tree) &&
+        typeof naturalAppUiCachedData.route?.output === 'string' &&
+        naturalAppUiCachedData.route.output.includes('cache=hit') &&
+        naturalAppUiCachedData.safety?.startsMicrophone === false &&
+        naturalAppUiCachedData.safety?.usesRealtime === false &&
+        naturalAppUiCachedData.safety?.storesRawAudio === false &&
+        naturalAppUiCachedData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_app_ui_cached', 'Natural current-app UI cache hit', `second app_ui request reused cached AX outline in ${naturalAppUiCachedData.route.data.tree.cacheAgeMs}ms`)
+        : fail('voice_command.natural_app_ui_cached', 'Natural current-app UI cache hit', 'second current-app UI phrase did not reuse the bounded AX cache', naturalAppUiCached.data),
+    );
+
     const naturalDelegate = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
