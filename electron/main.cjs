@@ -31820,6 +31820,7 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'ambient',
       pulse: 'off',
       label: presence.label || 'Local fallback ready',
+      reason: 'Realtime voice is recovering; local no-mic voice/text loop is ready.',
     });
   } else if (mode === 'needs_attention' || intervention.shouldNotify) {
     Object.assign(base, {

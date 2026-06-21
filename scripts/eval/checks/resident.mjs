@@ -285,7 +285,9 @@ export default {
             traffic.state === 'fallback_ready' &&
             traffic.color === 'yellow' &&
             traffic.urgency === 'ambient' &&
-            traffic.pulse === 'off')) &&
+            traffic.pulse === 'off' &&
+            /local no-mic voice\/text loop is ready/i.test(String(traffic.reason || '')) &&
+            !/^Routed work needs attention:/i.test(String(traffic.reason || '')))) &&
         localVoice.input?.endpoint === '/api/voice/command' &&
         localVoice.input?.historyEndpoint === '/api/voice/history' &&
         localVoice.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
