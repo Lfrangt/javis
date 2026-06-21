@@ -2479,6 +2479,18 @@ export default {
           }),
     );
 
+    const startVoiceIndex = rendererSource.indexOf('const startVoice = useCallback');
+    const startVoiceEndIndex = rendererSource.indexOf('  }, [addMessage, handleRealtimeEvent', startVoiceIndex);
+    const startVoiceSource = startVoiceIndex >= 0 && startVoiceEndIndex >= 0
+      ? rendererSource.slice(startVoiceIndex, startVoiceEndIndex)
+      : '';
+    const getUserMediaIndex = startVoiceSource.indexOf('navigator.mediaDevices.getUserMedia');
+    const startupBlockIndex = startVoiceSource.indexOf('readRealtimeStartupBlock()');
+    const beginAssistantIndex = rendererSource.indexOf('const beginAssistantSession = useCallback');
+    const beginAssistantEndIndex = rendererSource.indexOf('  }, [', beginAssistantIndex);
+    const beginAssistantSource = beginAssistantIndex >= 0 && beginAssistantEndIndex >= 0
+      ? rendererSource.slice(beginAssistantIndex, beginAssistantEndIndex)
+      : '';
     const rendererDogfoodHandlerIndex = rendererSource.indexOf('const handleRendererDogfood =');
     const rendererDogfoodListenerIndex = rendererSource.indexOf("window.addEventListener('javis:realtime-dogfood'", rendererDogfoodHandlerIndex);
     const rendererDogfoodEffectEndIndex = rendererSource.indexOf('  }, [])', rendererDogfoodListenerIndex);
@@ -2494,6 +2506,28 @@ export default {
       rendererDogfoodListener.includes("type: voiceErrored ? 'voice_error' : 'timeout'") &&
       !rendererDogfoodListener.includes('beginAssistantSession()') &&
       !/\}, \[[^\]]*voiceStatus[^\]]*\]\)/.test(rendererDogfoodListener);
+    const rendererProviderGateBeforeMic =
+      rendererSource.includes('/api/realtime/config?micMode=open') &&
+      rendererSource.includes('realtimeStartupBlockMessage') &&
+      startupBlockIndex >= 0 &&
+      getUserMediaIndex >= 0 &&
+      startupBlockIndex < getUserMediaIndex &&
+      rendererDogfoodListener.includes("type: 'provider_blocked'") &&
+      rendererDogfoodListener.includes('started === false') &&
+      beginAssistantSource.includes('readRealtimeStartupBlock()') &&
+      beginAssistantSource.indexOf('readRealtimeStartupBlock()') < beginAssistantSource.indexOf('startScreen({ describe: false })') &&
+      beginAssistantSource.includes('runLocalVoiceFallback(startupBlock)');
+    out.push(
+      rendererProviderGateBeforeMic
+        ? ok('realtime.renderer_provider_gate_before_mic', 'Renderer provider gate before microphone', 'renderer checks provider health before screen/microphone startup and falls back locally when known blocked')
+        : fail('realtime.renderer_provider_gate_before_mic', 'Renderer provider gate before microphone', 'renderer may still open microphone before checking known Realtime provider failures', {
+            hasConfigPrecheck: rendererSource.includes('/api/realtime/config?micMode=open'),
+            hasStartupBlock: startVoiceSource.includes('readRealtimeStartupBlock'),
+            startupBlockBeforeMic: startupBlockIndex >= 0 && getUserMediaIndex >= 0 && startupBlockIndex < getUserMediaIndex,
+            rendererDogfoodHandlesBlockedProvider: rendererDogfoodListener.includes("type: 'provider_blocked'") && rendererDogfoodListener.includes('started === false'),
+            beginPrechecksBeforeScreen: beginAssistantSource.includes('readRealtimeStartupBlock()') && beginAssistantSource.indexOf('readRealtimeStartupBlock()') < beginAssistantSource.indexOf('startScreen({ describe: false })'),
+          }),
+    );
     out.push(
       rendererDogfoodListenerStable
         ? ok('realtime.renderer_dogfood_listener_stability', 'Renderer dogfood listener stability', 'renderer dogfood wait survives voice status transitions during startup')

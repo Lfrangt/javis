@@ -103,6 +103,8 @@ curl -X POST http://127.0.0.1:3417/api/realtime/provider/probe \
 
 The probe never starts microphone capture, screen capture, raw audio storage, or the live dogfood session. A successful probe proves the key/project/model/voice/provider path is ready; it does not count as a live voice session. The live run still requires `npm run dogfood:realtime-renderer -- --execute --confirm-mic` while the user is present.
 
+The desktop renderer also reads Realtime provider health before microphone startup. If recent evidence already shows a known provider problem such as missing key, quota/rate-limit, auth/permission, provider error, or network failure, clicking the pet or triggering wake will not call `getUserMedia`; it shows the blocker and falls back to local speech instead. Run the no-mic provider probe again after fixing billing or replacing the key so the live microphone path can be retried with fresh provider evidence.
+
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
 ```bash

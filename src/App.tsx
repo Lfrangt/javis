@@ -81,6 +81,17 @@ type RealtimeRendererDogfoodCommand = {
   source?: string
 }
 
+type RealtimeVoiceHealth = {
+  ok?: boolean
+  status?: string
+  kind?: string
+  summary?: string
+  next?: string
+  hasOpenAiKey?: boolean
+  lastStatusCode?: number
+  lastError?: string
+}
+
 type RealtimeProviderProbeEvent = {
   runId: string
   type: string
@@ -537,12 +548,7 @@ type Status = {
   screenPrivacy?: ScreenPrivacy
   presence?: PresenceState
   conversation?: ConversationState
-  voiceHealth?: {
-    ok: boolean
-    status: string
-    summary: string
-    lastError: string
-  }
+  voiceHealth?: RealtimeVoiceHealth
   progressVersion?: ProgressVersion
   speech?: {
     available: boolean
@@ -1758,11 +1764,37 @@ function App() {
 
   const fallbackIncludesScreen = Boolean(status?.screen)
 
-  const runLocalVoiceFallback = useCallback(async () => {
+  const realtimeStartupBlockMessage = useCallback((health: RealtimeVoiceHealth | null | undefined) => {
+    if (!health) return ''
+    const status = String(health.status || '').toLowerCase()
+    const kind = String(health.kind || '').toLowerCase()
+    if (status === 'ready' || kind === 'no_provider_error' || kind === 'last_success' || kind === 'provider_probe_success') return ''
+    const knownProviderProblem = status === 'blocked' || status === 'warning' || [
+      'missing_key',
+      'quota_or_rate_limit',
+      'auth_or_permission',
+      'provider_error',
+      'network',
+    ].includes(kind)
+    if (!knownProviderProblem) return ''
+    const summary = health.summary || 'Realtime provider is not ready.'
+    const next = health.next || 'Run the no-mic Realtime provider probe from CUI, then retry live voice.'
+    return `${summary} ${next}`.trim()
+  }, [])
+
+  const readRealtimeStartupBlock = useCallback(async () => {
+    const configuredBlock = realtimeStartupBlockMessage(status?.voiceHealth)
+    if (configuredBlock) return configuredBlock
+    const result = await apiJson<{ realtime: { voiceHealth?: RealtimeVoiceHealth } }>('/api/realtime/config?micMode=open')
+    return realtimeStartupBlockMessage(result.realtime?.voiceHealth)
+  }, [realtimeStartupBlockMessage, status?.voiceHealth])
+
+  const runLocalVoiceFallback = useCallback(async (reason = '') => {
     const prompt = quickInput.trim()
     try {
       if (!prompt) {
-        const notice = '实时语音暂时连不上。我先切到本地语音；你可以在输入框里发消息。'
+        const reasonText = reason ? `原因：${reason.slice(0, 240)}` : ''
+        const notice = `实时语音暂时连不上。我先切到本地语音；你可以在输入框里发消息。${reasonText}`
         addMessage('assistant', notice)
         await speakLocal(notice)
         return
@@ -1784,6 +1816,13 @@ function App() {
 
   const startVoice = useCallback(async (options: { screenLive?: boolean } = {}) => {
     const intendedScreenLive = options.screenLive ?? screenLive
+    const startupBlock = await readRealtimeStartupBlock().catch(() => '')
+    if (startupBlock) {
+      setLastError(startupBlock)
+      addMessage('system', startupBlock)
+      await runLocalVoiceFallback(startupBlock)
+      return false
+    }
     const voiceSessionId = crypto.randomUUID()
     const startedAt = Date.now()
     voiceSessionIdRef.current = voiceSessionId
@@ -1971,6 +2010,7 @@ function App() {
         .catch((recordError) => {
           addMessage('tool', `Realtime negotiation evidence failed: ${recordError instanceof Error ? recordError.message : String(recordError)}`)
         })
+      return true
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       const errorAt = Date.now()
@@ -2003,9 +2043,10 @@ function App() {
       void updateResidentConversation({ status: 'error', sessionId: voiceSessionId, micMode, screenLive: intendedScreenLive, error: message })
       setLastError(message)
       addMessage('system', message)
-      void runLocalVoiceFallback()
+      void runLocalVoiceFallback(message)
     }
-  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, recordRealtimeLatency, recordRealtimeNegotiation, runLocalVoiceFallback, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
+    return false
+  }, [addMessage, handleRealtimeEvent, micMode, pushRealtimeScreenContext, pushRealtimeTextContext, readRealtimeStartupBlock, recordRealtimeLatency, recordRealtimeNegotiation, runLocalVoiceFallback, screenLive, status?.screen?.height, status?.screen?.width, stopVoice, updateResidentConversation])
 
   useEffect(() => {
     if (voiceStatus !== 'live') return undefined
@@ -2228,11 +2269,18 @@ function App() {
 
   const beginAssistantSession = useCallback(async () => {
     if (voiceStatus === 'connecting' || voiceStatus === 'live') return
+    const startupBlock = await readRealtimeStartupBlock().catch(() => '')
+    if (startupBlock) {
+      setLastError(startupBlock)
+      addMessage('system', startupBlock)
+      await runLocalVoiceFallback(startupBlock)
+      return
+    }
     if (!screenLive) {
       void startScreen({ describe: false })
     }
     await startVoice({ screenLive: true })
-  }, [screenLive, startScreen, startVoice, voiceStatus])
+  }, [addMessage, readRealtimeStartupBlock, runLocalVoiceFallback, screenLive, startScreen, startVoice, voiceStatus])
 
   const postRendererDogfoodEventRef = useRef(postRendererDogfoodEvent)
   const sendRealtimeUserTextRef = useRef(sendRealtimeUserText)
@@ -2376,7 +2424,17 @@ function App() {
             if (!screenLiveRef.current) {
               void startScreenRef.current({ describe: false })
             }
-            await startVoiceRef.current({ screenLive: true })
+            const started = await startVoiceRef.current({ screenLive: true })
+            if (started === false) {
+              await postRendererDogfoodEventRef.current({
+                runId,
+                type: 'provider_blocked',
+                status: 'error',
+                detail: 'Realtime provider precheck blocked microphone startup.',
+                sessionId: voiceSessionIdRef.current,
+              })
+              return
+            }
           }
 
           const live = await waitForDataChannel(90000)
