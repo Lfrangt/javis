@@ -138,6 +138,20 @@ By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback do
 
 If a work session is active, local voice and wake commands append a sanitized `voice_command` event to that session automatically. The event keeps only transcript preview, route/job ids, lane status, and metadata-only context summary. It does not store raw audio, screenshots, clipboard text, browser page bodies, or full Accessibility node payloads. Use CLI `--session` or API `session:true` to start a session automatically when none is active; use `--session-goal "..."` / `sessionGoal` to name it. Use `--no-session` or `session:false` for one-off commands that should not touch the session ledger.
 
+When the session contains a recent executable voice route, the workbench can continue it from the session instead of making the user copy a route id:
+
+```bash
+npm run work:next
+npm run work:run -- --action-id session:$SESSION_ID
+curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/work/next?actionId=session:$SESSION_ID"
+curl -X POST http://127.0.0.1:3417/api/work/next \
+  -H "X-JAVIS-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d "{\"actionId\":\"session:$SESSION_ID\",\"execute\":true,\"source\":\"operator_session_continue\"}"
+```
+
+If the session has no executable voice route, executing the session action records a sanitized `session_check_in` event instead. This keeps the long-running work timeline recoverable without starting Realtime, microphone capture, raw audio storage, screenshots, clipboard text, or full Accessibility payload storage.
+
 `npm run wake -- "..."` is the one-shot wake path. It records the wake phrase, returns the same read-only handoff evidence as `/api/wake/status`, then routes the transcript through local voice-command intake. It does not start microphone capture or Realtime.
 
 To continue the latest executable voice preview by voice/text instead of copying a route id, send `继续刚才那个` or `continue last voice route` through `/api/voice/command` with `execute:true`. This uses sanitized voice history to find the latest executable preview route, then runs it through `/api/work/next`; quick-lane previews still stay held unless explicitly rerouted or cloud quick execution is allowed.

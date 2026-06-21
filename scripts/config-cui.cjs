@@ -615,6 +615,11 @@ function printNextAction(next) {
   console.log(`Next action: ${action.label || action.id || 'unnamed'} (${action.source || 'unknown'}, ${auto})`);
   if (action.summary) console.log(`Summary: ${compact(action.summary, 260)}`);
   if (action.manualOnlyReason) console.log(`Manual reason: ${compact(action.manualOnlyReason, 220)}`);
+  if (action.source === 'sessions' && action.sessionContinuation?.routeId) {
+    console.log(`Session route: ${action.sessionContinuation.routeId} · ${action.sessionContinuation.label || action.sessionContinuation.recoveryType || 'continue'}`);
+    if (action.sessionContinuation.summary) console.log(`Session plan: ${compact(action.sessionContinuation.summary, 260)}`);
+    if (action.sessionContinuation.executable) console.log(`Run: POST /api/work/next {"actionId":"${action.id}","execute":true}`);
+  }
   const fallback = action.localFallback || action.fallback || action.voiceHealth?.fallback || {};
   if (fallback.available) {
     console.log(`Guide: Use local fallback while this work-next item is blocked.`);

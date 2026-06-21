@@ -167,6 +167,109 @@ export default {
         : fail('briefing.worknext', 'Work-next', `GET /api/work/next did not return a coherent preview envelope (${wn.status})`, wn.data),
     );
 
+    let cleanupSessionId = '';
+    try {
+      const startSession = await ctx.api('/api/sessions/start', {
+        method: 'POST',
+        body: {
+          goal: `eval session work-next continuation ${Date.now()}`,
+          source: 'eval_session_worknext',
+        },
+        timeoutMs: 10000,
+      });
+      const session = startSession.data?.session || null;
+      cleanupSessionId = session?.id || '';
+      const voiceSeed = cleanupSessionId
+        ? await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: '状态',
+            execute: false,
+            includeScreen: false,
+            useMemory: false,
+            speak: false,
+            session: true,
+            sessionId: cleanupSessionId,
+            source: 'eval_session_worknext_voice_seed',
+          },
+          timeoutMs: 15000,
+        })
+        : { ok: false, data: { error: 'missing session id' } };
+      const seedRouteId = voiceSeed.data?.route?.routing?.id || '';
+      const sessionActionId = `session:${cleanupSessionId}`;
+      const sessionPreview = cleanupSessionId
+        ? await ctx.api(`/api/work/next?actionId=${encodeURIComponent(sessionActionId)}`, { timeoutMs: 15000 })
+        : { ok: false, data: null };
+      const sessionPreviewNext = sessionPreview.data?.next || {};
+      const sessionRun = cleanupSessionId
+        ? await ctx.api('/api/work/next', {
+          method: 'POST',
+          body: {
+            execute: true,
+            actionId: sessionActionId,
+            source: 'eval_session_worknext_run',
+          },
+          timeoutMs: 20000,
+        })
+        : { ok: false, data: null };
+      const sessionRunNext = sessionRun.data?.next || {};
+      const runResult = sessionRunNext.result || {};
+
+      if (cleanupSessionId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_session_worknext_cleanup',
+            note: 'Cleaning up eval session work-next continuation.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+
+      out.push(
+        startSession.ok &&
+          voiceSeed.ok &&
+          seedRouteId &&
+          voiceSeed.data?.session?.recorded === true &&
+          sessionPreview.ok &&
+          sessionPreviewNext.ok === true &&
+          sessionPreviewNext.executed === false &&
+          sessionPreviewNext.action?.id === sessionActionId &&
+          sessionPreviewNext.action?.source === 'sessions' &&
+          sessionPreviewNext.action?.sessionContinuation?.routeId === seedRouteId &&
+          sessionPreviewNext.action?.sessionContinuation?.executable === true &&
+          sessionPreviewNext.result?.routeRecovery?.recommended?.type === 'route_preview_execute' &&
+          String(sessionPreviewNext.output || '').includes(seedRouteId) &&
+          sessionRun.ok &&
+          sessionRunNext.ok === true &&
+          sessionRunNext.executed === true &&
+          sessionRunNext.action?.id === sessionActionId &&
+          runResult.routeExecution?.continuedRouteId === seedRouteId &&
+          runResult.sessionEvent?.event?.type === 'session_continue' &&
+          String(sessionRunNext.output || '').includes('已继续会话中的最新语音任务')
+          ? ok('briefing.worknext_session_continue_voice_route', 'Work-next session continues voice route', `${sessionActionId} continued local route ${seedRouteId}`)
+          : fail('briefing.worknext_session_continue_voice_route', 'Work-next session continues voice route', 'session work-next did not preview and execute the latest session voice route', {
+              startSession: startSession.data,
+              voiceSeed: voiceSeed.data,
+              sessionPreview: sessionPreview.data,
+              sessionRun: sessionRun.data,
+              seedRouteId,
+            }),
+      );
+    } catch (error) {
+      if (cleanupSessionId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+      out.push(fail('briefing.worknext_session_continue_voice_route', 'Work-next session continues voice route', error instanceof Error ? error.message : String(error)));
+    }
+
     const realtimeProviderAction = workNextActions.find((action) => action?.id === 'readiness:realtime_voice_provider') || next.find((action) => action?.id === 'readiness:realtime_voice_provider') || null;
     if (realtimeProviderAction) {
       const providerProbePreview = await ctx.api(`/api/work/next?actionId=${encodeURIComponent(realtimeProviderAction.id)}`);

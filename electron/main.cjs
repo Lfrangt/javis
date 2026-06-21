@@ -41164,6 +41164,44 @@ function routingRecoveryEnvelope(record, options = {}) {
   };
 }
 
+function latestExecutableSessionRoute(session, options = {}) {
+  if (!session || !Array.isArray(session.events)) return null;
+  const events = session.events.slice().reverse();
+  for (const event of events) {
+    if (event?.type !== 'voice_command') continue;
+    const ref = event.ref || {};
+    if (ref.kind !== 'route' || !ref.id) continue;
+    const record = routingRecords.get(String(ref.id || '')) || null;
+    if (!record) continue;
+    const routeRecovery = routingRecoveryEnvelope(record, { source: options.source || 'session_route' });
+    const recommended = routeRecovery.recommended || null;
+    if (routeRecovery.ok !== false && recommended?.executable === true) {
+      return {
+        event,
+        record,
+        routeRecovery,
+        recommended,
+      };
+    }
+  }
+  return null;
+}
+
+function compactSessionRouteContinuation(candidate = null) {
+  if (!candidate) return null;
+  return {
+    eventId: compactRecordText(candidate.event?.id || '', 120),
+    routeId: compactRecordText(candidate.record?.id || candidate.recommended?.routeId || '', 120),
+    routeStatus: compactRecordText(candidate.record?.status || '', 60),
+    routeLane: compactRecordText(candidate.record?.lane || candidate.recommended?.mode || '', 60),
+    label: compactRecordText(candidate.recommended?.label || '', 160),
+    summary: compactRecordText(candidate.recommended?.summary || candidate.recommended?.reason || '', 260),
+    executable: Boolean(candidate.recommended?.executable),
+    recoveryType: compactRecordText(candidate.recommended?.type || '', 100),
+    riskLevel: boundedCount(candidate.recommended?.riskLevel, 4),
+  };
+}
+
 async function executeRoutingRecoveryCandidate(candidate, options = {}) {
   if (!candidate?.executable) return null;
   if (candidate.type === 'route_preview_execute') {
@@ -42035,13 +42073,25 @@ function workflowBriefing(options = {}) {
   }
 
   if (activeSession) {
+    const sessionRoute = latestExecutableSessionRoute(activeSession, { source: 'briefing_session' });
     nextActions.push({
       id: `session:${activeSession.id}`,
-      priority: 2,
+      priority: sessionRoute ? 1.9 : 2,
       label: 'Continue session',
-      summary: `${activeSession.title}: ${activeSession.events.length} event(s) recorded.`,
+      summary: sessionRoute
+        ? `${activeSession.title}: continue latest voice route via ${sessionRoute.recommended.label}.`
+        : `${activeSession.title}: ${activeSession.events.length} event(s) recorded.`,
       source: 'sessions',
       sessionId: activeSession.id,
+      routeId: sessionRoute?.record?.id || '',
+      executable: Boolean(sessionRoute?.recommended?.executable),
+      autoEligible: false,
+      autopilotEligible: false,
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      riskLevel: sessionRoute?.recommended?.riskLevel || 0,
+      sessionContinuation: compactSessionRouteContinuation(sessionRoute),
+      routeRecovery: sessionRoute?.routeRecovery || null,
     });
   }
 
@@ -43085,6 +43135,32 @@ async function workNextAction(options = {}) {
     const record = routingRecords.get(routeId) || null;
     action = routingWorkNextActionForRecord(record, { source: 'explicit_action_id' });
   }
+  if (requestedActionId && !action && requestedActionId.startsWith('session:')) {
+    const sessionId = requestedActionId.replace(/^session:/, '');
+    const session = workSessions.get(sessionId) || null;
+    if (session) {
+      const sessionRoute = latestExecutableSessionRoute(session, { source: 'explicit_session_action' });
+      action = {
+        id: `session:${session.id}`,
+        priority: sessionRoute ? 1.9 : 2,
+        label: 'Continue session',
+        summary: sessionRoute
+          ? `${session.title}: continue latest voice route via ${sessionRoute.recommended.label}.`
+          : `${session.title}: ${session.events.length} event(s) recorded.`,
+        source: 'sessions',
+        sessionId: session.id,
+        routeId: sessionRoute?.record?.id || '',
+        executable: Boolean(sessionRoute?.recommended?.executable),
+        autoEligible: false,
+        autopilotEligible: false,
+        startsMicrophone: false,
+        requiresMicConfirmation: false,
+        riskLevel: sessionRoute?.recommended?.riskLevel || 0,
+        sessionContinuation: compactSessionRouteContinuation(sessionRoute),
+        routeRecovery: sessionRoute?.routeRecovery || null,
+      };
+    }
+  }
   if (requestedActionId && !action) {
     return {
       ok: false,
@@ -43142,8 +43218,74 @@ async function workNextAction(options = {}) {
     executed = execute;
     output = result.output;
   } else if (action.source === 'sessions') {
-    result = sessionCheckIn({ source: options.source || 'work_next' });
-    output = result.output;
+    const session = action.sessionId ? workSessions.get(action.sessionId) || null : activeSessionSnapshot();
+    const sessionRoute = latestExecutableSessionRoute(session, { source: options.source || 'work_next_session' });
+    const checkIn = sessionCheckIn({ source: options.source || 'work_next' });
+    let routeExecution = null;
+    let sessionEvent = null;
+    if (sessionRoute?.recommended?.executable && execute) {
+      routeExecution = await executeRoutingRecoveryCandidate(sessionRoute.recommended, {
+        source: options.source || 'work_next_session_route',
+        autopilot: options.autopilot,
+        maxNodes: options.maxNodes,
+        maxDepth: options.maxDepth,
+      });
+      executed = Boolean(routeExecution?.executed || routeExecution?.queued || routeExecution?.ok);
+      if (session) {
+        sessionEvent = addWorkSessionEvent(session.id, {
+          type: 'session_continue',
+          text: [
+            `Continued latest voice route: ${sessionRoute.record.id}`,
+            routeExecution?.replacementRouteId ? `Replacement route: ${routeExecution.replacementRouteId}` : '',
+            routeExecution?.job?.id ? `Job: ${routeExecution.job.id}` : '',
+            routeExecution?.output ? compactRecordText(routeExecution.output, 700) : '',
+          ].filter(Boolean).join('\n'),
+          source: options.source || 'work_next_session',
+          ref: {
+            kind: 'route',
+            id: sessionRoute.record.id,
+            status: routeExecution?.queued ? 'queued' : routeExecution?.executed ? 'executed' : routeExecution?.ok ? 'done' : 'attempted',
+          },
+        });
+      }
+      output = [
+        `已继续会话中的最新语音任务: ${session?.title || action.sessionId || 'session'}`,
+        sessionRoute.routeRecovery.output,
+        routeExecution?.output || '推荐恢复动作已尝试执行。',
+      ].filter(Boolean).join('\n');
+    } else if (execute && session) {
+      sessionEvent = addWorkSessionEvent(session.id, {
+        type: 'session_check_in',
+        text: compactRecordText(checkIn.output, 1200),
+        source: options.source || 'work_next_session',
+        ref: {
+          kind: 'session',
+          id: session.id,
+          status: session.status,
+        },
+      });
+      executed = true;
+      output = [
+        `已记录会话 check-in: ${session.title}`,
+        checkIn.output,
+      ].filter(Boolean).join('\n');
+    } else {
+      output = [
+        sessionRoute
+          ? `会话可继续最新语音任务: ${sessionRoute.record.id} · ${sessionRoute.recommended.label}`
+          : '',
+        checkIn.output,
+      ].filter(Boolean).join('\n');
+    }
+    result = {
+      ok: true,
+      session,
+      checkIn,
+      sessionEvent,
+      sessionContinuation: compactSessionRouteContinuation(sessionRoute),
+      routeRecovery: sessionRoute?.routeRecovery || null,
+      routeExecution,
+    };
   } else if (action.source === 'recovery') {
     const job = action.jobId ? jobs.get(action.jobId) || null : null;
     result = runRecoveryActionForJob(job, action, {
@@ -43607,6 +43749,17 @@ function compactWorkNextActionForVoice(action = null) {
     workflowId: compactRecordText(action.workflowId || '', 120),
     jobId: compactRecordText(action.jobId || '', 120),
     routeId: compactRecordText(action.routeId || '', 120),
+    sessionId: compactRecordText(action.sessionId || '', 120),
+    sessionContinuation: action.sessionContinuation
+      ? {
+        routeId: compactRecordText(action.sessionContinuation.routeId || '', 120),
+        routeLane: compactRecordText(action.sessionContinuation.routeLane || '', 60),
+        label: compactRecordText(action.sessionContinuation.label || '', 160),
+        summary: compactRecordText(action.sessionContinuation.summary || '', 260),
+        executable: Boolean(action.sessionContinuation.executable),
+        recoveryType: compactRecordText(action.sessionContinuation.recoveryType || '', 100),
+      }
+      : null,
     localFallback: action.localFallback
       ? {
         available: Boolean(action.localFallback.available),
@@ -43712,6 +43865,30 @@ function compactWorkNextResultForVoice(result = null) {
         title: compactRecordText(result.workflow.title || '', 180),
         kind: compactRecordText(result.workflow.kind || '', 80),
         status: compactRecordText(result.workflow.status || '', 60),
+      }
+      : null,
+    session: result.session
+      ? {
+        id: compactRecordText(result.session.id || '', 120),
+        title: compactRecordText(result.session.title || '', 180),
+        status: compactRecordText(result.session.status || '', 60),
+        eventCount: boundedCount(result.session.events?.length, 500),
+      }
+      : null,
+    sessionEvent: result.sessionEvent?.event
+      ? {
+        id: compactRecordText(result.sessionEvent.event.id || '', 120),
+        type: compactRecordText(result.sessionEvent.event.type || '', 60),
+        source: compactRecordText(result.sessionEvent.event.source || '', 80),
+      }
+      : null,
+    sessionContinuation: result.sessionContinuation
+      ? {
+        routeId: compactRecordText(result.sessionContinuation.routeId || '', 120),
+        routeLane: compactRecordText(result.sessionContinuation.routeLane || '', 60),
+        label: compactRecordText(result.sessionContinuation.label || '', 160),
+        executable: Boolean(result.sessionContinuation.executable),
+        recoveryType: compactRecordText(result.sessionContinuation.recoveryType || '', 100),
       }
       : null,
     job: result.job
