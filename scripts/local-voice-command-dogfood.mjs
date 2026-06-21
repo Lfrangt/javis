@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /browser, /open, /handoff, /next, /history, /agent, /help.
+                               Slash commands: /status, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
@@ -333,6 +333,7 @@ function loopHelpText() {
     'Loop commands:',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /browser  Read the current supported browser tab and page summary.',
+    '  /browse   Preview a browser workflow over the current page; add --run to execute.',
     '  /open     Preview opening a URL or web search; add --run to execute through policy.',
     '  /handoff  Read the voice-ready work handoff summary.',
     '  /next     Fast-read the next workbench action preview.',
@@ -344,6 +345,40 @@ function loopHelpText() {
     'Flags: --full-status, --full-next, --full-agent, or --full for full diagnostics.',
     'Type a normal request without / to route it through /api/voice/command.',
   ].join('\n');
+}
+
+function normalizeBrowserWorkflowIntentForLoop(value) {
+  const raw = String(value || '').trim().toLowerCase();
+  const aliases = {
+    action: 'extract_actions',
+    actions: 'extract_actions',
+    todo: 'extract_actions',
+    todos: 'extract_actions',
+    question: 'ask',
+    qa: 'ask',
+    write: 'draft',
+    fill: 'fill_draft',
+    fill_form: 'fill_draft',
+    form_fill: 'fill_draft',
+    review: 'review_result',
+  };
+  const intent = aliases[raw] || raw;
+  if (['summarize', 'extract_actions', 'draft', 'ask', 'act', 'fill_draft', 'search', 'compare', 'review_result', 'research'].includes(intent)) return intent;
+  return '';
+}
+
+function normalizeBrowseRequest(transcript) {
+  const raw = String(transcript || '').replace(/^\/browse\b/i, '').trim();
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const firstIntent = normalizeBrowserWorkflowIntentForLoop(tokens[0] || '');
+  const intent = firstIntent || argValue('browser-intent', 'extract_actions');
+  const instruction = firstIntent ? raw.replace(/^\S+\s*/u, '').trim() : raw;
+  const mode = argValue('browser-mode', argValue('mode', 'quick'));
+  return {
+    intent: normalizeBrowserWorkflowIntentForLoop(intent) || 'extract_actions',
+    instruction,
+    mode: ['quick', 'background', 'codex', 'claude'].includes(mode) ? mode : 'quick',
+  };
 }
 
 function unwrapBrowserPayload(data = {}, key) {
@@ -427,6 +462,22 @@ function formatLoopOpen(data = {}, target = {}, execute = false) {
     `Result: executed=${data.executed ? 'yes' : 'no'} · queued=${route.queued || data.routing?.status === 'queued' ? 'yes' : 'no'} · ${compactText(route.output || data.output || data.spokenAck || '-', 260)}`,
   ];
   if (!execute) lines.push('Next: restart this loop with --run when you want the same command to actually open.');
+  return lines.join('\n');
+}
+
+function formatLoopBrowse(data = {}, request = {}, execute = false) {
+  const page = data.page || data.workflow?.target || {};
+  const workflow = data.workflow || {};
+  const routing = data.routing || {};
+  const lines = [
+    `Browse: ${execute ? 'execute requested' : 'preview only'} · ${data.intent || request.intent || '-'} · mode=${data.mode || request.mode || '-'}`,
+    `Page: ${page.title ? compactText(page.title, 160) : '-'} · ${formatBrowserUrl(page.url || '')}`,
+    `Workflow: ${workflow.status || '-'}${workflow.id ? ` · ${workflow.id}` : ''}`,
+    `Route: ${routing.status || '-'} · ${routing.lane || routing.mode || '-'}${routing.resultLink ? ` · ${routing.resultLink}` : ''}`,
+    `Result: ${compactText(data.output || workflow.result || '-', 520)}`,
+  ];
+  if (page.error) lines.push(`Note: ${compactText(page.error, 220)}`);
+  if (!execute) lines.push('Next: restart this loop with --run when you want this browser workflow to act or queue.');
   return lines.join('\n');
 }
 
@@ -655,6 +706,40 @@ async function runLoopCommand(transcript) {
           readOnly: !execute,
         },
       });
+    }
+    if (command === 'browse') {
+      const browseRequest = normalizeBrowseRequest(transcript);
+      const execute = loopExecuteRequested();
+      const response = await request('/api/browser/workflow', {
+        method: 'POST',
+        body: {
+          intent: browseRequest.intent,
+          mode: browseRequest.mode,
+          instruction: browseRequest.instruction,
+          execute,
+          source: execute ? 'local_voice_loop_browser_workflow_execute' : 'local_voice_loop_browser_workflow_preview',
+          scope: `local_voice_loop:browser:${browseRequest.intent}`,
+          parallelGroup: 'local_voice_loop:browser',
+          maxChars: 12000,
+        },
+      });
+      return {
+        ...publicLoopCommandBase(base),
+        endpoint: '/api/browser/workflow',
+        detailLevel: execute ? 'execute' : 'preview',
+        previewOnly: !execute,
+        intent: browseRequest.intent,
+        mode: browseRequest.mode,
+        ok: Boolean(response.ok && response.data),
+        responseStatus: response.status,
+        elapsedMs: Math.round(performance.now() - base.startedAt),
+        apiElapsedMs: response.elapsedMs,
+        safety: {
+          ...loopSafety(),
+          readOnly: !execute,
+        },
+        output: formatLoopBrowse(response.data || {}, browseRequest, execute),
+      };
     }
     if (command === 'handoff') {
       const response = await request('/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900');
