@@ -17,6 +17,7 @@ const EXPECTED_ACCEPTANCE_GATES = new Set([
   'review_and_resolve_approval',
   'manage_collaboration_claim',
   'ask_learning_profile',
+  'prepare_record_replay_teaching_packet',
   'ask_browser_workflow',
   'save_productivity_dogfood_archive',
   'teach_ui_demonstration',

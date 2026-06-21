@@ -65,6 +65,7 @@ These are not marketing comparisons. They are goals JAVIS should implement.
 - Hard work runs behind the voice. Research, coding, browser workflows, file organization, and multi-step automations should move to background lanes without blocking conversation.
 - The router chooses a lane before choosing a model. Simple answers use fast models or deterministic local commands; deep work uses stronger models, Codex, Claude Code, browser workers, or file/app workflows.
 - Workers should be adversarial and persistent. When a task is possible, the worker should search, inspect evidence, retry, try alternate tools, and produce a useful result instead of giving up early.
+- Autonomy should ask last. For recoverable problems, JAVIS should inspect existing evidence, try another safe browser/file/app/background lane, preview scoped Codex/Claude delegation, or use worker recovery before returning the problem to the user.
 - Failed workers should expose targeted recovery actions that can be previewed, spoken, or queued through the same policy gates instead of relying on a generic "try again" prompt.
 - Escalation is reserved for real boundaries: missing user intent, missing credentials, private/irreversible actions, external account blocks, or conflicts that cannot be resolved safely.
 - The user should see ownership, not noise. Progress check-ins should say who owns the work, what is running, what is blocked, and what the next safe action is.

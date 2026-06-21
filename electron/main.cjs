@@ -5004,41 +5004,41 @@ function compactCapabilityCollaborationForVoice(collaboration = null) {
   return {
     active: boundedCount(collaboration.active, 1000),
     conflictPairs: boundedCount(collaboration.conflictPairs, 1000),
-    activeClaims: activeClaims.slice(0, 3).map((claim) => ({
+    activeClaims: activeClaims.slice(0, 1).map((claim) => ({
       id: compactRecordText(claim.id || '', 120),
       owner: compactRecordText(claim.owner || claim.agent || '', 120),
       lane: compactRecordText(claim.lane || '', 60),
       access: compactRecordText(claim.access || '', 40),
-      scope: compactRecordText(claim.scope || claim.key || '', 180),
-      task: compactRecordText(claim.task || '', 160),
+      scope: compactRecordText(claim.scope || claim.key || '', 140),
+      task: compactRecordText(claim.task || '', 100),
       expiresAt: boundedCount(claim.expiresAt, 4102444800000),
     })),
     handoff: {
       mode: compactRecordText(handoff.mode || '', 40),
-      summary: compactRecordText(handoff.summary || '', 260),
-      spokenSummary: compactRecordText(handoff.spokenSummary || '', 260),
+      summary: compactRecordText(handoff.summary || '', 200),
+      spokenSummary: compactRecordText(handoff.spokenSummary || '', 200),
       counts: handoff.counts || {},
       ownerGroupCount: Array.isArray(handoff.ownerGroups) ? handoff.ownerGroups.length : 0,
       activeScopeCount: Array.isArray(handoff.activeScopes) ? handoff.activeScopes.length : 0,
       conflictPairCount: Array.isArray(handoff.conflictPairs) ? handoff.conflictPairs.length : 0,
       suggestedScopes: Array.isArray(handoff.suggestedScopes)
-        ? handoff.suggestedScopes.slice(0, 4).map((item) => ({
+        ? handoff.suggestedScopes.slice(0, 3).map((item) => ({
           id: compactRecordText(item.id || '', 100),
           label: compactRecordText(item.label || '', 140),
           owner: compactRecordText(item.owner || item.agent || '', 100),
           lane: compactRecordText(item.lane || '', 40),
-          scope: compactRecordText(item.scope || item.key || '', 180),
-          task: compactRecordText(item.task || '', 180),
+          scope: compactRecordText(item.scope || item.key || '', 140),
+          task: compactRecordText(item.task || '', 120),
           safeToClaim: item.safeToClaim === true,
           conflictCount: boundedCount(item.conflictCount, 100),
-          claimCommand: compactRecordText(item.claimCommand || '', 260),
+          claimCommand: compactRecordText(item.claimCommand || '', 180),
         }))
         : [],
       nextActions: Array.isArray(handoff.nextActions)
-        ? handoff.nextActions.slice(0, 3).map((action) => ({
+        ? handoff.nextActions.slice(0, 2).map((action) => ({
           id: compactRecordText(action.id || '', 100),
           label: compactRecordText(action.label || '', 140),
-          summary: compactRecordText(action.summary || '', 220),
+          summary: compactRecordText(action.summary || '', 160),
           priority: boundedCount(action.priority, 1000),
         }))
         : [],
@@ -5059,24 +5059,24 @@ function localCapabilityVoicePayload(snapshot = {}, options = {}) {
     version: boundedCount(snapshot.version || 1, 10),
     generatedAt: snapshot.generatedAt || new Date().toISOString(),
     source: compactRecordText(options.source || snapshot.source || 'voice', 80),
-    summary: compactRecordText(snapshot.summary || '', 360),
-    spokenSummary: compactRecordText(snapshot.spokenSummary || snapshot.summary || '', 500),
+    summary: compactRecordText(snapshot.summary || '', 300),
+    spokenSummary: compactRecordText(snapshot.spokenSummary || snapshot.summary || '', 420),
     counts: snapshot.counts || {
       total: capabilities.length,
       ready: capabilities.filter((item) => item?.status === 'ready').length,
       limited: capabilities.filter((item) => item?.status === 'limited').length,
       blocked: capabilities.filter((item) => item?.status === 'blocked').length,
     },
-    capabilities: capabilities.slice(0, 8).map(compactLocalCapabilityForVoice).filter(Boolean),
+    capabilities: capabilities.slice(0, 7).map(compactLocalCapabilityForVoice).filter(Boolean),
     speedPolicy: {
       summary: compactRecordText(snapshot.speedPolicy?.summary || '', 260),
       spokenSummary: compactRecordText(snapshot.speedPolicy?.spokenSummary || '', 260),
       endpoint: compactRecordText(snapshot.speedPolicy?.endpoint || '/api/routing/speed-policy', 120),
       command: compactRecordText(snapshot.speedPolicy?.command || '', 140),
     },
-    recommendedStart: recommendedStart.slice(0, 7).map(compactRecommendedStartForVoice).filter(Boolean),
+    recommendedStart: recommendedStart.slice(0, 6).map(compactRecommendedStartForVoice).filter(Boolean),
     guardrails: Array.isArray(snapshot.guardrails)
-      ? snapshot.guardrails.slice(0, 5).map((item) => compactRecordText(item, 180))
+      ? snapshot.guardrails.slice(0, 4).map((item) => compactRecordText(item, 140))
       : [],
     readiness: {
       overall: compactRecordText(snapshot.readiness?.overall || '', 60),
@@ -29525,7 +29525,7 @@ function compactAutopilotActionForVoice(action = null) {
       primary: action.dogfoodActionPlan.primary
         ? {
           id: compactRecordText(action.dogfoodActionPlan.primary.id || '', 120),
-          label: compactRecordText(action.dogfoodActionPlan.primary.label || action.dogfoodActionPlan.primary.id || '', 140),
+          label: compactRecordText(action.dogfoodActionPlan.primary.label || action.dogfoodActionPlan.primary.id || '', 120),
           startsMicrophone: Boolean(action.dogfoodActionPlan.primary.startsMicrophone),
           requiresMicConfirmation: Boolean(action.dogfoodActionPlan.primary.requiresMicConfirmation),
           requiresLiveVoice: Boolean(action.dogfoodActionPlan.primary.requiresLiveVoice),
@@ -29537,22 +29537,22 @@ function compactAutopilotActionForVoice(action = null) {
       firstPreviewable: action.dogfoodActionPlan.firstPreviewable
         ? {
           id: compactRecordText(action.dogfoodActionPlan.firstPreviewable.id || '', 120),
-          label: compactRecordText(action.dogfoodActionPlan.firstPreviewable.label || action.dogfoodActionPlan.firstPreviewable.id || '', 140),
-          command: compactRecordText(action.dogfoodActionPlan.firstPreviewable.command || '', 180),
-          endpoint: compactRecordText(action.dogfoodActionPlan.firstPreviewable.endpoint || '', 140),
+          label: compactRecordText(action.dogfoodActionPlan.firstPreviewable.label || action.dogfoodActionPlan.firstPreviewable.id || '', 120),
+          command: compactRecordText(action.dogfoodActionPlan.firstPreviewable.command || '', 140),
+          endpoint: compactRecordText(action.dogfoodActionPlan.firstPreviewable.endpoint || '', 100),
           startsMicrophone: Boolean(action.dogfoodActionPlan.firstPreviewable.startsMicrophone),
         }
         : null,
       firstManual: action.dogfoodActionPlan.firstManual
         ? {
           id: compactRecordText(action.dogfoodActionPlan.firstManual.id || '', 120),
-          label: compactRecordText(action.dogfoodActionPlan.firstManual.label || action.dogfoodActionPlan.firstManual.id || '', 140),
+          label: compactRecordText(action.dogfoodActionPlan.firstManual.label || action.dogfoodActionPlan.firstManual.id || '', 120),
           startsMicrophone: Boolean(action.dogfoodActionPlan.firstManual.startsMicrophone),
           requiresMicConfirmation: Boolean(action.dogfoodActionPlan.firstManual.requiresMicConfirmation),
           requiresLiveVoice: Boolean(action.dogfoodActionPlan.firstManual.requiresLiveVoice),
         }
         : null,
-      spokenSummary: compactRecordText(action.dogfoodActionPlan.spokenSummary || '', 260),
+      spokenSummary: compactRecordText(action.dogfoodActionPlan.spokenSummary || '', 180),
     }
     : summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan);
   return {
@@ -29561,7 +29561,7 @@ function compactAutopilotActionForVoice(action = null) {
     label: compactRecordText(action.label || action.id || '', 140),
     source: compactRecordText(action.source || '', 80),
     priority: boundedCount(action.priority, 1000),
-    summary: compactRecordText(action.summary || '', 220),
+    summary: compactRecordText(action.summary || '', 180),
     executable: Boolean(action.executable),
     autoEligible: Boolean(action.autoEligible),
     autopilotEligible: action.autopilotEligible !== false,
@@ -29588,7 +29588,7 @@ function compactAutopilotActionForVoice(action = null) {
       ? {
         executable: Boolean(action.decision.executable),
         reason: compactRecordText(action.decision.reason || '', 120),
-        detail: compactRecordText(action.decision.detail || '', 220),
+        detail: compactRecordText(action.decision.detail || '', 160),
       }
       : null,
   };
@@ -29637,19 +29637,19 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
     skippedCount: boundedCount(status.skippedCount, 1000000),
     lastTickAt: boundedCount(status.lastTickAt, 4102444800000),
     lastExecutedAt: boundedCount(status.lastExecutedAt, 4102444800000),
-    lastResult: compactRecordText(status.lastResult || '', 260),
-    lastError: compactRecordText(status.lastError || '', 260),
+    lastResult: compactRecordText(status.lastResult || '', 200),
+    lastError: compactRecordText(status.lastError || '', 200),
     maintenance: compactAutopilotMaintenanceForVoice(status.maintenance),
     canActNow: Boolean(status.canActNow),
     reason: compactRecordText(status.reason || '', 120),
     nextWait: compactRecordText(status.nextWait || '', 260),
-    spokenSummary: compactRecordText(status.spokenSummary || '', 420),
-    skipSummary: compactRecordText(status.skipSummary || '', 420),
+    spokenSummary: compactRecordText(status.spokenSummary || '', 320),
+    skipSummary: compactRecordText(status.skipSummary || '', 320),
     candidateCounts: status.candidateCounts || null,
-    waitingFor: waitingFor.slice(0, 6).map(compactAutopilotWaitingForVoice).filter(Boolean),
+    waitingFor: waitingFor.slice(0, 4).map(compactAutopilotWaitingForVoice).filter(Boolean),
     selectedAction: compactAutopilotActionForVoice(status.selectedAction),
     firstAction: compactAutopilotActionForVoice(status.firstAction),
-    candidates: candidates.slice(0, 6).map(compactAutopilotActionForVoice).filter(Boolean),
+    candidates: candidates.slice(0, 4).map(compactAutopilotActionForVoice).filter(Boolean),
     lastDecision: status.lastDecision
       ? {
         generatedAt: compactRecordText(status.lastDecision.generatedAt || '', 80),
@@ -29672,17 +29672,31 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
       conversationActive: Boolean(preview.conversationActive),
       activeJobs: boundedCount(preview.activeJobs, 100000),
       nextActionCount: boundedCount(preview.nextActionCount, 1000),
-      selectedAction: compactAutopilotActionForVoice(preview.selectedAction),
-      firstAction: compactAutopilotActionForVoice(preview.firstAction),
+      selectedAction: preview.selectedAction
+        ? {
+          id: compactRecordText(preview.selectedAction.id || '', 120),
+          label: compactRecordText(preview.selectedAction.label || preview.selectedAction.id || '', 120),
+          executable: Boolean(preview.selectedAction.decision?.executable || preview.selectedAction.executable),
+          reason: compactRecordText(preview.selectedAction.decision?.reason || '', 100),
+        }
+        : null,
+      firstAction: preview.firstAction
+        ? {
+          id: compactRecordText(preview.firstAction.id || '', 120),
+          label: compactRecordText(preview.firstAction.label || preview.firstAction.id || '', 120),
+          executable: Boolean(preview.firstAction.decision?.executable || preview.firstAction.executable),
+          reason: compactRecordText(preview.firstAction.decision?.reason || '', 100),
+        }
+        : null,
       candidateCounts: preview.candidateCounts || null,
       waitingFor: Array.isArray(preview.waitingFor)
         ? preview.waitingFor.slice(0, 4).map(compactAutopilotWaitingForVoice).filter(Boolean)
         : [],
-      skipSummary: compactRecordText(preview.skipSummary || '', 320),
+      skipSummary: compactRecordText(preview.skipSummary || '', 240),
       maintenance: compactAutopilotMaintenanceForVoice(preview.maintenance),
-      nextWait: compactRecordText(preview.nextWait || '', 260),
+      nextWait: compactRecordText(preview.nextWait || '', 220),
     },
-    nextAction: compactRecordText(status.nextAction || '', 320),
+    nextAction: compactRecordText(status.nextAction || '', 260),
     responseBudget: {
       compact: true,
       maxTargetBytes: 20000,
@@ -34410,12 +34424,12 @@ function compactRealtimeDogfoodGateForVoice(gate = null) {
   return {
     id: compactRecordText(gate.id || '', 120),
     group: compactRecordText(gate.group || '', 80),
-    label: compactRecordText(gate.label || gate.id || '', 160),
+    label: compactRecordText(gate.label || gate.id || '', 140),
     ok: Boolean(gate.ok),
     status: compactRecordText(gate.status || (gate.ok ? 'pass' : 'gap'), 60),
-    detail: compactRecordText(gate.detail || '', 260),
-    nextAction: compactRecordText(gate.nextAction || '', 260),
-    prompt: compactRecordText(gate.evidence?.prompt || gate.evidence?.tool || '', 240),
+    detail: compactRecordText(gate.detail || '', 200),
+    nextAction: compactRecordText(gate.nextAction || '', 200),
+    prompt: compactRecordText(gate.evidence?.prompt || gate.evidence?.tool || '', 160),
   };
 }
 
@@ -34423,13 +34437,13 @@ function compactRealtimeDogfoodActionForVoice(action = null) {
   if (!action || typeof action !== 'object') return null;
   return {
     id: compactRecordText(action.id || '', 120),
-    label: compactRecordText(action.label || action.id || '', 160),
+    label: compactRecordText(action.label || action.id || '', 140),
     group: compactRecordText(action.group || '', 80),
-    summary: compactRecordText(action.summary || '', 280),
-    nextAction: compactRecordText(action.nextAction || '', 280),
-    command: compactRecordText(action.command || '', 220),
-    endpoint: compactRecordText(action.endpoint || '', 160),
-    prompt: compactRecordText(action.prompt || '', 240),
+    summary: compactRecordText(action.summary || '', 220),
+    nextAction: compactRecordText(action.nextAction || '', 220),
+    command: compactRecordText(action.command || '', 160),
+    endpoint: compactRecordText(action.endpoint || '', 120),
+    prompt: compactRecordText(action.prompt || '', 160),
     startsMicrophone: Boolean(action.startsMicrophone),
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     requiresUserPresence: Boolean(action.requiresUserPresence),
@@ -34452,23 +34466,23 @@ function compactRealtimeDogfoodActionPlanForVoice(plan = null) {
     status: compactRecordText(plan.status || '', 60),
     accepted: Boolean(plan.accepted),
     primary: compactRealtimeDogfoodActionForVoice(plan.primary),
-    nextActions: nextActions.slice(0, 4).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
-    previewable: previewable.slice(0, 4).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
-    manual: manual.slice(0, 4).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
-    blockers: blockers.slice(0, 6).map((blocker) => ({
+    nextActions: nextActions.slice(0, 3).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
+    previewable: previewable.slice(0, 3).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
+    manual: manual.slice(0, 3).map(compactRealtimeDogfoodActionForVoice).filter(Boolean),
+    blockers: blockers.slice(0, 4).map((blocker) => ({
       id: compactRecordText(blocker.id || '', 120),
       group: compactRecordText(blocker.group || '', 80),
-      label: compactRecordText(blocker.label || blocker.id || '', 160),
-      nextAction: compactRecordText(blocker.nextAction || '', 240),
+      label: compactRecordText(blocker.label || blocker.id || '', 140),
+      nextAction: compactRecordText(blocker.nextAction || '', 180),
     })),
     counts: plan.counts || null,
     askUserOnlyFor: Array.isArray(plan.askUserOnlyFor)
-      ? plan.askUserOnlyFor.slice(0, 5).map((item) => compactRecordText(item, 180))
+      ? plan.askUserOnlyFor.slice(0, 4).map((item) => compactRecordText(item, 150))
       : [],
     boundaries: Array.isArray(plan.boundaries)
-      ? plan.boundaries.slice(0, 5).map((item) => compactRecordText(item, 220))
+      ? plan.boundaries.slice(0, 4).map((item) => compactRecordText(item, 180))
       : [],
-    spokenSummary: compactRecordText(plan.spokenSummary || '', 320),
+    spokenSummary: compactRecordText(plan.spokenSummary || '', 240),
   };
 }
 
@@ -34486,7 +34500,7 @@ function realtimeDogfoodAcceptanceVoicePayload(acceptance = {}, options = {}) {
     manualOnly: acceptance.manualOnly !== false,
     startsMicrophone: Boolean(acceptance.startsMicrophone),
     requiresUserPresence: acceptance.requiresUserPresence !== false,
-    summary: compactRecordText(acceptance.summary || '', 420),
+    summary: compactRecordText(acceptance.summary || '', 320),
     counts: acceptance.counts || {
       gates: gates.length,
       passed: passedGateCount,
@@ -34498,21 +34512,21 @@ function realtimeDogfoodAcceptanceVoicePayload(acceptance = {}, options = {}) {
       ok: Boolean(group.ok),
       ready: boundedCount(group.ready, 1000),
       total: boundedCount(group.total, 1000),
-      gaps: Array.isArray(group.gaps) ? group.gaps.slice(0, 8).map((item) => compactRecordText(item, 120)) : [],
+      gaps: Array.isArray(group.gaps) ? group.gaps.slice(0, 5).map((item) => compactRecordText(item, 100)) : [],
     })),
     passedGateCount,
-    gaps: gaps.slice(0, 8).map(compactRealtimeDogfoodGateForVoice).filter(Boolean),
+    gaps: gaps.slice(0, 6).map(compactRealtimeDogfoodGateForVoice).filter(Boolean),
     nextGap: compactRealtimeDogfoodGateForVoice(acceptance.nextGap || gaps[0]),
     actionPlan: compactRealtimeDogfoodActionPlanForVoice(acceptance.actionPlan),
-    nextAction: compactRecordText(acceptance.nextAction || '', 320),
+    nextAction: compactRecordText(acceptance.nextAction || '', 240),
     archive: acceptance.archive
       ? {
         id: compactRecordText(acceptance.archive.id || '', 120),
         saved: Boolean(acceptance.archive.saved),
-        file: compactRecordText(acceptance.archive.file || '', 240),
+        file: compactRecordText(acceptance.archive.file || '', 200),
         status: compactRecordText(acceptance.archive.status || '', 60),
         phase: compactRecordText(acceptance.archive.phase || '', 80),
-        summary: compactRecordText(acceptance.archive.summary || '', 280),
+        summary: compactRecordText(acceptance.archive.summary || '', 180),
       }
       : null,
     evidence: acceptance.evidence
@@ -34533,7 +34547,7 @@ function realtimeDogfoodAcceptanceVoicePayload(acceptance = {}, options = {}) {
       desktopPetDiagnostics: false,
       recordReplayRequiresConfirmation: true,
     },
-    output: compactRecordText(acceptance.output || '', 1000),
+    output: compactRecordText(acceptance.output || '', 600),
     responseBudget: {
       compact: true,
       maxTargetBytes: 20000,
@@ -36325,12 +36339,12 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
   const promptLimit = Math.max(1, Math.min(8, Number(options.promptLimit || 3)));
   const checklist = includeChecklist
     ? (evidence.checklist || []).map((step) => ({
-        id: step.id,
-        label: step.label,
-        status: step.status,
+        id: compactRecordText(step.id || '', 120),
+        label: compactRecordText(step.label || '', 140),
+        status: compactRecordText(step.status || '', 60),
         ok: Boolean(step.ok),
-        detail: step.detail,
-        nextAction: step.nextAction,
+        detail: compactRecordText(step.detail || '', 180),
+        nextAction: compactRecordText(step.nextAction || '', 180),
       }))
     : [];
   const drill = evidence.drill || {};
@@ -36345,19 +36359,26 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
     summary: evidence.blocker
       ? `Realtime voice is ${evidence.status}/${evidence.phase}. Blocker: ${evidence.blocker.label}. ${evidence.blocker.summary}`
       : `Realtime voice is ${evidence.status}/${evidence.phase}. Ready for: ${evidence.nextAction}`,
-    blocker: evidence.blocker,
-    nextAction: evidence.nextAction,
+    blocker: evidence.blocker
+      ? {
+        id: compactRecordText(evidence.blocker.id || '', 120),
+        label: compactRecordText(evidence.blocker.label || '', 140),
+        summary: compactRecordText(evidence.blocker.summary || '', 220),
+        nextAction: compactRecordText(evidence.blocker.nextAction || '', 220),
+      }
+      : null,
+    nextAction: compactRecordText(evidence.nextAction || '', 240),
     conversation: evidence.conversation ? {
       status: evidence.conversation.status,
       active: Boolean(evidence.conversation.active),
-      sessionId: evidence.conversation.sessionId,
-      micMode: evidence.conversation.micMode,
+      sessionId: compactRecordText(evidence.conversation.sessionId || '', 120),
+      micMode: compactRecordText(evidence.conversation.micMode || '', 40),
     } : null,
     voiceHealth: {
       status: evidence.voiceHealth?.status || '',
       kind: evidence.voiceHealth?.kind || '',
-      summary: evidence.voiceHealth?.summary || '',
-      next: evidence.voiceHealth?.next || '',
+      summary: compactRecordText(evidence.voiceHealth?.summary || '', 220),
+      next: compactRecordText(evidence.voiceHealth?.next || '', 220),
       hasOpenAiKey: Boolean(evidence.voiceHealth?.hasOpenAiKey),
     },
     checks: evidence.checks,
@@ -36365,11 +36386,11 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
     progressSync: evidence.progressSync ? {
       ok: Boolean(evidence.progressSync.ok),
       status: evidence.progressSync.status,
-      detail: evidence.progressSync.detail,
+      detail: compactRecordText(evidence.progressSync.detail || '', 180),
       currentSequence: evidence.progressSync.currentSequence,
       injectedSequence: evidence.progressSync.injectedSequence,
       behindBy: evidence.progressSync.behindBy,
-      nextAction: evidence.progressSync.nextAction,
+      nextAction: compactRecordText(evidence.progressSync.nextAction || '', 180),
     } : null,
     voiceLatency: evidence.latency ? {
       observed: true,
@@ -36387,8 +36408,8 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
       nextAction: 'Start a real voice session to capture start-to-live latency.',
     },
     progress: {
-      spokenSummary: evidence.progress?.spokenSummary || '',
-      workerSummary: evidence.progress?.workerSummary || '',
+      spokenSummary: compactRecordText(evidence.progress?.spokenSummary || '', 260),
+      workerSummary: compactRecordText(evidence.progress?.workerSummary || '', 220),
       activeJobs: Number(evidence.progress?.activeJobs || 0),
       blockedWorkflows: Number(evidence.progress?.blockedWorkflows || 0),
     },
@@ -36396,14 +36417,14 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
       manualOnly: true,
       requiresUserPresence: true,
       status: drill.status || evidence.status,
-      summary: drill.summary || '',
+      summary: compactRecordText(drill.summary || '', 260),
       gapSummary: evidence.gapSummary || realtimeDogfoodGapSummaryFromEvidence(evidence, { drill }),
       prompts,
       pending: pending.map((step) => ({
         id: step.id,
-        label: step.label,
-        status: step.status,
-        nextAction: step.nextAction,
+        label: compactRecordText(step.label || '', 140),
+        status: compactRecordText(step.status || '', 60),
+        nextAction: compactRecordText(step.nextAction || '', 180),
       })),
       monitor: {
         endpoint: '/api/realtime/evidence',
@@ -37244,10 +37265,46 @@ function buildAutonomyAgencyPlan(context = {}) {
     });
   }
 
+  const repoOrCodeTask = /javis|repo|repository|code|codex|claude|claude code|bug|test|eval|doc|docs|roadmap|开发|代码|仓库|实现|修复|测试|文档|协作/i.test(task)
+    || ['codex', 'claude'].includes(route.lane)
+    || String(route.label || '').toLowerCase().includes('codex')
+    || String(route.label || '').toLowerCase().includes('claude');
+  if (repoOrCodeTask) {
+    fallbacks.push(autonomyAgencyAction({
+      id: 'plan_parallel_agent_scope',
+      label: 'Plan scoped Codex/Claude collaboration',
+      source: 'collaboration',
+      tool: 'plan_collaboration_claim, delegate_task',
+      executable: false,
+      riskLevel: 1,
+      summary: '先预览非重叠写入范围；能并行就 claim/委派，冲突就串行。',
+      reason: 'Repo or code-heavy work can continue through scoped workers instead of asking the user to coordinate manually.',
+      command: 'get_collaboration_state -> plan_collaboration_claim -> delegate_task',
+    }));
+    evidence.push('collaboration:scoped-agent-handoff');
+  }
+
+  const hasAutonomousCandidate = primary.some((action) => action.executable && !action.requiresUser)
+    || fallbacks.some((action) => action.executable && !action.requiresUser);
+  if (!hasAutonomousCandidate) {
+    fallbacks.push(autonomyAgencyAction({
+      id: 'inspect_search_retry_alternates',
+      label: 'Inspect, search, and try an alternate lane',
+      source: 'persistence',
+      tool: 'observe_now, run_browser_workflow, route_task',
+      executable: false,
+      riskLevel: 1,
+      summary: '先用现有证据、浏览器/文件/app 工具或后台路线找替代做法，再决定是否需要用户。',
+      reason: 'Recoverable unknowns should trigger bounded investigation instead of an immediate handoff back to the user.',
+    }));
+    evidence.push('persistence:ask-last');
+  }
+
   const activeJobs = Number(progress?.counts?.activeJobs || 0);
   const activeRoutes = Number(progress?.counts?.activeRoutes || 0);
   const recoverable = Number(recovery?.counts?.recoverable || progress?.recovery?.counts?.recoverable || 0);
-  const status = blockers.length
+  const hardBlockers = blockers.filter((blocker) => ['openai_key', 'local_execution'].includes(blocker.id));
+  const status = hardBlockers.length
     ? 'blocked'
     : context.recoveryAttempt?.queued
       ? 'recovering'
@@ -37263,14 +37320,51 @@ function buildAutonomyAgencyPlan(context = {}) {
     'credentials, login, payment, account, private, send, delete, install, export, or irreversible actions',
     'macOS permission prompts and microphone/live voice start',
     'overlapping write-scope conflicts that the collaboration ledger cannot serialize safely',
+    'only after safe inspect/search/retry/delegate alternatives have been previewed or exhausted',
   ];
   const boundaries = [
     'Use route_task, work-next, worker recovery, browser/file/app tools, or delegated workers; do not bypass action policy.',
     'Run at most one bounded next action per autonomy tick.',
+    'When a task is possible, inspect evidence, try a safer tool/lane, or delegate a scoped worker before asking the user to solve it.',
     'Keep local inferred learning as soft context only; it never grants permission.',
     'Preserve approval gates for Level 4, private, irreversible, account, send, delete, purchase, install, and export actions.',
   ];
   const ordered = [...primary, ...fallbacks].slice(0, 6);
+  const selfRecoveryPlan = {
+    version: 1,
+    posture: 'ask_last',
+    maxSafeAttemptsBeforeUser: 3,
+    safeAttempts: [
+      {
+        id: 'inspect_existing_evidence',
+        label: 'Inspect existing evidence first',
+        tools: ['route_task', 'observe_now', 'get_work_progress'],
+        summary: 'Use current route, Mac context, progress, and recovery evidence before asking the user.',
+      },
+      {
+        id: 'try_alternate_tool_or_lane',
+        label: 'Try an alternate safe tool or lane',
+        tools: ['run_browser_workflow', 'file/app tools', 'background worker'],
+        summary: 'Use browser, file, app, or background lanes when the first route lacks enough context.',
+      },
+      {
+        id: 'delegate_scoped_agent',
+        label: 'Delegate scoped agent work',
+        tools: ['plan_collaboration_claim', 'delegate_task'],
+        summary: 'For repo/code-heavy work, preview non-overlapping Codex/Claude scopes before asking the user to coordinate.',
+      },
+      {
+        id: 'retry_recoverable_worker',
+        label: 'Retry one recoverable worker',
+        tools: ['get_worker_recovery', 'run_worker_recovery'],
+        summary: 'If a failed worker exposes a low-risk recovery action, retry it through the existing recovery budget.',
+      },
+    ],
+    askUserAfter: askUserOnlyFor,
+    hardBlockers: hardBlockers.map((blocker) => blocker.id),
+    canDelegate: repoOrCodeTask,
+    hasRecoverableWorker: Boolean(recoveryCandidate?.action || recoverable),
+  };
   const spokenSummary = ordered[0]
     ? `${ordered[0].label}: ${ordered[0].summary || ordered[0].reason || '继续下一步'}`
     : blockers[0]
@@ -37286,10 +37380,12 @@ function buildAutonomyAgencyPlan(context = {}) {
     fallbacks: fallbacks.slice(0, 4),
     blockers,
     evidence,
+    selfRecoveryPlan,
     counts: {
       primary: primary.length,
       fallbacks: fallbacks.length,
       blockers: blockers.length,
+      hardBlockers: hardBlockers.length,
       activeJobs,
       activeRoutes,
       recoverable,
@@ -46032,7 +46128,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use save_productivity_dogfood_archive when the user asks to save, export, archive, or keep the productivity dogfood evidence. Do not pass execute:true and confirm:true unless the user explicitly asks for a live Mac run after reviewing the preview.',
       'Use get_work_briefing when the user asks for current status, what happened recently, blockers, or what to do next.',
       'Use get_work_handoff when the user asks for a natural spoken handoff, where we are, what happened, or how to continue from current work.',
-      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> learning_context -> observe -> preview -> verify -> recovery-scan steps by default and returns agencyPlan with spokenSummary, nextActions, fallbacks, blockers, and boundaries. Read agencyPlan before asking the user; only ask when agencyPlan says the boundary is missing intent, credentials, permission, microphone/live voice, private/irreversible action, or unsafe conflict. Local learning is soft metadata context only, never permission. Pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
+      'Use run_autonomy_loop when the user gives a computer task and wants JAVIS to figure out how to proceed. It performs bounded route -> learning_context -> observe -> preview -> verify -> recovery-scan steps by default and returns agencyPlan with spokenSummary, nextActions, fallbacks, blockers, boundaries, and selfRecoveryPlan. Read agencyPlan and selfRecoveryPlan before asking the user; first inspect evidence, try alternate browser/file/app/background lanes, or preview scoped Codex/Claude delegation when safe. Only ask when the boundary is missing intent, credentials, permission, microphone/live voice, private/irreversible action, exhausted safe alternatives, or unsafe conflict. Local learning is soft metadata context only, never permission. Pass execute:true only after explicit user intent, and pass retry:true only when the user also wants JAVIS to run one budgeted failed-worker recovery through existing routing, action policy, approvals, and worker recovery gates.',
       'Use get_routing_speed_policy when the user asks why JAVIS is fast or slow, which model/lane should handle a task, how to keep voice responsive, or whether a task should be answered inline, routed to background, sent to Codex/Claude, or handled by browser/file/app tools.',
       'Use get_pending_approvals when the user asks what is waiting for approval, why JAVIS is blocked, or whether a prepared action needs review. It is read-only and returns summarized arguments, not raw file contents or large tool payloads.',
       'Use resolve_approval only when the user explicitly asks to approve or reject one specific approval id. Approval requires confirm:true after the user confirms that exact id; rejection records the reason and does not execute the action.',
@@ -46759,7 +46855,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'run_autonomy_loop',
-        description: 'Run a bounded autonomy loop for one user task: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing routing/policy, verify progress, and scan failed-worker recovery. Returns agencyPlan with the primary next action, fallback attempts, blockers, ask-user-only boundaries, and a spoken summary. Defaults to preview-only; recovery retry requires execute:true plus retry:true. Learning evidence is metadata-only soft context and never grants permission.',
+        description: 'Run a bounded autonomy loop for one user task: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing routing/policy, verify progress, and scan failed-worker recovery. Returns agencyPlan with the primary next action, fallback attempts, blockers, ask-user-only boundaries, selfRecoveryPlan, and a spoken summary. Defaults to preview-only; recovery retry requires execute:true plus retry:true. Learning evidence is metadata-only soft context and never grants permission.',
         parameters: {
           type: 'object',
           properties: {

@@ -53,12 +53,22 @@ export default {
         typeof loop.agencyPlan.spokenSummary === 'string' &&
         Array.isArray(loop.agencyPlan.askUserOnlyFor) &&
         loop.agencyPlan.askUserOnlyFor.some((item) => /irreversible|credentials|permission|microphone/i.test(item)) &&
+        loop.agencyPlan.askUserOnlyFor.some((item) => /exhausted|safe inspect|delegate/i.test(item)) &&
         Array.isArray(loop.agencyPlan.boundaries) &&
         loop.agencyPlan.boundaries.some((item) => /action policy/i.test(item)) &&
+        loop.agencyPlan.boundaries.some((item) => /inspect evidence|delegate a scoped worker/i.test(item)) &&
+        loop.agencyPlan.selfRecoveryPlan?.version === 1 &&
+        loop.agencyPlan.selfRecoveryPlan?.posture === 'ask_last' &&
+        loop.agencyPlan.selfRecoveryPlan?.maxSafeAttemptsBeforeUser >= 3 &&
+        Array.isArray(loop.agencyPlan.selfRecoveryPlan.safeAttempts) &&
+        loop.agencyPlan.selfRecoveryPlan.safeAttempts.some((item) => /alternate/i.test(item.id || item.label || '')) &&
+        loop.agencyPlan.selfRecoveryPlan.safeAttempts.some((item) => /delegate/i.test(item.id || item.label || '')) &&
+        Array.isArray(loop.agencyPlan.selfRecoveryPlan.askUserAfter) &&
+        loop.agencyPlan.counts?.hardBlockers >= 0 &&
         loop.learning?.privacy?.localOnly === true &&
         loop.learning?.privacy?.noPermissionGrant === true &&
         loop.safety?.learningContext?.noPolicyBypass === true
-        ? ok('autonomy.preview_loop', 'Autonomy loop preview', `${loop.route.label || loop.route.lane} · ${loop.steps.length} bounded step(s) · agency=${loop.agencyPlan.status}`)
+        ? ok('autonomy.preview_loop', 'Autonomy loop preview', `${loop.route.label || loop.route.lane} · ${loop.steps.length} bounded step(s) · agency=${loop.agencyPlan.status} · posture=${loop.agencyPlan.selfRecoveryPlan.posture}`)
         : fail('autonomy.preview_loop', 'Autonomy loop preview', `expected preview-only route/learning/observe/work-next/verify/recovery envelope (${preview.status})`, preview.data),
     );
 
@@ -178,6 +188,8 @@ export default {
         Array.isArray(voiceOutput.agencyPlan.nextActions) &&
         voiceOutput.agencyPlan.nextActions.length >= 1 &&
         voiceOutput.agencyPlan.boundaries?.some((item) => /approval|policy/i.test(item)) &&
+        voiceOutput.agencyPlan.selfRecoveryPlan?.posture === 'ask_last' &&
+        voiceOutput.agencyPlan.selfRecoveryPlan?.safeAttempts?.some((item) => /inspect|delegate|alternate/i.test(item.id || item.label || '')) &&
         voiceOutput?.safety?.recoveryBudget?.retryRequested === false &&
         voiceOutput?.safety?.learningContext?.noPermissionGrant === true &&
         voiceOutput?.safety?.usesExistingRouting === true
