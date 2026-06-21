@@ -1278,6 +1278,23 @@ export default {
               hardcodedOpenLoop: openLoopSource.includes("'/api/voice/open-local-loop'"),
             }),
       );
+      const localInputIndex = rendererSource.indexOf('const focusLocalInputPanel = useCallback');
+      const localInputEndIndex = rendererSource.indexOf('  }, [addMessage, setWindowMode]', localInputIndex);
+      const localInputSource = localInputIndex >= 0 && localInputEndIndex >= 0
+        ? rendererSource.slice(localInputIndex, localInputEndIndex)
+        : '';
+      out.push(
+        localInputSource.includes("setWindowMode('compose'") &&
+          localInputSource.includes('quickInputRef.current?.focus()') &&
+          !localInputSource.includes("setWindowMode('panel'")
+          ? ok('voice_command.renderer_compose_input', 'Renderer quiet local input', 'local fallback opens the compact compose input instead of the full panel')
+          : fail('voice_command.renderer_compose_input', 'Renderer quiet local input', 'expected local fallback to open compose mode and focus the input', {
+              hasLocalInput: Boolean(localInputSource),
+              opensCompose: localInputSource.includes("setWindowMode('compose'"),
+              opensPanel: localInputSource.includes("setWindowMode('panel'"),
+              focusesInput: localInputSource.includes('quickInputRef.current?.focus()'),
+            }),
+      );
     } catch (error) {
       out.push(fail('voice_command.renderer_fallback', 'Renderer fallback wiring', error instanceof Error ? error.message : String(error)));
     }

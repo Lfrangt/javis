@@ -226,7 +226,7 @@ type SetupAction =
   | 'open_action_policy'
   | 'install_resident_agent'
   | 'uninstall_resident_agent'
-type WindowMode = 'pet' | 'panel'
+type WindowMode = 'pet' | 'compose' | 'panel'
 
 type WindowState = {
   mode: WindowMode
@@ -1603,10 +1603,10 @@ function App() {
     }
   }, [loadPanelDetails])
 
-  const setWindowMode = useCallback(async (mode: WindowMode) => {
+  const setWindowMode = useCallback(async (mode: WindowMode, options: { focus?: boolean } = {}) => {
     const result = await apiJson<{ window: WindowState }>('/api/window/mode', {
       method: 'POST',
-      body: JSON.stringify({ mode }),
+      body: JSON.stringify({ mode, focus: options.focus === true }),
     })
     setExpanded(result.window.mode === 'panel')
     return result.window
@@ -1768,16 +1768,13 @@ function App() {
 
   const focusLocalInputPanel = useCallback(async (reason = '') => {
     try {
-      const windowState = await setWindowMode('panel')
-      if (windowState.mode === 'panel') {
-        void loadPanelDetails()
-        window.setTimeout(() => quickInputRef.current?.focus(), 80)
-      }
+      await setWindowMode('compose', { focus: true })
+      window.setTimeout(() => quickInputRef.current?.focus(), 80)
       addMessage('system', reason ? `本地输入已打开：${reason}` : '本地输入已打开。')
     } catch (error) {
       setLastError(error instanceof Error ? error.message : String(error))
     }
-  }, [addMessage, loadPanelDetails, setWindowMode])
+  }, [addMessage, setWindowMode])
 
   const openLocalVoiceEntry = useCallback(async (reason = '') => {
     try {
@@ -2899,6 +2896,7 @@ function App() {
           const output = result.spokenAck?.trim() || result.route?.output?.trim() || '已通过本地语音指令通道处理。'
           addMessage(result.ok ? 'assistant' : 'system', output)
           refreshStatus()
+          if (status?.window?.mode === 'compose') await setWindowMode('pet')
           return
         }
         const result = await apiJson<TaskRouteResult>('/api/tasks/route', {
@@ -2911,13 +2909,14 @@ function App() {
         } else {
           addMessage(result.ok ? 'assistant' : 'system', result.output)
         }
+        if (status?.window?.mode === 'compose') await setWindowMode('pet')
       } catch (error) {
         addMessage('system', error instanceof Error ? error.message : String(error))
       } finally {
         setBusy(false)
       }
     },
-    [addMessage, quickInput, refreshStatus, status],
+    [addMessage, quickInput, refreshStatus, setWindowMode, status],
   )
 
   const enqueueTask = useCallback(
@@ -3476,6 +3475,8 @@ function App() {
     void startScreen({ describe: true })
   }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
+  const activeWindowMode = status?.window?.mode || (expanded ? 'panel' : 'pet')
+  const composeOpen = activeWindowMode === 'compose'
   const localVoiceInteraction = status?.localVoice?.interaction
   const petLocalInputReady = hasOpenAiKey === true &&
     (localVoiceInteraction?.capsuleClick === 'open_local_input' || localVoiceInteraction?.capsuleClick === 'open_local_voice_loop')
@@ -3509,7 +3510,7 @@ function App() {
           : 'Talk to JAVIS with screen'
 
   return (
-    <main className={`pet-shell ${expanded ? 'expanded' : 'compact'} mood-${mood} signal-${petTrafficLight?.activeLight || petTrafficLight?.color || 'green'} pulse-${petTrafficLight?.pulse || 'off'}`}>
+    <main className={`pet-shell ${expanded ? 'expanded' : 'compact'} mode-${activeWindowMode} mood-${mood} signal-${petTrafficLight?.activeLight || petTrafficLight?.color || 'green'} pulse-${petTrafficLight?.pulse || 'off'}`}>
       <audio ref={audioRef} autoPlay />
 
       <div className="drag-handle" />
@@ -3550,6 +3551,15 @@ function App() {
           </span>
           <span className="island-peek" aria-hidden="true" />
         </button>
+
+        {composeOpen ? (
+          <form className="compose-row no-drag" onSubmit={sendQuick}>
+            <input ref={quickInputRef} value={quickInput} onChange={(event) => setQuickInput(event.target.value)} placeholder="Ask JAVIS" />
+            <button type="submit" disabled={busy || !quickInput.trim()} aria-label="Send local input">
+              {busy ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
+            </button>
+          </form>
+        ) : null}
 
         <div className="speech no-drag">
           <span>{petStatusLabel}</span>

@@ -257,6 +257,42 @@ export default {
         : warn('resident.window', 'Pet window + hotkeys', `GET /api/window/state ${win.status} ${win.error || ''}`),
     );
 
+    const composeWindowResponse = await ctx.api('/api/window/mode', {
+      method: 'POST',
+      body: {
+        mode: 'compose',
+        focus: false,
+      },
+      timeoutMs: 10000,
+    });
+    const composeWindow = composeWindowResponse.data?.window || {};
+    const restoredWindowResponse = await ctx.api('/api/window/mode', {
+      method: 'POST',
+      body: {
+        mode: 'pet',
+        focus: false,
+      },
+      timeoutMs: 10000,
+    });
+    const restoredWindow = restoredWindowResponse.data?.window || {};
+    out.push(
+      composeWindowResponse.ok &&
+        composeWindow.mode === 'compose' &&
+        Number(composeWindow.width || 0) <= 520 &&
+        Number(composeWindow.height || 0) <= 56 &&
+        restoredWindowResponse.ok &&
+        restoredWindow.mode === 'pet' &&
+        Number(restoredWindow.width || 0) <= 148 &&
+        Number(restoredWindow.height || 0) <= 40
+        ? ok('resident.window_compose', 'Compose window mode', `compose=${composeWindow.width}x${composeWindow.height} restored=${restoredWindow.width}x${restoredWindow.height}`)
+        : fail('resident.window_compose', 'Compose window mode', 'expected quiet local-input compose window to open and restore to pet', {
+          composeStatus: composeWindowResponse.status,
+          composeWindow,
+          restoreStatus: restoredWindowResponse.status,
+          restoredWindow,
+        }),
+    );
+
     const pet = await ctx.api('/api/pet/status');
     const p = pet.data || {};
     const hasOwn = (key) => Object.prototype.hasOwnProperty.call(p, key);

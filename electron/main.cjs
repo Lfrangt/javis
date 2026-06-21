@@ -868,7 +868,7 @@ const activeJobRuns = new Map();
 let learnedProfile = null;
 const windowModes = {
   pet: { width: 148, height: 40 },
-  panel: { width: 148, height: 40 },
+  compose: { width: 520, height: 56 },
 };
 let latestScreen = null;
 let latestAccessibilityTree = null;
@@ -1073,6 +1073,12 @@ function windowBoundsSnapshot() {
 
 function windowTargetForMode(mode = currentWindowMode) {
   return windowModes[mode] || windowModes.pet;
+}
+
+function normalizeWindowMode(mode) {
+  return Object.prototype.hasOwnProperty.call(windowModes, String(mode || ''))
+    ? String(mode)
+    : 'pet';
 }
 
 function displayForWindow(displayMode = WINDOW_PARK_DISPLAY) {
@@ -1769,7 +1775,7 @@ function notifyCurrentAttention(source = 'attention', options = {}) {
 }
 
 function applyWindowMode(mode, options = {}) {
-  const nextMode = 'pet';
+  const nextMode = normalizeWindowMode(mode);
   currentWindowMode = nextMode;
   if (mainWindow && !mainWindow.isDestroyed()) {
     enforceWindowSize(nextMode);
@@ -56981,7 +56987,7 @@ function startApiServer() {
   });
 
   api.post('/api/window/mode', express.json({ limit: '64kb' }), (req, res) => {
-    const mode = 'pet';
+    const mode = normalizeWindowMode(req.body?.mode);
     const windowState = applyWindowMode(mode, {
       source: 'api',
       focus: req.body?.focus === true,
