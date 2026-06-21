@@ -225,7 +225,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -243,6 +243,7 @@ export default {
       const statusTurn = commandTurns.find((turn) => turn.command === 'status') || {};
       const appTurn = commandTurns.find((turn) => turn.command === 'app') || {};
       const uiTurn = commandTurns.find((turn) => turn.command === 'ui') || {};
+      const fileTurn = commandTurns.find((turn) => turn.command === 'file') || {};
       const browserTurn = commandTurns.find((turn) => turn.command === 'browser') || {};
       const browseTurn = commandTurns.find((turn) => turn.command === 'browse') || {};
       const openTurn = commandTurns.find((turn) => turn.command === 'open') || {};
@@ -267,13 +268,13 @@ export default {
         loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 11 &&
+          loop.turnCount === 12 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 9 &&
-          ['status', 'app', 'ui', 'browser', 'browse', 'open', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 10 &&
+          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           statusTurn.detailLevel === 'fast' &&
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&
@@ -287,6 +288,13 @@ export default {
           uiTurn.task === '打开 Calculator 然后关闭窗口' &&
           uiTurn.output.includes('UI: preview only') &&
           uiTurn.output.includes('open_app') &&
+          fileTurn.detailLevel === 'fast' &&
+          fileTurn.endpoint === '/api/files/execute' &&
+          fileTurn.previewOnly === true &&
+          fileTurn.fileAction === 'list_directory' &&
+          fileTurn.filePath === '.' &&
+          fileTurn.output.includes('File: list_directory') &&
+          fileTurn.output.includes('Result:') &&
           browserTurn.detailLevel === 'fast' &&
           browserTurn.endpoint === '/api/browser/context + /api/browser/page?maxChars=1200' &&
           browserTurn.output.includes('Browser:') &&
@@ -546,6 +554,11 @@ export default {
     try {
       const sessionsBefore = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
       let targetSession = sessionsBefore.data?.sessions?.active || null;
+      const activeLooksLikeEval = targetSession && (
+        targetSession.source === 'eval_voice_command_session_ledger' ||
+        String(targetSession.goal || '').startsWith('eval local voice session ledger')
+      );
+      if (activeLooksLikeEval) cleanupSessionId = targetSession.id;
       if (!targetSession?.id) {
         const startSession = await ctx.api('/api/sessions/start', {
           method: 'POST',

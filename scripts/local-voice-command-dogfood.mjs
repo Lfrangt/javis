@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /ui, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
+                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
@@ -334,6 +334,7 @@ function loopHelpText() {
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /app      Read the current Mac app, screen metadata, and compact UI outline.',
     '  /ui       Preview a local app/UI workflow plan; add --run to execute through policy.',
+    '  /file     List, search, or read allowed local files through the file policy.',
     '  /browser  Read the current supported browser tab and page summary.',
     '  /browse   Preview a browser workflow over the current page; add --run to execute.',
     '  /open     Preview opening a URL or web search; add --run to execute through policy.',
@@ -351,6 +352,127 @@ function loopHelpText() {
 
 function normalizeUiTask(transcript) {
   return String(transcript || '').replace(/^\/ui\b/i, '').trim();
+}
+
+function normalizeFileRequest(transcript) {
+  const raw = String(transcript || '').replace(/^\/files?\b/i, '').trim();
+  if (!raw) {
+    return {
+      action: 'list_directory',
+      path: '.',
+      maxEntries: 12,
+      label: 'list',
+    };
+  }
+  const tokens = raw.split(/\s+/).filter(Boolean);
+  const command = String(tokens[0] || '').toLowerCase();
+  if (['search', 'find', 'grep'].includes(command)) {
+    let rest = raw.replace(/^\S+\s*/u, '').trim();
+    let targetPath = '.';
+    const inMatch = rest.match(/\s+(?:in|within|under|at|path:)\s+(.+)$/i);
+    if (inMatch) {
+      targetPath = inMatch[1].trim() || '.';
+      rest = rest.slice(0, inMatch.index).trim();
+    }
+    if (!rest) {
+      return {
+        error: 'Usage: /file search <query> [in <path>]',
+      };
+    }
+    return {
+      action: 'search_files',
+      path: targetPath,
+      query: rest,
+      maxResults: 8,
+      label: 'search',
+    };
+  }
+  if (['read', 'cat', 'show', 'open'].includes(command)) {
+    const targetPath = raw.replace(/^\S+\s*/u, '').trim();
+    if (!targetPath) {
+      return {
+        error: 'Usage: /file read <path>',
+      };
+    }
+    return {
+      action: 'read_file',
+      path: targetPath,
+      maxBytes: 6000,
+      label: 'read',
+    };
+  }
+  if (['list', 'ls', 'dir'].includes(command)) {
+    const targetPath = raw.replace(/^\S+\s*/u, '').trim() || '.';
+    return {
+      action: 'list_directory',
+      path: targetPath,
+      maxEntries: 12,
+      label: 'list',
+    };
+  }
+  return {
+    action: 'list_directory',
+    path: raw,
+    maxEntries: 12,
+    label: 'list',
+  };
+}
+
+function parseFileActionOutput(data = {}) {
+  const raw = typeof data.output === 'string' ? data.output : '';
+  if (!raw) return { raw: '' };
+  try {
+    return {
+      ...JSON.parse(raw),
+      raw,
+    };
+  } catch {
+    return { raw };
+  }
+}
+
+function formatBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0B';
+  if (bytes < 1024) return `${bytes}B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)}KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function formatFileEntryLine(entry = {}) {
+  const name = entry.name || entry.path || '-';
+  const type = entry.type || (entry.match ? 'match' : 'file');
+  const size = entry.size !== undefined ? ` · ${formatBytes(entry.size)}` : '';
+  const match = entry.match ? ` · ${compactText(entry.match, 80)}` : '';
+  return `- ${type}${size}${match} · ${compactText(name, 180)}`;
+}
+
+function formatLoopFile(data = {}, request = {}) {
+  const parsed = parseFileActionOutput(data);
+  const action = request.action || '-';
+  const pathLabel = parsed.path || request.path || '.';
+  const lines = [
+    `File: ${action} · path=${compactText(pathLabel, 220)}`,
+  ];
+  if (request.query) lines.push(`Query: ${compactText(request.query, 180)}`);
+  if (action === 'list_directory') {
+    const entries = Array.isArray(parsed.entries) ? parsed.entries : [];
+    lines.push(`Result: ${entries.length} item(s) shown${parsed.truncated ? ' · truncated' : ''}`);
+    lines.push(...entries.slice(0, 8).map(formatFileEntryLine));
+  } else if (action === 'search_files') {
+    const results = Array.isArray(parsed.results) ? parsed.results : [];
+    lines.push(`Result: ${results.length} match(es) shown${parsed.truncated ? ' · truncated' : ''}`);
+    lines.push(...results.slice(0, 8).map(formatFileEntryLine));
+  } else if (action === 'read_file') {
+    const text = String(parsed.text || parsed.content || parsed.raw || data.output || '').trim();
+    lines.push(`Result: ${text.length} char(s) previewed${parsed.truncated ? ' · truncated' : ''}`);
+    if (text) lines.push(`Text: ${compactText(text, 900)}`);
+  } else {
+    lines.push(`Result: ${compactText(parsed.raw || data.output || '-', 900)}`);
+  }
+  if (data.error) lines.push(`Note: ${compactText(data.error, 220)}`);
+  lines.push('Next: ask normally to summarize, organize, or hand this file context to a worker.');
+  return lines.filter(Boolean).join('\n');
 }
 
 function loopUiUseModel() {
@@ -755,6 +877,37 @@ async function runLoopCommand(transcript) {
         },
         output: formatLoopUi(response.data || {}, task, execute),
       };
+    }
+    if (command === 'file' || command === 'files') {
+      const fileRequest = normalizeFileRequest(transcript);
+      if (fileRequest.error) {
+        return {
+          ...publicLoopCommandBase(base),
+          command: 'file',
+          ok: false,
+          elapsedMs: Math.round(performance.now() - base.startedAt),
+          output: fileRequest.error,
+        };
+      }
+      const response = await request('/api/files/execute', {
+        method: 'POST',
+        body: {
+          action: fileRequest.action,
+          path: fileRequest.path,
+          query: fileRequest.query,
+          maxEntries: fileRequest.maxEntries,
+          maxResults: fileRequest.maxResults,
+          maxBytes: fileRequest.maxBytes,
+        },
+      });
+      return loopCommandResult(base, response, formatLoopFile(response.data || {}, fileRequest), {
+        command: 'file',
+        endpoint: '/api/files/execute',
+        detailLevel: 'fast',
+        fileAction: fileRequest.action,
+        filePath: fileRequest.path,
+        query: fileRequest.query || '',
+      });
     }
     if (command === 'browser') {
       const [contextResponse, pageResponse] = await Promise.all([
