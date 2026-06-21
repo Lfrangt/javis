@@ -1766,8 +1766,6 @@ function App() {
     }
   }, [])
 
-  const localVoiceOpenLoopEndpoint = status?.localVoice?.input?.openLoopEndpoint || '/api/voice/open-local-loop'
-
   const focusLocalInputPanel = useCallback(async (reason = '') => {
     try {
       const windowState = await setWindowMode('panel')
@@ -1783,18 +1781,21 @@ function App() {
 
   const openLocalVoiceLoop = useCallback(async (reason = '') => {
     try {
-      const result = await apiJson<{ ok: boolean; output: string; command?: string }>(localVoiceOpenLoopEndpoint, {
+      const result = await apiJson<{ ok: boolean; output: string; action?: { output?: string }; primaryAction?: { id?: string } }>('/api/voice/standby', {
         method: 'POST',
-        body: JSON.stringify({ source: 'pet_realtime_fallback' }),
+        body: JSON.stringify({
+          execute: true,
+          source: 'pet_voice_standby_primary',
+        }),
       })
-      addMessage('system', result.output || 'Opened JAVIS local voice/text loop in Terminal.')
+      addMessage('system', result.output || result.action?.output || 'Opened JAVIS local voice/text loop in Terminal.')
       setLastError('')
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       setLastError(message)
       await focusLocalInputPanel(reason || message)
     }
-  }, [addMessage, focusLocalInputPanel, localVoiceOpenLoopEndpoint])
+  }, [addMessage, focusLocalInputPanel])
 
   const updateResidentConversation = useCallback((patch: Partial<ConversationState> & Record<string, unknown>) => {
     return apiJson<{ conversation: ConversationState }>('/api/conversation/state', {

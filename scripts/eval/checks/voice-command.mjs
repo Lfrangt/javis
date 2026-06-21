@@ -1257,6 +1257,25 @@ export default {
               includesAccessibility: fallbackSource.includes('includeAccessibility: fallbackIncludesScreen'),
             }),
       );
+
+      const openLoopIndex = rendererSource.indexOf('const openLocalVoiceLoop = useCallback');
+      const openLoopEndIndex = rendererSource.indexOf('  }, [addMessage, focusLocalInputPanel]', openLoopIndex);
+      const openLoopSource = openLoopIndex >= 0 && openLoopEndIndex >= 0
+        ? rendererSource.slice(openLoopIndex, openLoopEndIndex)
+        : '';
+      out.push(
+        openLoopSource.includes("'/api/voice/standby'") &&
+          openLoopSource.includes('execute: true') &&
+          openLoopSource.includes("source: 'pet_voice_standby_primary'") &&
+          !openLoopSource.includes("'/api/voice/open-local-loop'")
+          ? ok('voice_command.renderer_standby_primary', 'Renderer pet standby primary wiring', 'pet fallback click uses /api/voice/standby primary action instead of hardcoded local loop endpoint')
+          : fail('voice_command.renderer_standby_primary', 'Renderer pet standby primary wiring', 'expected pet fallback click to use the voice standby primary contract', {
+              hasOpenLoop: Boolean(openLoopSource),
+              hasVoiceStandby: openLoopSource.includes("'/api/voice/standby'"),
+              hasExecuteTrue: openLoopSource.includes('execute: true'),
+              hardcodedOpenLoop: openLoopSource.includes("'/api/voice/open-local-loop'"),
+            }),
+      );
     } catch (error) {
       out.push(fail('voice_command.renderer_fallback', 'Renderer fallback wiring', error instanceof Error ? error.message : String(error)));
     }
