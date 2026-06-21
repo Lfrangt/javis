@@ -172,6 +172,41 @@ export default {
         : fail('voice_command.natural_progress', 'Natural progress voice command', 'natural progress phrase did not use the local work_progress fast path', naturalProgress.data),
     );
 
+    const naturalCapabilities = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '你现在能看到什么，能操作什么，权限开了哪些？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_capabilities',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalCapabilitiesData = naturalCapabilities.data || {};
+    out.push(
+      naturalCapabilities.ok &&
+        naturalCapabilitiesData.ok === true &&
+        naturalCapabilitiesData.executed === false &&
+        naturalCapabilitiesData.route?.decision?.localCommand === 'capability_status' &&
+        naturalCapabilitiesData.route?.localCommand?.intent === 'capability_status' &&
+        typeof naturalCapabilitiesData.route?.output === 'string' &&
+        naturalCapabilitiesData.route.output.includes('能力/权限:') &&
+        naturalCapabilitiesData.route.output.includes('主要感知面:') &&
+        naturalCapabilitiesData.route.output.includes('主要能力:') &&
+        naturalCapabilitiesData.route?.data?.perception?.summary &&
+        naturalCapabilitiesData.route?.data?.capabilities?.summary &&
+        naturalCapabilitiesData.route?.data?.capabilities?.counts?.total > 0 &&
+        naturalCapabilitiesData.safety?.startsMicrophone === false &&
+        naturalCapabilitiesData.safety?.usesRealtime === false &&
+        naturalCapabilitiesData.safety?.storesRawAudio === false &&
+        naturalCapabilitiesData.safety?.callsOpenAIImmediately === false &&
+        naturalCapabilitiesData.speech?.dryRun === true
+        ? ok('voice_command.natural_capabilities', 'Natural capability voice command', '权限/能看什么 routes to local perception and capability status without cloud/realtime')
+        : fail('voice_command.natural_capabilities', 'Natural capability voice command', 'natural capability phrase did not use the local capability_status fast path', naturalCapabilities.data),
+    );
+
     const naturalDelegate = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

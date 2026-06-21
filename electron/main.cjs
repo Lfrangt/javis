@@ -22572,6 +22572,21 @@ function naturalDelegateCommand(text) {
   };
 }
 
+function naturalCapabilityStatusCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  const english = /(?:what|which).*(?:can you|can javis|you can|javis can).*(?:see|watch|listen|control|operate|do|use|access|permission|tool|capabilit)|(?:can you|can javis).*(?:see|watch|listen|control|operate|do|use|access)|(?:permission|capabilit|tool surface|what can you do|what can you see|what can you control)/i.test(raw);
+  const chinese = /(?:你|JAVIS|javis|贾维斯).*(?:能|可以).*(?:看|看到|监听|听|操作|控制|使用|调用|做什么|干什么)|(?:能看什么|能操作什么|能控制什么|能调用什么|你能做什么|你可以做什么|权限|授权|能力|工具|开了哪些权限|权限开了哪些|看到哪些|控制哪些)/.test(compact);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'capability_status',
+    label: 'Capability status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
@@ -22581,6 +22596,9 @@ function localCommandDecision(task) {
 
   const delegateCommand = naturalDelegateCommand(text);
   if (delegateCommand) return delegateCommand;
+
+  const capabilityCommand = naturalCapabilityStatusCommand(text);
+  if (capabilityCommand) return capabilityCommand;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
     || /^(状态|当前状态|系统状态|下一步|有什么待办|现在该做什么|简报)$/.test(text)) {
@@ -23069,7 +23087,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -23083,7 +23101,10 @@ function buildContextPlan(message, options = {}) {
     needs.learning = false;
     needs.localSkills = false;
     contextPlanPushReason(reasons, `deterministic local command matched first: ${localCommand}`);
-    if (['observe_now', 'describe_screen'].includes(localCommand)) {
+    if (['capability_status'].includes(localCommand)) {
+      needs.perceptionStatus = true;
+      needs.residentState = true;
+    } else if (['observe_now', 'describe_screen'].includes(localCommand)) {
       needs.macContext = true;
       needs.screen = true;
       needs.accessibility = true;
@@ -23234,6 +23255,43 @@ function formatObservationForLocalCommand(observation) {
   return lines.join('\n');
 }
 
+function formatCapabilityStatusForLocalCommand({ perception = {}, capabilities = {} } = {}) {
+  const perceptionCounts = perception.counts || {};
+  const capabilityCounts = capabilities.counts || {};
+  const surfaces = Array.isArray(perception.surfaces) ? perception.surfaces : [];
+  const capabilityItems = Array.isArray(capabilities.capabilities) ? capabilities.capabilities : [];
+  const importantSurfaceIds = new Set([
+    'screen_context',
+    'voice_microphone',
+    'ambient_observer',
+    'browser_page_reader',
+    'accessibility_tree',
+    'app_control',
+    'worker_tools',
+    'local_learning',
+  ]);
+  const surfaceLines = surfaces
+    .filter((surface) => importantSurfaceIds.has(surface.id) || ['active', 'limited', 'blocked'].includes(surface.status))
+    .slice(0, 8)
+    .map((surface) => `- ${surface.label || surface.id}: ${surface.status || '-'} · ${compactRecordText(surface.summary || '', 140)}`);
+  const capabilityLines = capabilityItems
+    .slice(0, 8)
+    .map((item) => `- ${item.label || item.id}: ${item.status || '-'} · ${compactRecordText(item.summary || '', 140)}`);
+  const policy = capabilities.controlMode || perception.policy?.controlMode || {};
+  const next = capabilities.next?.action || {};
+  return [
+    `能力/权限: perception ${perceptionCounts.enabled ?? 0}/${perceptionCounts.total ?? 0} enabled · active ${perceptionCounts.active ?? 0} · limited ${perceptionCounts.limited ?? 0} · blocked ${perceptionCounts.blocked ?? 0}`,
+    `能力通道: ready ${capabilityCounts.ready ?? 0} · limited ${capabilityCounts.limited ?? 0} · blocked ${capabilityCounts.blocked ?? 0}`,
+    `控制模式: ${policy.label || policy.mode || '-'} · local execution ${policy.localExecutionEnabled === false ? 'off' : 'on'} · trusted ${policy.trustedLocalMode ? 'yes' : 'no'}`,
+    perception.summary ? `可感知: ${compactRecordText(perception.summary, 220)}` : '',
+    capabilities.spokenSummary || capabilities.summary ? `能做: ${compactRecordText(capabilities.spokenSummary || capabilities.summary, 260)}` : '',
+    surfaceLines.length ? `主要感知面:\n${surfaceLines.join('\n')}` : '',
+    capabilityLines.length ? `主要能力:\n${capabilityLines.join('\n')}` : '',
+    next.label ? `下一步提醒: ${compactRecordText(next.label, 80)} · ${compactRecordText(next.summary || '', 180)}` : '',
+    '边界: 动作仍需要明确用户意图；登录、付款、删除、发送和高风险写入继续走确认/审批门。',
+  ].filter(Boolean).join('\n');
+}
+
 async function runLocalCommand(command, options = {}) {
   appendAudit('local_command.requested', { intent: command.intent, label: command.label });
   try {
@@ -23254,6 +23312,24 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: progress.output,
         data: { progress },
+      };
+    }
+
+    if (command.intent === 'capability_status') {
+      const [perception, capabilities] = await Promise.all([
+        Promise.resolve(perceptionConsentSnapshot({ limit: 8, source: 'local_command' })),
+        localCapabilitySnapshot({
+          query: '',
+          includeNext: false,
+          limit: 9,
+          source: 'local_command',
+        }),
+      ]);
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatCapabilityStatusForLocalCommand({ perception, capabilities }),
+        data: { perception, capabilities },
       };
     }
 
@@ -24610,7 +24686,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_workflow', 'creative_workflow', 'delegate_task', 'work_progress'].includes(localCommand.intent)) {
+      if (['app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
