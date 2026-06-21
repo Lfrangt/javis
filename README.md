@@ -9,7 +9,7 @@ Local Mac-first realtime desktop buddy.
 - Live screen-context injection into the active Realtime voice session.
 - Soft wake-word behavior inside live voice sessions through `JAVIS_WAKE_WORDS`.
 - Wake trigger API for plugging in a local wake-word engine without changing the Realtime flow.
-- Read-only wake handoff in `/api/wake/status`, so tap-to-summon and local wake engines can expose the next Realtime/local-fallback intake path without starting microphone capture from a status read.
+- Read-only wake handoff in `/api/wake/status`, so tap-to-summon and local wake engines can expose the next Realtime/local-fallback intake path without starting microphone capture from a status read. When Realtime is not ready, tap-to-summon opens the compact compose input directly.
 - Wake-command intake through `/api/wake/command` and `npm run wake -- "..."`, combining a wake trigger with the local no-mic voice-command router for one-shot fallback requests.
 - Resident conversation lifecycle state for connecting/live/error/idle voice sessions, with heartbeats back into presence.
 - Renderer-recorded Realtime SDP negotiation evidence, so successful or failed real WebRTC starts update `/api/realtime/evidence`.

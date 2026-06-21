@@ -293,6 +293,49 @@ export default {
         }),
     );
 
+    if (voiceStandby.mode === 'local_fallback_ready') {
+      const summonWindowResponse = await ctx.api('/api/window/summon', {
+        method: 'POST',
+        body: {
+          source: 'eval_resident_summon_compose',
+          wake: false,
+        },
+        timeoutMs: 10000,
+      });
+      const summonWindow = summonWindowResponse.data?.window || {};
+      const summonRestoreResponse = await ctx.api('/api/window/mode', {
+        method: 'POST',
+        body: {
+          mode: 'pet',
+          focus: false,
+        },
+        timeoutMs: 10000,
+      });
+      out.push(
+        summonWindowResponse.ok &&
+          summonWindowResponse.data?.fallbackReady === true &&
+          summonWindow.mode === 'compose' &&
+          summonRestoreResponse.ok &&
+          summonRestoreResponse.data?.window?.mode === 'pet'
+          ? ok('resident.summon_compose', 'Summon opens compose in fallback mode', `${summonWindow.width}x${summonWindow.height} · wake=${summonWindowResponse.data?.wake?.triggerCount || 0}`)
+          : fail('resident.summon_compose', 'Summon opens compose in fallback mode', 'expected summon to open compose directly when Realtime is blocked without starting microphone', {
+            status: summonWindowResponse.status,
+            body: summonWindowResponse.data,
+            restoreStatus: summonRestoreResponse.status,
+            restoreBody: summonRestoreResponse.data,
+          }),
+      );
+    } else {
+      const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+      out.push(
+        mainSource.includes("applyWindowMode(fallbackReady ? 'compose' : 'pet'") &&
+          mainSource.includes('fallbackReady = voiceHealth.status !==') &&
+          mainSource.includes('JAVIS local input opened')
+          ? ok('resident.summon_compose_static', 'Summon compose fallback wiring', 'summon is wired to compose mode when voice health is not ready')
+          : fail('resident.summon_compose_static', 'Summon compose fallback wiring', 'expected summonJavis to route fallback-ready state to compose mode'),
+      );
+    }
+
     const pet = await ctx.api('/api/pet/status');
     const p = pet.data || {};
     const hasOwn = (key) => Object.prototype.hasOwnProperty.call(p, key);

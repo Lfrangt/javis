@@ -1800,24 +1800,38 @@ function toggleWindowMode(source = 'hotkey') {
   return applyWindowMode('pet', { source, focus: false });
 }
 
-function summonJavis(source = 'hotkey') {
-  const windowState = applyWindowMode('pet', { source, focus: false, park: true, corner: currentParkCorner });
-  const wake = triggerWake({
+function summonJavis(source = 'hotkey', options = {}) {
+  const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
+  const fallbackReady = voiceHealth.status !== 'ready';
+  const windowState = applyWindowMode(fallbackReady ? 'compose' : 'pet', {
     source,
-    phrase: source === 'hotkey' ? `hotkey:${SUMMON_HOTKEY}` : source,
+    focus: fallbackReady,
+    park: true,
+    corner: currentParkCorner,
   });
+  const wakeTriggered = options.wake !== false;
+  const wake = wakeTriggered
+    ? triggerWake({
+        source,
+        phrase: source === 'hotkey' ? `hotkey:${SUMMON_HOTKEY}` : source,
+      })
+    : wakeStatusSnapshot();
   appendAudit('summon.triggered', {
     source,
     hotkey: SUMMON_HOTKEY,
+    mode: windowState.mode,
+    fallbackReady,
+    wakeTriggered,
     wakePending: wake.pending,
     triggerCount: wake.triggerCount,
   });
   return {
     ok: true,
-    output: 'JAVIS summoned.',
+    output: fallbackReady ? 'JAVIS local input opened.' : 'JAVIS summoned.',
     window: windowState,
     wake,
     hotkey: SUMMON_HOTKEY,
+    fallbackReady,
   };
 }
 
@@ -57004,7 +57018,7 @@ function startApiServer() {
   });
 
   api.post('/api/window/summon', express.json({ limit: '64kb' }), (req, res) => {
-    res.json(summonJavis(req.body?.source || 'api'));
+    res.json(summonJavis(req.body?.source || 'api', { wake: req.body?.wake !== false }));
   });
 
   api.post('/api/window/move', express.json({ limit: '64kb' }), (req, res) => {

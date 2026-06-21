@@ -1295,6 +1295,13 @@ export default {
               focusesInput: localInputSource.includes('quickInputRef.current?.focus()'),
             }),
       );
+      out.push(
+        rendererSource.includes("wake.handoff?.mode === 'local_voice_fallback'") &&
+          rendererSource.includes("status?.window?.mode === 'compose'") &&
+          rendererSource.includes('beginAssistantSession()')
+          ? ok('voice_command.renderer_wake_compose_guard', 'Renderer wake compose guard', 'summon-opened compose input is not re-opened through the fallback wake path')
+          : fail('voice_command.renderer_wake_compose_guard', 'Renderer wake compose guard', 'expected renderer wake handler to skip duplicate fallback when compose is already open'),
+      );
     } catch (error) {
       out.push(fail('voice_command.renderer_fallback', 'Renderer fallback wiring', error instanceof Error ? error.message : String(error)));
     }

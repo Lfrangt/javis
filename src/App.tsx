@@ -2857,8 +2857,11 @@ function App() {
     lastWakeHandledAtRef.current = wake.lastTriggerAt
     const handoff = wake.handoff?.summary || wake.handoff?.next || ''
     addMessage('system', `Wake: ${wake.lastPhrase || wake.lastSource || 'triggered'}${handoff ? ` · ${handoff}` : ''}`)
-    void beginAssistantSession()
-  }, [addMessage, beginAssistantSession, status?.wake])
+    if (wake.handoff?.mode === 'local_voice_fallback' && status?.window?.mode === 'compose') return
+    window.setTimeout(() => {
+      void beginAssistantSession()
+    }, 0)
+  }, [addMessage, beginAssistantSession, status?.wake, status?.window?.mode])
 
   useEffect(() => {
     if (!screenLive) return undefined
@@ -3477,6 +3480,10 @@ function App() {
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
   const activeWindowMode = status?.window?.mode || (expanded ? 'panel' : 'pet')
   const composeOpen = activeWindowMode === 'compose'
+  useEffect(() => {
+    if (!composeOpen) return
+    window.setTimeout(() => quickInputRef.current?.focus(), 80)
+  }, [composeOpen])
   const localVoiceInteraction = status?.localVoice?.interaction
   const petLocalInputReady = hasOpenAiKey === true &&
     (localVoiceInteraction?.capsuleClick === 'open_local_input' || localVoiceInteraction?.capsuleClick === 'open_local_voice_loop')

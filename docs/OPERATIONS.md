@@ -555,7 +555,7 @@ Right-click the capsule to open the terminal CUI. Keep setup, policy, and diagno
 
 The resident app registers a global pet park hotkey, defaulting to `Control+Shift+Space`. Change it with `JAVIS_TOGGLE_HOTKEY` if macOS or another app already owns that shortcut.
 
-It also registers a tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Space` on Mac). Pressing it wakes JAVIS, parks the capsule at the notch/Dynamic Island position, and lets the renderer start the voice session through the same `/api/wake/status` path used by a local wake engine. Change it with `JAVIS_SUMMON_HOTKEY` or `JAVIS_TAP_HOTKEY`, or set either value to `false` to disable it.
+It also registers a tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Space` on Mac). Pressing it wakes JAVIS and parks the capsule at the notch/Dynamic Island position. If Realtime is ready, the renderer can start the voice session through the same `/api/wake/status` path used by a local wake engine; if Realtime is blocked or unverified, the resident opens the compact `compose` input immediately so the user can type the local fallback turn without waiting for a failed microphone path. Change it with `JAVIS_SUMMON_HOTKEY` or `JAVIS_TAP_HOTKEY`, or set either value to `false` to disable it.
 
 It also registers a clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`. Copy text anywhere, press the capture hotkey, and JAVIS saves the clipboard into local Inbox. Change it with `JAVIS_CAPTURE_HOTKEY`, or set `JAVIS_CAPTURE_HOTKEY=false` to disable it.
 
