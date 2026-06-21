@@ -28525,6 +28525,11 @@ function summarizeDogfoodActionPlanForAutopilot(plan = null) {
   const previewable = Array.isArray(plan.previewable) ? plan.previewable : [];
   const manual = Array.isArray(plan.manual) ? plan.manual : [];
   const primary = plan.primary || null;
+  const preferredPreviewable =
+    previewable.find((action) => action?.id === 'prepare_preflight_bundle') ||
+    previewable.find((action) => action?.id === 'prepare_live_run') ||
+    previewable[0] ||
+    null;
   return {
     version: Number(plan.version || 0),
     scope: compactRecordText(plan.scope || '', 80),
@@ -28542,13 +28547,13 @@ function summarizeDogfoodActionPlanForAutopilot(plan = null) {
       : null,
     previewableCount: previewable.length,
     manualCount: manual.length,
-    firstPreviewable: previewable[0]
+    firstPreviewable: preferredPreviewable
       ? {
-        id: compactRecordText(previewable[0].id || '', 120),
-        label: compactRecordText(previewable[0].label || previewable[0].id || '', 140),
-        command: compactRecordText(previewable[0].command || '', 180),
-        endpoint: compactRecordText(previewable[0].endpoint || '', 140),
-        startsMicrophone: Boolean(previewable[0].startsMicrophone),
+        id: compactRecordText(preferredPreviewable.id || '', 120),
+        label: compactRecordText(preferredPreviewable.label || preferredPreviewable.id || '', 140),
+        command: compactRecordText(preferredPreviewable.command || '', 180),
+        endpoint: compactRecordText(preferredPreviewable.endpoint || '', 140),
+        startsMicrophone: Boolean(preferredPreviewable.startsMicrophone),
       }
       : null,
     firstManual: manual[0]
@@ -33464,6 +33469,20 @@ function realtimeDogfoodAcceptanceActionPlan({ accepted = false, nextGap = null,
       nextAction: 'Run npm run dogfood:realtime-prepare before asking the user to start the mic-confirmed live run.',
       command: 'npm run dogfood:realtime-prepare',
       endpoint: '/api/work/next?actionId=realtime_voice:needs_live_session',
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      requiresUserPresence: false,
+      writesLocalJson: true,
+      canPreview: true,
+    }),
+    realtimeDogfoodPlanAction({
+      id: 'prepare_preflight_bundle',
+      label: 'Prepare full no-mic preflight bundle',
+      group: 'live_voice',
+      summary: 'Run every safe Realtime dogfood preparation step: live-run cockpit, operator tracker, shortcut recall, saved archive, and acceptance snapshot.',
+      nextAction: 'Run npm run config -- --prepare-realtime-dogfood-preflight --confirm before asking the user to start the mic-confirmed live run.',
+      command: 'npm run config -- --prepare-realtime-dogfood-preflight --confirm',
+      endpoint: '/api/realtime/dogfood/preflight-bundle',
       startsMicrophone: false,
       requiresMicConfirmation: false,
       requiresUserPresence: false,
@@ -38953,7 +38972,7 @@ function workflowBriefing(options = {}) {
       dogfoodGuide: realtimeWorkbench.dogfoodGuide,
       dogfoodActionPlan: realtimeWorkbench.actionPlan,
       preparableActions: Array.isArray(realtimeWorkbench.actionPlan?.previewable)
-        ? realtimeWorkbench.actionPlan.previewable.slice(0, 3)
+        ? realtimeWorkbench.actionPlan.previewable.slice(0, 4)
         : [],
       manualActions: Array.isArray(realtimeWorkbench.actionPlan?.manual)
         ? realtimeWorkbench.actionPlan.manual.slice(0, 3)
@@ -40001,13 +40020,22 @@ async function workNextAction(options = {}) {
         : `这个 workflow 还没有可交付结果: ${workflow.title}`;
     }
   } else if (action.source === 'realtime_voice') {
-    result = await prepareRealtimeDogfoodLiveRun({
-      execute,
-      source: options.source || 'work_next',
-      promptLimit: options.promptLimit || 32,
-      sessionLimit: options.sessionLimit || 6,
-      auditLimit: options.auditLimit || 50,
-    });
+    result = execute
+      ? await prepareRealtimeDogfoodPreflightBundle({
+          ...(options || {}),
+          confirm: true,
+          source: options.source || 'work_next',
+          promptLimit: options.promptLimit || 32,
+          sessionLimit: options.sessionLimit || 6,
+          auditLimit: options.auditLimit || 50,
+        })
+      : await prepareRealtimeDogfoodLiveRun({
+          execute: false,
+          source: options.source || 'work_next',
+          promptLimit: options.promptLimit || 32,
+          sessionLimit: options.sessionLimit || 6,
+          auditLimit: options.auditLimit || 50,
+        });
     if (action.dogfoodActionPlan) {
       result = {
         ...result,
@@ -40021,6 +40049,7 @@ async function workNextAction(options = {}) {
       action.preparableActions?.length
         ? `Can prepare without mic: ${action.preparableActions.map((item) => item.label || item.id).join(', ')}.`
         : '',
+      result.next?.liveCommand ? `Live command: ${result.next.liveCommand}` : '',
     ].filter(Boolean).join('\n');
   } else if (action.source === 'maintenance') {
     result = await runMaintenanceSnapshot({
@@ -40276,7 +40305,24 @@ function compactWorkNextResultForVoice(result = null) {
     manualOnly: Boolean(result.manualOnly),
     queued: Boolean(result.queued),
     executed: Boolean(result.executed),
+    startsMicrophone: Boolean(result.startsMicrophone),
+    requiresMicConfirmationForLiveStart: Boolean(result.requiresMicConfirmationForLiveStart),
     output: compactRecordText(result.output || '', 800),
+    realtimePreflightBundle: result.shortcutRecall || result.archive || result.acceptance
+      ? {
+        status: compactRecordText(result.status || '', 80),
+        startsMicrophone: Boolean(result.startsMicrophone),
+        requiresMicConfirmationForLiveStart: Boolean(result.requiresMicConfirmationForLiveStart),
+        livePromptCount: boundedCount(result.live?.promptCount, 100),
+        shortcutRecalled: Boolean(result.shortcutRecall?.recalled),
+        archiveSaved: Boolean(result.archive?.saved),
+        archiveFile: compactRecordText(result.archive?.file?.path || '', 240),
+        acceptancePassed: boundedCount(result.acceptance?.counts?.passed, 1000),
+        acceptanceGates: boundedCount(result.acceptance?.counts?.gates, 1000),
+        nextGap: compactRecordText(result.acceptance?.nextGap?.id || '', 120),
+        nextLiveCommand: compactRecordText(result.next?.liveCommand || '', 240),
+      }
+      : null,
     routeRecovery: compactRouteRecoveryForVoice(routeRecovery),
     browserFillRecovery: compactBrowserFillRecoveryForVoice(browserFillRecovery),
     workflow: result.workflow

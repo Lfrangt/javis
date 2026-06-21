@@ -72,6 +72,7 @@ export default {
           Array.isArray(realtimeActionPlan.previewable) &&
           realtimeActionPlan.previewable.some((action) => action.startsMicrophone === false && action.readOnly === true) &&
           realtimeActionPlan.previewable.some((action) => action.id === 'prepare_live_run' && action.startsMicrophone === false && action.command?.includes('dogfood:realtime-prepare')) &&
+          realtimeActionPlan.previewable.some((action) => action.id === 'prepare_preflight_bundle' && action.startsMicrophone === false && action.command?.includes('prepare-realtime-dogfood-preflight')) &&
           Array.isArray(realtimeActionPlan.manual) &&
           realtimeActionPlan.manual.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
           realtimeActionPlan.boundaries?.some((item) => /microphone|confirmMic/i.test(item))
@@ -135,6 +136,7 @@ export default {
         selectedPlan.scope === 'workbench' &&
         selectedPlan.previewable?.some((action) => action.startsMicrophone === false) &&
         selectedPlan.previewable?.some((action) => action.id === 'prepare_live_run' && action.startsMicrophone === false) &&
+        selectedPlan.previewable?.some((action) => action.id === 'prepare_preflight_bundle' && action.startsMicrophone === false) &&
         selectedPlan.manual?.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true),
     );
     out.push(
@@ -163,6 +165,37 @@ export default {
           String(prepareNext.output || '').includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance')
           ? ok('briefing.worknext_realtime_prepare', 'Work-next Realtime prepare preview', `${prepareResult.promptCount} prompt(s), no mic`)
           : fail('briefing.worknext_realtime_prepare', 'Work-next Realtime prepare preview', 'explicit realtime work-next did not return a no-mic prepare cockpit', realtimePreparePreview.data),
+      );
+
+      const realtimePrepareRun = await ctx.api('/api/work/next', {
+        method: 'POST',
+        body: {
+          execute: true,
+          actionId: realtimeAction.id,
+          source: 'briefing_eval_realtime_preflight_bundle',
+        },
+        retries: 0,
+      });
+      const prepareRunNext = realtimePrepareRun.data?.next || {};
+      const prepareRunResult = prepareRunNext.result || {};
+      out.push(
+        realtimePrepareRun.ok &&
+          prepareRunNext.ok === true &&
+          prepareRunNext.executed === true &&
+          prepareRunNext.action?.id === realtimeAction.id &&
+          prepareRunResult.ok === true &&
+          prepareRunResult.executed === true &&
+          prepareRunResult.startsMicrophone === false &&
+          prepareRunResult.requiresMicConfirmationForLiveStart === true &&
+          prepareRunResult.archive?.saved === true &&
+          prepareRunResult.archive?.file?.path &&
+          prepareRunResult.shortcutRecall?.recalled === true &&
+          prepareRunResult.acceptance?.gates?.some((gate) => gate.id === 'archive_saved' && gate.ok === true) &&
+          prepareRunResult.acceptance?.gates?.some((gate) => gate.id === 'route_recalled_shortcut' && gate.ok === true) &&
+          String(prepareRunNext.output || '').includes('Prepared Realtime dogfood preflight bundle without starting microphone capture') &&
+          String(prepareRunNext.output || '').includes('Live command: npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance')
+          ? ok('briefing.worknext_realtime_preflight_execute', 'Work-next Realtime preflight execute', prepareRunResult.archive.file.path)
+          : fail('briefing.worknext_realtime_preflight_execute', 'Work-next Realtime preflight execute', 'execute=true should prepare the full no-mic Realtime preflight bundle', realtimePrepareRun.data),
       );
     }
 
