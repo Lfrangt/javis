@@ -879,6 +879,8 @@ let latestScreen = null;
 let latestAccessibilityTree = null;
 let apiServer;
 let mainWindow;
+let rendererRecoveryTimer = null;
+let rendererRecoveryAttempts = 0;
 let speechProcess = null;
 let actionPolicy;
 let controlModeState;
@@ -57601,6 +57603,60 @@ function rendererLoadFileOptions() {
     : undefined;
 }
 
+function loadRendererIntoWindow(source = 'startup') {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const rendererUrl = process.env.JAVIS_RENDERER_URL;
+  const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
+  appendAudit('renderer.load_started', {
+    source,
+    mode: rendererUrl ? 'url' : fs.existsSync(distIndex) ? 'file' : 'dev_url',
+    rendererUrl: rendererUrl ? compactRecordText(rendererUrl, 180) : '',
+    hasDist: fs.existsSync(distIndex),
+  });
+  if (rendererUrl) {
+    mainWindow.loadURL(rendererUrlWithApiToken(rendererUrl));
+  } else if (fs.existsSync(distIndex)) {
+    mainWindow.loadFile(distIndex, rendererLoadFileOptions());
+  } else {
+    mainWindow.loadURL(rendererUrlWithApiToken('http://127.0.0.1:5173'));
+  }
+}
+
+function scheduleRendererRecovery(reason = 'unknown', details = {}) {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (rendererRecoveryTimer) return;
+  rendererRecoveryAttempts += 1;
+  const delayMs = Math.min(30000, 750 * (2 ** Math.min(5, rendererRecoveryAttempts - 1)));
+  appendAudit('renderer.recovery_scheduled', {
+    reason,
+    attempt: rendererRecoveryAttempts,
+    delayMs,
+    details,
+  });
+  rendererRecoveryTimer = setTimeout(() => {
+    rendererRecoveryTimer = null;
+    if (!mainWindow || mainWindow.isDestroyed()) return;
+    appendAudit('renderer.recovery_reload', {
+      reason,
+      attempt: rendererRecoveryAttempts,
+    });
+    enforceWindowSize(currentWindowMode);
+    parkWindow('renderer_recovery', { corner: currentParkCorner, display: WINDOW_PARK_DISPLAY, menu: false });
+    loadRendererIntoWindow('renderer_recovery');
+  }, delayMs);
+}
+
+function resetRendererRecovery(source = 'renderer_loaded') {
+  if (rendererRecoveryTimer) {
+    clearTimeout(rendererRecoveryTimer);
+    rendererRecoveryTimer = null;
+  }
+  if (rendererRecoveryAttempts > 0) {
+    appendAudit('renderer.recovery_reset', { source, attempts: rendererRecoveryAttempts });
+  }
+  rendererRecoveryAttempts = 0;
+}
+
 function createWindow() {
   const initialWindowMode = windowModes[currentWindowMode];
   mainWindow = new BrowserWindow({
@@ -57629,31 +57685,27 @@ function createWindow() {
   scheduleWindowSizeEnforcement('startup_enforce');
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
-    appendAudit('renderer.load_failed', {
+    const details = {
       errorCode,
       errorDescription,
       url: validatedURL,
-    });
+    };
+    appendAudit('renderer.load_failed', details);
+    scheduleRendererRecovery('load_failed', details);
   });
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     appendAudit('renderer.process_gone', details || {});
+    scheduleRendererRecovery('process_gone', details || {});
   });
   mainWindow.webContents.on('did-finish-load', () => {
+    resetRendererRecovery('did_finish_load');
     scheduleWindowSizeEnforcement('renderer_ready');
   });
   mainWindow.on('ready-to-show', () => {
     scheduleWindowSizeEnforcement('ready_to_show');
   });
 
-  const rendererUrl = process.env.JAVIS_RENDERER_URL;
-  const distIndex = path.join(__dirname, '..', 'dist', 'index.html');
-  if (rendererUrl) {
-    mainWindow.loadURL(rendererUrlWithApiToken(rendererUrl));
-  } else if (fs.existsSync(distIndex)) {
-    mainWindow.loadFile(distIndex, rendererLoadFileOptions());
-  } else {
-    mainWindow.loadURL(rendererUrlWithApiToken('http://127.0.0.1:5173'));
-  }
+  loadRendererIntoWindow('startup');
 }
 
 function handleStartupError(error) {
@@ -57728,6 +57780,10 @@ function startJavisApp() {
     stopAutopilotMonitor();
     stopWakeEngine();
     stopSpeechProcess('quit');
+    if (rendererRecoveryTimer) {
+      clearTimeout(rendererRecoveryTimer);
+      rendererRecoveryTimer = null;
+    }
     if (menuBarAvailable()) {
       menuBarTray.destroy();
       menuBarTray = null;

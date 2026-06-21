@@ -582,6 +582,21 @@ export default {
         : fail('resident.single_instance_guard', 'Resident single-instance guard', 'expected Electron requestSingleInstanceLock plus second-instance summon handling'),
     );
 
+    const rendererRecoveryGuard =
+      mainSource.includes('function scheduleRendererRecovery') &&
+      mainSource.includes("appendAudit('renderer.recovery_scheduled'") &&
+      mainSource.includes("appendAudit('renderer.recovery_reload'") &&
+      mainSource.includes("scheduleRendererRecovery('load_failed'") &&
+      mainSource.includes("scheduleRendererRecovery('process_gone'") &&
+      mainSource.includes('function resetRendererRecovery') &&
+      mainSource.includes("resetRendererRecovery('did_finish_load'") &&
+      mainSource.includes('loadRendererIntoWindow');
+    out.push(
+      rendererRecoveryGuard
+        ? ok('resident.renderer_recovery_guard', 'Renderer recovery guard', 'load failures and renderer crashes schedule a bounded reload and reset after successful load')
+        : fail('resident.renderer_recovery_guard', 'Renderer recovery guard', 'expected renderer load failure/process-gone recovery with reset on did-finish-load'),
+    );
+
     const status = await ctx.api('/api/status');
     const statusVoiceHealth = status.data?.voiceHealth || {};
     const statusLocalVoice = status.data?.localVoice || {};
