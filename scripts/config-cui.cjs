@@ -3048,7 +3048,7 @@ function printRealtimeDogfoodBrief(result) {
   console.log('\nPrompt script:');
   const prompts = Array.isArray(brief.prompts) ? brief.prompts : [];
   if (prompts.length) {
-    prompts.slice(0, 16).forEach((item, index) => console.log(`${index + 1}. ${item}`));
+    prompts.slice(0, 24).forEach((item, index) => console.log(`${index + 1}. ${item}`));
   } else {
     console.log('- none');
   }

@@ -4726,7 +4726,7 @@ function routingSpeedPolicyVoicePayload(snapshot = {}, options = {}) {
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
-    realtime: ['get_routing_speed_policy', 'get_local_capabilities', 'get_learning_distillation', 'get_learning_profile', 'get_learning_evolution', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
+    realtime: ['get_routing_speed_policy', 'get_local_capabilities', 'get_learning_distillation', 'get_learning_profile', 'get_learning_evolution', 'get_record_replay_teaching_packet', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
     background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
     codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
     claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
@@ -30314,6 +30314,10 @@ const REALTIME_DEMONSTRATION_TOOL_NAMES = new Set([
   'draft_ui_demonstration_skill',
   'save_ui_demonstration_skill',
 ]);
+const REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAME = 'get_record_replay_teaching_packet';
+const REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAMES = new Set([
+  REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAME,
+]);
 const REALTIME_HANDOFF_TOOL_NAME = 'get_work_handoff';
 const REALTIME_WORK_NEXT_TOOL_NAME = 'get_work_next';
 const REALTIME_RUN_WORK_NEXT_TOOL_NAME = 'run_work_next';
@@ -31130,6 +31134,54 @@ function realtimeProductivityDogfoodToolSummary(name, args = {}, result = {}) {
   };
 }
 
+function realtimeRecordReplayTeachingToolSummary(name, args = {}, result = {}) {
+  if (!REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAMES.has(name)) return null;
+  const output = realtimeToolOutputObject(result) || {};
+  const packet = output.packet || output.teachingPacket || {};
+  const metadata = output.metadata || recordReplayTeachingPacketMetadata(packet, packet.file?.path || '');
+  const counts = metadata.counts || {};
+  const safety = metadata.safety || packet.safety || {};
+  const packets = output.packets || {};
+  const latest = output.latest || (Array.isArray(packets.items) ? packets.items[0] : null) || {};
+  const saveRequested = args?.save === true || args?.confirm === true || args?.confirmed === true ||
+    String(args?.save || args?.confirm || args?.confirmed || '').toLowerCase() === 'true';
+  return {
+    action: output.saved || metadata.saved || saveRequested ? 'save' : 'preview',
+    packetId: String(metadata.id || packet.id || '').slice(0, 120),
+    saved: Boolean(output.saved || metadata.saved || packet.saved),
+    file: compactRecordText(metadata.file || packet.file?.path || '', 260),
+    ok: Boolean(output.ok !== false && metadata.ok !== false && result.ok !== false),
+    candidateId: compactRecordText(metadata.candidate?.id || packet.candidate?.id || args?.candidateId || '', 140),
+    candidateKind: compactRecordText(metadata.candidate?.kind || packet.candidate?.kind || '', 80),
+    candidateLabel: compactRecordText(metadata.candidate?.label || packet.candidate?.label || '', 180),
+    teachingSteps: boundedCount(counts.teachingSteps ?? packet.teachingScript?.length, 100),
+    livePrompts: boundedCount(counts.livePrompts ?? packet.liveVoicePrompts?.length, 100),
+    habitCandidates: boundedCount(counts.habitCandidates ?? packet.distillation?.habitCandidateCount, 1000),
+    demonstrationsDone: boundedCount(counts.demonstrationsDone ?? packet.distillation?.demonstrationsDone, 1000),
+    shortcutsEnabled: boundedCount(counts.shortcutsEnabled ?? packet.distillation?.shortcutsEnabled, 1000),
+    localSkills: boundedCount(counts.localSkills ?? packet.distillation?.localSkills, 1000),
+    packetCount: boundedCount(packets.count, 1000),
+    latestSavedId: String(latest.id || '').slice(0, 120),
+    latestSavedAt: compactRecordText(latest.savedAt || latest.generatedAt || '', 80),
+    localOnly: safety.localOnly !== false,
+    previewOnly: safety.previewOnly !== false,
+    startsMicrophone: Boolean(safety.startsMicrophone),
+    startsRecording: Boolean(safety.startsRecording),
+    startsWorkers: Boolean(safety.startsWorkers),
+    executesTask: Boolean(safety.executesTask),
+    grantsPermission: Boolean(safety.grantsPermission),
+    storesScreenshots: Boolean(safety.storesScreenshots),
+    storesClipboardText: Boolean(safety.storesClipboardText),
+    storesPageBodies: Boolean(safety.storesPageBodies),
+    confirmationRequiredForRecording: safety.confirmationRequiredForRecording !== false,
+    confirmationRequiredForReplay: safety.confirmationRequiredForReplay !== false,
+    confirmationRequiredForSkillSave: safety.confirmationRequiredForSkillSave !== false,
+    confirmationRequiredForShortcutSave: safety.confirmationRequiredForShortcutSave !== false,
+    confirmationRequiredForMemoryPromotion: safety.confirmationRequiredForMemoryPromotion !== false,
+    output: compactRecordText(output.output || packet.output || metadata.summary || '', 320),
+  };
+}
+
 function recordRealtimeToolCall(options = {}) {
   const name = compactRecordText(options.name || '', 120);
   if (!name) return null;
@@ -31151,6 +31203,7 @@ function recordRealtimeToolCall(options = {}) {
   const demonstration = realtimeDemonstrationToolSummary(name, options.args || {}, result);
   const dogfoodSession = realtimeDogfoodSessionToolSummary(name, options.args || {}, result);
   const productivityDogfood = realtimeProductivityDogfoodToolSummary(name, options.args || {}, result);
+  const recordReplayTeaching = realtimeRecordReplayTeachingToolSummary(name, options.args || {}, result);
   const event = {
     id: crypto.randomUUID(),
     name,
@@ -31177,6 +31230,7 @@ function recordRealtimeToolCall(options = {}) {
     demonstration,
     dogfoodSession,
     productivityDogfood,
+    recordReplayTeaching,
   };
   realtimeToolCallEvents.unshift(event);
   realtimeToolCallEvents.splice(MAX_REALTIME_TOOL_CALL_EVENTS);
@@ -31319,6 +31373,16 @@ function recordRealtimeToolCall(options = {}) {
     productivityDogfoodExecuted: productivityDogfood?.executed || 0,
     productivityDogfoodSendsMessages: Boolean(productivityDogfood?.sendsMessages),
     productivityDogfoodFile: productivityDogfood?.file || '',
+    recordReplayTeachingAction: recordReplayTeaching?.action || '',
+    recordReplayTeachingSaved: Boolean(recordReplayTeaching?.saved),
+    recordReplayTeachingPacketId: recordReplayTeaching?.packetId || '',
+    recordReplayTeachingCandidateId: recordReplayTeaching?.candidateId || '',
+    recordReplayTeachingSteps: recordReplayTeaching?.teachingSteps || 0,
+    recordReplayTeachingStartsMicrophone: Boolean(recordReplayTeaching?.startsMicrophone),
+    recordReplayTeachingStartsRecording: Boolean(recordReplayTeaching?.startsRecording),
+    recordReplayTeachingStartsWorkers: Boolean(recordReplayTeaching?.startsWorkers),
+    recordReplayTeachingExecutesTask: Boolean(recordReplayTeaching?.executesTask),
+    recordReplayTeachingFile: recordReplayTeaching?.file || '',
     error: event.error,
   });
   return event;
@@ -31402,6 +31466,69 @@ function realtimeProductivityDogfoodToolEvidence(limit = 8) {
     nextAction: hasSavedArchive
       ? 'Ask live voice to explain the saved productivity dogfood evidence and then run a confirmed live Mac pass only when the user asks.'
       : 'Ask live voice to preview or save the four-app productivity dogfood archive.',
+  };
+}
+
+function realtimeRecordReplayTeachingToolEvidence(limit = 8) {
+  const recent = realtimeToolCallEvents
+    .filter((event) => REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAMES.has(event.name))
+    .slice(0, Math.max(1, Math.min(50, Number(limit || 8))));
+  const actions = new Set(recent.map((event) => event.recordReplayTeaching?.action).filter(Boolean));
+  const hasPreview = recent.some((event) => (
+    event.ok &&
+    event.recordReplayTeaching?.action === 'preview' &&
+    event.recordReplayTeaching?.saved === false
+  ));
+  const hasSavedPacket = recent.some((event) => (
+    event.ok &&
+    event.recordReplayTeaching?.action === 'save' &&
+    event.recordReplayTeaching?.saved === true &&
+    event.recordReplayTeaching?.file
+  ));
+  const hasTeachingPacket = recent.some((event) => (
+    event.ok &&
+    Number(event.recordReplayTeaching?.teachingSteps || 0) > 0 &&
+    Number(event.recordReplayTeaching?.livePrompts || 0) > 0
+  ));
+  const hasConfirmationGates = recent.some((event) => (
+    event.recordReplayTeaching?.confirmationRequiredForRecording === true &&
+    event.recordReplayTeaching?.confirmationRequiredForReplay === true &&
+    event.recordReplayTeaching?.confirmationRequiredForSkillSave === true &&
+    event.recordReplayTeaching?.confirmationRequiredForShortcutSave === true &&
+    event.recordReplayTeaching?.confirmationRequiredForMemoryPromotion === true
+  ));
+  const noRecording = recent.length > 0 && recent.every((event) => (
+    event.recordReplayTeaching?.startsMicrophone !== true &&
+    event.recordReplayTeaching?.startsRecording !== true &&
+    event.recordReplayTeaching?.startsWorkers !== true &&
+    event.recordReplayTeaching?.executesTask !== true &&
+    event.recordReplayTeaching?.grantsPermission !== true
+  ));
+  const noRawStored = recent.length > 0 && recent.every((event) => (
+    event.recordReplayTeaching?.storesScreenshots !== true &&
+    event.recordReplayTeaching?.storesClipboardText !== true &&
+    event.recordReplayTeaching?.storesPageBodies !== true
+  ));
+  return {
+    ok: recent.length > 0,
+    count: recent.length,
+    observedActions: Array.from(actions),
+    hasPreview,
+    hasSavedPacket,
+    hasTeachingPacket,
+    hasConfirmationGates,
+    noRecording,
+    noRawStored,
+    startsMicrophone: recent.some((event) => event.recordReplayTeaching?.startsMicrophone === true),
+    startsRecording: recent.some((event) => event.recordReplayTeaching?.startsRecording === true),
+    startsWorkers: recent.some((event) => event.recordReplayTeaching?.startsWorkers === true),
+    executesTask: recent.some((event) => event.recordReplayTeaching?.executesTask === true),
+    grantsPermission: recent.some((event) => event.recordReplayTeaching?.grantsPermission === true),
+    last: recent[0] || null,
+    recent,
+    nextAction: hasSavedPacket && hasTeachingPacket && noRecording
+      ? 'Ask live voice to explain the saved Record & Replay teaching packet, then wait for explicit user teaching before recording.'
+      : 'Ask live voice to prepare a Record & Replay teaching packet for the next workflow, then save it only when explicitly requested.',
   };
 }
 
@@ -32426,6 +32553,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
+  const recordReplayTeachingTools = evidence.recordReplayTeachingTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const progressSync = evidence.progressSync || evidence.progress?.sync || {};
   return {
@@ -32470,6 +32598,8 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
       '你最近学到了我什么使用习惯？',
       '最近我的使用习惯有什么变化？',
       '把本地蒸馏状态总结一下：你学到了什么、有哪些可复用工作流、哪些动作还需要我确认？',
+      '准备一份 Record & Replay 教学包，先预览，不要开始录制。',
+      '保存这份 Record & Replay 教学包，但不要开始录制。',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
       '保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
       '我来教你一个流程，开始记录这个 UI 流程',
@@ -32557,6 +32687,12 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: REALTIME_LEARNING_EVOLUTION_TOOL_NAME,
       },
       {
+        id: 'record_replay_teaching_tool',
+        label: 'Realtime prepared a no-recording Record & Replay teaching packet',
+        ok: Boolean(recordReplayTeachingTools.hasPreview && recordReplayTeachingTools.hasSavedPacket && recordReplayTeachingTools.hasTeachingPacket && recordReplayTeachingTools.noRecording && recordReplayTeachingTools.noRawStored),
+        tool: REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAME,
+      },
+      {
         id: 'browser_tool',
         label: 'Realtime used browser read/workflow tools safely',
         ok: Boolean(browserTools.hasWorkflow || browserTools.hasPageRead),
@@ -32575,7 +32711,7 @@ function realtimeDogfoodGuideFromEvidence(evidence = {}) {
         tool: 'draft_ui_demonstration_skill',
       },
     ],
-    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, work-next, delegate, autopilot, attention, perception, capability, collaboration, learning, browser, and UI demonstration prompts.',
+    nextAction: blocker?.nextAction || evidence.nextAction || 'Start live voice, keep CUI option V open, then ask the progress, handoff, work-next, delegate, autopilot, attention, perception, capability, collaboration, learning, Record & Replay teaching, browser, and UI demonstration prompts.',
   };
 }
 
@@ -32595,6 +32731,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   const learningTools = evidence.learningTools || {};
   const browserTools = evidence.browserTools || {};
   const productivityDogfoodTools = evidence.productivityDogfoodTools || {};
+  const recordReplayTeachingTools = evidence.recordReplayTeachingTools || {};
   const demonstrationTools = evidence.demonstrationTools || {};
   const dogfoodGuide = realtimeDogfoodGuideFromEvidence(evidence);
   const stepById = new Map(checklist.map((step) => [step.id, step]));
@@ -32620,7 +32757,7 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
   });
   const ready = evidence.readyForVoiceProgressQuestion === true || evidence.status === 'ready';
   const currentStep = steps.find((step) => !step.ok) || null;
-  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, workNextTools, delegateTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, collaborationTools, learningTools, browserTools, productivityDogfoodTools, demonstrationTools });
+  const drill = realtimeDogfoodDrillFromEvidence(evidence, { steps, ready, shortcutTools, handoffTools, workNextTools, delegateTools, autopilotTools, attentionTools, perceptionTools, capabilityTools, mcpTools, approvalTools, collaborationTools, learningTools, browserTools, productivityDogfoodTools, recordReplayTeachingTools, demonstrationTools });
   const gapSummary = realtimeDogfoodGapSummaryFromEvidence(evidence, { drill });
   return {
     ok: true,
@@ -32809,6 +32946,18 @@ function realtimeDogfoodRunbookFromEvidence(evidence = {}) {
       mutatesUserFiles: Boolean(productivityDogfoodTools.mutatesUserFiles),
       nextAction: productivityDogfoodTools.nextAction || 'Ask the live voice session to save a safe productivity dogfood archive.',
     },
+    recordReplayTeachingTools: {
+      observed: Boolean(recordReplayTeachingTools.ok),
+      count: Number(recordReplayTeachingTools.count || 0),
+      observedActions: Array.isArray(recordReplayTeachingTools.observedActions) ? recordReplayTeachingTools.observedActions : [],
+      hasPreview: Boolean(recordReplayTeachingTools.hasPreview),
+      hasSavedPacket: Boolean(recordReplayTeachingTools.hasSavedPacket),
+      hasTeachingPacket: Boolean(recordReplayTeachingTools.hasTeachingPacket),
+      hasConfirmationGates: Boolean(recordReplayTeachingTools.hasConfirmationGates),
+      noRecording: Boolean(recordReplayTeachingTools.noRecording),
+      noRawStored: Boolean(recordReplayTeachingTools.noRawStored),
+      nextAction: recordReplayTeachingTools.nextAction || 'Ask the live voice session to prepare and save a no-recording Record & Replay teaching packet.',
+    },
     demonstrationTools: {
       observed: Boolean(demonstrationTools.ok),
       count: Number(demonstrationTools.count || 0),
@@ -32860,6 +33009,7 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
   const learningTools = options.learningTools || evidence.learningTools || {};
   const browserTools = options.browserTools || evidence.browserTools || {};
   const productivityDogfoodTools = options.productivityDogfoodTools || evidence.productivityDogfoodTools || {};
+  const recordReplayTeachingTools = options.recordReplayTeachingTools || evidence.recordReplayTeachingTools || {};
   const demonstrationTools = options.demonstrationTools || evidence.demonstrationTools || {};
   const dogfoodStart = evidence.dogfoodStart || realtimeDogfoodStartStateSnapshot();
   const recall = realtimeShortcutRecallEvidence(5);
@@ -33109,6 +33259,28 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       },
     }),
     realtimeDogfoodDrillStep({
+      id: 'prepare_record_replay_teaching_packet',
+      label: 'Prepare a no-recording Record & Replay teaching packet',
+      ok: Boolean(recordReplayTeachingTools.hasPreview && recordReplayTeachingTools.hasSavedPacket && recordReplayTeachingTools.hasTeachingPacket && recordReplayTeachingTools.noRecording && recordReplayTeachingTools.noRawStored),
+      detail: recordReplayTeachingTools.hasSavedPacket
+        ? 'get_record_replay_teaching_packet previewed and saved a local teaching packet without microphone, recording, worker start, replay, or raw content storage.'
+        : recordReplayTeachingTools.hasPreview
+          ? 'get_record_replay_teaching_packet previewed a local teaching packet; saved-packet evidence is still missing.'
+          : 'No Realtime Record & Replay teaching packet call has been observed in recent evidence.',
+      nextAction: 'Ask: 准备一份 Record & Replay 教学包，先预览，不要开始录制。 Then ask to save it without starting recording.',
+      evidence: {
+        tool: REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAME,
+        count: Number(recordReplayTeachingTools.count || 0),
+        observedActions: Array.isArray(recordReplayTeachingTools.observedActions) ? recordReplayTeachingTools.observedActions : [],
+        hasPreview: Boolean(recordReplayTeachingTools.hasPreview),
+        hasSavedPacket: Boolean(recordReplayTeachingTools.hasSavedPacket),
+        hasTeachingPacket: Boolean(recordReplayTeachingTools.hasTeachingPacket),
+        hasConfirmationGates: Boolean(recordReplayTeachingTools.hasConfirmationGates),
+        noRecording: Boolean(recordReplayTeachingTools.noRecording),
+        noRawStored: Boolean(recordReplayTeachingTools.noRawStored),
+      },
+    }),
+    realtimeDogfoodDrillStep({
       id: 'ask_browser_workflow',
       label: 'Ask voice to inspect the current browser page safely',
       ok: Boolean(browserTools.hasWorkflow || browserTools.hasPageRead),
@@ -33232,6 +33404,8 @@ function realtimeDogfoodDrillFromEvidence(evidence = {}, options = {}) {
       '确认创建这个 Claude Code 协作占用，然后刷新一次心跳，最后标记完成释放。',
       '你最近学到了我什么使用习惯？',
       '最近我的使用习惯有什么变化？',
+      '准备一份 Record & Replay 教学包，先预览，不要开始录制。',
+      '保存这份 Record & Replay 教学包，但不要开始录制。',
       '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
       '保存一份生产力四应用 dogfood 证据，先不要执行真实创建。',
       '我来教你一个流程，开始记录这个 UI 流程',
@@ -33358,6 +33532,13 @@ function realtimeDogfoodPromptInstructionForStep(step = {}, drill = {}) {
       followUpPrompts: ['你最近学到了我什么使用习惯？', '最近我的使用习惯有什么变化？'],
       reason: 'This verifies the Realtime session calls get_learning_profile, get_learning_evolution, and get_learning_distillation while framing them as local inferred context, not explicit memory or action permission.',
     },
+    prepare_record_replay_teaching_packet: {
+      promptType: 'spoken_sequence',
+      prompt: '准备一份 Record & Replay 教学包，先预览，不要开始录制。',
+      copyText: '准备一份 Record & Replay 教学包，先预览，不要开始录制。',
+      followUpPrompts: ['保存这份 Record & Replay 教学包，但不要开始录制。'],
+      reason: 'This verifies Realtime can prepare and save a local teaching packet for the next user-taught workflow without microphone capture, recording, worker startup, replay, skill save, shortcut save, or memory promotion.',
+    },
     ask_browser_workflow: {
       promptType: 'spoken',
       prompt: '帮我看看当前网页，提取下一步操作，先不要提交任何表单。',
@@ -33453,6 +33634,7 @@ function realtimeDogfoodGapSummaryFromEvidence(evidence = {}, options = {}) {
     { id: 'capability', ok: Boolean(evidence.capabilityTools?.hasCapabilityMap), label: 'local capability map', tool: REALTIME_CAPABILITY_TOOL_NAME },
     { id: 'mcp', ok: Boolean(evidence.mcpTools?.hasDiscovery), label: 'MCP server discovery', tool: REALTIME_MCP_TOOL_NAME },
     { id: 'learning', ok: Boolean(evidence.learningTools?.hasLearningProfile && evidence.learningTools?.hasLearningDistillation), label: 'local learning distillation', tool: REALTIME_LEARNING_DISTILLATION_TOOL_NAME },
+    { id: 'record_replay_teaching', ok: Boolean(evidence.recordReplayTeachingTools?.hasPreview && evidence.recordReplayTeachingTools?.hasSavedPacket && evidence.recordReplayTeachingTools?.noRecording), label: 'Record & Replay teaching packet', tool: REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAME },
     { id: 'browser', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), label: 'browser read/workflow', tool: 'run_browser_workflow' },
     {
       id: 'demonstration',
@@ -33632,6 +33814,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
     { id: 'approval', label: 'approval queue review', ok: Boolean(evidence.approvalTools?.hasList && evidence.approvalTools?.hasConfirmationGate), tool: 'get_pending_approvals' },
     { id: 'collaboration', label: 'collaboration claim control', ok: Boolean(evidence.collaborationTools?.hasClaimPreview && evidence.collaborationTools?.hasClaimCreate && evidence.collaborationTools?.hasHeartbeat && evidence.collaborationTools?.hasRelease), tool: REALTIME_COLLABORATION_PLAN_TOOL_NAME },
     { id: 'learning', label: 'local learning distillation', ok: Boolean(evidence.learningTools?.hasLearningProfile && evidence.learningTools?.hasLearningDistillation), tool: REALTIME_LEARNING_DISTILLATION_TOOL_NAME },
+    { id: 'record_replay_teaching', label: 'Record & Replay teaching packet', ok: Boolean(evidence.recordReplayTeachingTools?.hasPreview && evidence.recordReplayTeachingTools?.hasSavedPacket && evidence.recordReplayTeachingTools?.noRecording), tool: REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAME },
     { id: 'browser', label: 'browser read/workflow', ok: Boolean(evidence.browserTools?.hasWorkflow || evidence.browserTools?.hasPageRead), tool: 'run_browser_workflow' },
     { id: 'demonstration', label: 'UI demonstration replay/skill', ok: Boolean(evidence.demonstrationTools?.hasSafeReplayPlan && evidence.demonstrationTools?.hasDraft && evidence.demonstrationTools?.hasConfirmationGate && evidence.demonstrationTools?.noRawStored), tool: 'draft_ui_demonstration_skill' },
     { id: 'shortcut', label: 'shortcut list/save/forget', ok: Boolean(evidence.shortcutTools?.hasList && evidence.shortcutTools?.hasSave && evidence.shortcutTools?.hasForget), tool: 'save_skill_shortcut' },
@@ -33643,7 +33826,7 @@ function realtimeDogfoodBriefSnapshot(options = {}) {
   ]
     .filter(Boolean)
     .map((item) => compactRecordText(item, 220));
-  const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(32, Number(options.promptLimit || 16))));
+  const uniqueScript = Array.from(new Set(promptScript)).slice(0, Math.max(1, Math.min(32, Number(options.promptLimit || 24))));
   const briefLines = [
     `Realtime dogfood: ${drill.summary || `${evidence.status || 'pending'}/${evidence.phase || '-'}`}`,
     `缺口: ${gapSummary.summary}`,
@@ -33890,6 +34073,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     'plan_mcp_tool_call',
     'review_and_resolve_approval',
     'ask_learning_profile',
+    'prepare_record_replay_teaching_packet',
     'ask_browser_workflow',
     'teach_ui_demonstration',
     'list_shortcuts',
@@ -33914,6 +34098,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     plan_mcp_tool_call: 'Ask live voice to call plan_mcp_tool_call in preview/approval mode.',
     review_and_resolve_approval: 'Ask live voice to call get_pending_approvals, then resolve_approval only for one confirmed id.',
     ask_learning_profile: 'Ask live voice to call get_learning_profile, get_learning_evolution, and get_learning_distillation.',
+    prepare_record_replay_teaching_packet: 'Ask live voice to call get_record_replay_teaching_packet first as preview, then with save:true.',
     ask_browser_workflow: 'Ask live voice to call read_browser_page or run_browser_workflow preview-first.',
     save_productivity_dogfood_archive: 'Ask live voice to call save_productivity_dogfood_archive preview-safe.',
     teach_ui_demonstration: 'Ask live voice to run the UI demonstration Record & Replay flow.',
@@ -33928,13 +34113,14 @@ function realtimeDogfoodActionForGate(gate = {}) {
     open_monitor: '/api/realtime/evidence',
     start_live_voice: '/api/realtime/dogfood/renderer/start',
     inject_worker_progress: '/api/realtime/dogfood/start',
+    prepare_record_replay_teaching_packet: '/api/tools/execute get_record_replay_teaching_packet',
     save_productivity_dogfood_archive: '/api/tools/execute save_productivity_dogfood_archive',
     route_recalled_shortcut: '/api/realtime/dogfood/shortcut-recall',
     archive_saved: '/api/realtime/dogfood/archive',
   };
   const startsMicrophone = id === 'start_live_voice';
   const requiresLiveVoice = liveVoiceGates.has(id) && id !== 'route_recalled_shortcut';
-  const writesLocalJson = id === 'archive_saved' || id === 'save_productivity_dogfood_archive' || id === 'route_recalled_shortcut';
+  const writesLocalJson = id === 'archive_saved' || id === 'save_productivity_dogfood_archive' || id === 'prepare_record_replay_teaching_packet' || id === 'route_recalled_shortcut';
   const readOnly = id === 'open_monitor' || id === 'provider_ready';
   const requiresUserPresence = startsMicrophone || requiresLiveVoice || id === 'archive_saved' || id === 'provider_ready';
   return realtimeDogfoodPlanAction({
@@ -33952,7 +34138,7 @@ function realtimeDogfoodActionForGate(gate = {}) {
     requiresLiveVoice,
     writesLocalJson,
     readOnly,
-    canPreview: readOnly || id === 'archive_saved' || id === 'save_productivity_dogfood_archive' || id === 'route_recalled_shortcut',
+    canPreview: readOnly || id === 'archive_saved' || id === 'save_productivity_dogfood_archive' || id === 'prepare_record_replay_teaching_packet' || id === 'route_recalled_shortcut',
   });
 }
 
@@ -34114,6 +34300,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
     realtimeDogfoodAcceptanceStepGate(stepById, 'review_and_resolve_approval', 'voice_tools', 'Review and resolve one local approval from voice'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'manage_collaboration_claim', 'voice_tools', 'Preview and manage a scoped Codex/Claude collaboration claim'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_learning_profile', 'learning_loop', 'Ask what local habits JAVIS has inferred'),
+    realtimeDogfoodAcceptanceStepGate(stepById, 'prepare_record_replay_teaching_packet', 'learning_loop', 'Prepare a no-recording Record & Replay teaching packet'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'ask_browser_workflow', 'computer_tools', 'Ask voice to inspect the current browser page safely'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'save_productivity_dogfood_archive', 'computer_tools', 'Save a safe productivity dogfood archive'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'teach_ui_demonstration', 'learning_loop', 'Teach one repeatable UI workflow'),
@@ -36023,6 +36210,7 @@ function realtimeVoiceEvidenceSnapshot() {
   const shortcutTools = realtimeShortcutToolEvidence(8);
   const dogfoodSessionTools = realtimeDogfoodSessionToolEvidence(8);
   const productivityDogfoodTools = realtimeProductivityDogfoodToolEvidence(8);
+  const recordReplayTeachingTools = realtimeRecordReplayTeachingToolEvidence(8);
   const handoffTools = realtimeHandoffToolEvidence(8);
   const workNextTools = realtimeWorkNextToolEvidence(8);
   const delegateTools = realtimeDelegateToolEvidence(8);
@@ -36098,6 +36286,7 @@ function realtimeVoiceEvidenceSnapshot() {
     shortcutTools,
     dogfoodSessionTools,
     productivityDogfoodTools,
+    recordReplayTeachingTools,
     handoffTools,
     workNextTools,
     delegateTools,
@@ -36250,6 +36439,18 @@ function realtimeVoiceEvidenceToolSnapshot(options = {}) {
         observedActions: Array.isArray(evidence.dogfoodSessionTools?.observedActions) ? evidence.dogfoodSessionTools.observedActions : [],
         startsMicrophone: Boolean(evidence.dogfoodSessionTools?.startsMicrophone),
         nextAction: evidence.dogfoodSessionTools?.nextAction || '',
+      },
+      recordReplayTeaching: {
+        observed: Boolean(evidence.recordReplayTeachingTools?.ok),
+        count: Number(evidence.recordReplayTeachingTools?.count || 0),
+        observedActions: Array.isArray(evidence.recordReplayTeachingTools?.observedActions) ? evidence.recordReplayTeachingTools.observedActions : [],
+        hasPreview: Boolean(evidence.recordReplayTeachingTools?.hasPreview),
+        hasSavedPacket: Boolean(evidence.recordReplayTeachingTools?.hasSavedPacket),
+        hasTeachingPacket: Boolean(evidence.recordReplayTeachingTools?.hasTeachingPacket),
+        hasConfirmationGates: Boolean(evidence.recordReplayTeachingTools?.hasConfirmationGates),
+        noRecording: Boolean(evidence.recordReplayTeachingTools?.noRecording),
+        noRawStored: Boolean(evidence.recordReplayTeachingTools?.noRawStored),
+        nextAction: evidence.recordReplayTeachingTools?.nextAction || '',
       },
       autopilot: {
         observed: Boolean(evidence.autopilotTools?.hasStatus),
@@ -45329,6 +45530,30 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(learningDistillationVoiceSnapshot({ ...(args || {}), source: 'voice' })) };
   }
 
+  if (name === REALTIME_RECORD_REPLAY_TEACHING_TOOL_NAME) {
+    const saveRequested = args?.save === true || args?.confirm === true || args?.confirmed === true ||
+      String(args?.save || args?.confirm || args?.confirmed || '').toLowerCase() === 'true';
+    const result = saveRequested
+      ? saveRecordReplayTeachingPacket({
+          ...(args || {}),
+          source: 'voice_record_replay_teaching',
+          candidateLimit: args?.candidateLimit || args?.habitLimit,
+        })
+      : {
+          ok: true,
+          saved: false,
+          teachingPacket: recordReplayTeachingPacketSnapshot({
+            ...(args || {}),
+            source: 'voice_record_replay_teaching_preview',
+            candidateLimit: args?.candidateLimit || args?.habitLimit,
+          }),
+          latest: latestRecordReplayTeachingPacket(),
+          packets: recordReplayTeachingPacketList({ limit: args?.limit || 5 }),
+          output: 'Prepared Record & Replay teaching packet preview. It did not start microphone capture, recording, workers, replay, skill save, shortcut save, memory promotion, or permission changes.',
+        };
+    return { ok: result.ok !== false, output: JSON.stringify(result) };
+  }
+
   if (name === 'get_presence_state') {
     return { ok: true, output: JSON.stringify(presenceStateSnapshot({ limit: args?.limit || 5 })) };
   }
@@ -45837,6 +46062,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Skill shortcuts only recall a skillRecallPlan for routing; they do not execute skills, approve actions, or expand permissions.',
       'Use get_learning_profile when the user asks what you have learned from passive local observation, recent app/browser focus, or inferred work patterns.',
       'Use get_learning_evolution when the user asks how their habits changed, what is different recently, whether JAVIS is adapting, or how local learning is evolving over time.',
+      'Use get_record_replay_teaching_packet when the user asks how to teach JAVIS a workflow or asks to prepare a Record & Replay teaching packet. Preview by default; use save:true only when the user asks to save the teaching packet. It never starts microphone capture, UI recording, workers, replay, skill save, shortcut save, memory promotion, or permission changes.',
       'Treat the learning profile as local inferred context, not as user-confirmed memory or a reason to act without being asked.',
       'Use draft_learning_skill when the user asks to turn learned habits, repeated workflows, or a demonstrated local process into a reviewable Codex-style skill draft. This does not save files.',
       'Use set_learning_controls when the user asks to pause, resume, or stop using inferred local learning in prompts.',
@@ -47175,6 +47401,30 @@ function createRealtimeSessionConfig(options = {}) {
       },
       {
         type: 'function',
+        name: 'get_record_replay_teaching_packet',
+        description: 'Prepare or save a local no-recording Record & Replay teaching packet for the next user-taught workflow. Preview by default; save:true writes only local JSON evidence. It never starts microphone capture, UI recording, workers, replay, skill save, shortcut save, memory promotion, or permission changes.',
+        parameters: {
+          type: 'object',
+          properties: {
+            save: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
+            candidateId: { type: 'string' },
+            limit: { type: 'number' },
+            skillLimit: { type: 'number' },
+            demonstrationLimit: { type: 'number' },
+            shortcutLimit: { type: 'number' },
+            recentLimit: { type: 'number' },
+            baselineLimit: { type: 'number' },
+            candidateLimit: { type: 'number' },
+            habitLimit: { type: 'number' },
+            query: { type: 'string' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
         name: 'get_presence_state',
         description: 'Get the resident standby/watch/work state: what JAVIS is passively observing, whether it is waiting for wake, what local learning has inferred, and whether any approvals or background work need attention. Read-only.',
         parameters: {
@@ -48043,6 +48293,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_local_capabilities',
   'get_learning_profile',
   'get_learning_evolution',
+  'get_record_replay_teaching_packet',
   'search_local_skills',
   'get_skill_shortcuts',
   'get_skill_shortcut_candidates',
@@ -48088,6 +48339,7 @@ function realtimeInstructionChecks(instructions = '') {
     localCapabilities: /get_local_capabilities|what JAVIS can do|local capability map|which local tools are available|browser\/file\/app\/Codex\/Claude\/local execution is ready/i.test(text),
     learningProfile: /get_learning_profile|passive local observation|inferred work patterns|learning profile|learned from passive/i.test(text),
     learningEvolution: /get_learning_evolution|habits changed|different recently|learning is evolving/i.test(text),
+    recordReplayTeaching: /get_record_replay_teaching_packet|Record & Replay teaching packet|no-recording teaching packet|next user-taught workflow/i.test(text),
     workHandoff: /get_work_handoff|spoken handoff|natural spoken handoff/i.test(text),
     autonomyLoop: /run_autonomy_loop|bounded route.*learning_context.*observe.*preview.*verify|recovery-scan|agencyPlan|existing routing, action policy/i.test(text),
     approvals: /get_pending_approvals|resolve_approval|waiting for approval|approval id|confirm:true/i.test(text),

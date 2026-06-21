@@ -46,6 +46,7 @@ const REQUIRED_TOOLS = [
   'get_learning_profile',
   'get_learning_evolution',
   'get_learning_distillation',
+  'get_record_replay_teaching_packet',
   'get_mcp_servers',
   'plan_mcp_workflow',
   'plan_mcp_tool_call',
@@ -552,6 +553,111 @@ export default {
         ))
         ? ok('realtime.learning_profile_tool_evidence', 'Realtime local learning tool evidence', 'get_learning_profile, get_learning_evolution, and get_learning_distillation are visible in privacy-safe Realtime evidence')
         : fail('realtime.learning_profile_tool_evidence', 'Realtime local learning profile tool evidence', 'expected local learning tools to appear in realtime evidence', learningToolEvidence),
+    );
+
+    const recordReplayTeachingPreviewTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_record_replay_teaching_packet',
+        arguments: { limit: 3, candidateLimit: 3 },
+      },
+      timeoutMs: 45000,
+    });
+    const recordReplayTeachingPreviewOutput = parseToolOutput(recordReplayTeachingPreviewTool);
+    const teachingPacketPreview = recordReplayTeachingPreviewOutput?.teachingPacket || {};
+    const teachingPacketPreviewSafety = teachingPacketPreview.safety || {};
+    const teachingPacketPreviewBytes = Buffer.byteLength(recordReplayTeachingPreviewTool.data?.output || '', 'utf8');
+    out.push(
+      recordReplayTeachingPreviewTool.ok &&
+        recordReplayTeachingPreviewTool.data?.ok === true &&
+        recordReplayTeachingPreviewOutput?.ok === true &&
+        recordReplayTeachingPreviewOutput?.saved === false &&
+        teachingPacketPreview.kind === 'record_replay_teaching_packet' &&
+        teachingPacketPreview.recordReplayInspired === true &&
+        Array.isArray(teachingPacketPreview.teachingScript) &&
+        teachingPacketPreview.teachingScript.length >= 4 &&
+        Array.isArray(teachingPacketPreview.liveVoicePrompts) &&
+        teachingPacketPreview.liveVoicePrompts.length >= 4 &&
+        teachingPacketPreviewSafety.startsMicrophone === false &&
+        teachingPacketPreviewSafety.startsRecording === false &&
+        teachingPacketPreviewSafety.startsWorkers === false &&
+        teachingPacketPreviewSafety.executesTask === false &&
+        teachingPacketPreviewSafety.confirmationRequiredForRecording === true &&
+        teachingPacketPreviewSafety.confirmationRequiredForReplay === true &&
+        teachingPacketPreviewSafety.confirmationRequiredForSkillSave === true &&
+        teachingPacketPreviewSafety.confirmationRequiredForShortcutSave === true &&
+        teachingPacketPreviewSafety.confirmationRequiredForMemoryPromotion === true &&
+        teachingPacketPreviewBytes > 0 &&
+        teachingPacketPreviewBytes <= 20000
+        ? ok('realtime.record_replay_teaching_preview_tool', 'Realtime Record & Replay teaching preview tool', `${teachingPacketPreviewBytes}/20000B · ${teachingPacketPreview.summary}`)
+        : fail('realtime.record_replay_teaching_preview_tool', 'Realtime Record & Replay teaching preview tool', `tool execute ${recordReplayTeachingPreviewTool.status}`, recordReplayTeachingPreviewTool.data),
+    );
+
+    const recordReplayTeachingSaveTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: {
+        source: 'eval',
+        name: 'get_record_replay_teaching_packet',
+        arguments: { save: true, limit: 3, candidateLimit: 3 },
+      },
+      timeoutMs: 45000,
+    });
+    const recordReplayTeachingSaveOutput = parseToolOutput(recordReplayTeachingSaveTool);
+    const savedTeachingPacket = recordReplayTeachingSaveOutput?.packet || {};
+    const savedTeachingMetadata = recordReplayTeachingSaveOutput?.metadata || {};
+    const savedTeachingSafety = savedTeachingPacket.safety || {};
+    out.push(
+      recordReplayTeachingSaveTool.ok &&
+        recordReplayTeachingSaveTool.data?.ok === true &&
+        recordReplayTeachingSaveOutput?.ok === true &&
+        recordReplayTeachingSaveOutput?.saved === true &&
+        savedTeachingPacket.kind === 'record_replay_teaching_packet' &&
+        savedTeachingPacket.saved === true &&
+        savedTeachingMetadata.kind === 'record_replay_teaching_packet' &&
+        typeof savedTeachingMetadata.file === 'string' &&
+        savedTeachingMetadata.file.includes('record-replay-teaching-packets') &&
+        fs.existsSync(savedTeachingMetadata.file) &&
+        savedTeachingSafety.startsMicrophone === false &&
+        savedTeachingSafety.startsRecording === false &&
+        savedTeachingSafety.startsWorkers === false &&
+        savedTeachingSafety.executesTask === false &&
+        savedTeachingSafety.grantsPermission === false &&
+        savedTeachingSafety.confirmationRequiredForReplay === true &&
+        savedTeachingSafety.confirmationRequiredForSkillSave === true
+        ? ok('realtime.record_replay_teaching_save_tool', 'Realtime Record & Replay teaching save tool', `saved ${savedTeachingMetadata.filename}`)
+        : fail('realtime.record_replay_teaching_save_tool', 'Realtime Record & Replay teaching save tool', `tool execute ${recordReplayTeachingSaveTool.status}`, recordReplayTeachingSaveTool.data),
+    );
+
+    const recordReplayTeachingEvidence = await ctx.api('/api/realtime/evidence');
+    const recordReplayTeachingToolEvidence = recordReplayTeachingEvidence.data?.evidence?.recordReplayTeachingTools;
+    const recordReplayTeachingEvents = Array.isArray(recordReplayTeachingToolEvidence?.recent) ? recordReplayTeachingToolEvidence.recent : [];
+    out.push(
+      recordReplayTeachingEvidence.ok &&
+        recordReplayTeachingToolEvidence?.hasPreview === true &&
+        recordReplayTeachingToolEvidence?.hasSavedPacket === true &&
+        recordReplayTeachingToolEvidence?.hasTeachingPacket === true &&
+        recordReplayTeachingToolEvidence?.hasConfirmationGates === true &&
+        recordReplayTeachingToolEvidence?.noRecording === true &&
+        recordReplayTeachingToolEvidence?.noRawStored === true &&
+        recordReplayTeachingEvents.some((event) => (
+          event.name === 'get_record_replay_teaching_packet' &&
+          event.source === 'eval' &&
+          event.recordReplayTeaching?.action === 'preview' &&
+          event.recordReplayTeaching?.saved === false &&
+          event.recordReplayTeaching?.startsMicrophone === false &&
+          event.recordReplayTeaching?.startsRecording === false
+        )) &&
+        recordReplayTeachingEvents.some((event) => (
+          event.name === 'get_record_replay_teaching_packet' &&
+          event.source === 'eval' &&
+          event.recordReplayTeaching?.action === 'save' &&
+          event.recordReplayTeaching?.saved === true &&
+          event.recordReplayTeaching?.startsWorkers === false &&
+          event.recordReplayTeaching?.executesTask === false
+        ))
+        ? ok('realtime.record_replay_teaching_tool_evidence', 'Realtime Record & Replay teaching tool evidence', 'preview and saved packet are visible with no-recording safety flags')
+        : fail('realtime.record_replay_teaching_tool_evidence', 'Realtime Record & Replay teaching tool evidence', 'expected get_record_replay_teaching_packet to appear in realtime evidence', recordReplayTeachingToolEvidence),
     );
 
     const capabilityApi = await ctx.api('/api/capabilities?query=browser&includeNext=false');
@@ -2545,6 +2651,7 @@ export default {
         e.drill.steps.some((step) => step.id === 'manage_collaboration_claim') &&
         e.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         e.drill.steps.some((step) => step.id === 'ask_learning_evolution') &&
+        e.drill.steps.some((step) => step.id === 'prepare_record_replay_teaching_packet') &&
         e.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
         e.drill.steps.some((step) => step.id === 'save_productivity_dogfood_archive') &&
         e.drill.steps.some((step) => step.id === 'route_recalled_shortcut') &&
@@ -2567,6 +2674,11 @@ export default {
         e.collaborationTools?.safeControl === true &&
         e.learningTools?.hasLearningProfile === true &&
         e.learningTools?.hasLearningEvolution === true &&
+        e.recordReplayTeachingTools?.hasPreview === true &&
+        e.recordReplayTeachingTools?.hasSavedPacket === true &&
+        e.recordReplayTeachingTools?.hasTeachingPacket === true &&
+        e.recordReplayTeachingTools?.noRecording === true &&
+        e.recordReplayTeachingTools?.noRawStored === true &&
         e.browserTools?.hasWorkflow === true &&
         e.browserTools?.hasSafeWorkflowPreview === true &&
         e.productivityDogfoodTools?.hasSavedArchive === true &&
@@ -2613,6 +2725,7 @@ export default {
         d.drill.steps.some((step) => step.id === 'manage_collaboration_claim') &&
         d.drill.steps.some((step) => step.id === 'ask_learning_profile') &&
         d.drill.steps.some((step) => step.id === 'ask_learning_evolution') &&
+        d.drill.steps.some((step) => step.id === 'prepare_record_replay_teaching_packet') &&
         d.drill.steps.some((step) => step.id === 'ask_browser_workflow') &&
         d.drill.steps.some((step) => step.id === 'save_productivity_dogfood_archive') &&
         d.drill.steps.some((step) => step.id === 'teach_ui_demonstration') &&
@@ -2639,6 +2752,11 @@ export default {
         d.learningTools?.hasLearningProfile === true &&
         d.learningTools?.hasLearningEvolution === true &&
         d.learningTools?.privacySafe === true &&
+        d.recordReplayTeachingTools?.hasPreview === true &&
+        d.recordReplayTeachingTools?.hasSavedPacket === true &&
+        d.recordReplayTeachingTools?.hasTeachingPacket === true &&
+        d.recordReplayTeachingTools?.noRecording === true &&
+        d.recordReplayTeachingTools?.noRawStored === true &&
         d.browserTools?.hasWorkflow === true &&
         d.browserTools?.hasSafeWorkflowPreview === true &&
         d.productivityDogfoodTools?.hasSavedArchive === true &&
@@ -2658,6 +2776,7 @@ export default {
         dogfoodGuide.prompts.some((prompt) => prompt.includes('协作占用')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('变化')) &&
+        dogfoodGuide.prompts.some((prompt) => prompt.includes('Record & Replay 教学包')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
         dogfoodGuide.prompts.some((prompt) => prompt.includes('开始记录')) &&
@@ -2671,6 +2790,7 @@ export default {
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'plan_collaboration_claim') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_distillation') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_learning_evolution') &&
+        dogfoodGuide.expectedEvidence.some((item) => item.tool === 'get_record_replay_teaching_packet') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'run_browser_workflow') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'save_productivity_dogfood_archive') &&
         dogfoodGuide.expectedEvidence.some((item) => item.tool === 'draft_ui_demonstration_skill') &&
@@ -2699,6 +2819,7 @@ export default {
       'ask_local_capabilities',
       'manage_collaboration_claim',
       'ask_learning_profile',
+      'prepare_record_replay_teaching_packet',
       'ask_browser_workflow',
       'save_productivity_dogfood_archive',
       'teach_ui_demonstration',
@@ -2721,6 +2842,7 @@ export default {
         drillGuide.prompts.some((prompt) => prompt.includes('委派')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('协作占用')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('学到了')) &&
+        drillGuide.prompts.some((prompt) => prompt.includes('Record & Replay 教学包')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('当前网页')) &&
         drillGuide.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
         Array.isArray(drillData.prompts) &&
@@ -2731,6 +2853,7 @@ export default {
         drillData.prompts.some((prompt) => prompt.includes('委派')) &&
         drillData.prompts.some((prompt) => prompt.includes('协作占用')) &&
         drillData.prompts.some((prompt) => prompt.includes('学到了')) &&
+        drillData.prompts.some((prompt) => prompt.includes('Record & Replay 教学包')) &&
         drillData.prompts.some((prompt) => prompt.includes('当前网页')) &&
         drillData.prompts.some((prompt) => prompt.includes('生产力四应用')) &&
         drillData.prompts.some((prompt) => prompt.includes('开始记录')) &&
@@ -2807,6 +2930,7 @@ export default {
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'delegate' && item.tool === 'delegate_task') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'collaboration' && item.tool === 'plan_collaboration_claim') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'learning' && item.tool === 'get_learning_distillation') &&
+        dogfoodBriefData.evidenceTools.some((item) => item.id === 'record_replay_teaching' && item.tool === 'get_record_replay_teaching_packet') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'browser' && item.tool === 'run_browser_workflow') &&
         dogfoodBriefData.evidenceTools.some((item) => item.id === 'demonstration' && item.tool === 'draft_ui_demonstration_skill')
         ? ok('realtime.dogfood_brief', 'Realtime dogfood operator brief', `${dogfoodBriefData.counts.ready}/${dogfoodBriefData.counts.steps} ready · next=${dogfoodBriefData.nextPrompt?.copyText || dogfoodBriefData.currentStep?.label || '-'}`)
@@ -2831,6 +2955,7 @@ export default {
           output.includes('delegate_task') &&
           output.includes('plan_collaboration_claim') &&
           output.includes('get_learning_distillation') &&
+          output.includes('get_record_replay_teaching_packet') &&
           output.includes('run_browser_workflow') &&
           output.includes('开始记录') &&
           output.includes('/api/realtime/evidence')
@@ -2857,6 +2982,7 @@ export default {
       'ask_local_capabilities',
       'manage_collaboration_claim',
       'ask_learning_profile',
+      'prepare_record_replay_teaching_packet',
       'ask_browser_workflow',
       'save_productivity_dogfood_archive',
       'teach_ui_demonstration',
@@ -3141,7 +3267,6 @@ export default {
         normalizePromptSource.includes("function normalizeRendererDogfoodPrompts(value, fallback = '', limit = 32)") &&
         normalizePromptSource.includes('.slice(0, maxPrompts)') &&
         !normalizePromptSource.includes('.slice(0, 8);') &&
-        mainSource.includes('Math.min(32, Number(options.promptLimit || 16))') &&
         mainSource.includes('Math.min(32, Number(options.promptLimit || 24))')
         ? ok('realtime.renderer_dogfood_prompt_script', 'Renderer dogfood prompt script', 'require-acceptance loads the full dogfood prompt script without needing manual --prompt values')
         : fail('realtime.renderer_dogfood_prompt_script', 'Renderer dogfood prompt script', 'expected renderer script and pack to support full prompt scripts up to 32 prompts'),

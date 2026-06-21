@@ -345,7 +345,10 @@ save shortcuts, promote memory, or grant permissions. Autopilot may run this pre
 window because it only writes local evidence; the user still has to explicitly start the real demonstration.
 Use `npm run config -- --print-record-replay-teaching` to inspect the current preview plus the latest saved
 packet, or `npm run config -- --save-record-replay-teaching` to write a fresh local packet from the terminal
-CUI without starting recording.
+CUI without starting recording. Realtime voice can call `get_record_replay_teaching_packet` for the same
+flow: default calls only preview the teaching packet, and `save:true` writes local JSON evidence while still
+starting no microphone, no UI recording, no workers, no replay, no skill export, no shortcut save, no memory
+promotion, and no permission changes.
 
 Use option `24. Show learning evolution`, or:
 
