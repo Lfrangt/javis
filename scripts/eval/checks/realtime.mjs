@@ -1539,6 +1539,28 @@ export default {
     const autopilotDogfoodCandidate = Array.isArray(autopilotStatusOutput?.candidates)
       ? autopilotStatusOutput.candidates.find((candidate) => candidate.dogfoodActionPlan)
       : null;
+    const autopilotNoMicPreflightCandidate = Array.isArray(autopilotStatusOutput?.candidates)
+      ? autopilotStatusOutput.candidates.find((candidate) => (
+        candidate.id === 'realtime_voice:prepare_preflight_bundle' ||
+        candidate.realtimePreparation === 'preflight_bundle'
+      ))
+      : null;
+    const autopilotDogfoodPreparationCovered = !autopilotDogfoodCandidate || (
+      autopilotDogfoodCandidate.dogfoodActionPlan.version === 1 &&
+      autopilotDogfoodCandidate.dogfoodActionPlan.firstPreviewable?.startsMicrophone === false &&
+      (autopilotDogfoodCandidate.dogfoodActionPlan.firstManual?.requiresLiveVoice === true ||
+        autopilotDogfoodCandidate.dogfoodActionPlan.firstManual?.requiresMicConfirmation === true) &&
+      (
+        autopilotStatusOutput.waitingFor.some((item) => item.id === 'realtime_dogfood_prepare') ||
+        (
+          autopilotNoMicPreflightCandidate?.decision?.executable === true &&
+          autopilotNoMicPreflightCandidate?.decision?.reason === 'eligible_realtime_no_mic_preflight' &&
+          autopilotNoMicPreflightCandidate?.startsMicrophone === false &&
+          autopilotNoMicPreflightCandidate?.requiresMicConfirmation === false &&
+          autopilotNoMicPreflightCandidate?.realtimePreparation === 'preflight_bundle'
+        )
+      )
+    );
     out.push(
       autopilotStatusTool.ok &&
         autopilotStatusTool.data?.ok === true &&
@@ -1554,13 +1576,7 @@ export default {
         typeof autopilotStatusOutput.candidateCounts.total === 'number' &&
         typeof autopilotStatusOutput.candidateCounts.autoExecutable === 'number' &&
         Array.isArray(autopilotStatusOutput.waitingFor) &&
-        (!autopilotDogfoodCandidate || (
-          autopilotDogfoodCandidate.dogfoodActionPlan.version === 1 &&
-          autopilotDogfoodCandidate.dogfoodActionPlan.firstPreviewable?.startsMicrophone === false &&
-          (autopilotDogfoodCandidate.dogfoodActionPlan.firstManual?.requiresLiveVoice === true ||
-            autopilotDogfoodCandidate.dogfoodActionPlan.firstManual?.requiresMicConfirmation === true) &&
-          autopilotStatusOutput.waitingFor.some((item) => item.id === 'realtime_dogfood_prepare')
-        )) &&
+        autopilotDogfoodPreparationCovered &&
         autopilotStatusOutput.decisionPreview &&
         !Array.isArray(autopilotStatusOutput.decisionPreview.candidates) &&
         Array.isArray(autopilotStatusOutput.candidates) &&

@@ -314,6 +314,11 @@ low-risk progress while unattended. The resident autopilot executes only low-ris
 trusted routed failed-job recovery candidates, and blocked app workflows that the local safe planner can re-plan; it skips while voice is active or
 another background job is running. When multiple work-next actions exist, autopilot skips manual-only
 items, including Realtime voice dogfood, and executes the first action that passes its auto-executable guard.
+When Realtime live voice is the first manual-only blocker, autopilot may still execute the separate
+`realtime_voice:prepare_preflight_bundle` fallback. That fallback writes local no-mic preparation
+evidence and acceptance/archive state, but it is explicitly marked `startsMicrophone=false`,
+`startsWorkers=false`, and `executesTask=false`; the actual live voice start remains gated by the
+desktop pet/summon hotkey plus the `--confirm-mic` renderer command.
 `/api/autopilot` exposes the same structured decision preview so unattended runs leave evidence for
 why an action ran, why it skipped, which candidates were auto-executable, and what condition JAVIS is waiting on.
 If no user-visible action is auto-executable, it can run a cooldown-gated read-only maintenance snapshot

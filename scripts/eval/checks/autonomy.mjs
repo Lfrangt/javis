@@ -98,6 +98,51 @@ export default {
         : fail('autonomy.learning_context', 'Autonomy learning context', `expected local learning evidence envelope (${learnedPreview.status})`, learnedPreview.data),
     );
 
+    const workNext = await ctx.api('/api/work/next?workflowLimit=6&jobLimit=6');
+    const workNextActions = workNext.data?.next?.briefing?.nextActions || [];
+    const noMicAction = workNextActions.find((action) => action.id === 'realtime_voice:prepare_preflight_bundle');
+    const autopilot = await ctx.api('/api/autopilot');
+    const autopilotCandidates = autopilot.data?.decisionPreview?.candidates || [];
+    const noMicCandidate = autopilotCandidates.find((candidate) => candidate.id === 'realtime_voice:prepare_preflight_bundle');
+    const noMicRun = await ctx.api('/api/work/next', {
+      method: 'POST',
+      body: {
+        execute: true,
+        actionId: 'realtime_voice:prepare_preflight_bundle',
+        source: 'eval_autonomy_no_mic_preflight',
+        promptLimit: 24,
+        auditLimit: 8,
+      },
+      timeoutMs: 30000,
+      retries: 0,
+    });
+    const noMicResult = noMicRun.data?.next?.result || {};
+    out.push(
+      workNext.ok &&
+        noMicAction?.autoEligible === true &&
+        noMicAction?.manualOnly === false &&
+        noMicAction?.startsMicrophone === false &&
+        noMicAction?.realtimePreparation === 'preflight_bundle' &&
+        noMicCandidate?.decision?.executable === true &&
+        noMicCandidate?.decision?.reason === 'eligible_realtime_no_mic_preflight' &&
+        noMicRun.ok &&
+        noMicRun.data?.next?.executed === true &&
+        noMicResult?.executed === true &&
+        noMicResult?.startsMicrophone === false &&
+        noMicResult?.safety?.startsMicrophone === false &&
+        noMicResult?.safety?.startsWorkers === false &&
+        noMicResult?.safety?.executesTask === false &&
+        noMicResult?.requiresMicConfirmationForLiveStart === true &&
+        noMicResult?.archive?.saved === true &&
+        noMicResult?.next?.liveCommand?.includes('--confirm-mic')
+        ? ok('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', `${noMicCandidate.label} · archive=${noMicResult.archive.file?.path || 'saved'}`)
+        : fail('autonomy.no_mic_realtime_preflight', 'Autonomy no-mic Realtime fallback', 'expected auto-safe no-mic preflight candidate and execution result', {
+          action: noMicAction,
+          candidate: noMicCandidate,
+          run: noMicRun.data,
+        }),
+    );
+
     const voiceTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {

@@ -28728,6 +28728,24 @@ function autopilotEligibilityDecision(action) {
         : 'Workflow retry needs local execution and trusted local mode.',
     };
   }
+  if (action.source === 'realtime_voice' && action.realtimePreparation === 'preflight_bundle') {
+    const executable = Boolean(
+      action.executable &&
+      action.autoEligible &&
+      action.autopilotEligible !== false &&
+      action.startsMicrophone === false &&
+      action.requiresMicConfirmation === false &&
+      action.requiresUserPresence === false &&
+      Number(action.riskLevel || 0) <= 1,
+    );
+    return {
+      executable,
+      reason: executable ? 'eligible_realtime_no_mic_preflight' : 'realtime_preflight_not_safe_for_autopilot',
+      detail: executable
+        ? 'Autopilot may prepare the no-mic Realtime dogfood bundle; live microphone start still requires the user.'
+        : 'Realtime preparation must prove it starts no microphone, needs no user presence, and stays low-risk before autopilot can run it.',
+    };
+  }
   return {
     executable: false,
     reason: 'unsupported_action_source',
@@ -28759,6 +28777,8 @@ function autopilotActionDecision(action, index = 0) {
     manualOnly: Boolean(action.manualOnly),
     requiresUserPresence: Boolean(action.requiresUserPresence),
     riskLevel: Math.max(0, Math.min(4, Number(action.riskLevel || 0))),
+    startsMicrophone: Boolean(action.startsMicrophone),
+    requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     recoveryType: compactRecordText(action.recoveryType || '', 80),
     trustedAutoEligible: Boolean(action.trustedAutoEligible),
     recoveryAttempts: Math.max(0, Number(action.recoveryAttempts || 0)),
@@ -28766,6 +28786,7 @@ function autopilotActionDecision(action, index = 0) {
     routeRecoveryType: compactRecordText(action.routeRecovery?.recommended?.type || '', 80),
     routeRecoveryLabel: compactRecordText(action.routeRecovery?.recommended?.label || '', 140),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
+    realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
     decision: eligibility,
@@ -29128,6 +29149,8 @@ function compactAutopilotActionForVoice(action = null) {
     autopilotEligible: action.autopilotEligible !== false,
     manualOnly: Boolean(action.manualOnly),
     requiresUserPresence: Boolean(action.requiresUserPresence),
+    startsMicrophone: Boolean(action.startsMicrophone),
+    requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     riskLevel: boundedCount(action.riskLevel, 4),
     recoveryType: compactRecordText(action.recoveryType || '', 80),
     trustedAutoEligible: Boolean(action.trustedAutoEligible),
@@ -29136,6 +29159,7 @@ function compactAutopilotActionForVoice(action = null) {
     routeRecoveryType: compactRecordText(action.routeRecoveryType || '', 80),
     routeRecoveryLabel: compactRecordText(action.routeRecoveryLabel || '', 140),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
+    realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     dogfoodActionPlan,
     decision: action.decision
@@ -39063,6 +39087,36 @@ function workflowBriefing(options = {}) {
       manualOnlyReason: 'Starting microphone/live voice requires explicit user action.',
       requiresUserPresence: true,
     });
+    const preflightBundleAction = Array.isArray(realtimeWorkbench.actionPlan?.previewable)
+      ? realtimeWorkbench.actionPlan.previewable.find((item) => item?.id === 'prepare_preflight_bundle')
+      : null;
+    if (realtimeWorkbench.phase === 'needs_live_session' && preflightBundleAction?.startsMicrophone === false) {
+      nextActions.push({
+        id: 'realtime_voice:prepare_preflight_bundle',
+        priority: 3.1,
+        label: 'Prepare Realtime voice without mic',
+        summary: preflightBundleAction.summary || 'Run safe no-mic Realtime dogfood preparation before asking the user to start live voice.',
+        source: 'realtime_voice',
+        phase: realtimeWorkbench.phase,
+        status: 'can_prepare',
+        realtimePreparation: 'preflight_bundle',
+        blocker: realtimeWorkbench.blocker,
+        dogfoodGuide: realtimeWorkbench.dogfoodGuide,
+        dogfoodActionPlan: realtimeWorkbench.actionPlan,
+        preparableActions: [preflightBundleAction],
+        manualActions: Array.isArray(realtimeWorkbench.actionPlan?.manual)
+          ? realtimeWorkbench.actionPlan.manual.slice(0, 3)
+          : [],
+        executable: true,
+        autoEligible: true,
+        autopilotEligible: true,
+        manualOnly: false,
+        requiresUserPresence: false,
+        startsMicrophone: false,
+        requiresMicConfirmation: false,
+        riskLevel: 1,
+      });
+    }
   }
 
   if (latestDeliverableWorkflow?.result && !nextActions.some((action) => action.id === `copy:${latestDeliverableWorkflow.id}`)) {
@@ -40099,10 +40153,11 @@ async function workNextAction(options = {}) {
         : `这个 workflow 还没有可交付结果: ${workflow.title}`;
     }
   } else if (action.source === 'realtime_voice') {
-    result = execute
+    const usePreflightBundle = execute || action.realtimePreparation === 'preflight_bundle';
+    result = usePreflightBundle
       ? await prepareRealtimeDogfoodPreflightBundle({
           ...(options || {}),
-          confirm: true,
+          confirm: execute,
           source: options.source || 'work_next',
           promptLimit: options.promptLimit || 32,
           sessionLimit: options.sessionLimit || 6,
@@ -40121,9 +40176,10 @@ async function workNextAction(options = {}) {
         dogfoodActionPlan: action.dogfoodActionPlan,
       };
     }
-    executed = Boolean(result.executed);
+    executed = Boolean(execute && result.executed);
     output = [
       result.output,
+      action.realtimePreparation === 'preflight_bundle' && !execute ? 'Preview mode: no local preflight evidence was written.' : '',
       action.dogfoodActionPlan?.spokenSummary ? `Plan: ${action.dogfoodActionPlan.spokenSummary}` : '',
       action.preparableActions?.length
         ? `Can prepare without mic: ${action.preparableActions.map((item) => item.label || item.id).join(', ')}.`
@@ -40340,8 +40396,11 @@ function compactWorkNextActionForVoice(action = null) {
     manualOnly: Boolean(action.manualOnly),
     manualOnlyReason: compactRecordText(action.manualOnlyReason || '', 240),
     requiresUserPresence: Boolean(action.requiresUserPresence),
+    startsMicrophone: Boolean(action.startsMicrophone),
+    requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     riskLevel: boundedCount(action.riskLevel, 4),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
+    realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     workflowId: compactRecordText(action.workflowId || '', 120),
     jobId: compactRecordText(action.jobId || '', 120),
     routeId: compactRecordText(action.routeId || '', 120),
