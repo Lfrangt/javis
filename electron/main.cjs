@@ -44958,11 +44958,15 @@ function stopSpeechProcess(reason = 'stop') {
 }
 
 function speechStateSnapshot() {
+  const commandAvailable = process.platform === 'darwin' && fs.existsSync('/usr/bin/say');
   return {
     available: process.platform === 'darwin',
+    commandAvailable,
     enabled: LOCAL_EXEC_ENABLED,
     speaking: Boolean(speechProcess?.pid),
     pid: speechProcess?.pid || null,
+    voice: String(process.env.JAVIS_LOCAL_TTS_VOICE || '').trim().slice(0, 80),
+    defaultRate: 190,
   };
 }
 
@@ -44971,11 +44975,32 @@ function speechSay(options = {}) {
   if (!text) throw new Error('Missing speech text.');
   if (!LOCAL_EXEC_ENABLED) throw new Error('Local speech requires JAVIS_ENABLE_LOCAL_EXEC=true.');
   if (process.platform !== 'darwin') throw new Error('Local speech requires macOS /usr/bin/say.');
-  stopSpeechProcess('replace');
+  if (!fs.existsSync('/usr/bin/say')) throw new Error('Local speech command /usr/bin/say is not available.');
   const args = ['-r', String(Math.max(120, Math.min(260, Number(options.rate || 190))))];
   const voice = String(options.voice || process.env.JAVIS_LOCAL_TTS_VOICE || '').trim();
   if (voice) args.push('-v', voice.slice(0, 80));
   args.push(text);
+  const dryRun = options.dryRun === true || String(options.dryRun || '').toLowerCase() === 'true';
+  if (dryRun) {
+    appendAudit('speech.preview', {
+      commandName: 'say',
+      textLength: text.length,
+      voice,
+      rate: args[1],
+      source: String(options.source || 'api').slice(0, 80),
+    });
+    return {
+      ok: true,
+      speaking: false,
+      dryRun: true,
+      command: '/usr/bin/say',
+      args: args.map((item, index) => (index === args.length - 1 ? `[text ${text.length} chars]` : item)),
+      textLength: text.length,
+      voice,
+      rate: Number(args[1]),
+    };
+  }
+  stopSpeechProcess('replace');
   const child = spawn('/usr/bin/say', args, {
     stdio: 'ignore',
     detached: false,

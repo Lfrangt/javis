@@ -35,6 +35,7 @@
     "dogfood:realtime-acceptance": "node scripts/config-cui.cjs --print-realtime-dogfood-acceptance",
     "dogfood:realtime-payload": "node scripts/realtime-payload-audit.mjs",
     "dogfood:browser-live-fill": "JAVIS_EVAL_BROWSER_LIVE_FILL=true node scripts/eval/run.mjs --only=browser-live-fill",
+    "dogfood:local-speech": "node scripts/local-speech-dogfood.mjs",
     "dogfood:productivity-live": "node scripts/productivity-dogfood.mjs",
     "dogfood:workers-live": "JAVIS_EVAL_LIVE_WORKERS=true node scripts/eval/run.mjs --only=workers-live",
     "dogfood:realtime-live": "JAVIS_EVAL_REALTIME_DOGFOOD=true node scripts/eval/run.mjs --only=realtime-live-dogfood",

@@ -5,6 +5,7 @@
 - Transparent always-on-top desktop buddy.
 - Desktop pet stays visually minimal; configuration moves to terminal CUI.
 - Realtime voice session.
+- Local macOS speech fallback with silent preflight and explicit short audible dogfood.
 - Screen sharing and frame analysis.
 - Live screen context in active Realtime sessions.
 - Private screen mode with renderer-side downscale/blur before API or Realtime delivery.
