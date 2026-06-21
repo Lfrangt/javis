@@ -17337,6 +17337,29 @@ async function planAndMaybeRunAppWorkflow(options = {}) {
   };
 }
 
+function appWorkflowPlanOutput(steps = []) {
+  return steps.length
+    ? steps.map((step, index) => `${index + 1}. ${step.type}: ${step.label || step.instruction || step.app || step.url || ''}`).join('\n')
+    : 'No plan available.';
+}
+
+function appWorkflowPlanFromLocalCommand(command = {}) {
+  const embedded = command.args?.plan || null;
+  if (!embedded || !Array.isArray(embedded.steps) || !embedded.steps.length) return null;
+  const plan = sanitizePlannedAppWorkflow({
+    source: embedded.source || 'deterministic',
+    title: embedded.title || command.args?.instruction || command.label || 'App workflow',
+    instruction: command.args?.instruction || '',
+    confidence: embedded.confidence || 0.8,
+    needsClarification: false,
+    reason: 'Matched a small local app workflow pattern.',
+    steps: embedded.steps,
+  }, command.args?.instruction || command.label || 'App workflow');
+  plan.ok = plan.ok && !plan.needsClarification;
+  plan.output = appWorkflowPlanOutput(plan.steps);
+  return plan.ok ? plan : null;
+}
+
 async function runAppWorkflow(options = {}) {
   const steps = normalizeAppWorkflowSteps(options.steps || []);
   if (!steps.length) throw new Error('App workflow requires at least one step.');
@@ -24843,6 +24866,49 @@ async function runLocalCommand(command, options = {}) {
 
     if (command.intent === 'app_workflow') {
       const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const embeddedPlan = appWorkflowPlanFromLocalCommand(command);
+      if (embeddedPlan) {
+        if (!execute) {
+          return {
+            ok: embeddedPlan.ok,
+            localCommand: command,
+            output: embeddedPlan.output,
+            data: {
+              result: {
+                ok: embeddedPlan.ok,
+                executed: false,
+                plan: embeddedPlan,
+                output: embeddedPlan.output,
+                reusedLocalPlan: true,
+              },
+            },
+          };
+        }
+        const run = await runAppWorkflow({
+          title: embeddedPlan.title,
+          instruction: embeddedPlan.instruction,
+          execute: true,
+          steps: embeddedPlan.steps,
+          continueOnError: command.args?.continueOnError,
+          source: 'local_command',
+        });
+        return {
+          ok: run.ok,
+          localCommand: command,
+          output: run.output,
+          data: {
+            result: {
+              ok: run.ok,
+              executed: true,
+              plan: embeddedPlan,
+              run,
+              workflow: run.workflow,
+              output: run.output,
+              reusedLocalPlan: true,
+            },
+          },
+        };
+      }
       const result = await planAndMaybeRunAppWorkflow({
         instruction: command.args.instruction,
         execute,

@@ -453,6 +453,44 @@ export default {
         : fail('voice_command.natural_app_ui_status', 'Natural current-app UI status voice command', 'natural app UI status phrase did not use the local app_ui_status fast path', naturalAppUiStatus.data),
     );
 
+    const naturalAppWorkflow = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '打开 Calculator 然后关闭窗口',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_app_workflow',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalAppWorkflowData = naturalAppWorkflow.data || {};
+    const naturalAppWorkflowResult = naturalAppWorkflowData.route?.data?.result || {};
+    const naturalAppWorkflowSteps = naturalAppWorkflowResult.plan?.steps || [];
+    out.push(
+      naturalAppWorkflow.ok &&
+        naturalAppWorkflowData.ok === true &&
+        naturalAppWorkflowData.executed === false &&
+        naturalAppWorkflowData.route?.decision?.localCommand === 'app_workflow' &&
+        naturalAppWorkflowData.route?.localCommand?.intent === 'app_workflow' &&
+        naturalAppWorkflowResult.reusedLocalPlan === true &&
+        naturalAppWorkflowResult.executed === false &&
+        naturalAppWorkflowResult.plan?.source === 'deterministic' &&
+        naturalAppWorkflowSteps.some((step) => step.type === 'open_app' && step.app === 'Calculator') &&
+        naturalAppWorkflowSteps.some((step) => step.type === 'wait') &&
+        naturalAppWorkflowSteps.some((step) => step.type === 'hotkey' && step.keys === 'cmd+w') &&
+        typeof naturalAppWorkflowData.route?.output === 'string' &&
+        naturalAppWorkflowData.route.output.includes('open_app') &&
+        naturalAppWorkflowData.route.output.includes('hotkey') &&
+        naturalAppWorkflowData.safety?.startsMicrophone === false &&
+        naturalAppWorkflowData.safety?.usesRealtime === false &&
+        naturalAppWorkflowData.safety?.storesRawAudio === false &&
+        naturalAppWorkflowData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_app_workflow_preview', 'Natural app workflow preview voice command', '打开 Calculator 然后关闭窗口 reuses deterministic local plan without cloud/realtime')
+        : fail('voice_command.natural_app_workflow_preview', 'Natural app workflow preview voice command', 'natural app workflow phrase did not use the deterministic local app_workflow preview path', naturalAppWorkflow.data),
+    );
+
     const naturalDelegate = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
