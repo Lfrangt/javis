@@ -1907,9 +1907,10 @@ function App() {
     if (!health) return ''
     const status = String(health.status || '').toLowerCase()
     const kind = String(health.kind || '').toLowerCase()
-    if (status === 'ready' || kind === 'no_provider_error' || kind === 'last_success' || kind === 'provider_probe_success') return ''
+    if (status === 'ready' || kind === 'last_success' || kind === 'provider_probe_success') return ''
     const knownProviderProblem = status === 'blocked' || status === 'warning' || [
       'missing_key',
+      'provider_unverified',
       'quota_or_rate_limit',
       'auth_or_permission',
       'provider_error',

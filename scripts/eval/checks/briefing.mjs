@@ -92,7 +92,7 @@ export default {
     );
     out.push(
       !realtimeVoice.status ||
-        (['ready', 'pending', 'blocked'].includes(realtimeVoice.status) &&
+        (['ready', 'pending', 'warning', 'blocked'].includes(realtimeVoice.status) &&
           typeof realtimeVoice.phase === 'string' &&
           realtimeGuideReady &&
           realtimeActionPlanReady &&

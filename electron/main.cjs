@@ -31770,7 +31770,7 @@ function latestRealtimeNegotiationAuditSnapshot(limit = 80) {
 }
 
 function latestRealtimeNegotiationSnapshot(conversation, options = {}) {
-  const current = conversation?.lastRealtimeSessionNegotiation || null;
+  const current = recentRealtimeProviderCheckSnapshot(conversation?.lastRealtimeSessionNegotiation || null);
   const audit = options.includeRecentAudit ? latestRealtimeNegotiationAuditSnapshot() : null;
   if (!current) return audit;
   if (!audit) return current;
@@ -31814,11 +31814,18 @@ function latestRealtimeProviderProbeAuditSnapshot(limit = 300) {
 }
 
 function latestRealtimeProviderProbeResultSnapshot(options = {}) {
-  const current = realtimeProviderProbeState.result || null;
+  const current = recentRealtimeProviderCheckSnapshot(realtimeProviderProbeState.result || null);
   const audit = options.includeRecentAudit ? latestRealtimeProviderProbeAuditSnapshot() : null;
   if (!current) return audit;
   if (!audit) return current;
   return Number(audit.createdAt || 0) > Number(current.createdAt || 0) ? audit : current;
+}
+
+function recentRealtimeProviderCheckSnapshot(check = null) {
+  if (!check || typeof check !== 'object') return null;
+  const createdAt = Number(check.createdAt || 0);
+  if (!createdAt || Date.now() - createdAt > REALTIME_PROVIDER_WARNING_MAX_AGE_MS) return null;
+  return check;
 }
 
 function classifyRealtimeProviderIssue(details = {}) {
@@ -31865,9 +31872,18 @@ function classifyRealtimeProviderIssue(details = {}) {
   return null;
 }
 
+function realtimeProviderUnverifiedIssue() {
+  return {
+    kind: 'provider_unverified',
+    status: 'warning',
+    summary: 'Realtime voice provider has not been verified by a recent no-mic probe or live WebRTC negotiation.',
+    next: 'Run npm run dogfood:realtime-provider-probe to verify OpenAI Realtime without starting the microphone; when it succeeds, retry live voice.',
+  };
+}
+
 function realtimeLocalVoiceFallbackSnapshot(issue = null) {
   const blockedByQuota = issue?.kind === 'quota_or_rate_limit';
-  const providerBlocked = Boolean(issue && ['missing_key', 'quota_or_rate_limit', 'auth_or_permission', 'provider_error', 'network'].includes(issue.kind));
+  const providerBlocked = Boolean(issue && ['missing_key', 'provider_unverified', 'quota_or_rate_limit', 'auth_or_permission', 'provider_error', 'network'].includes(issue.kind));
   const blocker = {
     active: Boolean(issue),
     kind: compactRecordText(issue?.kind || '', 80),
@@ -31915,26 +31931,27 @@ function realtimeVoiceHealthSnapshot(options = {}) {
         ? providerProbe
         : negotiation;
   const errorText = parseRealtimeErrorPayload(providerCheck?.error || conversation?.error || '');
+  const statusCode = Number(providerCheck?.statusCode || 0);
+  const lastSuccess = Boolean(providerCheck?.ok && (!statusCode || (statusCode >= 200 && statusCode < 300)));
   const issue = OPENAI_API_KEY
     ? classifyRealtimeProviderIssue({
       ok: providerCheck?.ok,
-      statusCode: providerCheck?.statusCode,
+      statusCode,
       error: errorText,
-    })
+    }) || (lastSuccess ? null : realtimeProviderUnverifiedIssue())
     : {
       kind: 'missing_key',
       status: 'blocked',
       summary: 'Realtime voice cannot start because OPENAI_API_KEY is missing.',
-        next: 'Add OPENAI_API_KEY to .env and restart JAVIS.',
-      };
-  const lastSuccess = Boolean(providerCheck?.ok && Number(providerCheck?.statusCode || 0) >= 200 && Number(providerCheck?.statusCode || 0) < 300);
+      next: 'Add OPENAI_API_KEY to .env and restart JAVIS.',
+    };
   const status = issue?.status || 'ready';
   const summary = issue?.summary
     || (lastSuccess
       ? providerCheck.kind === 'provider_probe'
         ? `Last no-mic Realtime provider probe succeeded${providerCheck.statusCode ? ` (HTTP ${providerCheck.statusCode})` : ''}.`
         : `Last Realtime WebRTC negotiation succeeded${providerCheck.statusCode ? ` (HTTP ${providerCheck.statusCode})` : ''}.`
-      : 'No Realtime voice provider error recorded.');
+      : realtimeProviderUnverifiedIssue().summary);
   return {
     ok: status !== 'blocked',
     status,
