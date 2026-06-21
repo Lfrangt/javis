@@ -28228,7 +28228,50 @@ function petStatusSnapshot() {
   const rawPresence = petPresenceSnapshot({ conversation, wake, pendingApprovals, activeJobs, readiness });
   const presence = petPresenceStatusSnapshot(rawPresence);
   const screenFrame = latestScreenSnapshot();
-  return {
+  const allowedTopLevel = [
+    'pet',
+    'api',
+    'runtime',
+    'actionPolicy',
+    'screenPrivacy',
+    'presence',
+    'conversation',
+    'voiceHealth',
+    'progressVersion',
+    'wake',
+    'speech',
+    'window',
+    'menuBar',
+    'notifications',
+    'approvals',
+    'readiness',
+    'activeJobs',
+    'workflowCounts',
+    'inbox',
+    'sessions',
+    'screen',
+    'queue',
+    'payloadContract',
+  ];
+  const forbiddenTopLevel = [
+    'models',
+    'routing',
+    'collaboration',
+    'memory',
+    'memories',
+    'learning',
+    'learnedProfile',
+    'shortcuts',
+    'demonstrations',
+    'workflows',
+    'ambient',
+    'laneContracts',
+    'doctor',
+    'config',
+    'macContext',
+    'audit',
+  ];
+  const snapshot = {
     pet: {
       version: 1,
       lightweight: true,
@@ -28243,6 +28286,9 @@ function petStatusSnapshot() {
         'routing.recent',
         'workflow logs/results',
         'notification bodies',
+        'model identifiers',
+        'collaboration ledger',
+        'ambient event log',
       ],
       mode: presence.mode,
       label: presence.label,
@@ -28319,7 +28365,21 @@ function petStatusSnapshot() {
       pid: job.pid || null,
       updatedAt: job.updatedAt,
     })),
+    payloadContract: {
+      version: 1,
+      maxTargetBytes: 12000,
+      allowedTopLevel,
+      forbiddenTopLevel,
+      omittedTopLevel: forbiddenTopLevel,
+      screenImagesAllowed: false,
+      rawLogsAllowed: false,
+      rawRuntimePathsAllowed: false,
+      diagnosticsEndpoint: '/api/status',
+      outputBytes: 0,
+    },
   };
+  snapshot.payloadContract.outputBytes = Buffer.byteLength(JSON.stringify(snapshot), 'utf8');
+  return snapshot;
 }
 
 function formatRealtimeContextAction(action, index) {

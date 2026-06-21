@@ -600,6 +600,49 @@ type Status = {
   workflows?: WorkflowRecord[]
 }
 
+type PetStatusPayload = Pick<
+  Status,
+  | 'pet'
+  | 'api'
+  | 'actionPolicy'
+  | 'window'
+  | 'menuBar'
+  | 'notifications'
+  | 'approvals'
+  | 'screen'
+  | 'screenPrivacy'
+  | 'presence'
+  | 'conversation'
+  | 'voiceHealth'
+  | 'progressVersion'
+  | 'speech'
+  | 'wake'
+  | 'readiness'
+  | 'inbox'
+  | 'sessions'
+  | 'queue'
+> & {
+  pet: PetStatusMeta
+  runtime?: {
+    version: string
+    uptimeSeconds: number
+  }
+  activeJobs?: string[]
+  workflowCounts?: Record<string, number>
+  payloadContract?: {
+    version: number
+    maxTargetBytes: number
+    outputBytes: number
+    allowedTopLevel: string[]
+    forbiddenTopLevel: string[]
+    omittedTopLevel: string[]
+    screenImagesAllowed: boolean
+    rawLogsAllowed: boolean
+    rawRuntimePathsAllowed: boolean
+    diagnosticsEndpoint: string
+  }
+}
+
 type ConfigItem = {
   id: string
   label: string
@@ -1040,6 +1083,13 @@ function normalizedScreenPrivacy(value?: ScreenPrivacy) {
   return value || DEFAULT_SCREEN_PRIVACY
 }
 
+function mergePetStatusPayload(current: Status | null, next: PetStatusPayload): Status {
+  return {
+    ...(current || {}),
+    ...next,
+  } as Status
+}
+
 function App() {
   const [expanded, setExpanded] = useState(false)
   const [status, setStatus] = useState<Status | null>(null)
@@ -1400,13 +1450,13 @@ function App() {
     let lastPanelDetailAt = 0
     const load = async () => {
       try {
-        const next = await apiJson<Status>('/api/pet/status')
+        const next = await apiJson<PetStatusPayload>('/api/pet/status')
         if (disposed) return
         setLastError('')
         const panelOpen = next.window?.mode === 'panel'
         const now = Date.now()
         if (!panelOpen) {
-          setStatus(next)
+          setStatus((current) => mergePetStatusPayload(current, next))
           if (next.window) setExpanded(false)
           return
         }
@@ -1434,7 +1484,7 @@ function App() {
               readiness: next.readiness,
               screen: next.screen,
             }
-          : next))
+          : mergePetStatusPayload(current, next)))
       } catch (error) {
         if (!disposed) {
           setLastError(error instanceof Error ? error.message : String(error))
@@ -2877,8 +2927,9 @@ function App() {
   }, [messages])
 
   const presence = status?.presence
+  const hasOpenAiKey = status?.api.hasOpenAiKey
   const mood = useMemo<PetMood>(() => {
-    if (status?.api && !status.api.hasOpenAiKey) return 'needs-key'
+    if (hasOpenAiKey === false) return 'needs-key'
     if (presence?.mode === 'setup_blocked' || presence?.mode === 'voice_error' || readiness?.overall === 'blocked') return 'attention'
     if (presence?.mode === 'needs_attention' || approvals.length > 0) return 'attention'
     if (voiceStatus === 'connecting' || presence?.mode === 'connecting' || presence?.mode === 'waking') return 'thinking'
@@ -2887,7 +2938,7 @@ function App() {
     if (screenLive || presence?.mode === 'watching') return 'watching'
     if (presence?.mode === 'standby') return 'standby'
     return 'ready'
-  }, [activeJobCount, approvals.length, presence?.mode, readiness?.overall, screenLive, status?.api.hasOpenAiKey, voiceStatus])
+  }, [activeJobCount, approvals.length, hasOpenAiKey, presence?.mode, readiness?.overall, screenLive, voiceStatus])
 
   const voiceAction = useCallback(() => {
     if (voiceStatus === 'idle' || voiceStatus === 'error') {
@@ -2904,10 +2955,10 @@ function App() {
     void startScreen({ describe: true })
   }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
-  const petAction = status?.api.hasOpenAiKey ? startAssistantSession : openConfigCui
+  const petAction = hasOpenAiKey === true ? startAssistantSession : openConfigCui
   const petStatusLabel = petMoodLabel(mood, presence, talking)
   const petStatusDetail = presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
-  const petActionLabel = !status?.api.hasOpenAiKey
+  const petActionLabel = hasOpenAiKey !== true
     ? 'Open JAVIS config'
     : voiceStatus === 'live' || screenLive
       ? 'Stop JAVIS voice and screen'

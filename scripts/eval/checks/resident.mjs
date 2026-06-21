@@ -34,15 +34,43 @@ export default {
     const pet = await ctx.api('/api/pet/status');
     const p = pet.data || {};
     const hasOwn = (key) => Object.prototype.hasOwnProperty.call(p, key);
-    const forbiddenTopLevel = ['models', 'routing', 'collaboration', 'memory', 'learnedProfile', 'shortcuts', 'demonstrations', 'workflows']
+    const actualTopLevel = Object.keys(p);
+    const contract = p.payloadContract || {};
+    const allowedTopLevel = new Set(Array.isArray(contract.allowedTopLevel) ? contract.allowedTopLevel : []);
+    const contractForbidden = Array.isArray(contract.forbiddenTopLevel) ? contract.forbiddenTopLevel : [];
+    const forbiddenTopLevel = ['models', 'routing', 'collaboration', 'memory', 'memories', 'learning', 'learnedProfile', 'shortcuts', 'demonstrations', 'workflows', 'ambient', 'laneContracts', 'doctor', 'config', 'macContext', 'audit']
       .filter((key) => hasOwn(key));
+    const unexpectedTopLevel = allowedTopLevel.size
+      ? actualTopLevel.filter((key) => !allowedTopLevel.has(key))
+      : [];
     const queue = Array.isArray(p.queue) ? p.queue : [];
+    const raw = JSON.stringify(p);
+    const rawBytes = Buffer.byteLength(raw, 'utf8');
+    const hasForbiddenNestedKey = (value, forbidden) => {
+      if (!value || typeof value !== 'object') return false;
+      if (Array.isArray(value)) return value.some((item) => hasForbiddenNestedKey(item, forbidden));
+      return Object.keys(value).some((key) => forbidden.includes(key) || hasForbiddenNestedKey(value[key], forbidden));
+    };
+    const forbiddenNestedKeys = ['imageDataUrl', 'dataDir', 'log', 'result', 'ledger', 'models', 'learning', 'routing'];
     out.push(
       pet.ok &&
         p.pet?.lightweight === true &&
         p.pet?.detailEndpoint === '/api/status' &&
         Array.isArray(p.pet?.excludes) &&
         p.pet.excludes.includes('screen.imageDataUrl') &&
+        p.pet.excludes.includes('model identifiers') &&
+        contract.version === 1 &&
+        contract.maxTargetBytes >= rawBytes &&
+        contract.outputBytes > 0 &&
+        rawBytes <= contract.maxTargetBytes &&
+        contract.screenImagesAllowed === false &&
+        contract.rawLogsAllowed === false &&
+        contract.rawRuntimePathsAllowed === false &&
+        contract.diagnosticsEndpoint === '/api/status' &&
+        contractForbidden.includes('models') &&
+        contractForbidden.includes('learning') &&
+        contractForbidden.includes('routing') &&
+        contractForbidden.includes('workflows') &&
         typeof p.pet?.color === 'string' &&
         p.window?.mode &&
         p.presence?.intervention?.passiveByDefault === true &&
@@ -52,12 +80,17 @@ export default {
         !p.screen?.privacy?.rules &&
         !p.runtime?.dataDir &&
         forbiddenTopLevel.length === 0 &&
+        unexpectedTopLevel.length === 0 &&
+        !hasForbiddenNestedKey(p, forbiddenNestedKeys) &&
         queue.every((job) => !Object.prototype.hasOwnProperty.call(job, 'log') && !Object.prototype.hasOwnProperty.call(job, 'result'))
-        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${p.pet.color} · ${p.presence.mode} · detail=${p.pet.detailEndpoint}`)
+        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${p.pet.color} · ${p.presence.mode} · ${rawBytes}/${contract.maxTargetBytes} bytes`)
         : fail('resident.pet_status_lightweight', 'Pet status lightweight payload', `expected slim pet payload, got ${pet.status}`, {
           forbiddenTopLevel,
+          unexpectedTopLevel,
           hasImage: Boolean(p.screen?.imageDataUrl),
           hasRuntimeDataDir: Boolean(p.runtime?.dataDir),
+          rawBytes,
+          contract,
           pet: p.pet,
         }),
     );
