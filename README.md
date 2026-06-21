@@ -19,7 +19,7 @@ Local Mac-first realtime desktop buddy.
 - Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, compact work-next preview/run, delegate-task preview/confirmation gates, collaboration claim control, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
 - Realtime voice self-diagnostics through `get_realtime_evidence`, so voice can explain whether WebRTC/live progress is connected, what is blocked, and the next dogfood step.
 - No-mic Realtime provider probe through CUI/API, so API key, project quota, model, voice, and the Realtime endpoint can be tested before starting microphone capture.
-- Renderer provider gate before microphone startup: if recent evidence already shows Realtime quota/auth/provider failure, the desktop pet does not open the microphone and instead uses the local voice fallback, which previews no-model local/background routing before falling back to the paid quick model lane.
+- Renderer provider gate before microphone startup: if recent evidence already shows Realtime quota/auth/provider failure, the desktop pet does not open the microphone and instead sends any typed prompt through the local voice-command fallback.
 - Local voice-command fallback through `/api/voice/command` and `npm run dogfood:voice-command`, so typed transcripts or future local STT can route work and dry-run a spoken acknowledgement without Realtime, microphone capture, default memory attachment, or accidental quick-lane cloud calls.
 - Realtime attention explanations through `get_attention_explanation`, so voice can briefly explain pet color, quiet/notify decisions, cooldown, and recent attention history without opening a desktop dashboard.
 - Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, perception-consent, UI-demonstration Record & Replay, and shortcut list/save/recall/forget flows from CUI/API, including a no-mic shortcut recall preparation path through `npm run config -- --prepare-realtime-shortcut-recall --confirm`.
@@ -261,6 +261,7 @@ Local Express service on 127.0.0.1:3417
   /api/approvals        -> local action approval queue
   /api/realtime/session  -> OpenAI Realtime WebRTC session
   /api/chat/quick        -> fast model lane
+  /api/voice/command     -> no-Realtime transcript intake with routing + local spoken acknowledgement
   /api/screen/describe   -> vision lane over latest screen frame
   /api/screen/capture-now -> resident-side screen frame refresh
   /api/screen/privacy    -> screen context privacy mode

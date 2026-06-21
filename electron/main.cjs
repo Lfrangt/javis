@@ -23685,7 +23685,8 @@ async function runVoiceCommand(options = {}) {
   }
 
   const result = {
-    ok: route.ok !== false && (!speakRequested || speech?.ok !== false),
+    ok: route.ok !== false,
+    speechOk: !speakRequested || speech?.ok !== false,
     channel: 'local_voice_command',
     transcript,
     requestedExecute,

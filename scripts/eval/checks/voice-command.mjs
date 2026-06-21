@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 
 import { ok, fail } from '../_client.mjs';
@@ -98,6 +99,35 @@ export default {
       );
     } catch (error) {
       out.push(fail('voice_command.dogfood_preview', 'Local voice command dogfood', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
+      const fallbackIndex = rendererSource.indexOf('const runLocalVoiceFallback = useCallback');
+      const fallbackEndIndex = rendererSource.indexOf('  }, [addMessage, fallbackIncludesScreen', fallbackIndex);
+      const fallbackSource = fallbackIndex >= 0 && fallbackEndIndex >= 0
+        ? rendererSource.slice(fallbackIndex, fallbackEndIndex)
+        : '';
+      out.push(
+        fallbackSource.includes("'/api/voice/command'") &&
+          fallbackSource.includes('transcript: prompt') &&
+          fallbackSource.includes('execute: true') &&
+          fallbackSource.includes('confirmSpeak: true') &&
+          fallbackSource.includes('useMemory: false') &&
+          fallbackSource.includes('allowCloudQuick: false') &&
+          !fallbackSource.includes("'/api/chat/quick'") &&
+          !fallbackSource.includes("'/api/tasks/route'")
+          ? ok('voice_command.renderer_fallback', 'Renderer fallback wiring', 'blocked Realtime pet prompts use /api/voice/command without quick-lane cloud fallback')
+          : fail('voice_command.renderer_fallback', 'Renderer fallback wiring', 'renderer fallback is not wired to voice-command safely', {
+              hasFallback: Boolean(fallbackSource),
+              hasVoiceCommand: fallbackSource.includes("'/api/voice/command'"),
+              hasChatQuick: fallbackSource.includes("'/api/chat/quick'"),
+              hasTasksRoute: fallbackSource.includes("'/api/tasks/route'"),
+              holdsCloudQuick: fallbackSource.includes('allowCloudQuick: false'),
+            }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.renderer_fallback', 'Renderer fallback wiring', error instanceof Error ? error.message : String(error)));
     }
 
     return out;

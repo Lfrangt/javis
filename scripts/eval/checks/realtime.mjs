@@ -2533,26 +2533,28 @@ export default {
     const localFallbackSource = localFallbackIndex >= 0 && localFallbackEndIndex >= 0
       ? rendererSource.slice(localFallbackIndex, localFallbackEndIndex)
       : '';
-    const localFallbackRouteIndex = localFallbackSource.indexOf("'/api/tasks/route'");
+    const localFallbackVoiceCommandIndex = localFallbackSource.indexOf("'/api/voice/command'");
     const localFallbackQuickIndex = localFallbackSource.indexOf("'/api/chat/quick'");
+    const localFallbackTaskRouteIndex = localFallbackSource.indexOf("'/api/tasks/route'");
     const rendererLocalFallbackRouterFirst =
-      localFallbackRouteIndex >= 0 &&
-      localFallbackQuickIndex >= 0 &&
-      localFallbackRouteIndex < localFallbackQuickIndex &&
-      localFallbackSource.includes("source: 'renderer_voice_fallback_preview'") &&
-      localFallbackSource.includes('execute: false') &&
-      localFallbackSource.includes('noModelLocalRoute(routePreview)') &&
-      localFallbackSource.includes('backgroundRoute(routePreview)') &&
-      localFallbackSource.includes("source: noModelLocalRoute(routePreview) ? 'renderer_voice_fallback_local' : 'renderer_voice_fallback_route'") &&
-      localFallbackSource.includes("source: 'renderer_voice_fallback_quick'");
+      localFallbackVoiceCommandIndex >= 0 &&
+      localFallbackQuickIndex < 0 &&
+      localFallbackTaskRouteIndex < 0 &&
+      localFallbackSource.includes('transcript: prompt') &&
+      localFallbackSource.includes('execute: true') &&
+      localFallbackSource.includes('confirmSpeak: true') &&
+      localFallbackSource.includes('useMemory: false') &&
+      localFallbackSource.includes('allowCloudQuick: false') &&
+      localFallbackSource.includes("source: 'renderer_voice_fallback'");
     out.push(
       rendererLocalFallbackRouterFirst
-        ? ok('realtime.renderer_local_fallback_router_first', 'Renderer local fallback router first', 'blocked Realtime voice previews no-model local/background routing before using the quick model lane')
-        : fail('realtime.renderer_local_fallback_router_first', 'Renderer local fallback router first', 'blocked Realtime voice may still call the paid quick model before trying local routing', {
+        ? ok('realtime.renderer_local_fallback_voice_command', 'Renderer local fallback voice-command', 'blocked Realtime voice uses the no-mic transcript router and holds quick-lane cloud calls')
+        : fail('realtime.renderer_local_fallback_voice_command', 'Renderer local fallback voice-command', 'blocked Realtime voice may bypass the local voice-command fallback', {
             hasFallback: Boolean(localFallbackSource),
-            hasRoute: localFallbackRouteIndex >= 0,
+            hasVoiceCommand: localFallbackVoiceCommandIndex >= 0,
             hasQuick: localFallbackQuickIndex >= 0,
-            routeBeforeQuick: localFallbackRouteIndex >= 0 && localFallbackQuickIndex >= 0 && localFallbackRouteIndex < localFallbackQuickIndex,
+            hasTaskRoute: localFallbackTaskRouteIndex >= 0,
+            holdsCloudQuick: localFallbackSource.includes('allowCloudQuick: false'),
           }),
     );
     out.push(

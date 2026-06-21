@@ -893,6 +893,36 @@ type TaskRouteResult = {
   }
 }
 
+type VoiceCommandResult = {
+  ok: boolean
+  speechOk?: boolean
+  channel: 'local_voice_command'
+  transcript: string
+  requestedExecute: boolean
+  executed: boolean
+  heldReason: string
+  route: TaskRouteResult
+  routePreview: TaskRouteResult
+  spokenAck: string
+  speech?: null | {
+    ok?: boolean
+    dryRun?: boolean
+    speaking?: boolean
+    error?: string
+  }
+  safety?: {
+    startsMicrophone: boolean
+    usesRealtime: boolean
+    storesRawAudio: boolean
+    usesMemory: boolean
+    callsOpenAIImmediately: boolean
+    mayQueueCloudModel: boolean
+    mayQueueLocalWorker: boolean
+    speaksAudio: boolean
+    speechDryRun: boolean
+  }
+}
+
 type ProcessNextInboxResult = {
   ok: boolean
   output: string
@@ -1127,17 +1157,6 @@ function mergePetStatusPayload(current: Status | null, next: PetStatusPayload): 
     ...(current || {}),
     ...next,
   } as Status
-}
-
-function noModelLocalRoute(route: TaskRouteResult | null | undefined) {
-  const intent = route?.localCommand?.intent || route?.decision?.localCommand || ''
-  if (!intent) return false
-  return route?.localCommand?.requiresOpenAiKey !== true && route?.decision?.requiresOpenAiKey !== true
-}
-
-function backgroundRoute(route: TaskRouteResult | null | undefined) {
-  const lane = route?.decision?.lane || ''
-  return lane === 'background' || lane === 'codex' || lane === 'claude'
 }
 
 function App() {
@@ -1822,42 +1841,23 @@ function App() {
 
       setQuickInput('')
       addMessage('user', prompt)
-      const routePreview = await apiJson<TaskRouteResult>('/api/tasks/route', {
+      const result = await apiJson<VoiceCommandResult>('/api/voice/command', {
         method: 'POST',
         body: JSON.stringify({
-          message: prompt,
+          transcript: prompt,
           includeScreen: fallbackIncludesScreen,
-          execute: false,
-          source: 'renderer_voice_fallback_preview',
+          execute: true,
+          speak: true,
+          confirmSpeak: true,
+          useMemory: false,
+          allowCloudQuick: false,
+          source: 'renderer_voice_fallback',
         }),
       })
-      if (noModelLocalRoute(routePreview) || backgroundRoute(routePreview)) {
-        const routed = await apiJson<TaskRouteResult>('/api/tasks/route', {
-          method: 'POST',
-          body: JSON.stringify({
-            message: prompt,
-            includeScreen: fallbackIncludesScreen,
-            execute: true,
-            source: noModelLocalRoute(routePreview) ? 'renderer_voice_fallback_local' : 'renderer_voice_fallback_route',
-          }),
-        })
-        const routedOutput = routed.output?.trim() || '我已经走本地路由处理了，但没有拿到可朗读结果。'
-        addMessage(routed.ok && !routed.queued ? 'assistant' : 'system', routedOutput)
-        await speakLocal(routedOutput)
-        refreshStatus()
-        return
-      }
-      const result = await apiJson<{ output: string }>('/api/chat/quick', {
-        method: 'POST',
-        body: JSON.stringify({
-          message: prompt,
-          includeScreen: fallbackIncludesScreen,
-          source: 'renderer_voice_fallback_quick',
-        }),
-      })
-      const output = result.output?.trim() || '我没有拿到有效回复。'
-      addMessage('assistant', output)
-      await speakLocal(output)
+      const output = result.spokenAck?.trim() || result.route?.output?.trim() || '我已经走本地语音指挥通道处理了。'
+      const queued = Boolean(result.route?.queued || result.route?.job)
+      addMessage(result.ok && !queued ? 'assistant' : 'system', output)
+      refreshStatus()
     } catch (error) {
       addMessage('system', `本地语音兜底失败：${error instanceof Error ? error.message : String(error)}`)
     }
