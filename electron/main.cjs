@@ -103,6 +103,7 @@ const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.en
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const REALTIME_PREFLIGHT_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PREFLIGHT_FRESH_MS || 900000)));
 const RECORD_REPLAY_TEACHING_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_RECORD_REPLAY_TEACHING_FRESH_MS || 43200000)));
+const PRODUCTIVITY_DOGFOOD_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_PRODUCTIVITY_DOGFOOD_FRESH_MS || 43200000)));
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
 const RENDERER_DOGFOOD_EVENT_NAME = 'javis:realtime-dogfood';
@@ -15627,6 +15628,126 @@ function pruneProductivityDogfoodArchives() {
   return stale.length;
 }
 
+function latestProductivityDogfoodArchive() {
+  const list = productivityDogfoodArchiveList({ limit: 1 });
+  return list.items[0] || null;
+}
+
+function productivityDogfoodArchiveFreshness(maxAgeMs = PRODUCTIVITY_DOGFOOD_FRESH_MS) {
+  const latest = latestProductivityDogfoodArchive();
+  const cooldownMs = Math.max(60000, Number(maxAgeMs || PRODUCTIVITY_DOGFOOD_FRESH_MS));
+  if (!latest?.savedAt && !latest?.generatedAt) {
+    return {
+      fresh: false,
+      cooldownMs,
+      ageMs: null,
+      waitMs: 0,
+      ageLabel: '',
+      waitLabel: '',
+      latest: null,
+    };
+  }
+  const timestamp = Date.parse(latest.savedAt || latest.generatedAt);
+  if (!Number.isFinite(timestamp)) {
+    return {
+      fresh: false,
+      cooldownMs,
+      ageMs: null,
+      waitMs: 0,
+      ageLabel: '',
+      waitLabel: '',
+      latest: null,
+    };
+  }
+  const ageMs = Math.max(0, Date.now() - timestamp);
+  const waitMs = Math.max(0, cooldownMs - ageMs);
+  return {
+    fresh: waitMs > 0,
+    cooldownMs,
+    ageMs,
+    waitMs,
+    ageLabel: autopilotWaitDurationLabel(ageMs),
+    waitLabel: autopilotWaitDurationLabel(waitMs),
+    latest: {
+      id: compactRecordText(latest.id || '', 120),
+      at: new Date(timestamp).toISOString(),
+      source: compactRecordText(latest.source || '', 80),
+      file: compactRecordText(latest.file || '', 300),
+      summary: compactRecordText(latest.summary || '', 240),
+      counts: latest.counts || {},
+      safety: latest.safety || {},
+    },
+  };
+}
+
+function compactProductivityDogfoodFreshness(freshness = null) {
+  if (!freshness || typeof freshness !== 'object') return null;
+  return {
+    fresh: Boolean(freshness.fresh),
+    cooldownMs: Math.max(0, Number(freshness.cooldownMs || 0)),
+    ageMs: freshness.ageMs === null || freshness.ageMs === undefined ? null : Math.max(0, Number(freshness.ageMs || 0)),
+    waitMs: Math.max(0, Number(freshness.waitMs || 0)),
+    ageLabel: compactRecordText(freshness.ageLabel || '', 40),
+    waitLabel: compactRecordText(freshness.waitLabel || '', 40),
+    latest: freshness.latest
+      ? {
+        id: compactRecordText(freshness.latest.id || '', 120),
+        at: compactRecordText(freshness.latest.at || '', 80),
+        source: compactRecordText(freshness.latest.source || '', 80),
+        file: compactRecordText(freshness.latest.file || '', 220),
+        summary: compactRecordText(freshness.latest.summary || '', 180),
+        pass: Number(freshness.latest.counts?.pass || 0),
+        total: Number(freshness.latest.counts?.total || 0),
+        previewOnly: freshness.latest.safety?.previewOnly === true,
+      }
+      : null,
+  };
+}
+
+function productivityDogfoodArchiveWorkNextAction(options = {}) {
+  const force = options.force === true || String(options.force || '').toLowerCase() === 'true';
+  const freshness = productivityDogfoodArchiveFreshness(options.maxAgeMs || PRODUCTIVITY_DOGFOOD_FRESH_MS);
+  if (!force && freshness.fresh) return null;
+  return {
+    id: 'productivity_dogfood:save_archive',
+    priority: Math.max(3.02, Math.min(8, Number(options.priority || 3.08))),
+    label: 'Save productivity dogfood archive',
+    summary: 'Save a four-app Notes/Reminders/Calendar/Mail preview archive without launching apps, sending messages, or mutating user data.',
+    source: 'productivity',
+    type: 'productivity_dogfood_archive',
+    productivityPreparation: 'dogfood_archive',
+    freshness: compactProductivityDogfoodFreshness(freshness),
+    executable: true,
+    autoEligible: true,
+    autopilotEligible: true,
+    manualOnly: false,
+    requiresUserPresence: false,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    startsRecording: false,
+    startsWorkers: false,
+    startsApps: false,
+    executesTask: false,
+    executesProductivityActions: false,
+    sendsMessages: false,
+    mutatesUserFiles: false,
+    mutatesUserRecords: false,
+    riskLevel: 0,
+    safety: {
+      previewOnly: true,
+      startsApps: false,
+      executesProductivityActions: false,
+      sendsMessages: false,
+      mutatesUserFiles: false,
+      mutatesUserRecords: false,
+      storesRawAudio: false,
+      storesScreenshots: false,
+      recordsWorkflowHistory: false,
+      actionPolicyBypassed: false,
+    },
+  };
+}
+
 async function productivityDogfoodArchiveSnapshot(options = {}) {
   const generatedAt = new Date().toISOString();
   const id = String(options.id || crypto.randomUUID());
@@ -29395,6 +29516,32 @@ function autopilotEligibilityDecision(action) {
         : 'Record & Replay preparation must prove it does not start recording, microphone, workers, or UI actions before autopilot can run it.',
     };
   }
+  if (action.source === 'productivity' && action.productivityPreparation === 'dogfood_archive') {
+    const executable = Boolean(
+      action.executable &&
+      action.autoEligible &&
+      action.autopilotEligible !== false &&
+      action.startsMicrophone === false &&
+      action.requiresMicConfirmation === false &&
+      action.startsRecording === false &&
+      action.startsWorkers === false &&
+      action.startsApps === false &&
+      action.executesTask === false &&
+      action.executesProductivityActions === false &&
+      action.sendsMessages === false &&
+      action.mutatesUserFiles === false &&
+      action.mutatesUserRecords === false &&
+      action.requiresUserPresence === false &&
+      Number(action.riskLevel || 0) <= 1
+    );
+    return {
+      executable,
+      reason: executable ? 'eligible_productivity_dogfood_archive' : 'productivity_dogfood_archive_not_safe_for_autopilot',
+      detail: executable
+        ? 'Autopilot may save a preview-only productivity dogfood archive; it starts no apps, sends no messages, and mutates no user data.'
+        : 'Productivity dogfood archiving must prove it is preview-only and does not start apps, send messages, or mutate user data before autopilot can run it.',
+    };
+  }
   return {
     executable: false,
     reason: 'unsupported_action_source',
@@ -29430,7 +29577,12 @@ function autopilotActionDecision(action, index = 0) {
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     startsRecording: Boolean(action.startsRecording),
     startsWorkers: Boolean(action.startsWorkers),
+    startsApps: Boolean(action.startsApps),
     executesTask: Boolean(action.executesTask),
+    executesProductivityActions: Boolean(action.executesProductivityActions),
+    sendsMessages: Boolean(action.sendsMessages),
+    mutatesUserFiles: Boolean(action.mutatesUserFiles),
+    mutatesUserRecords: Boolean(action.mutatesUserRecords),
     recoveryType: compactRecordText(action.recoveryType || '', 80),
     trustedAutoEligible: Boolean(action.trustedAutoEligible),
     recoveryAttempts: Math.max(0, Number(action.recoveryAttempts || 0)),
@@ -29440,6 +29592,7 @@ function autopilotActionDecision(action, index = 0) {
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
+    productivityPreparation: compactRecordText(action.productivityPreparation || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     freshness: compactRealtimePreflightFreshness(eligibility.freshness),
     dogfoodActionPlan: summarizeDogfoodActionPlanForAutopilot(action.dogfoodActionPlan),
@@ -29507,7 +29660,7 @@ function pushAutopilotWaitingCondition(list, item) {
   });
 }
 
-function autopilotWaitingConditions({ reason = '', candidates = [], selectedAction = null, firstAction = null, maintenance = null, recordReplayTeaching = null } = {}) {
+function autopilotWaitingConditions({ reason = '', candidates = [], selectedAction = null, firstAction = null, maintenance = null, recordReplayTeaching = null, productivityDogfood = null } = {}) {
   if (selectedAction?.decision?.executable && !reason) return [];
   const waiting = [];
   if (!AUTOPILOT_ENABLED) {
@@ -29612,6 +29765,26 @@ function autopilotWaitingConditions({ reason = '', candidates = [], selectedActi
     });
   }
 
+  const productivityDogfoodFresh = productivityDogfood?.freshness?.fresh === true
+    ? productivityDogfood.freshness
+    : null;
+  if (productivityDogfoodFresh && !candidates.some((candidate) => candidate.id === 'productivity_dogfood:save_archive')) {
+    const waitMs = Math.max(0, Number(productivityDogfoodFresh.waitMs || 0));
+    const waitLabel = productivityDogfoodFresh.waitLabel || autopilotWaitDurationLabel(waitMs);
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'productivity_dogfood_fresh',
+      label: 'Productivity dogfood cooldown',
+      summary: waitLabel
+        ? `Productivity dogfood archive is fresh; wait about ${waitLabel} before saving another preview-only archive.`
+        : 'Productivity dogfood archive is fresh; skip saving another preview-only archive for now.',
+      status: 'cooldown',
+      actionId: 'productivity_dogfood:save_archive',
+      actionSource: 'productivity',
+      waitMs,
+      waitLabel,
+    });
+  }
+
   const noExecutableCandidate = candidates.length && !candidates.some((candidate) => candidate.decision?.executable);
   if (noExecutableCandidate) {
     pushAutopilotWaitingCondition(waiting, {
@@ -29687,6 +29860,7 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
   const first = firstAction ? autopilotActionDecision(firstAction, actions.indexOf(firstAction)) : null;
   const maintenance = briefing?.maintenance || maintenanceStateSnapshot();
   const recordReplayTeaching = briefing?.recordReplayTeaching || null;
+  const productivityDogfood = briefing?.productivityDogfood || null;
   const candidateCounts = autopilotCandidateCounts(candidates);
   const waitingFor = autopilotWaitingConditions({
     reason,
@@ -29695,6 +29869,7 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
     firstAction: first,
     maintenance,
     recordReplayTeaching,
+    productivityDogfood,
   });
   const skipSummary = autopilotSkipSummary(reason, waitingFor, selected);
   return {
@@ -29716,6 +29891,7 @@ function autopilotDecisionSnapshot({ source = 'api', execute = true, briefing = 
     skipSummary: compactRecordText(skipSummary || '', 500),
     maintenance,
     recordReplayTeaching,
+    productivityDogfood,
     nextWait: autopilotNextWaitReason(reason, selectedAction, firstAction),
   };
 }
@@ -29777,6 +29953,7 @@ function autopilotVoiceStatusSnapshot(options = {}) {
     lastError: compactRecordText(state.lastError || '', 500),
     maintenance: state.maintenance,
     recordReplayTeaching: preview.recordReplayTeaching || null,
+    productivityDogfood: preview.productivityDogfood || null,
     canActNow,
     reason,
     nextWait: preview.nextWait,
@@ -29855,7 +30032,12 @@ function compactAutopilotActionForVoice(action = null) {
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     startsRecording: Boolean(action.startsRecording),
     startsWorkers: Boolean(action.startsWorkers),
+    startsApps: Boolean(action.startsApps),
     executesTask: Boolean(action.executesTask),
+    executesProductivityActions: Boolean(action.executesProductivityActions),
+    sendsMessages: Boolean(action.sendsMessages),
+    mutatesUserFiles: Boolean(action.mutatesUserFiles),
+    mutatesUserRecords: Boolean(action.mutatesUserRecords),
     riskLevel: boundedCount(action.riskLevel, 4),
     recoveryType: compactRecordText(action.recoveryType || '', 80),
     trustedAutoEligible: Boolean(action.trustedAutoEligible),
@@ -29866,6 +30048,7 @@ function compactAutopilotActionForVoice(action = null) {
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
+    productivityPreparation: compactRecordText(action.productivityPreparation || '', 80),
     phase: compactRecordText(action.phase || '', 80),
     dogfoodActionPlan,
     decision: action.decision
@@ -29919,6 +30102,23 @@ function compactAutopilotRecordReplayTeachingForVoice(state = null) {
   };
 }
 
+function compactAutopilotProductivityDogfoodForVoice(state = null) {
+  if (!state || typeof state !== 'object') return null;
+  const freshness = state.freshness || {};
+  return {
+    actionAvailable: Boolean(state.actionAvailable),
+    fresh: Boolean(freshness.fresh),
+    waitMs: boundedCount(freshness.waitMs, 7 * 24 * 60 * 60 * 1000),
+    waitLabel: compactRecordText(freshness.waitLabel || '', 40),
+    ageLabel: compactRecordText(freshness.ageLabel || '', 40),
+    latestSummary: compactRecordText(freshness.latest?.summary || '', 180),
+    latestFile: compactRecordText(freshness.latest?.file || '', 220),
+    pass: boundedCount(freshness.latest?.pass, 100),
+    total: boundedCount(freshness.latest?.total, 100),
+    previewOnly: freshness.latest?.previewOnly === true,
+  };
+}
+
 function autopilotStatusVoicePayload(status = {}, options = {}) {
   const candidates = Array.isArray(status.candidates) ? status.candidates : [];
   const waitingFor = Array.isArray(status.waitingFor) ? status.waitingFor : [];
@@ -29939,6 +30139,7 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
     lastError: compactRecordText(status.lastError || '', 200),
     maintenance: compactAutopilotMaintenanceForVoice(status.maintenance),
     recordReplayTeaching: compactAutopilotRecordReplayTeachingForVoice(status.recordReplayTeaching || preview.recordReplayTeaching),
+    productivityDogfood: compactAutopilotProductivityDogfoodForVoice(status.productivityDogfood || preview.productivityDogfood),
     canActNow: Boolean(status.canActNow),
     reason: compactRecordText(status.reason || '', 120),
     nextWait: compactRecordText(status.nextWait || '', 260),
@@ -29998,6 +30199,7 @@ function autopilotStatusVoicePayload(status = {}, options = {}) {
       skipSummary: compactRecordText(preview.skipSummary || '', 240),
       maintenance: compactAutopilotMaintenanceForVoice(preview.maintenance),
       recordReplayTeaching: compactAutopilotRecordReplayTeachingForVoice(preview.recordReplayTeaching),
+      productivityDogfood: compactAutopilotProductivityDogfoodForVoice(preview.productivityDogfood),
       nextWait: compactRecordText(preview.nextWait || '', 220),
     },
     nextAction: compactRecordText(status.nextAction || '', 260),
@@ -40001,6 +40203,16 @@ function workflowBriefing(options = {}) {
   const recordReplayTeachingFreshness = options.includeRecordReplayTeachingPacket === false
     ? null
     : recordReplayTeachingPacketFreshness(options.recordReplayTeachingFreshMs || RECORD_REPLAY_TEACHING_FRESH_MS);
+  const productivityDogfoodAction = options.includeProductivityDogfoodArchive === false
+    ? null
+    : productivityDogfoodArchiveWorkNextAction({
+      source: options.source || 'briefing_productivity_dogfood',
+      force: options.forceProductivityDogfoodArchive,
+      maxAgeMs: options.productivityDogfoodFreshMs,
+    });
+  const productivityDogfoodFreshness = options.includeProductivityDogfoodArchive === false
+    ? null
+    : productivityDogfoodArchiveFreshness(options.productivityDogfoodFreshMs || PRODUCTIVITY_DOGFOOD_FRESH_MS);
   const nextActions = [];
 
   if (readiness.primaryIssue) {
@@ -40157,6 +40369,10 @@ function workflowBriefing(options = {}) {
     nextActions.push(recordReplayTeachingAction);
   }
 
+  if (productivityDogfoodAction) {
+    nextActions.push(productivityDogfoodAction);
+  }
+
   if (latestDeliverableWorkflow?.result && !nextActions.some((action) => action.id === `copy:${latestDeliverableWorkflow.id}`)) {
     nextActions.push({
       id: `copy:${latestDeliverableWorkflow.id}`,
@@ -40233,14 +40449,23 @@ function workflowBriefing(options = {}) {
       followUps: followUps.length,
       learningHabitActions: learningHabitActions.length,
       recordReplayTeachingPacket: recordReplayTeachingAction ? 1 : 0,
+      productivityDogfoodArchive: productivityDogfoodAction ? 1 : 0,
     },
     nextActions: nextActions.sort((a, b) => a.priority - b.priority).slice(0, 6),
     followUps,
-    availableActions: learningHabitActions,
+    availableActions: [
+      ...learningHabitActions,
+      recordReplayTeachingAction,
+      productivityDogfoodAction,
+    ].filter(Boolean),
     realtimeVoice: realtimeWorkbench,
     recordReplayTeaching: {
       actionAvailable: Boolean(recordReplayTeachingAction),
       freshness: compactRecordReplayTeachingFreshness(recordReplayTeachingFreshness),
+    },
+    productivityDogfood: {
+      actionAvailable: Boolean(productivityDogfoodAction),
+      freshness: compactProductivityDogfoodFreshness(productivityDogfoodFreshness),
     },
     maintenance,
     routingLedger,
@@ -40990,6 +41215,13 @@ async function workNextAction(options = {}) {
       String(options.includeRecordReplayTeachingPacket || '').toLowerCase() !== 'false'
     ) ||
     String(options.includeRecordReplayTeachingPacket || '').toLowerCase() === 'true';
+  const includeProductivityDogfoodArchive =
+    requestedActionId.startsWith('productivity_dogfood:') ||
+    (
+      options.includeProductivityDogfoodArchive !== false &&
+      String(options.includeProductivityDogfoodArchive || '').toLowerCase() !== 'false'
+    ) ||
+    String(options.includeProductivityDogfoodArchive || '').toLowerCase() === 'true';
   const briefing = workflowBriefing({
     workflowLimit: options.workflowLimit || 6,
     jobLimit: options.jobLimit || 6,
@@ -41001,6 +41233,9 @@ async function workNextAction(options = {}) {
     forceRecordReplayTeachingPacket: requestedActionId.startsWith('record_replay:') || options.forceRecordReplayTeachingPacket === true || String(options.forceRecordReplayTeachingPacket || '').toLowerCase() === 'true',
     recordReplayTeachingFreshMs: options.recordReplayTeachingFreshMs,
     recordReplayCandidateLimit: options.recordReplayCandidateLimit || options.candidateLimit,
+    includeProductivityDogfoodArchive,
+    forceProductivityDogfoodArchive: requestedActionId.startsWith('productivity_dogfood:') || options.forceProductivityDogfoodArchive === true || String(options.forceProductivityDogfoodArchive || '').toLowerCase() === 'true',
+    productivityDogfoodFreshMs: options.productivityDogfoodFreshMs,
     source: options.source || 'work_next',
   });
   const primaryActions = Array.isArray(briefing.nextActions) ? briefing.nextActions : [];
@@ -41274,6 +41509,43 @@ async function workNextAction(options = {}) {
       execute ? '' : 'Preview mode: no teaching packet file was written.',
       action.teachingPacket?.firstPrompt ? `First prompt: ${action.teachingPacket.firstPrompt}` : '',
     ].filter(Boolean).join('\n');
+  } else if (action.source === 'productivity' && action.productivityPreparation === 'dogfood_archive') {
+    if (execute) {
+      result = await saveProductivityDogfoodArchive({
+        ...(options || {}),
+        execute: false,
+        confirm: false,
+        record: false,
+        recordWorkflow: false,
+        recordRouting: false,
+        source: options.source || 'work_next_productivity_dogfood_archive',
+        limit: options.limit || 5,
+      });
+      executed = Boolean(result.saved);
+      output = result.output;
+    } else {
+      const archive = await productivityDogfoodArchiveSnapshot({
+        ...(options || {}),
+        execute: false,
+        confirm: false,
+        record: false,
+        recordWorkflow: false,
+        recordRouting: false,
+        source: options.source || 'work_next_productivity_dogfood_archive',
+      });
+      result = {
+        ok: archive.ok,
+        executed: false,
+        saved: false,
+        archive,
+        metadata: productivityDogfoodArchiveMetadata(archive, ''),
+        output: archive.output,
+      };
+      output = [
+        archive.output,
+        'Preview mode: no productivity dogfood archive file was written.',
+      ].filter(Boolean).join('\n');
+    }
   } else if (action.source === 'jobs' || action.source === 'workflows') {
     result = workProgressCheckIn({
       source: options.source || 'work_next',
@@ -41472,11 +41744,17 @@ function compactWorkNextActionForVoice(action = null) {
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     startsRecording: Boolean(action.startsRecording),
     startsWorkers: Boolean(action.startsWorkers),
+    startsApps: Boolean(action.startsApps),
     executesTask: Boolean(action.executesTask),
+    executesProductivityActions: Boolean(action.executesProductivityActions),
+    sendsMessages: Boolean(action.sendsMessages),
+    mutatesUserFiles: Boolean(action.mutatesUserFiles),
+    mutatesUserRecords: Boolean(action.mutatesUserRecords),
     riskLevel: boundedCount(action.riskLevel, 4),
     workflowAction: compactRecordText(action.workflowAction || '', 80),
     realtimePreparation: compactRecordText(action.realtimePreparation || '', 80),
     recordReplayPreparation: compactRecordText(action.recordReplayPreparation || '', 80),
+    productivityPreparation: compactRecordText(action.productivityPreparation || '', 80),
     workflowId: compactRecordText(action.workflowId || '', 120),
     jobId: compactRecordText(action.jobId || '', 120),
     routeId: compactRecordText(action.routeId || '', 120),

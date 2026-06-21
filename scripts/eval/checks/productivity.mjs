@@ -221,6 +221,99 @@ export default {
         : fail('productivity.dogfood_archive_voice_tool', 'Productivity dogfood archive voice tool', `tool execute ${productivityTool.status}`, productivityTool.data),
     );
 
+    const workNextPreview = await ctx.api('/api/work/next?actionId=productivity_dogfood%3Asave_archive&forceProductivityDogfoodArchive=true', {
+      timeoutMs: 45000,
+    });
+    const workNextPreviewData = workNextPreview.data?.next || {};
+    const workNextPreviewArchive = workNextPreviewData.result?.archive || {};
+    out.push(
+      workNextPreview.ok &&
+        workNextPreviewData.ok === true &&
+        workNextPreviewData.executed === false &&
+        workNextPreviewData.action?.id === 'productivity_dogfood:save_archive' &&
+        workNextPreviewData.action?.source === 'productivity' &&
+        workNextPreviewData.action?.productivityPreparation === 'dogfood_archive' &&
+        workNextPreviewData.autopilotDecision?.reason === 'eligible_productivity_dogfood_archive' &&
+        workNextPreviewArchive.ok === true &&
+        workNextPreviewArchive.saved === false &&
+        workNextPreviewArchive.counts?.total === 4 &&
+        workNextPreviewArchive.counts?.pass === 4 &&
+        workNextPreviewArchive.safety?.previewOnly === true &&
+        workNextPreviewArchive.safety?.startsApps === false &&
+        workNextPreviewArchive.safety?.executesProductivityActions === false &&
+        workNextPreviewArchive.safety?.sendsMessages === false &&
+        workNextPreviewArchive.safety?.mutatesUserFiles === false &&
+        /Preview mode: no productivity dogfood archive file was written/.test(workNextPreviewData.output || '')
+        ? ok('productivity.dogfood_archive_work_next_preview', 'Productivity dogfood archive work-next preview', 'work-next previews safe four-app archive without writing')
+        : fail('productivity.dogfood_archive_work_next_preview', 'Productivity dogfood archive work-next preview', `GET /api/work/next ${workNextPreview.status}`, workNextPreview.data),
+    );
+
+    const workNextRun = await ctx.api('/api/work/next', {
+      method: 'POST',
+      body: {
+        execute: true,
+        actionId: 'productivity_dogfood:save_archive',
+        forceProductivityDogfoodArchive: true,
+        source: 'eval_productivity_worknext_archive',
+        limit: 2,
+      },
+      timeoutMs: 45000,
+      retries: 0,
+    });
+    const workNextRunData = workNextRun.data?.next || {};
+    const workNextRunArchive = workNextRunData.result?.archive || {};
+    const workNextRunMetadata = workNextRunData.result?.metadata || {};
+    const workNextRunFile = workNextRunMetadata.file || workNextRunArchive.archiveFile || workNextRunArchive.file?.path || '';
+    out.push(
+      workNextRun.ok &&
+        workNextRunData.ok === true &&
+        workNextRunData.executed === true &&
+        workNextRunData.action?.id === 'productivity_dogfood:save_archive' &&
+        workNextRunData.action?.source === 'productivity' &&
+        workNextRunData.action?.productivityPreparation === 'dogfood_archive' &&
+        workNextRunData.autopilotDecision?.reason === 'eligible_productivity_dogfood_archive' &&
+        workNextRunData.result?.saved === true &&
+        workNextRunArchive.ok === true &&
+        workNextRunArchive.saved === true &&
+        workNextRunArchive.execute === false &&
+        workNextRunArchive.confirm === false &&
+        workNextRunArchive.counts?.pass === 4 &&
+        workNextRunArchive.safety?.previewOnly === true &&
+        workNextRunArchive.safety?.startsApps === false &&
+        workNextRunArchive.safety?.executesProductivityActions === false &&
+        workNextRunArchive.safety?.sendsMessages === false &&
+        workNextRunArchive.safety?.mutatesUserFiles === false &&
+        workNextRunFile.includes('productivity-dogfood-archives') &&
+        fs.existsSync(workNextRunFile)
+        ? ok('productivity.dogfood_archive_work_next_save', 'Productivity dogfood archive work-next save', 'work-next saves safe preview archive as an autopilot-eligible action')
+        : fail('productivity.dogfood_archive_work_next_save', 'Productivity dogfood archive work-next save', `POST /api/work/next ${workNextRun.status}`, workNextRun.data),
+    );
+
+    const autopilot = await ctx.api('/api/autopilot', { timeoutMs: 30000 });
+    const autopilotPreview = autopilot.data?.decisionPreview || {};
+    const productivityFreshness = autopilotPreview.productivityDogfood?.freshness || {};
+    const productivityWaiting = Array.isArray(autopilotPreview.waitingFor)
+      ? autopilotPreview.waitingFor.some((item) => item.id === 'productivity_dogfood_fresh')
+      : false;
+    const needsWaitingCondition = Number(autopilotPreview.candidateCounts?.autoExecutable || 0) === 0;
+    out.push(
+      autopilot.ok &&
+        productivityFreshness.fresh === true &&
+        productivityFreshness.latest?.file === workNextRunFile &&
+        productivityFreshness.latest?.previewOnly === true &&
+        productivityFreshness.latest?.pass === 4 &&
+        productivityFreshness.latest?.total === 4 &&
+        Number(productivityFreshness.waitMs || 0) > 0 &&
+        (!needsWaitingCondition || productivityWaiting)
+        ? ok('productivity.dogfood_archive_autopilot_cooldown', 'Productivity dogfood archive autopilot cooldown', 'autopilot reports fresh preview archive cooldown after work-next save')
+        : fail('productivity.dogfood_archive_autopilot_cooldown', 'Productivity dogfood archive autopilot cooldown', `GET /api/autopilot ${autopilot.status}`, {
+            decisionPreview: autopilotPreview,
+            workNextRunFile,
+            needsWaitingCondition,
+            productivityWaiting,
+          }),
+    );
+
     const evidence = await ctx.api('/api/realtime/evidence');
     const productivityEvidence = evidence.data?.evidence?.productivityDogfoodTools;
     const productivityEvents = Array.isArray(productivityEvidence?.recent) ? productivityEvidence.recent : [];

@@ -560,11 +560,12 @@ function printAutopilotDecision(decision, label = 'Decision') {
   }
   const waitingFor = Array.isArray(decision.waitingFor) ? decision.waitingFor : [];
   if (waitingFor.length) {
-    const waits = waitingFor.slice(0, 4).map((item, index) => {
+    const waits = waitingFor.slice(0, 6).map((item, index) => {
       const wait = item.waitLabel ? ` · ${item.waitLabel}` : '';
       return `${index + 1}. ${item.label || item.id} · ${item.status || 'waiting'}${wait}: ${compact(item.summary || '', 140)}`;
     });
-    console.log(`Waiting for: ${waits.join(' | ')}`);
+    const more = waitingFor.length > waits.length ? ` | +${waitingFor.length - waits.length} more` : '';
+    console.log(`Waiting for: ${waits.join(' | ')}${more}`);
   }
   const candidates = Array.isArray(decision.candidates) ? decision.candidates : [];
   if (candidates.length) {
