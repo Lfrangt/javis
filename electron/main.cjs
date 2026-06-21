@@ -22510,6 +22510,7 @@ function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
   const lower = text.toLowerCase();
+  const compact = text.replace(/\s+/g, '');
   if (!text) return null;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
@@ -22518,7 +22519,13 @@ function localCommandDecision(task) {
   }
 
   if (/^(work progress|task progress|job status|jobs|background jobs|background work|long tasks?)$/i.test(text)
-    || /^(任务进度|任务状态|后台任务|后台进度|工作进度|长任务|任务跑到哪了|后台跑到哪了)$/.test(text)) {
+    || /\b(background|worker|workers|job|jobs|task|tasks|agent|agents|subagent|subagents|codex|claude)\b.*\b(progress|status|doing|running|queued|finished|done|active)\b/i.test(text)
+    || /\b(progress|status|doing|running|queued|finished|done|active)\b.*\b(background|worker|workers|job|jobs|task|tasks|agent|agents|subagent|subagents|codex|claude)\b/i.test(text)
+    || /\bwhat(?:'s| is)?\s+(running|active|queued|background|the agents?|the workers?|codex|claude)/i.test(text)
+    || /^(任务进度|任务状态|后台任务|后台进度|工作进度|长任务|任务跑到哪了|后台跑到哪了)$/.test(text)
+    || /(后台|任务|工作|进度|agent|agents|subagent|subagents|worker|workers|codex|claude|Claude|Codex).*(怎么样|在干嘛|做到哪|跑到哪|进展|状态|完成|运行|排队|卡住|失败)/.test(compact)
+    || /(怎么样|在干嘛|做到哪|跑到哪|进展|状态|完成|运行|排队|卡住|失败).*(后台|任务|工作|进度|agent|agents|subagent|subagents|worker|workers|codex|claude|Claude|Codex)/.test(compact)
+    || /^(进度怎么样|现在做到哪了|做到哪了|干到哪了|跑到哪了|现在跑到哪了|现在干到哪了)$/.test(compact)) {
     return { intent: 'work_progress', label: 'Work progress', args: {} };
   }
 
@@ -23652,6 +23659,9 @@ function voiceCommandAck(route = {}, options = {}) {
   if (route.executed && route.ok === false) {
     return output ? `这次没有完成。${output}` : '这次没有完成，我已经留下了路由记录。';
   }
+  if (route.localCommand?.intent === 'work_progress' && output) {
+    return output;
+  }
   const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
   return `收到。我会走${laneName}。${reason}`;
 }
@@ -24508,7 +24518,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (localCommand.intent === 'app_workflow' || localCommand.intent === 'creative_workflow') {
+      if (['app_workflow', 'creative_workflow', 'work_progress'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

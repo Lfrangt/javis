@@ -139,6 +139,39 @@ export default {
         : fail('voice_command.quick_hold', 'Quick lane cloud hold', `expected held quick lane, got ${quickHeld.status}`, quickHeld.data),
     );
 
+    const naturalProgress = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '后台现在怎么样',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_progress',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalProgressData = naturalProgress.data || {};
+    out.push(
+      naturalProgress.ok &&
+        naturalProgressData.ok === true &&
+        naturalProgressData.executed === false &&
+        naturalProgressData.route?.decision?.localCommand === 'work_progress' &&
+        naturalProgressData.route?.localCommand?.intent === 'work_progress' &&
+        typeof naturalProgressData.route?.output === 'string' &&
+        naturalProgressData.route.output.includes('下一步') &&
+        naturalProgressData.route?.data?.progress?.spokenSummary &&
+        typeof naturalProgressData.spokenAck === 'string' &&
+        naturalProgressData.spokenAck.length > 0 &&
+        naturalProgressData.safety?.startsMicrophone === false &&
+        naturalProgressData.safety?.usesRealtime === false &&
+        naturalProgressData.safety?.storesRawAudio === false &&
+        naturalProgressData.safety?.callsOpenAIImmediately === false &&
+        naturalProgressData.speech?.dryRun === true
+        ? ok('voice_command.natural_progress', 'Natural progress voice command', '后台现在怎么样 routes to read-only work_progress without cloud/realtime')
+        : fail('voice_command.natural_progress', 'Natural progress voice command', 'natural progress phrase did not use the local work_progress fast path', naturalProgress.data),
+    );
+
     try {
       const { stdout } = await execFileAsync(process.execPath, [
         'scripts/local-voice-command-dogfood.mjs',
