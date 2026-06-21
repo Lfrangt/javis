@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
+                               Slash commands: /status, /app, /browser, /browse, /open, /handoff, /next, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-next                 In chat mode, make /next use the full workbench payload.
   --full-agent                In chat mode, make /agent run the full autonomy preview.
@@ -332,6 +332,7 @@ function loopHelpText() {
   return [
     'Loop commands:',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
+    '  /app      Read the current Mac app, screen metadata, and compact UI outline.',
     '  /browser  Read the current supported browser tab and page summary.',
     '  /browse   Preview a browser workflow over the current page; add --run to execute.',
     '  /open     Preview opening a URL or web search; add --run to execute through policy.',
@@ -345,6 +346,26 @@ function loopHelpText() {
     'Flags: --full-status, --full-next, --full-agent, or --full for full diagnostics.',
     'Type a normal request without / to route it through /api/voice/command.',
   ].join('\n');
+}
+
+function formatLoopApp(macData = {}, treeData = {}) {
+  const context = macData.context || macData || {};
+  const tree = treeData.tree || treeData || {};
+  const frontmost = context.frontmost || {};
+  const browser = context.browser || {};
+  const screen = context.screen || {};
+  const clipboard = context.clipboard || {};
+  const outline = compactText(tree.outline || context.accessibility?.outline || '', 520);
+  const lines = [
+    `App: ${frontmost.app || tree.app || '-'} · ${compactText(frontmost.windowTitle || tree.windowTitle || '-', 180)}`,
+    `Screen: ${screen.available ? `${screen.width || '-'}x${screen.height || '-'}` : 'metadata-only'}${screen.private ? ' · private' : ''}${screen.ageMs !== undefined ? ` · age ${screen.ageMs}ms` : ''}`,
+    `Browser: ${browser.available ? 'available' : 'unavailable'} · ${browser.title ? compactText(browser.title, 120) : browser.host || browser.app || '-'}`,
+    `Clipboard: ${clipboard.hasText ? `text ${clipboard.length || 0} char(s)` : 'no text attached'}`,
+    `UI: ${tree.available ? 'available' : 'unavailable'} · app=${tree.app || '-'} · nodes=${tree.nodeCount ?? 0} · truncated=${tree.truncated ? 'yes' : 'no'}`,
+  ];
+  if (outline) lines.push(`Outline: ${outline}`);
+  if (tree.error) lines.push(`Note: ${compactText(tree.error, 180)}`);
+  return lines.join('\n');
 }
 
 function normalizeBrowserWorkflowIntentForLoop(value) {
@@ -650,6 +671,22 @@ async function runLoopCommand(transcript) {
         endpoint,
         detailLevel: full ? 'full' : 'fast',
       });
+    }
+    if (command === 'app') {
+      const [macResponse, treeResponse] = await Promise.all([
+        request('/api/mac/context'),
+        request('/api/accessibility/tree?maxNodes=40&maxDepth=4'),
+      ]);
+      return {
+        ...publicLoopCommandBase(base),
+        endpoint: '/api/mac/context + /api/accessibility/tree?maxNodes=40&maxDepth=4',
+        detailLevel: 'fast',
+        ok: Boolean(macResponse.ok && treeResponse.ok && macResponse.data && treeResponse.data),
+        responseStatus: macResponse.ok ? treeResponse.status : macResponse.status,
+        elapsedMs: Math.round(performance.now() - base.startedAt),
+        apiElapsedMs: Math.max(macResponse.elapsedMs || 0, treeResponse.elapsedMs || 0),
+        output: formatLoopApp(macResponse.data || {}, treeResponse.data || {}),
+      };
     }
     if (command === 'browser') {
       const [contextResponse, pageResponse] = await Promise.all([

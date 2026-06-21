@@ -225,7 +225,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/status\\n/app\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -241,6 +241,7 @@ export default {
       const commandTurns = turns.filter((turn) => turn.kind === 'loop_command');
       const voiceTurns = turns.filter((turn) => turn.kind !== 'loop_command');
       const statusTurn = commandTurns.find((turn) => turn.command === 'status') || {};
+      const appTurn = commandTurns.find((turn) => turn.command === 'app') || {};
       const browserTurn = commandTurns.find((turn) => turn.command === 'browser') || {};
       const browseTurn = commandTurns.find((turn) => turn.command === 'browse') || {};
       const openTurn = commandTurns.find((turn) => turn.command === 'open') || {};
@@ -265,16 +266,20 @@ export default {
         loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 9 &&
+          loop.turnCount === 10 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 7 &&
-          ['status', 'browser', 'browse', 'open', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 8 &&
+          ['status', 'app', 'browser', 'browse', 'open', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           statusTurn.detailLevel === 'fast' &&
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&
+          appTurn.detailLevel === 'fast' &&
+          appTurn.endpoint === '/api/mac/context + /api/accessibility/tree?maxNodes=40&maxDepth=4' &&
+          appTurn.output.includes('App:') &&
+          appTurn.output.includes('UI:') &&
           browserTurn.detailLevel === 'fast' &&
           browserTurn.endpoint === '/api/browser/context + /api/browser/page?maxChars=1200' &&
           browserTurn.output.includes('Browser:') &&
