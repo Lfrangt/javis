@@ -60,6 +60,7 @@ Examples:
   npm run voice -- "帮我看一下当前窗口，判断下一步该怎么做"
   npm run voice -- --wake "贾维斯，帮我看当前窗口下一步做什么"
   npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
+  npm run voice -- --session "把这次本地语音指令写入工作会话"
   npm run voice -- --json --no-speech "当前状态怎么样？"
 
 Flags:
@@ -70,6 +71,9 @@ Flags:
   --include-ui, --include-accessibility
                                Attach a bounded Accessibility outline. No full node payload is sent.
   --no-screen, --no-ui         Disable default local CLI screen/UI metadata.
+  --session                   Record into the active work session; if none exists, start one.
+  --session-goal <goal>       Goal/title for the auto-started work session.
+  --no-session                Disable active session logging for this command.
   --confirm-speak, --confirm  Actually speak the local acknowledgement with macOS say.
   --no-speech                 Disable the acknowledgement preview.
   --mode <lane>               Hint quick/background/codex/claude.
@@ -102,6 +106,8 @@ function buildPayload() {
     hasFlag('include-ui') ||
     hasFlag('ui') ||
     (userCli && includeScreen && !hasFlag('no-ui'));
+  const sessionRequested = hasFlag('session') || hasFlag('work-session') || hasFlag('record-session');
+  const sessionGoal = argValue('session-goal', argValue('session-title', ''));
   return {
     transcript: argValue('message', argValue('text', positionalMessage() || '帮我整理当前工作状态，给我一个三步计划，先不要执行。')),
     execute,
@@ -111,6 +117,9 @@ function buildPayload() {
     confirmSpeak: confirm,
     allowCloudQuick: hasFlag('allow-cloud-quick'),
     useMemory: hasFlag('use-memory'),
+    session: hasFlag('no-session') ? false : sessionRequested ? true : undefined,
+    sessionGoal,
+    sessionTitle: sessionGoal,
     mode: argValue('mode', ''),
     phrase: argValue('wake-phrase', '贾维斯'),
     source: userCli
@@ -174,6 +183,19 @@ function summarize(data = {}) {
           localVoiceMode: data.handoff?.localVoiceMode || data.wake.handoff?.localVoiceMode || '',
         }
       : null,
+    session: data.session
+      ? {
+          requested: Boolean(data.session.requested),
+          recorded: Boolean(data.session.recorded),
+          autoStarted: Boolean(data.session.autoStarted),
+          sessionId: data.session.sessionId || '',
+          eventId: data.session.eventId || '',
+          title: data.session.title || '',
+          reason: data.session.reason || '',
+          error: data.session.error || '',
+          privacy: data.session.privacy || {},
+        }
+      : null,
     safety: data.safety || {},
   };
 }
@@ -206,6 +228,8 @@ async function main() {
       confirmSpeak: payload.confirmSpeak,
       allowCloudQuick: payload.allowCloudQuick,
       useMemory: payload.useMemory,
+      session: payload.session,
+      sessionGoal: payload.sessionGoal,
       mode: payload.mode,
     },
     responseStatus: response.status,
@@ -223,6 +247,11 @@ async function main() {
     console.log(`Task: ${payload.transcript}`);
     console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
     if (result.route.jobId) console.log(`Job: ${result.route.jobId}`);
+    if (result.session?.recorded) {
+      console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);
+    } else if (result.session?.requested || result.session?.error) {
+      console.log(`Session: not recorded · ${result.session.reason || result.session.error || 'no active session'}`);
+    }
     console.log(`Speech: ${result.speech?.dryRun ? 'preview' : result.speech?.speaking ? 'speaking' : 'off'} · microphone=no · realtime=no`);
     console.log(`Context: ${result.context?.metadataOnly ? 'metadata-only' : 'unavailable'} · ${result.context?.summary || '-'}`);
     if (result.context?.accessibility?.requested) {

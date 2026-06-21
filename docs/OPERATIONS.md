@@ -122,6 +122,7 @@ Local voice-command fallback is the no-Realtime intake path. It accepts a transc
 npm run voice -- "帮我看一下当前窗口，判断下一步应该怎么做"
 npm run wake -- "贾维斯，帮我看一下当前窗口，判断下一步应该怎么做"
 npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
+npm run voice -- --session "把这次本地语音指令写进工作会话"
 npm run dogfood:voice-command
 curl -X POST http://127.0.0.1:3417/api/voice/command \
   -H "X-JAVIS-Token: $TOKEN" \
@@ -134,6 +135,8 @@ curl -X POST http://127.0.0.1:3417/api/wake/command \
 ```
 
 By default the acknowledgement is a `/usr/bin/say` dry-run, and this fallback does not attach local memory or inferred learning unless `useMemory:true` is explicit. The user-facing `npm run voice -- "..."` command defaults to metadata-only screen plus bounded UI outline context; add `--no-screen` or `--no-ui` to make it lighter. Its context snapshot is metadata-only: frontmost app/window, browser title/host, screen frame freshness/privacy when `includeScreen:true`, clipboard presence/length only, active-job count, approval count, and, when `includeAccessibility:true`, a compact UI outline capped by the existing Accessibility read policy. It does not attach screenshots, raw screen pixels, clipboard text, raw audio, browser page body, full Accessibility nodes, or local learning profile by default. Add `confirmSpeak:true` or CLI `--confirm-speak` only when you intentionally want local audio. If `execute:true` or CLI `--run` is used on a quick-lane question, `/api/voice/command` holds the cloud call unless `allowCloudQuick:true` is also set; background/Codex/Claude/local routes can still be queued through the normal policy gates.
+
+If a work session is active, local voice and wake commands append a sanitized `voice_command` event to that session automatically. The event keeps only transcript preview, route/job ids, lane status, and metadata-only context summary. It does not store raw audio, screenshots, clipboard text, browser page bodies, or full Accessibility node payloads. Use CLI `--session` or API `session:true` to start a session automatically when none is active; use `--session-goal "..."` / `sessionGoal` to name it. Use `--no-session` or `session:false` for one-off commands that should not touch the session ledger.
 
 `npm run wake -- "..."` is the one-shot wake path. It records the wake phrase, returns the same read-only handoff evidence as `/api/wake/status`, then routes the transcript through local voice-command intake. It does not start microphone capture or Realtime.
 

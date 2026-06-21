@@ -384,6 +384,100 @@ export default {
       out.push(fail('voice_command.wake_command_cli', 'Wake + local voice command CLI', error instanceof Error ? error.message : String(error)));
     }
 
+    const sessionTranscript = '把这条本地语音指令记到工作会话，先不要执行。';
+    let cleanupSessionId = '';
+    try {
+      const sessionsBefore = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+      let targetSession = sessionsBefore.data?.sessions?.active || null;
+      if (!targetSession?.id) {
+        const startSession = await ctx.api('/api/sessions/start', {
+          method: 'POST',
+          body: {
+            goal: `eval local voice session ledger ${Date.now()}`,
+            source: 'eval_voice_command_session_ledger',
+          },
+          timeoutMs: 10000,
+        });
+        targetSession = startSession.data?.session || null;
+        cleanupSessionId = targetSession?.id || '';
+      }
+
+      const sessionVoice = targetSession?.id
+        ? await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: sessionTranscript,
+            execute: false,
+            includeScreen: false,
+            useMemory: false,
+            speak: false,
+            session: true,
+            sessionId: targetSession.id,
+            source: 'eval_voice_command_session_ledger',
+          },
+          timeoutMs: 15000,
+        })
+        : { ok: false, status: 0, data: { error: 'missing target session' } };
+      const sessionsAfter = targetSession?.id
+        ? await ctx.api(`/api/sessions?status=active&limit=3`, { timeoutMs: 10000 })
+        : { ok: false, data: null };
+      const activeAfter = sessionsAfter.data?.sessions?.active || null;
+      const recordedEvent = (activeAfter?.events || []).find((event) => (
+        event.type === 'voice_command' &&
+        event.source === 'eval_voice_command_session_ledger' &&
+        String(event.text || '').includes(sessionTranscript.slice(0, 10))
+      ));
+      const sessionData = sessionVoice.data?.session || {};
+
+      if (cleanupSessionId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_voice_command_session_cleanup',
+            note: 'Cleaning up eval-created local voice session.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+
+      out.push(
+        targetSession?.id &&
+          sessionVoice.ok &&
+          sessionVoice.data?.ok === true &&
+          sessionData.recorded === true &&
+          sessionData.sessionId === targetSession.id &&
+          sessionData.eventId &&
+          sessionData.privacy?.transcriptPreviewOnly === true &&
+          sessionData.privacy?.noRawAudio === true &&
+          sessionData.privacy?.noScreenImages === true &&
+          sessionData.privacy?.noClipboardText === true &&
+          sessionData.privacy?.noAccessibilityNodes === true &&
+          recordedEvent &&
+          recordedEvent.ref?.kind === 'route' &&
+          !hasForbiddenHistoryPayload(sessionData) &&
+          !hasForbiddenHistoryPayload(recordedEvent)
+          ? ok('voice_command.session_ledger', 'Voice command session ledger', `${sessionData.title || targetSession.title} recorded event ${sessionData.eventId}`)
+          : fail('voice_command.session_ledger', 'Voice command session ledger', 'voice command did not append a sanitized work-session event', {
+              targetSession,
+              sessionVoice: sessionVoice.data,
+              activeAfter,
+              recordedEvent,
+            }),
+      );
+    } catch (error) {
+      if (cleanupSessionId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+      out.push(fail('voice_command.session_ledger', 'Voice command session ledger', error instanceof Error ? error.message : String(error)));
+    }
+
     const history = await ctx.api('/api/voice/history?limit=12', { timeoutMs: 10000 });
     const historyData = history.data?.history || {};
     const historyItems = Array.isArray(historyData.items) ? historyData.items : [];
@@ -423,7 +517,7 @@ export default {
     );
 
     try {
-      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-voice-history', '--limit', '8'], {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-voice-history', '--limit', '20'], {
         cwd: process.cwd(),
         env: {
           ...process.env,
@@ -436,7 +530,7 @@ export default {
       out.push(
         stdout.includes('Local Voice Command History') &&
           stdout.includes('transcript-preview-only') &&
-          stdout.includes(localCliTranscript.slice(0, 8)) &&
+          stdout.includes('route:') &&
           stdout.includes('Continue: npm run work:run -- --action-id route:')
           ? ok('voice_command.history_cui', 'Local voice history CUI', 'CUI prints recent sanitized voice-command history with route continuation command')
           : fail('voice_command.history_cui', 'Local voice history CUI', 'CUI did not print the expected local voice history summary', { stdout }),

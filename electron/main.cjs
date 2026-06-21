@@ -23682,10 +23682,23 @@ function voiceCommandHistoryItemFromAudit(event = {}) {
     routeId: compactRecordText(data.routeId || '', 120),
     jobId: compactRecordText(data.jobId || '', 120),
     workflowId: compactRecordText(data.workflowId || '', 120),
+    sessionId: compactRecordText(data.session?.sessionId || '', 120),
+    sessionEventId: compactRecordText(data.session?.eventId || '', 120),
     contextSummary: compactRecordText(data.contextSummary || '', 220),
     includeScreen: Boolean(data.includeScreen),
     includeAccessibility: Boolean(data.includeAccessibility),
     usesMemory: Boolean(data.usesMemory),
+    session: data.session
+      ? {
+        requested: Boolean(data.session.requested),
+        recorded: Boolean(data.session.recorded),
+        autoStarted: Boolean(data.session.autoStarted),
+        sessionId: compactRecordText(data.session.sessionId || '', 120),
+        eventId: compactRecordText(data.session.eventId || '', 120),
+        title: compactRecordText(data.session.title || '', 140),
+        error: compactRecordText(data.session.error || '', 180),
+      }
+      : null,
     speechDryRun: Boolean(data.speechDryRun),
     speaksAudio: Boolean(data.speaksAudio),
     safety: {
@@ -23697,6 +23710,162 @@ function voiceCommandHistoryItemFromAudit(event = {}) {
       storesAccessibilityNodes: false,
     },
   };
+}
+
+function disabledVoiceCommandSessionLogging(options = {}) {
+  const raw = String(options.session ?? options.recordSession ?? options.logSession ?? '').trim().toLowerCase();
+  return options.session === false ||
+    options.recordSession === false ||
+    options.logSession === false ||
+    ['false', 'off', 'none', 'disabled', 'no'].includes(raw);
+}
+
+function requestedVoiceCommandSessionLogging(options = {}) {
+  if (disabledVoiceCommandSessionLogging(options)) return false;
+  const raw = String(options.session ?? options.recordSession ?? options.logSession ?? '').trim().toLowerCase();
+  return options.session === true ||
+    options.recordSession === true ||
+    options.logSession === true ||
+    ['true', 'on', 'auto', 'start', 'create', 'yes'].includes(raw) ||
+    Boolean(options.sessionId || options.workSessionId || options.sessionGoal || options.sessionTitle || options.startSession || options.createSession || options.sessionAutoStart);
+}
+
+function voiceCommandSessionGoal(options = {}, transcript = '') {
+  return compactRecordText(
+    options.sessionGoal ||
+      options.sessionTitle ||
+      options.goal ||
+      `Voice intake: ${transcript}`,
+    180,
+  );
+}
+
+function voiceCommandSessionEventText(result = {}, options = {}) {
+  const route = result.route || {};
+  const transcript = compactRecordText(result.transcript || '', 280);
+  const lane = route.decision?.label || route.decision?.lane || route.localCommand?.label || 'local route';
+  const status = result.heldReason
+    ? `held:${result.heldReason}`
+    : result.executed
+      ? route.queued || route.job?.id ? 'queued' : 'executed'
+      : 'preview';
+  const routeId = route.routing?.id || '';
+  const jobId = route.job?.id || '';
+  return [
+    `Voice intake: ${transcript}`,
+    `Route: ${lane} · ${status}`,
+    routeId ? `Route id: ${routeId}` : '',
+    jobId ? `Job id: ${jobId}` : '',
+    result.context?.summary ? `Context: ${compactRecordText(result.context.summary, 240)}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function recordVoiceCommandSessionEvent(result = {}, options = {}) {
+  if (disabledVoiceCommandSessionLogging(options)) {
+    return {
+      requested: false,
+      recorded: false,
+      reason: 'disabled',
+      privacy: {
+        transcriptPreviewOnly: true,
+        metadataOnly: true,
+        noRawAudio: true,
+        noScreenImages: true,
+        noClipboardText: true,
+        noAccessibilityNodes: true,
+      },
+    };
+  }
+
+  const explicit = requestedVoiceCommandSessionLogging(options);
+  const requestedId = String(options.sessionId || options.workSessionId || '').trim();
+  let session = requestedId ? workSessions.get(requestedId) || null : activeSessionSnapshot();
+  let autoStarted = false;
+  const shouldStart = explicit && !requestedId && !session;
+
+  try {
+    if (!session && shouldStart) {
+      const goal = voiceCommandSessionGoal(options, result.transcript);
+      session = startWorkSession({
+        goal,
+        title: options.sessionTitle || goal,
+        tags: ['voice-command'],
+        source: options.source || 'voice_command_session',
+      });
+      autoStarted = true;
+    }
+
+    if (!session) {
+      return {
+        requested: explicit,
+        recorded: false,
+        reason: requestedId ? 'session_not_found' : 'no_active_session',
+        sessionId: requestedId,
+        privacy: {
+          transcriptPreviewOnly: true,
+          metadataOnly: true,
+          noRawAudio: true,
+          noScreenImages: true,
+          noClipboardText: true,
+          noAccessibilityNodes: true,
+        },
+      };
+    }
+
+    const route = result.route || {};
+    const refId = route.routing?.id || route.job?.id || route.workflow?.id || '';
+    const refKind = route.routing?.id ? 'route' : route.job?.id ? 'job' : route.workflow?.id ? 'workflow' : 'voice_command';
+    const refStatus = result.heldReason || (result.executed ? (route.queued || route.job?.id ? 'queued' : 'executed') : 'preview');
+    const recorded = addWorkSessionEvent(session.id, {
+      type: 'voice_command',
+      text: voiceCommandSessionEventText(result, options),
+      source: options.source || 'voice_command',
+      ref: {
+        kind: refKind,
+        id: refId,
+        status: refStatus,
+      },
+    });
+    return {
+      requested: explicit || Boolean(session),
+      recorded: true,
+      autoStarted,
+      sessionId: recorded.session.id,
+      eventId: recorded.event.id,
+      title: compactRecordText(recorded.session.title, 140),
+      eventType: recorded.event.type,
+      privacy: {
+        transcriptPreviewOnly: true,
+        metadataOnly: true,
+        noRawAudio: true,
+        noScreenImages: true,
+        noClipboardText: true,
+        noAccessibilityNodes: true,
+      },
+    };
+  } catch (error) {
+    appendAudit('voice_command.session_event_failed', {
+      requested: explicit,
+      requestedId,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    return {
+      requested: explicit,
+      recorded: false,
+      autoStarted,
+      sessionId: session?.id || requestedId,
+      title: compactRecordText(session?.title || '', 140),
+      error: error instanceof Error ? error.message : String(error),
+      privacy: {
+        transcriptPreviewOnly: true,
+        metadataOnly: true,
+        noRawAudio: true,
+        noScreenImages: true,
+        noClipboardText: true,
+        noAccessibilityNodes: true,
+      },
+    };
+  }
 }
 
 function voiceCommandHistorySnapshot(options = {}) {
@@ -24100,6 +24269,10 @@ async function runVoiceCommand(options = {}) {
       speechDryRun: Boolean(speakRequested && speech?.dryRun === true),
     },
   };
+  result.session = recordVoiceCommandSessionEvent(result, {
+    ...options,
+    source,
+  });
 
   appendAudit('voice_command.completed', {
     source,
@@ -24119,6 +24292,7 @@ async function runVoiceCommand(options = {}) {
     includeAccessibility,
     usesMemory: useMemory,
     hasContext: Boolean(contextSnapshot.prompt),
+    session: result.session,
     speechDryRun: result.safety.speechDryRun,
     speaksAudio: result.safety.speaksAudio,
   });
