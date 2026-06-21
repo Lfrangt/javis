@@ -2,23 +2,55 @@ import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, spawn } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { ok, fail, skip } from '../_client.mjs';
 
 const execFileAsync = promisify(execFile);
 const LIVE_FLAG = 'JAVIS_EVAL_BROWSER_LIVE_FILL';
+const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_CHROME_DEBUG_PORT || 9222)));
+const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR ||
+  path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS', 'Runtime', 'chrome-cdp-profile');
 const DEFAULT_BROWSER_CANDIDATES = [
   'Google Chrome',
-  'Arc',
-  'Comet',
+  'Safari',
   'Brave Browser',
   'Microsoft Edge',
-  'Safari',
 ];
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function appleScriptString(value) {
+  return `"${String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+async function cdpJson(pathname, options = {}) {
+  if (!CHROME_DEBUG_PORT) throw new Error('chrome_debug_port_disabled');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(500, Math.min(5000, Number(options.timeoutMs || 1500))));
+  try {
+    const response = await fetch(`http://127.0.0.1:${CHROME_DEBUG_PORT}${pathname}`, { signal: controller.signal });
+    if (!response.ok) throw new Error(`cdp_http_${response.status}`);
+    return await response.json().catch(() => ({}));
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function closeCdpDogfoodTargets() {
+  try {
+    const targets = await cdpJson('/json/list');
+    for (const target of Array.isArray(targets) ? targets : []) {
+      const title = String(target.title || '');
+      const id = String(target.id || '');
+      if (!id || !title.includes('JAVIS Browser Fill Dogfood')) continue;
+      await cdpJson(`/json/close/${encodeURIComponent(id)}`).catch(() => null);
+    }
+  } catch {
+    // CDP may not be running before the first live dogfood launch.
+  }
 }
 
 function escapeHtml(value = '') {
@@ -59,6 +91,7 @@ function dogfoodPageHtml(runId) {
       <button id="submit" type="submit">Submit</button>
     </form>
     <button id="ping" type="button">Ping DOM action</button>
+    <button id="workflow-action" type="button">Workflow action</button>
     <script>
       document.getElementById('dogfood-form').addEventListener('submit', (event) => {
         event.preventDefault();
@@ -66,6 +99,9 @@ function dogfoodPageHtml(runId) {
       });
       document.getElementById('ping').addEventListener('click', () => {
         document.getElementById('status').textContent = 'DOM_ACTION_CLICKED';
+      });
+      document.getElementById('workflow-action').addEventListener('click', () => {
+        document.getElementById('status').textContent = 'WORKFLOW_ACTION_CLICKED';
       });
     </script>
   </body>
@@ -117,27 +153,31 @@ async function installedBrowserApps() {
 }
 
 async function openBrowser(app, targetUrl) {
-  if (app === 'Google Chrome') {
-    const executable = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-    if (!fs.existsSync(executable)) {
-      await execFileAsync('/usr/bin/open', ['-a', app, targetUrl], { timeout: 8000 });
-      return;
-    }
-    const profile = path.join(os.tmpdir(), 'javis-browser-live-fill-chrome-profile');
-    const child = spawn(executable, [
-      `--user-data-dir=${profile}`,
-      '--no-first-run',
-      '--no-default-browser-check',
-      targetUrl,
-    ], {
-      detached: true,
-      stdio: 'ignore',
-    });
-    child.unref();
-    await sleep(2500);
-    return;
+  const quotedApp = appleScriptString(app);
+  const quotedUrl = appleScriptString(targetUrl);
+  const script = app.startsWith('Safari')
+    ? `
+tell application ${quotedApp}
+  activate
+  open location ${quotedUrl}
+end tell
+`.trim()
+    : `
+tell application ${quotedApp}
+  activate
+  if (count of windows) = 0 then make new window
+  set URL of active tab of front window to ${quotedUrl}
+end tell
+`.trim();
+  try {
+    await execFileAsync('/usr/bin/osascript', ['-e', script], { timeout: 8000 });
+  } catch {
+    await execFileAsync('/usr/bin/open', ['-a', app, targetUrl], { timeout: 8000 });
   }
-  await execFileAsync('/usr/bin/open', ['-a', app, targetUrl], { timeout: 8000 });
+  if (app === 'Google Chrome') {
+    fs.mkdirSync(CHROME_CDP_PROFILE_DIR, { recursive: true });
+  }
+  await sleep(1200);
 }
 
 async function closeDogfoodBrowserTabs(app, urlNeedle) {
@@ -173,6 +213,42 @@ end tell
   } catch {
     // Cleanup is best-effort; the dogfood result itself is already recorded.
   }
+  if (app === 'Google Chrome') await closeCdpDogfoodTargets();
+}
+
+async function closeStaleDogfoodBrowserTabs(app) {
+  const quotedApp = JSON.stringify(app);
+  const titleNeedle = JSON.stringify('JAVIS Browser Fill Dogfood');
+  const chromiumScript = `
+tell application ${quotedApp}
+  repeat with browserWindow in windows
+    set matchingTabs to {}
+    repeat with browserTab in tabs of browserWindow
+      try
+        if (title of browserTab as text) contains ${titleNeedle} then set end of matchingTabs to browserTab
+      end try
+    end repeat
+    repeat with browserTab in matchingTabs
+      close browserTab
+    end repeat
+  end repeat
+end tell
+`.trim();
+  const safariScript = `
+tell application ${quotedApp}
+  repeat with browserDocument in documents
+    try
+      if (name of browserDocument as text) contains ${titleNeedle} then close browserDocument
+    end try
+  end repeat
+end tell
+`.trim();
+  try {
+    await execFileAsync('/usr/bin/osascript', ['-e', app.startsWith('Safari') ? safariScript : chromiumScript], { timeout: 5000 });
+  } catch {
+    // Cleanup is best-effort; CDP cleanup below covers the common Chrome path.
+  }
+  if (app === 'Google Chrome') await closeCdpDogfoodTargets();
 }
 
 async function waitForBrowserContext(ctx, app, urlNeedle, timeoutMs = 18000) {
@@ -225,6 +301,7 @@ export default {
       const attempts = [];
       for (const candidate of apps) {
         try {
+          await closeStaleDogfoodBrowserTabs(candidate);
           await openBrowser(candidate, targetUrl);
           const candidateContext = await waitForBrowserContext(ctx, candidate, urlNeedle);
           attempts.push({
@@ -263,12 +340,13 @@ export default {
       const controls = dom.data?.dom?.elements || [];
       const hasExpectedControls = ['Name', 'Email', 'Plan'].every((label) => controls.some((item) => item.label === label || item.name?.toLowerCase() === label.toLowerCase()));
       const hasDomActionButton = controls.some((item) => item.selector === '#ping' || item.label === 'Ping DOM action' || item.text === 'Ping DOM action');
+      const hasWorkflowActionButton = controls.some((item) => item.selector === '#workflow-action' || item.label === 'Workflow action' || item.text === 'Workflow action');
       out.push(
-        dom.ok && hasExpectedControls && hasDomActionButton
-          ? ok('browser_live_fill.dom', 'Live DOM controls', `${controls.length} control(s), expected fields and DOM action button visible`)
-          : fail('browser_live_fill.dom', 'Live DOM controls', 'expected Name, Email, Plan, and Ping DOM action controls in live DOM snapshot', dom.data),
+        dom.ok && hasExpectedControls && hasDomActionButton && hasWorkflowActionButton
+          ? ok('browser_live_fill.dom', 'Live DOM controls', `${controls.length} control(s), expected fields and action buttons visible`)
+          : fail('browser_live_fill.dom', 'Live DOM controls', 'expected Name, Email, Plan, Ping DOM action, and Workflow action controls in live DOM snapshot', dom.data),
       );
-      if (!dom.ok || !hasExpectedControls || !hasDomActionButton) return out;
+      if (!dom.ok || !hasExpectedControls || !hasDomActionButton || !hasWorkflowActionButton) return out;
 
       const fill = await ctx.api('/api/browser/fill-draft', {
         method: 'POST',
@@ -346,6 +424,41 @@ export default {
           !textAfterDomAction.includes('FORM_SUBMITTED')
           ? ok('browser_live_fill.dom_action_verified', 'DOM action click verified', 'page status changed without submitting the form')
           : fail('browser_live_fill.dom_action_verified', 'DOM action click verified', 'page did not prove safe DOM click result', pageAfterDomAction.data),
+      );
+
+      const workflowAct = await ctx.api('/api/browser/workflow', {
+        method: 'POST',
+        timeoutMs: 60000,
+        body: {
+          app,
+          source: 'eval_browser_live_act_workflow',
+          intent: 'act',
+          mode: 'quick',
+          instruction: 'click Workflow action',
+          execute: true,
+          maxSteps: 1,
+        },
+      });
+      const workflowResult = workflowAct.data || {};
+      out.push(
+        workflowAct.ok &&
+          workflowResult.ok === true &&
+          workflowResult.intent === 'act' &&
+          ['local_fallback', 'model'].includes(workflowResult.plan?.source) &&
+          workflowResult.results?.some((result) => result.status === 'executed' && result.action === 'click') &&
+          workflowResult.workflow?.status === 'done'
+          ? ok('browser_live_fill.act_workflow', 'Live browser act workflow', `${workflowResult.plan?.source} planned and executed safe click from natural instruction`)
+          : fail('browser_live_fill.act_workflow', 'Live browser act workflow', `POST /api/browser/workflow ${workflowAct.status}`, workflowAct.data),
+      );
+
+      const pageAfterWorkflow = await ctx.api(`/api/browser/page?app=${encodeURIComponent(app)}&maxChars=1200`, { timeoutMs: 20000 });
+      const textAfterWorkflow = String(pageAfterWorkflow.data?.page?.text || '');
+      out.push(
+        pageAfterWorkflow.ok &&
+          textAfterWorkflow.includes('WORKFLOW_ACTION_CLICKED') &&
+          !textAfterWorkflow.includes('FORM_SUBMITTED')
+          ? ok('browser_live_fill.act_workflow_verified', 'Live browser act workflow verified', 'workflow click changed page state without submitting the form')
+          : fail('browser_live_fill.act_workflow_verified', 'Live browser act workflow verified', 'page did not prove safe workflow click result', pageAfterWorkflow.data),
       );
     } finally {
       if (app) await closeDogfoodBrowserTabs(app, urlNeedle);

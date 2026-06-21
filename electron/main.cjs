@@ -17696,6 +17696,7 @@ function chooseCdpTarget(targets = [], browser = {}) {
     const titleHit = pages.find((target) => String(target.title || '').trim() === title);
     if (titleHit) return titleHit;
   }
+  if (browserUrl || title) return null;
   return pages.find((target) => /^https?:|^file:/i.test(String(target.url || ''))) || pages[0] || null;
 }
 
