@@ -51,6 +51,7 @@ Renderer
 
 - Realtime lane: fast speech-to-speech interaction, short replies, tool calls, started or stopped from the minimal pet when configured.
 - Local speech fallback lane: macOS `/usr/bin/say` output for provider-blocked or no-mic states, with `/api/speech/state`, silent `dryRun` previews, explicit short audible dogfood, and no microphone/OpenAI dependency.
+- Local voice command lane: `/api/voice/command` accepts a transcript from typed input, future local STT, or a blocked Realtime fallback, routes it through the same task router, prepares a short spoken acknowledgement through local speech, and holds quick-lane cloud calls unless explicitly allowed.
 - Realtime config snapshot lane: exposes a read-only `/api/realtime/config` check for model/voice, tool inventory, wake/control guardrails, preflight status, and screen privacy without returning the full prompt text.
 - Pet session lane: one click starts voice and requests screen sharing, then pushes the first permitted screen frame into Realtime context.
 - Conversation state lane: renderer-reported connecting/live/idle/error voice lifecycle with heartbeats so the resident can expose whether it is truly listening.

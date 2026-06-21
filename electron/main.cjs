@@ -23584,6 +23584,146 @@ function quickLaneOutputOk(output) {
   return Boolean(text) && !text.startsWith('OpenAI API key is not configured.');
 }
 
+function booleanOption(value) {
+  return value === true || String(value || '').toLowerCase() === 'true';
+}
+
+function voiceLaneSpokenName(route = {}) {
+  const lane = route.decision?.lane || route.decision?.mode || 'local';
+  if (route.localCommand?.label) return route.localCommand.label;
+  if (lane === 'quick') return '快速回答';
+  if (lane === 'background') return '后台任务';
+  if (lane === 'codex') return 'Codex';
+  if (lane === 'claude') return 'Claude';
+  if (lane === 'local') return '本地命令';
+  return route.decision?.label || lane;
+}
+
+function voiceCommandAck(route = {}, options = {}) {
+  const laneName = voiceLaneSpokenName(route);
+  const output = compactRecordText(route.output || '', 180);
+  if (options.heldReason === 'quick_lane_cloud_call_not_allowed') {
+    return '听到了。这是快问快答，但当前本地演练默认不调用云端模型。你可以让我把它交给后台，或者等 Realtime 额度恢复后再直接回答。';
+  }
+  if (route.queued || route.job?.id) return `收到，已经交给${laneName}处理。`;
+  if (route.executed && route.ok !== false) {
+    return output ? `完成。${output}` : `完成，${laneName}已经处理。`;
+  }
+  if (route.executed && route.ok === false) {
+    return output ? `这次没有完成。${output}` : '这次没有完成，我已经留下了路由记录。';
+  }
+  const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
+  return `收到。我会走${laneName}。${reason}`;
+}
+
+async function runVoiceCommand(options = {}) {
+  const transcript = compactRecordText(options.transcript || options.message || options.text || '', 1600);
+  if (!transcript) throw new Error('Missing transcript.');
+  const requestedExecute = booleanOption(options.execute);
+  const includeScreen = booleanOption(options.includeScreen);
+  const allowCloudQuick = booleanOption(options.allowCloudQuick || options.allowOpenAIQuick);
+  const useMemory = booleanOption(options.useMemory);
+  const speakRequested = options.speak === undefined ? true : booleanOption(options.speak);
+  const confirmSpeak = booleanOption(options.confirmSpeak || options.confirmAudio || options.confirmSpeech);
+  const mode = options.mode || options.lane;
+  const source = String(options.source || 'voice_command').slice(0, 80);
+  const baseRouteOptions = {
+    message: transcript,
+    execute: false,
+    includeScreen,
+    mode,
+    useMemory,
+    memoryLimit: options.memoryLimit,
+    skillLimit: options.skillLimit,
+    source: `${source}_preview`,
+    owner: options.owner || 'voice',
+    scope: options.scope || 'voice command intake',
+  };
+
+  appendAudit('voice_command.received', {
+    source,
+    chars: transcript.length,
+    requestedExecute,
+    includeScreen,
+    allowCloudQuick,
+    useMemory,
+    speakRequested,
+    confirmSpeak,
+  });
+
+  const previewRoute = await routeTask(baseRouteOptions);
+  let route = previewRoute;
+  let heldReason = '';
+  const previewLane = previewRoute.decision?.lane || '';
+  const canExecute = requestedExecute && (allowCloudQuick || previewLane !== 'quick');
+  if (requestedExecute && !canExecute) {
+    heldReason = 'quick_lane_cloud_call_not_allowed';
+  } else if (canExecute) {
+    route = await routeTask({
+      ...baseRouteOptions,
+      execute: true,
+      source: `${source}_execute`,
+    });
+  }
+
+  const spokenAck = voiceCommandAck(route, { heldReason });
+  let speech = null;
+  if (speakRequested) {
+    try {
+      speech = speechSay({
+        text: spokenAck,
+        dryRun: !confirmSpeak,
+        source,
+      });
+    } catch (error) {
+      speech = {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        dryRun: !confirmSpeak,
+      };
+    }
+  }
+
+  const result = {
+    ok: route.ok !== false && (!speakRequested || speech?.ok !== false),
+    channel: 'local_voice_command',
+    transcript,
+    requestedExecute,
+    executed: Boolean(route.executed),
+    heldReason,
+    route,
+    routePreview: previewRoute,
+    spokenAck,
+    speech,
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      usesMemory: useMemory,
+      callsOpenAIImmediately: Boolean(canExecute && previewLane === 'quick' && allowCloudQuick),
+      mayQueueCloudModel: Boolean(canExecute && previewLane === 'background'),
+      mayQueueLocalWorker: Boolean(canExecute && ['codex', 'claude'].includes(previewLane)),
+      speaksAudio: Boolean(speakRequested && confirmSpeak && speech?.speaking),
+      speechDryRun: Boolean(speakRequested && speech?.dryRun === true),
+    },
+  };
+
+  appendAudit('voice_command.completed', {
+    source,
+    ok: result.ok,
+    requestedExecute,
+    executed: result.executed,
+    heldReason,
+    lane: route.decision?.lane || '',
+    queued: Boolean(route.queued || route.job?.id),
+    usesMemory: useMemory,
+    speechDryRun: result.safety.speechDryRun,
+    speaksAudio: result.safety.speaksAudio,
+  });
+
+  return result;
+}
+
 async function routeTask(options = {}) {
   const task = String(options.message || options.task || '').trim();
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
@@ -52575,6 +52715,15 @@ function startApiServer() {
         return;
       }
       jsonError(res, 500, 'Quick answer failed', output);
+    }
+  });
+
+  api.post('/api/voice/command', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await runVoiceCommand(req.body || {});
+      res.status(result.ok === false ? 400 : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Voice command failed', error instanceof Error ? error.message : String(error));
     }
   });
 
