@@ -8,6 +8,21 @@ export default {
     const health = await ctx.api('/api/health');
     out.push(assert(health.ok, 'health.up', 'Service health', `GET /api/health ${health.status}`, `health ${health.status} ${health.error || ''}`));
 
+    const petStatus = await ctx.api('/api/pet/status', { timeoutMs: 5000 });
+    const latencyThresholdMs = 2000;
+    out.push(
+      health.ok &&
+        petStatus.ok &&
+        health.elapsedMs <= latencyThresholdMs &&
+        petStatus.elapsedMs <= latencyThresholdMs &&
+        petStatus.data?.pet?.lightweight === true
+        ? ok('health.status_latency', 'Status endpoint latency', `health=${health.elapsedMs}ms · pet=${petStatus.elapsedMs}ms`)
+        : fail('health.status_latency', 'Status endpoint latency', `expected health and pet status under ${latencyThresholdMs}ms, got health=${health.elapsedMs ?? '-'}ms pet=${petStatus.elapsedMs ?? '-'}ms`, {
+            health: { status: health.status, elapsedMs: health.elapsedMs },
+            pet: { status: petStatus.status, elapsedMs: petStatus.elapsedMs },
+          }),
+    );
+
     const doctor = await ctx.api('/api/doctor/report', { timeoutMs: 45000 });
     const report = doctor.data?.doctor;
     if (report) {

@@ -11430,8 +11430,43 @@ function createActionApproval(plan, reason, continuation = null) {
 
 function readRecentAudit(limit = 80) {
   if (!fs.existsSync(AUDIT_FILE)) return [];
-  const lines = fs.readFileSync(AUDIT_FILE, 'utf8').trim().split('\n').filter(Boolean);
-  return lines.slice(-Math.max(1, Math.min(200, limit))).map((line) => {
+  const normalizedLimit = Math.max(1, Math.min(200, Number(limit || 80)));
+  let fd = null;
+  let startedInMiddle = false;
+  let chunks = [];
+  try {
+    const stat = fs.statSync(AUDIT_FILE);
+    if (!stat.size) return [];
+    const maxBytes = Math.max(64 * 1024, Math.min(4 * 1024 * 1024, normalizedLimit * 4096));
+    const chunkSize = 64 * 1024;
+    fd = fs.openSync(AUDIT_FILE, 'r');
+    let position = stat.size;
+    let bytesTotal = 0;
+    let newlineCount = 0;
+    while (position > 0 && bytesTotal < maxBytes && newlineCount <= normalizedLimit + 2) {
+      const bytesToRead = Math.min(chunkSize, position, maxBytes - bytesTotal);
+      position -= bytesToRead;
+      const buffer = Buffer.allocUnsafe(bytesToRead);
+      const bytesRead = fs.readSync(fd, buffer, 0, bytesToRead, position);
+      if (bytesRead <= 0) break;
+      const chunk = buffer.subarray(0, bytesRead);
+      chunks.unshift(chunk);
+      bytesTotal += bytesRead;
+      newlineCount += (chunk.toString('utf8').match(/\n/g) || []).length;
+    }
+    startedInMiddle = position > 0;
+  } catch {
+    return [];
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {}
+    }
+  }
+  const lines = Buffer.concat(chunks).toString('utf8').split('\n').filter(Boolean);
+  if (startedInMiddle && lines.length) lines.shift();
+  return lines.slice(-normalizedLimit).map((line) => {
     try {
       return JSON.parse(line);
     } catch {

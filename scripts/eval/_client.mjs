@@ -50,6 +50,7 @@ export function makeContext() {
     for (let attempt = 0; attempt <= retries; attempt += 1) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const startedAt = performance.now();
       try {
         const response = await fetch(`${baseUrl}${pathname}`, {
           method,
@@ -58,19 +59,19 @@ export function makeContext() {
           signal: controller.signal,
         });
         const data = await response.json().catch(() => null);
-        return { status: response.status, ok: response.ok, data };
+        return { status: response.status, ok: response.ok, data, elapsedMs: Math.round(performance.now() - startedAt) };
       } catch (error) {
         const isTimeout = error?.name === 'AbortError';
         lastError = isTimeout ? `timeout after ${timeoutMs}ms` : String(error?.message || error);
         if (isTimeout || attempt >= retries) {
-          return { status: 0, ok: false, data: null, error: lastError };
+          return { status: 0, ok: false, data: null, error: lastError, elapsedMs: Math.round(performance.now() - startedAt) };
         }
         await new Promise((resolve) => setTimeout(resolve, 1500));
       } finally {
         clearTimeout(timer);
       }
     }
-    return { status: 0, ok: false, data: null, error: lastError };
+    return { status: 0, ok: false, data: null, error: lastError, elapsedMs: 0 };
   }
   return { baseUrl, token, api };
 }
