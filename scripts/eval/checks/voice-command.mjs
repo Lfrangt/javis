@@ -223,6 +223,48 @@ export default {
         : fail('voice_command.natural_realtime_dogfood_pack', 'Natural Realtime dogfood pack voice command', 'natural Realtime dogfood pack phrase did not use the local read-only pack path', naturalRealtimeDogfoodPack.data),
     );
 
+    const naturalRealtimeDogfoodPromptCopy = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '把实时语音验收下一句复制到剪贴板。',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_realtime_dogfood_prompt_copy',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalRealtimeDogfoodPromptCopyData = naturalRealtimeDogfoodPromptCopy.data || {};
+    const promptCopy = naturalRealtimeDogfoodPromptCopyData.route?.data?.promptCopy || {};
+    out.push(
+      naturalRealtimeDogfoodPromptCopy.ok &&
+        naturalRealtimeDogfoodPromptCopyData.ok === true &&
+        naturalRealtimeDogfoodPromptCopyData.executed === false &&
+        naturalRealtimeDogfoodPromptCopyData.route?.decision?.localCommand === 'realtime_dogfood_prompt_copy' &&
+        naturalRealtimeDogfoodPromptCopyData.route?.localCommand?.intent === 'realtime_dogfood_prompt_copy' &&
+        naturalRealtimeDogfoodPromptCopyData.route?.executed === false &&
+        typeof naturalRealtimeDogfoodPromptCopyData.route?.output === 'string' &&
+        naturalRealtimeDogfoodPromptCopyData.route.output.includes('Realtime dogfood prompt copy: preview only') &&
+        naturalRealtimeDogfoodPromptCopyData.route.output.includes('下一句:') &&
+        naturalRealtimeDogfoodPromptCopyData.route.output.includes('边界:') &&
+        promptCopy.ok === true &&
+        promptCopy.copied === false &&
+        promptCopy.wouldCopy === true &&
+        typeof promptCopy.text === 'string' &&
+        promptCopy.text.length > 0 &&
+        promptCopy.safety?.startsMicrophone === false &&
+        promptCopy.safety?.usesRealtime === false &&
+        promptCopy.safety?.savesArchive === false &&
+        promptCopy.safety?.opensTerminal === false &&
+        naturalRealtimeDogfoodPromptCopyData.safety?.startsMicrophone === false &&
+        naturalRealtimeDogfoodPromptCopyData.safety?.usesRealtime === false &&
+        naturalRealtimeDogfoodPromptCopyData.safety?.callsOpenAIImmediately === false &&
+        naturalRealtimeDogfoodPromptCopyData.speech?.dryRun === true
+        ? ok('voice_command.natural_realtime_dogfood_prompt_copy', 'Natural Realtime dogfood prompt copy voice command', '复制实时语音验收下一句 previews the clipboard write without mic, Realtime, archive save, Terminal, or cloud')
+        : fail('voice_command.natural_realtime_dogfood_prompt_copy', 'Natural Realtime dogfood prompt copy voice command', 'natural Realtime dogfood prompt copy phrase did not use the local preview path', naturalRealtimeDogfoodPromptCopy.data),
+    );
+
     const naturalRealtimeDogfoodStatus = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
