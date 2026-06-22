@@ -1028,6 +1028,7 @@ function printVoiceStandby(result) {
   const primary = standby.primaryAction || {};
   const safety = standby.safety || {};
   const inputMode = standby.inputMode || local.inputMode || {};
+  const retryPolicy = provider.retryPolicy || {};
   const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
   const history = local.history || {};
   const promptPack = standby.promptPack || local.promptPack || {};
@@ -1047,6 +1048,9 @@ function printVoiceStandby(result) {
   if (provider.summary) console.log(`- ${compact(provider.summary, 300)}`);
   if (provider.next) console.log(`- next: ${compact(provider.next, 320)}`);
   if (provider.subscriptionBoundary) console.log(`- billing: ${compact(provider.subscriptionBoundary, 320)}`);
+  if (retryPolicy.active) {
+    console.log(`- retry: ${retryPolicy.state || '-'} · can probe now=${retryPolicy.canProbeNow ? 'yes' : 'no'}${retryPolicy.waitLabel ? ` · wait ${retryPolicy.waitLabel}` : ''} · local fallback=${retryPolicy.shouldUseLocalFallback ? 'yes' : 'no'}`);
+  }
   console.log('\nLocal intake');
   console.log(`- ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · loop=${local.input?.openLoopCommand || 'npm run voice:chat'}`);
   if (local.summary) console.log(`- ${compact(local.summary, 260)}`);
@@ -3474,6 +3478,10 @@ function printRealtimeProviderRecovery(result) {
     const fresh = recovery.autoProbe.freshness || {};
     const state = recovery.autoProbe.running ? 'running' : recovery.autoProbe.due ? 'due' : fresh.fresh ? `cooldown ${fresh.waitLabel || ''}`.trim() : 'idle';
     console.log(`Auto probe: ${state} · action=${recovery.autoProbe.actionId || 'readiness:realtime_voice_provider'} · starts microphone=${recovery.autoProbe.safety?.startsMicrophone ? 'yes' : 'no'}`);
+  }
+  if (recovery.retryPolicy?.active) {
+    const policy = recovery.retryPolicy;
+    console.log(`Retry policy: ${policy.state || '-'} · can probe now=${policy.canProbeNow ? 'yes' : 'no'}${policy.waitLabel ? ` · wait ${policy.waitLabel}` : ''} · use local fallback=${policy.shouldUseLocalFallback ? 'yes' : 'no'}`);
   }
   if (steps.length) {
     console.log('\nRecovery steps:');

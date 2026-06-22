@@ -110,6 +110,7 @@ export default {
     const voiceStandby = voiceStandbyResponse.data?.standby || {};
     const voiceStandbyPromptPack = voiceStandby.promptPack || {};
     const voiceStandbyInputMode = voiceStandby.inputMode || {};
+    const voiceStandbyRetryPolicy = voiceStandby.provider?.retryPolicy || {};
     const voiceStandbyCui = spawnSync('npm', ['run', 'voice:standby'], {
       cwd: process.cwd(),
       encoding: 'utf8',
@@ -127,6 +128,11 @@ export default {
         voiceStandbyInputMode.mode === 'push_to_talk' &&
         voiceStandbyInputMode.micDefault === 'push' &&
         voiceStandbyInputMode.startsMuted === true &&
+        (voiceStandby.provider?.status === 'ready' ||
+          (voiceStandbyRetryPolicy.active === true &&
+            ['probe_due', 'cooldown', 'probe_running'].includes(voiceStandbyRetryPolicy.state) &&
+            voiceStandbyRetryPolicy.shouldUseLocalFallback === true &&
+            voiceStandbyRetryPolicy.safety?.startsMicrophone === false)) &&
         voiceStandby.local?.available === true &&
         voiceStandby.local?.input?.endpoint === '/api/voice/command' &&
         voiceStandby.local?.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
@@ -148,6 +154,7 @@ export default {
         voiceStandbyCui.status === 0 &&
         voiceStandbyCui.stdout.includes('JAVIS Voice Standby') &&
         voiceStandbyCui.stdout.includes('Input mode: Push-to-talk') &&
+        (voiceStandby.provider?.status === 'ready' || voiceStandbyCui.stdout.includes('retry:')) &&
         voiceStandbyCui.stdout.includes('Try saying') &&
         voiceStandbyCui.stdout.includes('local loop: npm run voice:chat')
         ? ok('resident.voice_standby', 'Voice standby/fallback status', `${voiceStandby.mode} · primary=${voiceStandby.primaryAction.id}`)
@@ -1153,10 +1160,17 @@ export default {
     const recoveryResponse = await ctx.api('/api/realtime/provider/recovery');
     const recovery = recoveryResponse.data?.recovery || {};
     const recoverySteps = Array.isArray(recovery.steps) ? recovery.steps : [];
+    const retryPolicy = recovery.retryPolicy || {};
     out.push(
       recoveryResponse.ok &&
         recovery.version === 1 &&
         typeof recovery.active === 'boolean' &&
+        (recovery.active === false ||
+          (retryPolicy.active === true &&
+            ['probe_due', 'cooldown', 'probe_running'].includes(retryPolicy.state) &&
+            retryPolicy.shouldUseLocalFallback === true &&
+            retryPolicy.safety?.startsMicrophone === false &&
+            retryPolicy.safety?.storesRawAudio === false)) &&
         recovery.chatGptSubscriptionCoversApi === false &&
         String(recovery.subscriptionBoundary || '').includes('OpenAI API Platform billing') &&
         recovery.localFallback?.endpoint === '/api/voice/command' &&

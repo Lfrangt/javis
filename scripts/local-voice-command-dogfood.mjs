@@ -1191,6 +1191,7 @@ function formatLoopVoiceStatus(data = {}) {
   const provider = standby.provider || {};
   const local = standby.local || {};
   const inputMode = standby.inputMode || local.inputMode || {};
+  const retryPolicy = provider.retryPolicy || {};
   const primary = standby.primaryAction || {};
   const blocker = local.blocker || {};
   const promptPack = standby.promptPack || local.promptPack || {};
@@ -1204,6 +1205,9 @@ function formatLoopVoiceStatus(data = {}) {
   if (inputMode.mode) lines.push(`Input: ${inputMode.label || inputMode.mode} · default=${inputMode.micDefault || '-'} · ${compactText(inputMode.prompt || '', 120)}`);
   if (provider.summary) lines.push(`Realtime: ${compactText(provider.summary, 260)}`);
   if (provider.subscriptionBoundary) lines.push(`Billing/API: ${compactText(provider.subscriptionBoundary, 260)}`);
+  if (retryPolicy.active) {
+    lines.push(`Retry: ${retryPolicy.state || '-'} · canProbe=${retryPolicy.canProbeNow ? 'yes' : 'no'}${retryPolicy.waitLabel ? ` · wait ${retryPolicy.waitLabel}` : ''} · use local fallback=${retryPolicy.shouldUseLocalFallback ? 'yes' : 'no'}`);
+  }
   if (blocker.active) lines.push(`Blocker: ${blocker.kind || provider.kind || '-'} · ${compactText(blocker.summary || provider.summary || '', 240)}`);
   if (promptPack.nextUtterance) lines.push(`Try: ${compactText(promptPack.nextUtterance, 180)}`);
   if (examples.length) {

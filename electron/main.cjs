@@ -13622,6 +13622,14 @@ async function maybePrewarmAppUiCache(frontmost = {}, options = {}) {
   }
 }
 
+async function waitForAppUiPrewarmIdle(timeoutMs = 5000) {
+  const deadline = Date.now() + Math.max(0, Math.min(10000, Number(timeoutMs || 0)));
+  while (appUiPrewarmState.running && Date.now() < deadline) {
+    await waitMs(100);
+  }
+  return ambientAppUiPrewarmSnapshot();
+}
+
 const ACTIONABLE_AX_ROLES = new Set([
   'AXButton',
   'AXCheckBox',
@@ -25689,6 +25697,7 @@ function formatVoiceStatusForLocalCommand(status = {}) {
   const local = standby.local || {};
   const localInteraction = local.interaction || {};
   const inputMode = standby.inputMode || local.inputMode || {};
+  const retryPolicy = provider.retryPolicy || standby.recovery?.retryPolicy || {};
   const primary = standby.primaryAction || {};
   const blocker = local.blocker || {};
   const promptPack = standby.promptPack || local.promptPack || {};
@@ -25707,6 +25716,7 @@ function formatVoiceStatusForLocalCommand(status = {}) {
     `Voice: ${standby.label || standby.mode || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
     provider.summary ? `Realtime: ${compactRecordText(provider.summary, 260)}` : '',
     provider.subscriptionBoundary ? `Billing/API: ${compactRecordText(provider.subscriptionBoundary, 260)}` : '',
+    retryPolicy.active ? `Retry: ${retryPolicy.state || '-'} · canProbe=${retryPolicy.canProbeNow ? 'yes' : 'no'}${retryPolicy.waitLabel ? ` · wait ${retryPolicy.waitLabel}` : ''} · use local fallback=${retryPolicy.shouldUseLocalFallback ? 'yes' : 'no'}` : '',
     blocker.active ? `Blocker: ${blocker.kind || provider.kind || '-'} · ${compactRecordText(blocker.summary || provider.summary || '', 240)}` : '',
     `Primary: ${primary.label || primary.id || '-'} · mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`,
     `Local fallback: ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · terminal=${localInteraction.opensTerminal ? 'yes' : 'no'}`,
@@ -27563,6 +27573,7 @@ function voiceStandbySnapshot(options = {}) {
       subscriptionBoundary: compactRecordText(recovery.subscriptionBoundary || '', 320),
       billingLikely: Boolean(recovery.billingLikely),
       autoProbe: recovery.autoProbe || null,
+      retryPolicy: recovery.retryPolicy || null,
       links: recovery.links || {},
     },
     local: {
@@ -32495,7 +32506,19 @@ function recordAmbientEvent(rawEvent) {
 }
 
 async function sampleAmbientContext(source = 'ambient', options = {}) {
-  if (ambientSampling) return null;
+  if (ambientSampling) {
+    if (options.prewarmAppUi === true) {
+      const context = await macContextSnapshot({ includeClipboardText: false }).catch(() => null);
+      if (context?.frontmost?.app) {
+        await maybePrewarmAppUiCache(context.frontmost, {
+          source,
+          force: true,
+        });
+      }
+    }
+    if (options.waitForPrewarm === true) await waitForAppUiPrewarmIdle();
+    return ambientEvents[0] || null;
+  }
   ambientSampling = true;
   try {
     let screenFrame = latestScreenSnapshot();
@@ -32522,6 +32545,7 @@ async function sampleAmbientContext(source = 'ambient', options = {}) {
       const prewarmPromise = maybePrewarmAppUiCache(context.frontmost, prewarmOptions);
       if (options.waitForPrewarm === true) {
         await prewarmPromise;
+        await waitForAppUiPrewarmIdle();
       } else {
         void prewarmPromise;
       }
@@ -35771,6 +35795,41 @@ function classifyRealtimeProviderIssue(details = {}) {
   return null;
 }
 
+function realtimeProviderRetryPolicySnapshot(issue = null, options = {}) {
+  const active = Boolean(issue && issue.status !== 'ready');
+  const freshness = options.freshness || realtimeProviderProbeFreshness();
+  const state = !active
+    ? 'ready'
+    : freshness.running
+      ? 'probe_running'
+      : freshness.fresh
+        ? 'cooldown'
+        : 'probe_due';
+  return {
+    version: 1,
+    active,
+    state,
+    canProbeNow: Boolean(OPENAI_API_KEY && active && !freshness.running && !freshness.fresh),
+    shouldUseLocalFallback: active,
+    cooldownMs: Math.max(0, Number(freshness.cooldownMs || REALTIME_PROVIDER_PROBE_FRESH_MS)),
+    waitMs: Math.max(0, Number(freshness.waitMs || 0)),
+    waitLabel: compactRecordText(freshness.waitLabel || '', 40),
+    lastCheck: freshness.latest
+      ? {
+        at: compactRecordText(freshness.latest.at || '', 80),
+        status: compactRecordText(freshness.latest.status || '', 80),
+        source: compactRecordText(freshness.latest.source || '', 80),
+      }
+      : null,
+    nextCommand: 'npm run dogfood:realtime-provider-probe',
+    safety: {
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      storesRawAudio: false,
+    },
+  };
+}
+
 function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
   const kind = compactRecordText(issue?.kind || '', 80);
   const status = compactRecordText(issue?.status || 'ready', 80);
@@ -35850,6 +35909,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
   }
 
   const providerProbeFreshness = realtimeProviderProbeFreshness();
+  const retryPolicy = realtimeProviderRetryPolicySnapshot(issue, { freshness: providerProbeFreshness });
 
   return {
     version: 1,
@@ -35863,6 +35923,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     chatGptSubscriptionCoversApi: false,
     subscriptionBoundary: 'ChatGPT app subscriptions and OpenAI API Platform billing are separate; API/Realtime usage needs API billing or credits on the project/org that owns OPENAI_API_KEY.',
     billingLikely: quotaLike,
+    retryPolicy,
     links: {
       billing: billingUrl,
       limits: limitsUrl,
@@ -35982,6 +36043,7 @@ function realtimeVoiceHealthSnapshot(options = {}) {
         ? `Last no-mic Realtime provider probe succeeded${providerCheck.statusCode ? ` (HTTP ${providerCheck.statusCode})` : ''}.`
         : `Last Realtime WebRTC negotiation succeeded${providerCheck.statusCode ? ` (HTTP ${providerCheck.statusCode})` : ''}.`
       : realtimeProviderUnverifiedIssue().summary);
+  const recovery = realtimeProviderRecoverySnapshot(issue, { source: 'voice_health' });
   return {
     ok: status !== 'blocked',
     status,
@@ -35990,7 +36052,8 @@ function realtimeVoiceHealthSnapshot(options = {}) {
     next: issue?.next || '',
     hasOpenAiKey: Boolean(OPENAI_API_KEY),
     maxAuditAgeMs: REALTIME_PROVIDER_WARNING_MAX_AGE_MS,
-    recovery: realtimeProviderRecoverySnapshot(issue, { source: 'voice_health' }),
+    recovery,
+    retryPolicy: recovery.retryPolicy || null,
     fallback: realtimeLocalVoiceFallbackSnapshot(issue),
     lastNegotiation: negotiation,
     lastProviderProbe: providerProbe,
