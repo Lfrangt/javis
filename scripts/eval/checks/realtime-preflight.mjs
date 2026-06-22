@@ -189,6 +189,19 @@ export default {
     const packBlockers = Array.isArray(drillPack.blockers) ? drillPack.blockers : [];
     const acceptancePassed = Number(drillPack.readiness?.acceptancePassed || 0);
     const acceptanceGates = Number(drillPack.readiness?.acceptanceGates || 0);
+    const liveGateRunbook = drillPack.liveGateRunbook || {};
+    const liveGateIds = new Set(Array.isArray(liveGateRunbook.gateIds) ? liveGateRunbook.gateIds : []);
+    const liveGateRunbookOk = liveGateRunbook.manualOnly === true &&
+      liveGateRunbook.startsMicrophone === false &&
+      liveGateRunbook.triggerStartsMicrophone === true &&
+      liveGateRunbook.requiresMicConfirmation === true &&
+      liveGateRunbook.autopilotEligible === false &&
+      liveGateIds.has('start_live_voice') &&
+      liveGateIds.has('inject_worker_progress') &&
+      liveGateIds.has('sync_latest_progress') &&
+      liveGateIds.has('ask_progress') &&
+      String(liveGateRunbook.command || '').includes('--require-acceptance') &&
+      String(liveGateRunbook.progressPrompt || '').includes('后台');
     const packSafetyOk = drillPack.manualOnly === true &&
       drillPack.startsMicrophone === false &&
       drillPack.currentActionStartsMicrophone === false &&
@@ -199,6 +212,7 @@ export default {
       drillPack.readiness?.nextPromptReady === true &&
       acceptanceGates >= EXPECTED_ACCEPTANCE_GATES.size &&
       acceptancePassed < acceptanceGates &&
+      liveGateRunbookOk &&
       startStep?.startsMicrophone === true &&
       startStep?.requiresMicConfirmation === true &&
       String(drillPack.commands?.start || '').includes('--confirm-mic');

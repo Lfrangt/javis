@@ -42714,6 +42714,111 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
   });
   const blockers = Array.isArray(preflight.blockers) ? preflight.blockers : [];
   const gaps = Array.isArray(acceptance.gaps) ? acceptance.gaps : [];
+  const liveGateIds = ['start_live_voice', 'inject_worker_progress', 'sync_latest_progress', 'ask_progress'];
+  const liveGateRunbook = (() => {
+    const gates = Array.isArray(acceptance.gates) ? acceptance.gates : [];
+    const liveGates = liveGateIds.map((id) => gates.find((gate) => gate.id === id) || {
+      id,
+      group: id === 'ask_progress' ? 'spoken_answer' : 'live_voice',
+      ok: false,
+      label: id,
+      nextAction: '',
+    });
+    const missing = liveGates.filter((gate) => !gate.ok);
+    const progressPrompt = '后台现在怎么样';
+    return {
+      version: 1,
+      status: missing.length ? 'waiting_for_user_live_run' : 'ready',
+      manualOnly: true,
+      startsMicrophone: false,
+      triggerStartsMicrophone: true,
+      requiresMicConfirmation: true,
+      requiresUserPresence: true,
+      autoEligible: false,
+      autopilotEligible: false,
+      remainingCount: missing.length,
+      gateIds: liveGateIds,
+      gates: liveGates.map((gate) => ({
+        id: gate.id,
+        group: gate.group || (gate.id === 'ask_progress' ? 'spoken_answer' : 'live_voice'),
+        ok: Boolean(gate.ok),
+        label: compactRecordText(gate.label || gate.id, 140),
+        nextAction: compactRecordText(gate.nextAction || '', 220),
+      })),
+      missingGateIds: missing.map((gate) => gate.id),
+      command: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+      monitorCommand: 'npm run config -> V. Watch Realtime voice evidence',
+      acceptanceCommand: 'npm run dogfood:realtime-acceptance',
+      progressPrompt,
+      promptScript: [
+        progressPrompt,
+        '现在做到哪了？接下来做什么？',
+      ],
+      api: {
+        start: {
+          method: 'POST',
+          path: '/api/realtime/dogfood/renderer/start',
+          body: {
+            execute: true,
+            confirmMic: true,
+            prepareProgress: true,
+            prepareWhenLive: true,
+            durationMs: 45000,
+            promptDelayMs: 35000,
+            prompts: [progressPrompt],
+          },
+        },
+        evidence: { method: 'GET', path: '/api/realtime/evidence' },
+        acceptance: { method: 'GET', path: '/api/realtime/dogfood/acceptance' },
+      },
+      steps: [
+        {
+          id: 'start_live_voice',
+          label: 'Start live WebRTC voice',
+          command: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+          startsMicrophone: true,
+          requiresMicConfirmation: true,
+          nextAction: 'Run only while the user is present; this is the only step that opens microphone capture.',
+        },
+        {
+          id: 'inject_worker_progress',
+          label: 'Let renderer inject progress',
+          startsMicrophone: false,
+          automatic: true,
+          nextAction: 'Keep the live session open; prepareWhenLive queues a short read-only progress sample after live state is reported.',
+        },
+        {
+          id: 'sync_latest_progress',
+          label: 'Keep latest progress synced',
+          startsMicrophone: false,
+          automatic: true,
+          nextAction: 'Wait for the evidence monitor to show injected progress sequence caught up with the current work sequence.',
+        },
+        {
+          id: 'ask_progress',
+          label: 'Ask the spoken progress question',
+          startsMicrophone: false,
+          prompt: progressPrompt,
+          nextAction: 'Say or send this prompt inside the live voice session after progress injection is visible.',
+        },
+        {
+          id: 'check_acceptance',
+          label: 'Check final gates',
+          command: 'npm run dogfood:realtime-acceptance',
+          startsMicrophone: false,
+          nextAction: 'Save/inspect acceptance after the live prompt has been answered.',
+        },
+      ],
+      safety: {
+        packStartsMicrophone: false,
+        triggerRequiresConfirmMic: true,
+        rawAudioStored: false,
+        screenImageIncluded: false,
+        actionPolicyBypassed: false,
+        unattendedStartBlocked: true,
+      },
+    };
+  })();
   const operatorSteps = [
     {
       id: 'open_monitor',
@@ -42837,6 +42942,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
     },
     blockers,
     commands,
+    liveGateRunbook,
     api: {
       pack: { method: 'GET', path: '/api/realtime/dogfood/pack' },
       preflight: { method: 'GET', path: '/api/realtime/dogfood/renderer' },

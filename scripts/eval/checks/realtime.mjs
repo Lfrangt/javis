@@ -2625,6 +2625,20 @@ export default {
     const startStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'start_live_voice') || {};
     const archiveStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'save_archive') || {};
     const acceptanceStep = (liveDrillPackData.operatorSteps || []).find((step) => step.id === 'check_acceptance') || {};
+    const liveGateRunbook = liveDrillPackData.liveGateRunbook || {};
+    const liveGateIds = new Set(Array.isArray(liveGateRunbook.gateIds) ? liveGateRunbook.gateIds : []);
+    const liveGateRunbookOk = liveGateRunbook.manualOnly === true &&
+      liveGateRunbook.startsMicrophone === false &&
+      liveGateRunbook.triggerStartsMicrophone === true &&
+      liveGateRunbook.requiresMicConfirmation === true &&
+      liveGateRunbook.autopilotEligible === false &&
+      liveGateIds.has('start_live_voice') &&
+      liveGateIds.has('inject_worker_progress') &&
+      liveGateIds.has('sync_latest_progress') &&
+      liveGateIds.has('ask_progress') &&
+      String(liveGateRunbook.command || '').includes('--require-acceptance') &&
+      String(liveGateRunbook.progressPrompt || '').includes('后台') &&
+      liveGateRunbook.api?.start?.body?.prepareWhenLive === true;
     out.push(
       liveDrillPack.ok &&
         liveDrillPackData?.kind === 'realtime_live_drill_pack' &&
@@ -2661,6 +2675,7 @@ export default {
         startStep.requiresMicConfirmation === true &&
         archiveStep.startsMicrophone === false &&
         acceptanceStep.startsMicrophone === false &&
+        liveGateRunbookOk &&
         liveDrillPackData?.safety?.preflightStartsMicrophone === false &&
         liveDrillPackData?.safety?.packStartsMicrophone === false &&
         liveDrillPackData?.safety?.executeRequiresConfirmMic === true &&
@@ -2687,6 +2702,9 @@ export default {
           output.includes('Watch Realtime voice evidence') &&
           output.includes('--save-realtime-dogfood-archive') &&
           output.includes('dogfood:realtime-acceptance') &&
+          output.includes('Live gates:') &&
+          output.includes('后台现在怎么样') &&
+          output.includes('--require-acceptance') &&
           output.includes('Operator steps:') &&
           output.includes('Safety:') &&
           output.includes('execute requires confirm mic: yes') &&

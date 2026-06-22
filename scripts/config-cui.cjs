@@ -3771,6 +3771,17 @@ function printRealtimeDogfoodPack(result) {
   if (Array.isArray(next.followUpPrompts) && next.followUpPrompts.length) {
     console.log(`Follow-up: ${next.followUpPrompts.join(' | ')}`);
   }
+  const liveGateRunbook = pack.liveGateRunbook || {};
+  if (Array.isArray(liveGateRunbook.gateIds) && liveGateRunbook.gateIds.length) {
+    const missingGateIds = Array.isArray(liveGateRunbook.missingGateIds)
+      ? liveGateRunbook.missingGateIds.join(', ')
+      : '-';
+    console.log('\nLive gates:');
+    console.log(`- remaining: ${Number(liveGateRunbook.remainingCount || 0)} · ${missingGateIds || '-'}`);
+    console.log(`- command: ${liveGateRunbook.command || commands.startRequireAcceptance || commands.start || 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance'}`);
+    if (liveGateRunbook.progressPrompt) console.log(`- ask: ${liveGateRunbook.progressPrompt}`);
+    if (liveGateRunbook.monitorCommand) console.log(`- monitor: ${liveGateRunbook.monitorCommand}`);
+  }
   const blockers = Array.isArray(pack.blockers) ? pack.blockers : [];
   if (blockers.length) {
     console.log('\nBlockers:');
