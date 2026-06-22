@@ -6,6 +6,8 @@ const path = require('node:path');
 const repoRoot = path.resolve(__dirname, '..');
 const apiPort = Number(process.env.JAVIS_API_PORT || readEnvValue('JAVIS_API_PORT') || 3417);
 const selfPid = process.pid;
+const dataDir = process.env.JAVIS_DATA_DIR || path.join(process.env.HOME || '', 'Library', 'Application Support', 'JAVIS', 'Runtime');
+const localVoiceChatLockFile = path.join(dataDir, 'local-voice-chat.lock.json');
 
 function readEnvValue(key) {
   try {
@@ -95,6 +97,37 @@ function stopPid(pid, signal = 'SIGTERM') {
   }
 }
 
+function cleanupLocalVoiceLoopArtifacts() {
+  try {
+    fs.unlinkSync(localVoiceChatLockFile);
+  } catch {}
+
+  const closeWindowsScript = [
+    'tell application "System Events"',
+    '  set terminalRunning to exists process "Terminal"',
+    'end tell',
+    'if terminalRunning is false then return "0"',
+    'tell application "Terminal"',
+    '  set closedCount to 0',
+    '  repeat with w in windows',
+    '    set shouldClose to false',
+    '    try',
+    '      if (name of w contains "npm run voice:chat") or (name of w contains "local-voice-command-dogfood") then set shouldClose to true',
+    '    end try',
+    '    try',
+    '      if (contents of selected tab of w contains "JAVIS Local Voice Command Loop") or (contents of selected tab of w contains "npm run voice:chat") then set shouldClose to true',
+    '    end try',
+    '    if shouldClose then',
+    '      set closedCount to closedCount + 1',
+    '      close w',
+    '    end if',
+    '  end repeat',
+    '  return closedCount as text',
+    'end tell',
+  ].join('\n');
+  run('/usr/bin/osascript', ['-e', closeWindowsScript]);
+}
+
 function main() {
   const processes = listProcesses();
   const byPid = new Map(processes.map((item) => [item.pid, item]));
@@ -119,6 +152,7 @@ function main() {
     .filter((pid) => pid && pid !== selfPid)
     .sort((a, b) => b - a);
   if (!ordered.length) {
+    cleanupLocalVoiceLoopArtifacts();
     console.log('No stale JAVIS resident processes found.');
     return;
   }
@@ -130,6 +164,7 @@ function main() {
     const processInfo = remaining.get(pid);
     if (isProjectResidentProcess(processInfo)) stopPid(pid, 'SIGKILL');
   }
+  cleanupLocalVoiceLoopArtifacts();
   console.log(`Stopped stale JAVIS resident process(es): ${ordered.join(', ')}`);
 }
 

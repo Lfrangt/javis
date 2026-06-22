@@ -887,7 +887,13 @@ export default {
       mainSource.includes('reusedExisting: true') &&
       mainSource.includes('terminalWindowCount') &&
       mainSource.includes('stateRecentlyOpened') &&
-      mainSource.includes('opensTerminal: false');
+      mainSource.includes('opensTerminal: false') &&
+      loopSource.includes('LOCAL_VOICE_CHAT_LOCK_FILE') &&
+      loopSource.includes('acquireLocalVoiceChatLock') &&
+      loopSource.includes('localVoiceChatLockOwnerActive') &&
+      loopSource.includes('reusedExisting: true') &&
+      stopSource.includes('local-voice-chat.lock.json') &&
+      stopSource.includes('cleanupLocalVoiceLoopArtifacts');
     out.push(
       hasLocalLoopDedupe
         ? ok('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'existing, visible, or just-opened voice loop is reused instead of opening another Terminal window')

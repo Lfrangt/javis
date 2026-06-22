@@ -4,11 +4,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import { execFileSync } from 'node:child_process';
 
 const API_BASE = process.env.JAVIS_API_BASE || `http://127.0.0.1:${process.env.JAVIS_API_PORT || 3417}`;
 const APP_SUPPORT_DIR = path.join(os.homedir(), 'Library', 'Application Support', 'JAVIS');
 const DATA_DIR = process.env.JAVIS_DATA_DIR || path.join(APP_SUPPORT_DIR, 'Runtime');
 const API_TOKEN_FILE = process.env.JAVIS_API_TOKEN_FILE || path.join(DATA_DIR, 'api-token');
+const LOCAL_VOICE_CHAT_LOCK_FILE = path.join(DATA_DIR, 'local-voice-chat.lock.json');
 const DEFAULT_REQUEST_TIMEOUT_MS = 30000;
 
 function readApiToken() {
@@ -102,6 +104,132 @@ Flags:
   --no-speech                 Disable the acknowledgement preview.
   --mode <lane>               Hint quick/background/codex/claude.
   --json                      Print machine-readable output.`);
+}
+
+function readJsonFile(filePath) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function processCommandLine(pid) {
+  if (!Number.isFinite(pid) || pid <= 0) return '';
+  try {
+    return execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      timeout: 500,
+    }).trim();
+  } catch {
+    return '';
+  }
+}
+
+function localVoiceChatLockOwnerActive(lock) {
+  const pid = Number(lock?.pid || 0);
+  if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
+  const command = processCommandLine(pid);
+  return /local-voice-command-dogfood\.mjs\b.*--chat|npm run voice:chat/i.test(command);
+}
+
+function acquireLocalVoiceChatLock() {
+  if (process.env.JAVIS_ALLOW_MULTIPLE_VOICE_CHAT === 'true') {
+    return { ok: true, acquired: false, bypassed: true };
+  }
+
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const payload = {
+    pid: process.pid,
+    startedAt: new Date().toISOString(),
+    startedAtMs: Date.now(),
+    cwd: process.cwd(),
+    argv: process.argv.join(' '),
+  };
+
+  const writeLock = () => {
+    fs.writeFileSync(LOCAL_VOICE_CHAT_LOCK_FILE, JSON.stringify(payload, null, 2), { flag: 'wx' });
+    return { ok: true, acquired: true, lockFile: LOCAL_VOICE_CHAT_LOCK_FILE, lock: payload };
+  };
+
+  try {
+    return writeLock();
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
+
+  const existing = readJsonFile(LOCAL_VOICE_CHAT_LOCK_FILE) || {};
+  if (localVoiceChatLockOwnerActive(existing)) {
+    return {
+      ok: true,
+      acquired: false,
+      reusedExisting: true,
+      lockFile: LOCAL_VOICE_CHAT_LOCK_FILE,
+      existing: {
+        pid: Number(existing.pid || 0) || null,
+        startedAt: existing.startedAt || '',
+        cwd: existing.cwd || '',
+      },
+    };
+  }
+
+  try {
+    fs.unlinkSync(LOCAL_VOICE_CHAT_LOCK_FILE);
+  } catch {}
+  try {
+    return writeLock();
+  } catch (error) {
+    const raced = readJsonFile(LOCAL_VOICE_CHAT_LOCK_FILE) || {};
+    return {
+      ok: true,
+      acquired: false,
+      reusedExisting: true,
+      lockFile: LOCAL_VOICE_CHAT_LOCK_FILE,
+      existing: {
+        pid: Number(raced.pid || 0) || null,
+        startedAt: raced.startedAt || '',
+        cwd: raced.cwd || '',
+      },
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function releaseLocalVoiceChatLock(lock) {
+  if (!lock?.acquired) return;
+  const existing = readJsonFile(LOCAL_VOICE_CHAT_LOCK_FILE) || {};
+  if (Number(existing.pid || 0) !== process.pid) return;
+  try {
+    fs.unlinkSync(LOCAL_VOICE_CHAT_LOCK_FILE);
+  } catch {}
+}
+
+function duplicateLoopResult(lock, json) {
+  const output = [
+    'JAVIS local voice command loop is already running.',
+    lock?.existing?.pid ? `Existing pid: ${lock.existing.pid}` : '',
+    'Reusing the existing loop; this command will not start another Terminal window.',
+  ].filter(Boolean).join('\n');
+  if (json) {
+    console.log(JSON.stringify({
+      ok: true,
+      apiBase: API_BASE,
+      cliMode: userCliMode() ? 'local' : 'dogfood',
+      loop: true,
+      reusedExisting: true,
+      turnCount: 0,
+      output,
+      existing: lock?.existing || null,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        readOnly: true,
+      },
+    }, null, 2));
+  } else {
+    console.log(output);
+  }
 }
 
 async function request(apiPath, options = {}) {
@@ -1893,6 +2021,21 @@ async function runLoop() {
   const userCli = userCliMode();
   const wake = hasFlag('wake') || hasFlag('summon');
   const json = hasFlag('json');
+  const loopLock = acquireLocalVoiceChatLock();
+  if (loopLock.reusedExisting) {
+    duplicateLoopResult(loopLock, json);
+    return;
+  }
+  const releaseLock = () => releaseLocalVoiceChatLock(loopLock);
+  process.once('exit', releaseLock);
+  process.once('SIGINT', () => {
+    releaseLock();
+    process.exit(130);
+  });
+  process.once('SIGTERM', () => {
+    releaseLock();
+    process.exit(143);
+  });
   const rl = readline.createInterface({
     input: process.stdin,
     output: json || !process.stdin.isTTY ? undefined : process.stdout,
@@ -1907,59 +2050,63 @@ async function runLoop() {
 
   if (process.stdin.isTTY && !json) rl.setPrompt('JAVIS> ');
   if (process.stdin.isTTY && !json) rl.prompt();
-  for await (const rawLine of rl) {
-    const transcript = String(rawLine || '').trim();
-    if (!transcript) {
-      if (process.stdin.isTTY && !json) rl.prompt();
-      continue;
-    }
-    if (['/exit', '/quit', 'exit', 'quit'].includes(transcript.toLowerCase())) break;
-    const loopCommand = await runLoopCommand(transcript);
-    if (loopCommand) {
-      turns.push(loopCommand);
+  try {
+    for await (const rawLine of rl) {
+      const transcript = String(rawLine || '').trim();
+      if (!transcript) {
+        if (process.stdin.isTTY && !json) rl.prompt();
+        continue;
+      }
+      if (['/exit', '/quit', 'exit', 'quit'].includes(transcript.toLowerCase())) break;
+      const loopCommand = await runLoopCommand(transcript);
+      if (loopCommand) {
+        turns.push(loopCommand);
+        if (!json) {
+          console.log(loopCommand.output);
+          console.log(`Latency: ${loopCommand.elapsedMs ?? '-'}ms${loopCommand.apiElapsedMs !== undefined ? ` · api=${loopCommand.apiElapsedMs}ms` : ''}`);
+          console.log(`Safety: read-only=${loopCommand.safety?.readOnly === false ? 'no' : 'yes'} · microphone=no · realtime=no · raw audio=no`);
+          if (process.stdin.isTTY) rl.prompt();
+        }
+        if (!loopCommand.ok && hasFlag('stop-on-error')) break;
+        continue;
+      }
+      const payload = buildPayload({ loop: true, transcript });
+      const result = await runCommand(payload, wake, userCli);
+      turns.push({
+        transcript,
+        ok: result.ok,
+        responseStatus: result.responseStatus,
+        route: result.route,
+        executed: result.executed,
+        previewOnly: result.previewOnly,
+        spokenAck: result.spokenAck,
+        elapsedMs: result.elapsedMs,
+        apiElapsedMs: result.apiElapsedMs,
+        safety: result.safety,
+        context: result.context
+          ? {
+              metadataOnly: result.context.metadataOnly,
+              includesScreenImage: result.context.includesScreenImage,
+              includesClipboardText: result.context.includesClipboardText,
+              includesAccessibilityNodes: result.context.includesAccessibilityNodes,
+            }
+          : null,
+        session: result.session,
+      });
       if (!json) {
-        console.log(loopCommand.output);
-        console.log(`Latency: ${loopCommand.elapsedMs ?? '-'}ms${loopCommand.apiElapsedMs !== undefined ? ` · api=${loopCommand.apiElapsedMs}ms` : ''}`);
-        console.log(`Safety: read-only=${loopCommand.safety?.readOnly === false ? 'no' : 'yes'} · microphone=no · realtime=no · raw audio=no`);
+        console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
+        console.log(`Latency: ${result.elapsedMs ?? '-'}ms`);
+        if (result.session?.recorded) console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);
+        console.log(`Ack: ${result.spokenAck}`);
+        console.log('Safety: microphone=no · realtime=no · raw audio=no');
         if (process.stdin.isTTY) rl.prompt();
       }
-      if (!loopCommand.ok && hasFlag('stop-on-error')) break;
-      continue;
+      if (!result.ok && hasFlag('stop-on-error')) break;
     }
-    const payload = buildPayload({ loop: true, transcript });
-    const result = await runCommand(payload, wake, userCli);
-    turns.push({
-      transcript,
-      ok: result.ok,
-      responseStatus: result.responseStatus,
-      route: result.route,
-      executed: result.executed,
-      previewOnly: result.previewOnly,
-      spokenAck: result.spokenAck,
-      elapsedMs: result.elapsedMs,
-      apiElapsedMs: result.apiElapsedMs,
-      safety: result.safety,
-      context: result.context
-        ? {
-            metadataOnly: result.context.metadataOnly,
-            includesScreenImage: result.context.includesScreenImage,
-            includesClipboardText: result.context.includesClipboardText,
-            includesAccessibilityNodes: result.context.includesAccessibilityNodes,
-          }
-        : null,
-      session: result.session,
-    });
-    if (!json) {
-      console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
-      console.log(`Latency: ${result.elapsedMs ?? '-'}ms`);
-      if (result.session?.recorded) console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);
-      console.log(`Ack: ${result.spokenAck}`);
-      console.log('Safety: microphone=no · realtime=no · raw audio=no');
-      if (process.stdin.isTTY) rl.prompt();
-    }
-    if (!result.ok && hasFlag('stop-on-error')) break;
+  } finally {
+    rl.close();
+    releaseLock();
   }
-  rl.close();
 
   const okAll = turns.every((turn) => turn.ok);
   if (json) {
