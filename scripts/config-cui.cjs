@@ -1026,6 +1026,8 @@ function printVoiceStandby(result) {
   const safety = standby.safety || {};
   const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
   const history = local.history || {};
+  const promptPack = standby.promptPack || local.promptPack || {};
+  const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
   console.log('\nJAVIS Voice Standby');
   console.log('===================');
   console.log(`Mode: ${standby.mode || '-'} · ${standby.label || '-'}`);
@@ -1043,6 +1045,13 @@ function printVoiceStandby(result) {
   if (local.summary) console.log(`- ${compact(local.summary, 260)}`);
   if (history.count !== undefined) console.log(`- history: ${history.count || 0} item(s)${history.latency?.avgMs ? ` · avg ${history.latency.avgMs}ms` : ''}`);
   if (local.blocker?.active) console.log(`- blocker: ${local.blocker.kind || '-'} · ${compact(local.blocker.summary || '', 220)}`);
+  if (promptPack.nextUtterance || examples.length) {
+    console.log('\nTry saying');
+    if (promptPack.nextUtterance) console.log(`- next: ${compact(promptPack.nextUtterance, 180)}`);
+    for (const example of examples.slice(0, 3)) {
+      console.log(`- ${compact(example.utterance || example.label || '-', 180)}`);
+    }
+  }
   if (recoveryActions.length) {
     console.log('\nRecovery actions');
     for (const [index, action] of recoveryActions.entries()) {

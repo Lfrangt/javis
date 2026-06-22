@@ -109,6 +109,30 @@ type LocalVoiceBlocker = {
   next: string
 }
 
+type LocalVoicePromptPack = {
+  version?: number
+  mode?: string
+  label?: string
+  nextUtterance?: string
+  placeholder?: string
+  summary?: string
+  examples?: Array<{
+    id?: string
+    label?: string
+    utterance?: string
+    endpoint?: string
+    localCommand?: string
+  }>
+  safety?: {
+    startsMicrophone?: boolean
+    usesRealtime?: boolean
+    opensTerminal?: boolean
+    storesRawAudio?: boolean
+    localFallbackStartsMicrophone?: boolean
+    localFallbackUsesRealtime?: boolean
+  }
+}
+
 type LocalVoiceStatus = {
   version: number
   available: boolean
@@ -125,6 +149,7 @@ type LocalVoiceStatus = {
     openLoopCommand?: string
     historyCommand: string
   }
+  promptPack?: LocalVoicePromptPack
   interaction?: {
     capsuleClick?: 'open_local_input' | 'open_local_voice_loop' | 'start_realtime_voice' | string
     label?: string
@@ -1042,6 +1067,7 @@ type VoiceCommandResult = {
   heldReason: string
   route: TaskRouteResult
   routePreview: TaskRouteResult
+  output?: string
   spokenAck: string
   speech?: null | {
     ok?: boolean
@@ -1432,6 +1458,9 @@ function App() {
       .slice(0, 3)
   }, [configCheck, doctorIssues])
   const briefingActions = useMemo(() => (workBriefing?.nextActions || []).slice(0, 2), [workBriefing])
+  const localVoicePrompt = status?.localVoice?.promptPack?.placeholder
+    || status?.localVoice?.promptPack?.nextUtterance
+    || 'Ask or task'
 
   const addMessage = useCallback((role: ChatMessage['role'], text: string) => {
     setMessages((current) => [
@@ -2122,7 +2151,7 @@ function App() {
           source: 'renderer_voice_fallback',
         }),
       })
-      const output = result.spokenAck?.trim() || result.route?.output?.trim() || '我已经走本地语音指挥通道处理了。'
+      const output = result.output?.trim() || result.spokenAck?.trim() || result.route?.output?.trim() || '我已经走本地语音指挥通道处理了。'
       const queued = Boolean(result.route?.queued || result.route?.job)
       addMessage(result.ok && !queued ? 'assistant' : 'system', output)
       refreshStatus()
@@ -2896,7 +2925,7 @@ function App() {
               source: 'pet_quick_local_voice',
             }),
           })
-          const output = result.spokenAck?.trim() || result.route?.output?.trim() || '已通过本地语音指令通道处理。'
+          const output = result.output?.trim() || result.spokenAck?.trim() || result.route?.output?.trim() || '已通过本地语音指令通道处理。'
           addMessage(result.ok ? 'assistant' : 'system', output)
           refreshStatus()
           if (status?.window?.mode === 'compose') await setWindowMode('pet')
@@ -3735,7 +3764,7 @@ function App() {
           </div>
 
           <form className="quick-row" onSubmit={sendQuick}>
-            <input ref={quickInputRef} value={quickInput} onChange={(event) => setQuickInput(event.target.value)} placeholder="Ask or task" />
+            <input ref={quickInputRef} value={quickInput} onChange={(event) => setQuickInput(event.target.value)} placeholder={localVoicePrompt} />
             <button type="submit" disabled={busy || !quickInput.trim()} aria-label="Send">
               {busy ? <Loader2 className="spin" size={16} /> : <Send size={16} />}
             </button>

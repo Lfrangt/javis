@@ -108,6 +108,7 @@ export default {
 
     const voiceStandbyResponse = await ctx.api('/api/voice/standby');
     const voiceStandby = voiceStandbyResponse.data?.standby || {};
+    const voiceStandbyPromptPack = voiceStandby.promptPack || {};
     const voiceStandbyCui = spawnSync('npm', ['run', 'voice:standby'], {
       cwd: process.cwd(),
       encoding: 'utf8',
@@ -125,12 +126,23 @@ export default {
         voiceStandby.local?.available === true &&
         voiceStandby.local?.input?.endpoint === '/api/voice/command' &&
         voiceStandby.local?.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
+        typeof voiceStandbyPromptPack.nextUtterance === 'string' &&
+        voiceStandbyPromptPack.nextUtterance.length > 0 &&
+        Array.isArray(voiceStandbyPromptPack.examples) &&
+        voiceStandbyPromptPack.examples.length >= 3 &&
+        voiceStandbyPromptPack.safety?.opensTerminal === false &&
+        (voiceStandby.mode === 'local_fallback_ready'
+          ? voiceStandbyPromptPack.safety?.startsMicrophone === false &&
+            voiceStandbyPromptPack.safety?.usesRealtime === false
+          : typeof voiceStandbyPromptPack.safety?.startsMicrophone === 'boolean') &&
+        voiceStandby.local?.promptPack?.nextUtterance === voiceStandbyPromptPack.nextUtterance &&
         voiceStandby.local?.safety?.startsMicrophone === false &&
         voiceStandby.local?.safety?.usesRealtime === false &&
         voiceStandby.local?.safety?.storesRawAudio === false &&
         voiceStandby.safety?.storesRawAudio === false &&
         voiceStandbyCui.status === 0 &&
         voiceStandbyCui.stdout.includes('JAVIS Voice Standby') &&
+        voiceStandbyCui.stdout.includes('Try saying') &&
         voiceStandbyCui.stdout.includes('local loop: npm run voice:chat')
         ? ok('resident.voice_standby', 'Voice standby/fallback status', `${voiceStandby.mode} · primary=${voiceStandby.primaryAction.id}`)
         : fail('resident.voice_standby', 'Voice standby/fallback status', 'expected unified voice standby contract plus CUI output', {
@@ -607,7 +619,9 @@ export default {
     const voiceFallback = p.voiceHealth?.fallback || {};
     const localVoice = p.localVoice || {};
     const localVoiceInteraction = localVoice.interaction || {};
+    const localVoicePromptPack = localVoice.promptPack || {};
     const petWakeHandoff = p.wake?.handoff || {};
+    const petWakePromptPack = petWakeHandoff.promptPack || {};
     const localBlocker = localVoice.blocker || {};
     const fallbackBlocker = voiceFallback.blocker || {};
     const wakeBlocker = petWakeHandoff.blocker || {};
@@ -676,6 +690,16 @@ export default {
         String(localVoice.input?.cliCommand || '').includes('npm run voice') &&
         String(localVoice.input?.openLoopCommand || '').includes('npm run voice:chat') &&
         String(localVoice.input?.historyCommand || '').includes('--print-voice-history') &&
+        typeof localVoicePromptPack.nextUtterance === 'string' &&
+        localVoicePromptPack.nextUtterance.length > 0 &&
+        localVoicePromptPack.placeholder === localVoicePromptPack.nextUtterance &&
+        Array.isArray(localVoicePromptPack.examples) &&
+        localVoicePromptPack.examples.length >= 3 &&
+        localVoicePromptPack.safety?.opensTerminal === false &&
+        (localVoice.mode === 'fallback_ready'
+          ? localVoicePromptPack.safety?.startsMicrophone === false &&
+            localVoicePromptPack.safety?.usesRealtime === false
+          : typeof localVoicePromptPack.safety?.startsMicrophone === 'boolean') &&
         ['open_local_input', 'open_local_voice_loop', 'start_realtime_voice'].includes(localVoiceInteraction.capsuleClick) &&
         localVoiceInteraction.keepsPetCompact === true &&
         (localVoice.mode === 'fallback_ready'
@@ -708,6 +732,7 @@ export default {
         petWakeHandoff.ready === true &&
         ['local_voice_fallback', 'realtime_or_local'].includes(petWakeHandoff.mode) &&
         petWakeHandoff.input?.endpoint === '/api/voice/command' &&
+        petWakePromptPack.nextUtterance === localVoicePromptPack.nextUtterance &&
         String(petWakeHandoff.input?.cliCommand || '').includes('npm run voice') &&
         (petWakeHandoff.mode === 'local_voice_fallback' ? wakeBlocker.active === true : typeof wakeBlocker.active === 'boolean') &&
         petWakeHandoff.safety?.readOnly === true &&

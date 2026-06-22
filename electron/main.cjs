@@ -25669,12 +25669,17 @@ function formatVoiceStatusForLocalCommand(status = {}) {
   const localInteraction = local.interaction || {};
   const primary = standby.primaryAction || {};
   const blocker = local.blocker || {};
+  const promptPack = standby.promptPack || local.promptPack || {};
+  const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
   const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
   const recoveryLine = recoveryActions.length
     ? recoveryActions
       .slice(0, 3)
       .map((action) => `- ${action.label || action.id || '-'}: ${compactRecordText(action.detail || action.command || action.url || '', 180)}`)
       .join('\n')
+    : '';
+  const promptLine = examples.length
+    ? examples.slice(0, 3).map((item) => `- ${item.utterance || item.label || '-'}`).join('\n')
     : '';
   return [
     `Voice: ${standby.label || standby.mode || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
@@ -25683,6 +25688,8 @@ function formatVoiceStatusForLocalCommand(status = {}) {
     blocker.active ? `Blocker: ${blocker.kind || provider.kind || '-'} · ${compactRecordText(blocker.summary || provider.summary || '', 240)}` : '',
     `Primary: ${primary.label || primary.id || '-'} · mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`,
     `Local fallback: ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · terminal=${localInteraction.opensTerminal ? 'yes' : 'no'}`,
+    promptPack.nextUtterance ? `Try: ${compactRecordText(promptPack.nextUtterance, 160)}` : '',
+    promptLine ? `Examples:\n${promptLine}` : '',
     standby.next || provider.next || local.next ? `Next: ${compactRecordText(standby.next || provider.next || local.next, 320)}` : '',
     recoveryLine ? `Recovery:\n${recoveryLine}` : '',
     '边界: 这里只读语音/Realtime 状态；不启动麦克风，不创建 Realtime session，不开 Terminal，不读取屏幕。',
@@ -27178,6 +27185,62 @@ function latestExecutableVoiceRoute(options = {}) {
   return null;
 }
 
+function localVoicePromptPack(options = {}) {
+  const fallbackReady = options.fallbackReady === true;
+  const latest = options.latest || null;
+  const latestCanContinue = latest && latest.executed === false && latest.queued === false && latest.routeId;
+  const examples = (fallbackReady
+    ? [
+        {
+          id: 'progress',
+          utterance: '后台现在怎么样？',
+        },
+        {
+          id: 'capability',
+          utterance: '你现在能看到什么，能操作什么？',
+        },
+        {
+          id: 'distill',
+          utterance: '你从我身上学到了什么？',
+        },
+        {
+          id: 'browser',
+          utterance: '当前网页有哪些按钮？',
+        },
+      ]
+    : [
+        {
+          id: 'start',
+          utterance: 'JAVIS，开始语音。',
+        },
+        {
+          id: 'preview',
+          utterance: '先不要开麦，帮我预览下一步。',
+        },
+        {
+          id: 'status',
+          utterance: '实时语音连上了吗？',
+        },
+      ]).slice(0, 3);
+  const nextUtterance = latestCanContinue
+    ? '继续刚才那个'
+    : examples[0]?.utterance || '后台现在怎么样？';
+  return {
+    version: 1,
+    nextUtterance,
+    placeholder: nextUtterance,
+    examples,
+    safety: {
+      startsMicrophone: !fallbackReady,
+      usesRealtime: !fallbackReady,
+      opensTerminal: false,
+      storesRawAudio: false,
+      localFallbackStartsMicrophone: false,
+      localFallbackUsesRealtime: false,
+    },
+  };
+}
+
 function localVoiceStatusSnapshot(options = {}) {
   const conversation = options.conversation || conversationStateSnapshot();
   const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation });
@@ -27192,6 +27255,7 @@ function localVoiceStatusSnapshot(options = {}) {
     summary: compactRecordText(voiceHealth.summary || '', 220),
     next: compactRecordText(voiceHealth.next || '', 260),
   };
+  const promptPack = localVoicePromptPack({ fallbackReady, latest, blocker });
   return {
     version: 1,
     available: true,
@@ -27224,6 +27288,7 @@ function localVoiceStatusSnapshot(options = {}) {
       openLoopCommand: 'npm run voice:chat',
       historyCommand: 'npm run config -- --print-voice-history',
     },
+    promptPack,
     interaction: {
       capsuleClick: fallbackReady ? 'open_local_input' : 'start_realtime_voice',
       label: fallbackReady ? 'Open local typed intake' : 'Start Realtime voice',
@@ -27293,6 +27358,7 @@ function wakeHandoffSnapshot(options = {}) {
       220,
     ),
     input: localVoice.input,
+    promptPack: localVoice.promptPack || null,
     localVoiceMode: localVoice.mode,
     blocker: localVoice.blocker || null,
     voiceHealth: {
@@ -27370,6 +27436,7 @@ function voiceStandbySnapshot(options = {}) {
         : localVoice.next || 'Use the pet local input now, then restore Realtime after API billing/key/provider recovery.',
       320,
     ),
+    promptPack: localVoice.promptPack || null,
     primaryAction,
     recoveryActions,
     provider: {
@@ -27391,6 +27458,7 @@ function voiceStandbySnapshot(options = {}) {
       summary: compactRecordText(localVoice.summary || '', 220),
       next: compactRecordText(localVoice.next || '', 260),
       input: localVoice.input,
+      promptPack: localVoice.promptPack || null,
       interaction: localVoice.interaction,
       blocker: localVoice.blocker || null,
       history: localVoice.history,
@@ -33474,6 +33542,13 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
         endpoint: compactRecordText(handoff.input?.endpoint || '', 120),
         cliCommand: compactRecordText(handoff.input?.cliCommand || '', 140),
       },
+      promptPack: handoff.promptPack
+        ? {
+            version: Number(handoff.promptPack.version || 1),
+            nextUtterance: compactRecordText(handoff.promptPack.nextUtterance || '', 120),
+            placeholder: compactRecordText(handoff.promptPack.placeholder || handoff.promptPack.nextUtterance || '', 120),
+          }
+        : null,
       localVoiceMode: compactRecordText(handoff.localVoiceMode || '', 80),
       blocker: handoff.blocker
         ? {

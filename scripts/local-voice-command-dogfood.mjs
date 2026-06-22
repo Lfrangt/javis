@@ -1043,6 +1043,8 @@ function formatLoopVoiceStatus(data = {}) {
   const local = standby.local || {};
   const primary = standby.primaryAction || {};
   const blocker = local.blocker || {};
+  const promptPack = standby.promptPack || local.promptPack || {};
+  const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
   const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
   const lines = [
     `Voice: ${standby.label || standby.mode || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
@@ -1052,6 +1054,11 @@ function formatLoopVoiceStatus(data = {}) {
   if (provider.summary) lines.push(`Realtime: ${compactText(provider.summary, 260)}`);
   if (provider.subscriptionBoundary) lines.push(`Billing/API: ${compactText(provider.subscriptionBoundary, 260)}`);
   if (blocker.active) lines.push(`Blocker: ${blocker.kind || provider.kind || '-'} · ${compactText(blocker.summary || provider.summary || '', 240)}`);
+  if (promptPack.nextUtterance) lines.push(`Try: ${compactText(promptPack.nextUtterance, 180)}`);
+  if (examples.length) {
+    lines.push('Examples:');
+    for (const example of examples.slice(0, 3)) lines.push(`- ${compactText(example.utterance || example.label || '-', 180)}`);
+  }
   if (standby.next || provider.next || local.next) lines.push(`Next: ${compactText(standby.next || provider.next || local.next, 320)}`);
   if (recoveryActions.length) {
     lines.push('Recovery:');
