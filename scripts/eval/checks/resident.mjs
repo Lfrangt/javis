@@ -967,6 +967,21 @@ export default {
         : fail('resident.local_voice_loop_unblock_preview', 'Local voice loop unblock preview command', 'expected /unblock slash command to read /api/unblock/preview with read-only safety copy'),
     );
 
+    const hasLearningDistillationLocalCommand =
+      mainSource.includes('function naturalLearningDistillationLocalCommand') &&
+      mainSource.includes("intent: 'learning_distillation'") &&
+      mainSource.includes('learningDistillationVoiceSnapshot') &&
+      mainSource.includes('formatLearningDistillationForLocalCommand') &&
+      loopSource.includes("command === 'learn'") &&
+      loopSource.includes('get_learning_distillation') &&
+      loopSource.includes('formatLoopLearning') &&
+      loopSource.includes('does not save memory, save skills, grant permissions, execute actions');
+    out.push(
+      hasLearningDistillationLocalCommand
+        ? ok('resident.local_learning_distillation_fast_path', 'Local learning distillation fast path', 'natural learning questions and /learn read metadata-only user distillation without cloud, microphone, or actions')
+        : fail('resident.local_learning_distillation_fast_path', 'Local learning distillation fast path', 'expected natural learning_distillation and /learn loop command to read local distillation with strict no-action safety copy'),
+    );
+
     const petStandbyNoTerminal =
       mainSource.includes("id: 'open_local_input'") &&
       mainSource.includes('openLocalVoiceInput') &&

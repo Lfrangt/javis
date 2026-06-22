@@ -207,6 +207,43 @@ export default {
         : fail('voice_command.natural_capabilities', 'Natural capability voice command', 'natural capability phrase did not use the local capability_status fast path', naturalCapabilities.data),
     );
 
+    const naturalLearning = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '你从我身上学到了什么，怎么蒸馏我的使用习惯？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_learning_distillation',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalLearningData = naturalLearning.data || {};
+    out.push(
+      naturalLearning.ok &&
+        naturalLearningData.ok === true &&
+        naturalLearningData.executed === false &&
+        naturalLearningData.route?.decision?.localCommand === 'learning_distillation' &&
+        naturalLearningData.route?.localCommand?.intent === 'learning_distillation' &&
+        typeof naturalLearningData.route?.output === 'string' &&
+        naturalLearningData.route.output.includes('本地蒸馏:') &&
+        naturalLearningData.route.output.includes('可沉淀候选:') &&
+        naturalLearningData.route.output.includes('metadata-only') &&
+        naturalLearningData.route.output.includes('不保存记忆') &&
+        naturalLearningData.route?.data?.distillation?.kind === 'local_user_distillation' &&
+        naturalLearningData.route?.data?.distillation?.privacy?.localOnly === true &&
+        naturalLearningData.route?.data?.distillation?.privacy?.metadataOnly === true &&
+        naturalLearningData.route?.data?.distillation?.habitCandidates?.policy?.noAutoSave === true &&
+        naturalLearningData.safety?.startsMicrophone === false &&
+        naturalLearningData.safety?.usesRealtime === false &&
+        naturalLearningData.safety?.storesRawAudio === false &&
+        naturalLearningData.safety?.callsOpenAIImmediately === false &&
+        naturalLearningData.speech?.dryRun === true
+        ? ok('voice_command.natural_learning_distillation', 'Natural learning distillation voice command', '学到了什么 routes to local metadata-only user distillation without cloud/realtime')
+        : fail('voice_command.natural_learning_distillation', 'Natural learning distillation voice command', 'natural learning phrase did not use the local learning_distillation fast path', naturalLearning.data),
+    );
+
     const naturalWindowPreview = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -934,7 +971,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/learn\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -961,6 +998,7 @@ export default {
       const jobsTurn = commandTurns.find((turn) => turn.command === 'jobs') || {};
       const progressTurn = commandTurns.find((turn) => turn.command === 'progress') || {};
       const nextTurn = commandTurns.find((turn) => turn.command === 'next') || {};
+      const learnTurn = commandTurns.find((turn) => turn.command === 'learn') || {};
       const agentTurn = commandTurns.find((turn) => turn.command === 'agent') || {};
       const sessionId = turns.find((turn) => turn.session?.sessionId)?.session?.sessionId || '';
       if (sessionId) {
@@ -978,16 +1016,16 @@ export default {
         });
       }
       out.push(
-        loop.ok === true &&
+          loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 16 &&
+          loop.turnCount === 17 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 14 &&
-          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 15 &&
+          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'learn', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           statusTurn.detailLevel === 'fast' &&
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&
@@ -1049,6 +1087,11 @@ export default {
           progressTurn.output.includes('Next:') &&
           nextTurn.detailLevel === 'fast' &&
           nextTurn.endpoint?.includes('compact=true') &&
+          learnTurn.detailLevel === 'fast' &&
+          learnTurn.endpoint === '/api/tools/execute' &&
+          learnTurn.output.includes('Learning:') &&
+          learnTurn.output.includes('Habit candidates:') &&
+          learnTurn.output.includes('Safety: read-only') &&
           agentTurn.detailLevel === 'fast' &&
           agentTurn.agentSteps === 4 &&
           commandTurns.every((turn) => (

@@ -24344,6 +24344,33 @@ function naturalCapabilityStatusCommand(text) {
   };
 }
 
+function naturalLearningDistillationLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+  const english = /\b(learned|learning|distill|distillation|habit|habits|routine|routines|preference|preferences|personalization|profile|user profile|workflow candidate|reusable workflow|what have you learned)\b/i.test(raw)
+    || /\b(what|which|how).*(learned|learning|distill|habit|routine|preference|profile|personalization)\b/i.test(raw)
+    || /\b(habit|routine|workflow).*(candidate|automation|automate|reuse|shortcut|skill)\b/i.test(raw);
+  const chinese = /(?:学到|学习|学会|蒸馏|提炼|习惯|使用习惯|偏好|个人档案|用户画像|画像|本地学习|长期跟踪|仿生|进化|沉淀|可复用|自动化候选|工作流候选|快捷短语|技能候选)/i.test(compactPlain)
+    || /(?:你|JAVIS|javis|贾维斯).*(?:学|蒸馏|提炼|知道我|了解我|适应我|进化)/i.test(compactPlain)
+    || /(?:我的|我).*(?:习惯|偏好|工作流|自动化|可复用|快捷方式|技能).*(?:有哪些|是什么|怎么样|可以|候选)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'learning_distillation',
+    label: 'Local user distillation',
+    args: {
+      query: raw,
+      recentLimit: 8,
+      baselineLimit: 24,
+      skillLimit: 4,
+      demonstrationLimit: 4,
+      shortcutLimit: 4,
+      habitLimit: 4,
+    },
+  };
+}
+
 function naturalBrowserLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -24601,6 +24628,9 @@ function localCommandDecision(task) {
 
   const capabilityCommand = naturalCapabilityStatusCommand(text);
   if (capabilityCommand) return capabilityCommand;
+
+  const learningCommand = naturalLearningDistillationLocalCommand(text);
+  if (learningCommand) return learningCommand;
 
   const appUiStatusCommand = naturalAppUiStatusLocalCommand(text);
   if (appUiStatusCommand) return appUiStatusCommand;
@@ -25599,6 +25629,39 @@ function formatCapabilityStatusForLocalCommand({ perception = {}, capabilities =
   ].filter(Boolean).join('\n');
 }
 
+function formatLearningDistillationForLocalCommand(distillation = {}) {
+  const profile = distillation.profile || {};
+  const evolution = distillation.evolution || {};
+  const artifacts = distillation.artifacts || {};
+  const habitCandidates = distillation.habitCandidates || {};
+  const privacy = distillation.privacy || {};
+  const state = distillation.state || {};
+  const topApps = Array.isArray(profile.topApps)
+    ? profile.topApps.slice(0, 3).map((item) => `${item.name || '-'} ${Math.round(Number(item.share || 0) * 100)}%`)
+    : [];
+  const changes = Array.isArray(evolution.changes)
+    ? evolution.changes.slice(0, 3).map((change) => {
+        const shift = [change.from, change.to].filter(Boolean).join(' -> ') || change.to || change.label || change.id || '-';
+        return `${change.label || change.id || 'change'} · ${shift}`;
+      })
+    : [];
+  const candidates = Array.isArray(habitCandidates.candidates) ? habitCandidates.candidates.slice(0, 3) : [];
+  const nextActions = Array.isArray(distillation.nextActions) ? distillation.nextActions.slice(0, 3) : [];
+  return [
+    `本地蒸馏: ${state.enabled ? 'enabled' : state.paused ? 'paused' : 'off'} · events=${profile.sourceEventCount ?? 0} · candidates=${habitCandidates.count ?? candidates.length}`,
+    distillation.spokenSummary || distillation.summary ? `摘要: ${compactRecordText(distillation.spokenSummary || distillation.summary, 520)}` : '',
+    topApps.length ? `常见 App: ${topApps.join(', ')}` : '',
+    changes.length ? `近期变化:\n${changes.map((item) => `- ${compactRecordText(item, 160)}`).join('\n')}` : '',
+    candidates.length
+      ? `可沉淀候选:\n${candidates.map((candidate) => `- ${compactRecordText(candidate.label || candidate.id || '-', 120)} · confidence ${Math.round(Number(candidate.confidence || 0) * 100)}%${candidate.requiresConfirmation ? ' · confirm' : ''}`).join('\n')}`
+      : '可沉淀候选: none',
+    `Artifacts: demonstrations ${artifacts.demonstrations?.counts?.done ?? 0} · shortcuts ${artifacts.shortcuts?.counts?.enabled ?? 0} · skills ${artifacts.skills?.returned ?? 0}`,
+    nextActions.length ? `下一步:\n${nextActions.map((action) => `- ${action.label || action.id || '-'}${action.requiresConfirmation ? ' · confirm' : ''}`).join('\n')}` : '',
+    `隐私: local-only=${privacy.localOnly ? 'yes' : 'no'} · metadata-only=${privacy.metadataOnly ? 'yes' : 'no'} · raw screenshots=${privacy.noRawScreenshots ? 'no' : 'unknown'} · clipboard=${privacy.noClipboardText ? 'no' : 'unknown'} · page bodies=${privacy.noPageBodies ? 'no' : 'unknown'}`,
+    '边界: 这里只读本地推断；不保存记忆，不生成技能，不提升权限，不执行电脑动作，不启动麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatVoiceStatusForLocalCommand(status = {}) {
   const standby = status.standby || {};
   const provider = standby.provider || {};
@@ -26001,6 +26064,19 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatCapabilityStatusForLocalCommand({ perception, capabilities }),
         data: { perception, capabilities },
+      };
+    }
+
+    if (command.intent === 'learning_distillation') {
+      const distillation = learningDistillationVoiceSnapshot({
+        ...(command.args || {}),
+        source: 'local_command',
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatLearningDistillationForLocalCommand(distillation),
+        data: { distillation },
       };
     }
 
@@ -26800,6 +26876,9 @@ function voiceCommandAck(route = {}, options = {}) {
     return output;
   }
   if (route.localCommand?.intent === 'delegate_task' && output) {
+    return output;
+  }
+  if (route.localCommand?.intent === 'learning_distillation' && output) {
     return output;
   }
   const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
@@ -27698,6 +27777,8 @@ async function runVoiceCommand(options = {}) {
     heldReason,
     route,
     routePreview: previewRoute,
+    output: route.output || spokenAck,
+    data: route.data || null,
     context: contextSnapshot,
     spokenAck,
     speech,
@@ -27840,7 +27921,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'learning_distillation', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

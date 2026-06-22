@@ -89,7 +89,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, /history, /agent, /help.
+                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -357,6 +357,7 @@ function loopHelpText() {
     '  /unblock  Preview how to get unstuck and what safe next step can be prepared.',
     '  /next     Fast-read the next workbench action preview.',
     '  /auto     Read autopilot/agency status and why unattended work is or is not acting.',
+    '  /learn    Read local user-distillation, habit candidates, privacy boundaries, and next review actions.',
     '  /approvals Read pending approval/confirmation gates without resolving them.',
     '  /history  Read recent sanitized local voice-command turns.',
     '  /agent    Preview a short bounded autonomy loop for a task.',
@@ -1295,6 +1296,45 @@ function formatLoopAutopilot(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopLearning(data = {}) {
+  const payload = parseToolJsonOutput(data);
+  const profile = payload.profile || {};
+  const evolution = payload.evolution || {};
+  const habitCandidates = payload.habitCandidates || {};
+  const artifacts = payload.artifacts || {};
+  const privacy = payload.privacy || {};
+  const state = payload.state || {};
+  const topApps = Array.isArray(profile.topApps)
+    ? profile.topApps.slice(0, 3).map((item) => `${item.name || '-'} ${Math.round(Number(item.share || 0) * 100)}%`)
+    : [];
+  const candidates = Array.isArray(habitCandidates.candidates) ? habitCandidates.candidates : [];
+  const changes = Array.isArray(evolution.changes) ? evolution.changes : [];
+  const lines = [
+    `Learning: ${state.enabled ? 'enabled' : state.paused ? 'paused' : 'off'} · events=${profile.sourceEventCount ?? 0} · candidates=${habitCandidates.count ?? candidates.length}`,
+    `Summary: ${compactText(payload.spokenSummary || payload.summary || '-', 620)}`,
+  ];
+  if (topApps.length) lines.push(`Top apps: ${topApps.join(', ')}`);
+  if (changes.length) {
+    lines.push('Recent changes:');
+    for (const change of changes.slice(0, 3)) {
+      const shift = [change.from, change.to].filter(Boolean).join(' -> ') || change.to || change.label || change.id || '-';
+      lines.push(`- ${change.label || change.id || 'change'} · ${compactText(shift, 140)} · confidence ${Math.round(Number(change.confidence || 0) * 100)}%`);
+    }
+  }
+  if (candidates.length) {
+    lines.push('Habit candidates:');
+    for (const candidate of candidates.slice(0, 4)) {
+      lines.push(`- ${compactText(candidate.label || candidate.id || '-', 140)} · confidence ${Math.round(Number(candidate.confidence || 0) * 100)}%${candidate.requiresConfirmation ? ' · confirm' : ''}`);
+    }
+  } else {
+    lines.push('Habit candidates: none');
+  }
+  lines.push(`Artifacts: demonstrations ${artifacts.demonstrations?.counts?.done ?? 0} · shortcuts ${artifacts.shortcuts?.counts?.enabled ?? 0} · skills ${artifacts.skills?.returned ?? 0}`);
+  lines.push(`Privacy: local-only=${privacy.localOnly ? 'yes' : 'no'} · metadata-only=${privacy.metadataOnly ? 'yes' : 'no'} · raw screenshots=${privacy.noRawScreenshots ? 'no' : 'unknown'} · clipboard=${privacy.noClipboardText ? 'no' : 'unknown'} · page bodies=${privacy.noPageBodies ? 'no' : 'unknown'}`);
+  lines.push('Safety: read-only; does not save memory, save skills, grant permissions, execute actions, start microphone, or use Realtime.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatHistoryTime(timestamp) {
   const time = Date.parse(timestamp || '');
   if (!Number.isFinite(time)) return '-';
@@ -1743,6 +1783,29 @@ async function runLoopCommand(transcript) {
         },
       });
       return loopCommandResult(base, response, formatLoopAutopilot(response.data || {}), {
+        command,
+        endpoint: '/api/tools/execute',
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'learn' || command === 'learning' || command === 'distill' || command === 'habits') {
+      const response = await request('/api/tools/execute', {
+        method: 'POST',
+        body: {
+          source: 'local_voice_loop_learning_distillation',
+          name: 'get_learning_distillation',
+          arguments: {
+            source: 'local_voice_loop',
+            recentLimit: 8,
+            baselineLimit: 24,
+            skillLimit: 4,
+            demonstrationLimit: 4,
+            shortcutLimit: 4,
+            habitLimit: 4,
+          },
+        },
+      });
+      return loopCommandResult(base, response, formatLoopLearning(response.data || {}), {
         command,
         endpoint: '/api/tools/execute',
         detailLevel: 'fast',
