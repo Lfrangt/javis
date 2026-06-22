@@ -82,6 +82,7 @@ type RealtimeRendererDogfoodCommand = {
   betweenPromptsMs?: number
   stopAfterMs?: number
   source?: string
+  confirmOpenAiSpend?: boolean
 }
 
 type RealtimeVoiceHealth = {
@@ -1213,8 +1214,6 @@ const PET_STATUS_POLL_MS = 5000
 const PANEL_DETAIL_POLL_MS = 30000
 const SCREEN_CONTEXT_LIVE_POLL_MS = 15000
 const SCREEN_CONTEXT_IDLE_POLL_MS = 120000
-const REALTIME_PROVIDER_RECOVERY_POLL_MS = 500
-const REALTIME_PROVIDER_RECOVERY_TIMEOUT_MS = 15000
 const DEFAULT_SCREEN_PRIVACY: ScreenPrivacy = {
   version: 1,
   mode: 'private',
@@ -2093,27 +2092,14 @@ function App() {
     if (realtimeProviderRecoveryProbeRef.current) {
       return realtimeProviderRecoveryProbeRef.current
     }
-    addMessage('system', '正在先做一次无麦克风 Realtime provider 验证；成功后才会打开麦克风。')
+    addMessage('system', '正在预览 Realtime provider 状态；不会调用 OpenAI，也不会打开麦克风。')
     const run = (async () => {
       try {
-        const started = await apiJson<RealtimeProviderProbeApiResponse>('/api/realtime/provider/probe', {
+        const preview = await apiJson<RealtimeProviderProbeApiResponse>('/api/realtime/provider/probe', {
           method: 'POST',
-          body: JSON.stringify({ execute: true, source: 'renderer_startup_recovery' }),
+          body: JSON.stringify({ execute: false, source: 'renderer_startup_recovery' }),
         })
-        if (started.ok === false) {
-          return started.providerProbe || started.probe || null
-        }
-        const deadline = Date.now() + REALTIME_PROVIDER_RECOVERY_TIMEOUT_MS
-        let latest = started.providerProbe || started.probe || null
-        while (Date.now() < deadline) {
-          const snapshot = await apiJson<RealtimeProviderProbeApiResponse>('/api/realtime/provider/probe')
-          latest = snapshot.probe || snapshot.providerProbe || latest
-          if (latest?.providerReady || latest?.active === false || ['ok', 'ready', 'error', 'warning', 'blocked'].includes(String(latest?.status || '').toLowerCase())) {
-            return latest
-          }
-          await sleep(REALTIME_PROVIDER_RECOVERY_POLL_MS)
-        }
-        return latest
+        return preview.providerProbe || preview.probe || null
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         return {
@@ -2747,6 +2733,7 @@ function App() {
               runId,
               source: detail.source || 'renderer_provider_probe',
             })
+            if (detail.confirmOpenAiSpend === true) params.set('confirmOpenAiSpend', 'true')
             const response = await fetch(`${API_BASE}/api/realtime/session?${params.toString()}`, {
               method: 'POST',
               body: offerSdp,

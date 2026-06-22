@@ -2601,6 +2601,26 @@ function evaluateOpenAiSpendGuard(options = {}) {
   };
 }
 
+function truthyRequestValue(value) {
+  return value === true || ['true', '1', 'yes', 'y', 'confirm', 'confirmed'].includes(String(value || '').trim().toLowerCase());
+}
+
+function openAiSpendConfirmationSnapshot(options = {}) {
+  const kind = compactRecordText(options.kind || 'openai', 80);
+  const source = compactRecordText(options.source || 'unspecified', 80);
+  const manual = isManualOpenAiSource(source, { ...options, kind });
+  const confirmed = truthyRequestValue(options.confirmOpenAiSpend || options.confirmCloud);
+  return {
+    version: 1,
+    required: Boolean(options.required ?? kind === 'realtime_provider_probe'),
+    confirmed,
+    manual,
+    kind,
+    source,
+    prompt: 'This OpenAI Realtime provider probe can consume API quota. Confirm with confirmOpenAiSpend:true, CUI RUN, or --confirm-openai-spend.',
+  };
+}
+
 function assertOpenAiSpendAllowed(options = {}) {
   const decision = evaluateOpenAiSpendGuard({ ...options, reserve: true });
   if (!decision.allowed) throw new OpenAiSpendGuardBlocked(decision);
@@ -26749,9 +26769,11 @@ function formatVoiceStatusForLocalCommand(status = {}) {
 function formatRealtimeProviderProbeForLocalCommand(control = {}) {
   const probe = control.providerProbe || {};
   const result = control.result || {};
+  const confirmation = control.openAiSpendConfirmation || {};
   return [
     `Realtime provider probe: ${control.executed ? 'dispatched' : 'preview only'} · status=${probe.status || '-'} · ready=${probe.providerReady ? 'yes' : 'no'}`,
     `Renderer: ${probe.rendererAvailable ? 'ready' : 'missing'} · OpenAI key=${probe.hasOpenAiKey ? 'present' : 'missing'}`,
+    confirmation.required ? `OpenAI spend: ${confirmation.confirmed ? 'confirmed for this request' : 'confirmation required'} · one-request only` : '',
     probe.summary ? `Summary: ${compactRecordText(probe.summary, 260)}` : '',
     result.output ? `Output: ${compactRecordText(result.output, 300)}` : '',
     probe.next ? `Next: ${compactRecordText(probe.next, 320)}` : '',
@@ -26859,12 +26881,24 @@ function formatRealtimeDogfoodScriptCopyForLocalCommand(copy = {}) {
 
 function realtimeProviderProbeControlPayload(result = {}, execute = false) {
   const providerProbe = result.providerProbe || result.probe || realtimeProviderProbeSnapshot();
+  const confirmation = result.openAiSpendConfirmation || providerProbe.openAiSpendConfirmation || null;
   return {
     ok: result.ok !== false,
     requestedExecute: Boolean(execute),
     executed: Boolean(result.executed),
     status: result.status || 200,
     runId: result.runId || providerProbe.runId || '',
+    openAiSpendConfirmation: confirmation
+      ? {
+        version: Number(confirmation.version || 0),
+        required: Boolean(confirmation.required),
+        confirmed: Boolean(confirmation.confirmed),
+        manual: Boolean(confirmation.manual),
+        kind: compactRecordText(confirmation.kind || '', 80),
+        source: compactRecordText(confirmation.source || '', 80),
+        prompt: compactRecordText(confirmation.prompt || '', 240),
+      }
+      : null,
     providerProbe: {
       status: compactRecordText(providerProbe.status || '', 80),
       providerReady: Boolean(providerProbe.providerReady),
@@ -26890,6 +26924,8 @@ function realtimeProviderProbeControlPayload(result = {}, execute = false) {
       opensTerminal: false,
       executesUserTask: false,
       usesRealtimeProvider: Boolean(execute && result.executed),
+      requiresOpenAiSpendConfirmation: Boolean(confirmation?.required),
+      openAiSpendConfirmed: Boolean(confirmation?.confirmed),
     },
   };
 }
@@ -36763,16 +36799,7 @@ function autopilotEligibilityDecision(action) {
     };
   }
   if (action.source === 'readiness' && action.providerProbe === true) {
-    const executable = Boolean(
-      action.executable &&
-      action.autoEligible &&
-      action.autopilotEligible !== false &&
-      action.startsMicrophone === false &&
-      action.requiresMicConfirmation === false &&
-      action.requiresUserPresence === false &&
-      Number(action.riskLevel || 0) <= 1,
-    );
-    const freshness = executable ? realtimeProviderProbeFreshness() : null;
+    const freshness = realtimeProviderProbeFreshness();
     const compactFreshness = compactRealtimePreflightFreshness(freshness);
     if (freshness?.running) {
       return {
@@ -36792,11 +36819,9 @@ function autopilotEligibilityDecision(action) {
       };
     }
     return {
-      executable,
-      reason: executable ? 'eligible_realtime_provider_probe' : 'realtime_provider_probe_not_safe_for_autopilot',
-      detail: executable
-        ? 'Autopilot may retry the no-mic Realtime provider probe; live microphone start still requires the user.'
-        : 'Realtime provider probing must prove it starts no microphone, needs no user presence, and stays low-risk before autopilot can run it.',
+      executable: false,
+      reason: 'openai_spend_confirmation_required',
+      detail: 'Realtime provider probing can consume OpenAI quota, so it remains manual-only and requires one-request explicit spend confirmation.',
       freshness: compactFreshness,
     };
   }
@@ -38118,6 +38143,7 @@ function realtimeProviderRetryPolicySnapshot(issue = null, options = {}) {
       }
       : null,
     nextCommand: 'npm run dogfood:realtime-provider-probe',
+    runCommand: 'npm run dogfood:realtime-provider-probe:run',
     safety: {
       startsMicrophone: false,
       requiresMicConfirmation: false,
@@ -38184,14 +38210,14 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
       id: 'run_provider_probe',
       label: 'Run no-mic provider probe',
       detail: 'Verify the key/project/model/voice path before opening the microphone.',
-      command: 'npm run dogfood:realtime-provider-probe',
+      command: 'npm run dogfood:realtime-provider-probe:run',
     });
   } else if (kind === 'network' || kind === 'provider_error') {
     steps.push({
       id: 'retry_provider_probe',
       label: 'Retry provider probe',
       detail: 'Retry the no-mic provider probe after checking network/provider status.',
-      command: 'npm run dogfood:realtime-provider-probe',
+      command: 'npm run dogfood:realtime-provider-probe:run',
     });
   }
 
@@ -38200,7 +38226,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
       id: 'restart_and_probe',
       label: 'Restart and probe again',
       detail: 'After billing/key/limit changes, restart JAVIS and rerun the no-mic provider probe before live voice.',
-      command: 'npm run resident:restart && npm run dogfood:realtime-provider-probe',
+      command: 'npm run resident:restart && npm run dogfood:realtime-provider-probe:run',
     });
   }
 
@@ -38265,7 +38291,7 @@ function realtimeProviderUnverifiedIssue() {
     kind: 'provider_unverified',
     status: 'warning',
     summary: 'Realtime voice provider has not been verified by a recent no-mic probe or live WebRTC negotiation.',
-    next: 'Run npm run dogfood:realtime-provider-probe to verify OpenAI Realtime without starting the microphone; when it succeeds, retry live voice.',
+    next: 'Preview with npm run dogfood:realtime-provider-probe, then explicitly run npm run dogfood:realtime-provider-probe:run to verify OpenAI Realtime without starting the microphone.',
   };
 }
 
@@ -43759,7 +43785,7 @@ function realtimeRendererDogfoodPreflight(options = {}) {
       scriptPreview: 'npm run dogfood:realtime-renderer',
       scriptExecute: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
       scriptAcceptanceOnly: 'npm run dogfood:realtime-renderer -- --acceptance-only --no-save-archive',
-      providerProbe: 'npm run config -- --run-realtime-provider-probe',
+      providerProbe: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
       providerProbePreview: 'npm run config -- --print-realtime-provider-probe',
       cui: 'npm run config -> R. Run renderer Realtime dogfood',
       monitor: 'npm run config -> V. Watch Realtime voice evidence',
@@ -43879,14 +43905,21 @@ function realtimeProviderProbeSnapshot(options = {}) {
     providerReady,
     startsMicrophone: false,
     requiresMicConfirmation: false,
-    manualOnly: false,
-    requiresUserPresence: false,
+    manualOnly: true,
+    manualOnlyReason: 'OpenAI provider probes can consume API quota and require explicit spend confirmation.',
+    requiresUserPresence: true,
+    requiresOpenAiSpendConfirmation: true,
+    openAiSpendConfirmation: openAiSpendConfirmationSnapshot({
+      kind: 'realtime_provider_probe',
+      source: 'status',
+      required: true,
+    }),
     summary,
     next: !OPENAI_API_KEY
       ? 'Add OPENAI_API_KEY to .env and restart JAVIS.'
       : issue?.next || (providerReady
         ? 'The provider lane is ready; start the mic-confirmed live Realtime dogfood only when the user is present.'
-        : 'Run the no-mic provider probe before opening a live microphone session.'),
+        : 'Preview with npm run dogfood:realtime-provider-probe, then explicitly run npm run dogfood:realtime-provider-probe:run before opening a live microphone session.'),
     result,
     issue,
     createdAt: realtimeProviderProbeState.createdAt,
@@ -43896,14 +43929,14 @@ function realtimeProviderProbeSnapshot(options = {}) {
     events: (realtimeProviderProbeState.events || []).slice(-20),
     commands: {
       preview: 'npm run config -- --print-realtime-provider-probe',
-      execute: 'npm run config -- --run-realtime-provider-probe',
+      execute: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
       liveVoice: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
     },
     endpoint: {
       method: 'POST',
       path: '/api/realtime/provider/probe',
       previewBody: { execute: false },
-      executeBody: { execute: true },
+      executeBody: { execute: true, confirmOpenAiSpend: true },
     },
     safety: {
       startsMicrophone: false,
@@ -43912,6 +43945,9 @@ function realtimeProviderProbeSnapshot(options = {}) {
       storesRawAudio: false,
       startsScreenCapture: false,
       actionPolicyBypassed: false,
+      usesRealtimeProvider: true,
+      callsOpenAi: true,
+      requiresOpenAiSpendConfirmation: true,
     },
   };
 }
@@ -43921,6 +43957,12 @@ async function startRealtimeProviderProbe(options = {}) {
   const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
   const source = String(options.source || 'api').slice(0, 80);
   const rendererAvailable = Boolean(mainWindow && !mainWindow.isDestroyed());
+  const spendConfirmation = openAiSpendConfirmationSnapshot({
+    kind: 'realtime_provider_probe',
+    source,
+    confirmOpenAiSpend: options.confirmOpenAiSpend,
+    confirmCloud: options.confirmCloud,
+  });
   const spendPreview = evaluateOpenAiSpendGuard({
     kind: 'realtime_provider_probe',
     source,
@@ -43930,7 +43972,7 @@ async function startRealtimeProviderProbe(options = {}) {
     recordBlocked: false,
   });
   const preview = {
-    ok: Boolean(OPENAI_API_KEY && rendererAvailable && spendPreview.allowed),
+    ok: Boolean(OPENAI_API_KEY && rendererAvailable),
     executed: false,
     runId,
     startsMicrophone: false,
@@ -43939,13 +43981,15 @@ async function startRealtimeProviderProbe(options = {}) {
     requiresUserPresence: true,
     rendererAvailable,
     hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    requiresOpenAiSpendConfirmation: spendConfirmation.required,
+    openAiSpendConfirmation: spendConfirmation,
     spendGuard: spendPreview,
     providerProbe: realtimeProviderProbeSnapshot(),
     endpoint: {
       method: 'POST',
       path: '/api/realtime/provider/probe',
       previewBody: { execute: false },
-      executeBody: { execute: true },
+      executeBody: { execute: true, confirmOpenAiSpend: true },
     },
     detail: {
       action: 'probe',
@@ -43955,13 +43999,23 @@ async function startRealtimeProviderProbe(options = {}) {
     },
     output: [
       'Preview no-mic Realtime provider probe.',
-      'This creates a renderer WebRTC offer without getUserMedia, then calls the same Realtime provider session endpoint with probe=true.',
+      'No OpenAI request is made in preview. If explicitly confirmed, JAVIS will create a renderer WebRTC offer without getUserMedia, then call the Realtime provider session endpoint with probe=true.',
       `Renderer: ${rendererAvailable ? 'ready' : 'missing'}.`,
       `OpenAI key: ${OPENAI_API_KEY ? 'present' : 'missing'}.`,
       `Cloud spend guard: ${spendPreview.allowed ? 'allowed' : `blocked (${spendPreview.reasons.join(', ')})`}.`,
+      spendConfirmation.required ? `OpenAI spend confirmation: ${spendConfirmation.confirmed ? 'confirmed for this request' : 'required before execution'}.` : '',
     ].join('\n'),
   };
   if (!execute) return preview;
+  if (spendConfirmation.required && !spendConfirmation.confirmed) {
+    return {
+      ...preview,
+      ok: false,
+      status: 428,
+      executed: false,
+      output: 'OpenAI spend confirmation required before running the no-mic Realtime provider probe. Re-run with confirmOpenAiSpend:true, type RUN in the CUI, or pass --confirm-openai-spend.',
+    };
+  }
   if (!OPENAI_API_KEY) {
     return {
       ...preview,
@@ -44011,7 +44065,10 @@ async function startRealtimeProviderProbe(options = {}) {
     events: [],
   };
   recordRealtimeProviderProbeEvent({ runId, type: 'created', status: 'dispatching', detail: 'No-mic Realtime provider probe created.' });
-  const dispatch = await dispatchRendererDogfoodCommand(preview.detail);
+  const dispatch = await dispatchRendererDogfoodCommand({
+    ...preview.detail,
+    confirmOpenAiSpend: true,
+  });
   if (!dispatch.ok) {
     recordRealtimeProviderProbeEvent({ runId, type: 'error', status: 'error', detail: dispatch.error || 'Renderer dispatch failed.' });
     return {
@@ -44189,7 +44246,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
     {
       id: 'probe_provider_no_mic',
       label: 'Probe Realtime provider without mic',
-      command: 'npm run config -- --run-realtime-provider-probe',
+      command: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
       endpoint: '/api/realtime/provider/probe',
       startsMicrophone: false,
       requiresMicConfirmation: false,
@@ -44240,7 +44297,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
   const commands = {
     pack: 'npm run config -- --print-realtime-dogfood-pack',
     preflight: 'npm run dogfood:realtime-renderer',
-    providerProbe: 'npm run config -- --run-realtime-provider-probe',
+    providerProbe: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
     start: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
     startRequireAcceptance: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
     monitor: 'npm run config -> V. Watch Realtime voice evidence',
@@ -61698,6 +61755,7 @@ function startApiServer() {
     const source = isProviderProbe
       ? String(req.query.source || 'renderer_provider_probe').slice(0, 80)
       : String(req.query.source || 'renderer').slice(0, 80);
+    const confirmOpenAiSpend = truthyRequestValue(req.query.confirmOpenAiSpend || req.query.confirmCloud);
     const sessionId = isProviderProbe ? runId : conversationState.sessionId;
     const offerBytes = Buffer.byteLength(String(req.body || ''), 'utf8');
     const recordProviderAttempt = (payload = {}) => {
@@ -61733,6 +61791,24 @@ function startApiServer() {
 
     const startedAt = Date.now();
     const micMode = isProviderProbe ? 'open' : normalizeConversationMicMode(req.query.micMode);
+    const spendConfirmation = openAiSpendConfirmationSnapshot({
+      kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session',
+      source,
+      confirmOpenAiSpend,
+      required: isProviderProbe,
+    });
+    if (spendConfirmation.required && !spendConfirmation.confirmed) {
+      recordProviderAttempt({
+        micMode,
+        answerBytes: 0,
+        statusCode: 428,
+        ok: false,
+        durationMs: Date.now() - startedAt,
+        error: 'openai_spend_confirmation_required',
+      });
+      res.status(428).send(spendConfirmation.prompt);
+      return;
+    }
     let spendDecision = null;
     try {
       spendDecision = assertOpenAiSpendAllowed({
@@ -61740,6 +61816,8 @@ function startApiServer() {
         source,
         model: models.realtime,
         isProviderProbe,
+        confirmOpenAiSpend,
+        confirmCloud: confirmOpenAiSpend,
       });
     } catch (error) {
       if (error instanceof OpenAiSpendGuardBlocked) {

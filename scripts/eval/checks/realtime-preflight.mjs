@@ -63,13 +63,18 @@ export default {
   lane: 'realtime-preflight',
   async run(ctx) {
     const out = [];
-    const [config, renderer, providerProbe, providerProbePreview, pack, acceptanceResponse, evidence] = await Promise.all([
+    const [config, renderer, providerProbe, providerProbePreview, unconfirmedProviderProbeExecute, pack, acceptanceResponse, evidence] = await Promise.all([
       ctx.api('/api/realtime/config?micMode=open', { timeoutMs: 30000 }),
       ctx.api('/api/realtime/dogfood/renderer', { timeoutMs: 30000 }),
       ctx.api('/api/realtime/provider/probe', { timeoutMs: 30000 }),
       ctx.api('/api/realtime/provider/probe', {
         method: 'POST',
         body: { execute: false, source: 'eval_realtime_preflight' },
+        timeoutMs: 30000,
+      }),
+      ctx.api('/api/realtime/provider/probe', {
+        method: 'POST',
+        body: { execute: true, source: 'cui_cli' },
         timeoutMs: 30000,
       }),
       ctx.api('/api/realtime/dogfood/pack', { timeoutMs: 30000 }),
@@ -114,9 +119,28 @@ export default {
         probePreview.executed === false &&
         probePreview.startsMicrophone === false &&
         probePreview.requiresMicConfirmation === false &&
+        probePreview.requiresOpenAiSpendConfirmation === true &&
+        probePreview.openAiSpendConfirmation?.required === true &&
+        probePreview.openAiSpendConfirmation?.confirmed === false &&
+        probePreview.endpoint?.executeBody?.confirmOpenAiSpend === true &&
         probePreview.detail?.action === 'probe'
-        ? ok('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `${probe.status || 'idle'} · renderer=${probe.rendererAvailable ? 'ready' : 'missing'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'}`)
+        ? ok('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `${probe.status || 'idle'} · renderer=${probe.rendererAvailable ? 'ready' : 'missing'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'} · spend confirmation required`)
         : fail('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `GET/POST /api/realtime/provider/probe ${providerProbe.status}/${providerProbePreview.status}`, { probe, preview: probePreview }),
+    );
+
+    const unconfirmedProbe = unconfirmedProviderProbeExecute.data || {};
+    out.push(
+      unconfirmedProviderProbeExecute.status === 428 &&
+        unconfirmedProbe.ok === false &&
+        unconfirmedProbe.executed === false &&
+        unconfirmedProbe.openAiSpendConfirmation?.required === true &&
+        unconfirmedProbe.openAiSpendConfirmation?.confirmed === false &&
+        String(unconfirmedProbe.output || '').includes('OpenAI spend confirmation required')
+        ? ok('realtime_preflight.provider_probe_spend_confirmation', 'Provider probe spend confirmation gate', 'execute:true without confirmOpenAiSpend stops at 428 before any OpenAI provider request')
+        : fail('realtime_preflight.provider_probe_spend_confirmation', 'Provider probe spend confirmation gate', 'expected execute:true without confirmOpenAiSpend to return 428 and remain unexecuted', {
+          status: unconfirmedProviderProbeExecute.status,
+          body: unconfirmedProbe,
+        }),
     );
 
     const autopilot = await ctx.api('/api/autopilot');
@@ -129,20 +153,24 @@ export default {
         providerCandidate?.providerProbe === true &&
         providerCandidate.startsMicrophone === false &&
         providerCandidate.requiresMicConfirmation === false &&
-        providerCandidate.requiresUserPresence === false &&
-        providerCandidate.riskLevel <= 1 &&
+        providerCandidate.requiresUserPresence === true &&
+        providerCandidate.manualOnly === true &&
+        providerCandidate.autoEligible === false &&
+        providerCandidate.autopilotEligible === false &&
+        providerCandidate.decision?.executable === false &&
         [
-          'eligible_realtime_provider_probe',
+          'manual_only',
+          'openai_spend_confirmation_required',
           'realtime_provider_probe_fresh',
           'realtime_provider_probe_running',
         ].includes(providerCandidateReason)
       );
     out.push(
       autopilot.ok && providerCandidateCovered
-        ? ok('realtime_preflight.provider_probe_autopilot_candidate', 'No-mic provider probe autopilot candidate', realtime.voiceHealth?.status === 'ready'
+        ? ok('realtime_preflight.provider_probe_autopilot_candidate', 'No-mic provider probe manual candidate', realtime.voiceHealth?.status === 'ready'
           ? 'provider ready; no recovery candidate needed'
-          : `${providerCandidateReason} · startsMic=${providerCandidate.startsMicrophone}`)
-        : fail('realtime_preflight.provider_probe_autopilot_candidate', 'No-mic provider probe autopilot candidate', 'provider readiness should expose a low-risk no-mic autopilot candidate or cooldown', {
+          : `${providerCandidateReason} · manualOnly=${providerCandidate.manualOnly} · autopilot=${providerCandidate.autopilotEligible}`)
+        : fail('realtime_preflight.provider_probe_autopilot_candidate', 'No-mic provider probe manual candidate', 'provider readiness should expose provider probe as manual-only and not autopilot-executable because it can spend API quota', {
             voiceHealth: realtime.voiceHealth,
             candidate: providerCandidate,
             candidates: autopilotCandidates.slice(0, 6),

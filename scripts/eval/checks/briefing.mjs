@@ -281,12 +281,15 @@ export default {
           providerProbeNext.executed === false &&
           providerProbeNext.action?.id === 'readiness:realtime_voice_provider' &&
           providerProbeResult.executed === false &&
-          providerProbeResult.startsMicrophone === false &&
-          providerProbeResult.requiresMicConfirmation === false &&
-          providerProbeResult.endpoint?.path === '/api/realtime/provider/probe' &&
-          String(providerProbeNext.output || '').includes('Preview no-mic Realtime provider probe') &&
-          String(providerProbeNext.output || '').includes('Preview mode: no provider request was sent')
-          ? ok('briefing.worknext_realtime_provider_probe_preview', 'Work-next Realtime provider probe preview', 'readiness action previews a no-mic provider probe without calling OpenAI')
+	          providerProbeResult.startsMicrophone === false &&
+	          providerProbeResult.requiresMicConfirmation === false &&
+	          providerProbeResult.endpoint?.path === '/api/realtime/provider/probe' &&
+	          providerProbeResult.endpoint?.executeBody?.confirmOpenAiSpend === true &&
+	          providerProbeResult.requiresOpenAiSpendConfirmation === true &&
+	          providerProbeResult.openAiSpendConfirmation?.required === true &&
+	          String(providerProbeNext.output || '').includes('Preview no-mic Realtime provider probe') &&
+	          String(providerProbeNext.output || '').includes('Preview mode: no provider request was sent')
+	          ? ok('briefing.worknext_realtime_provider_probe_preview', 'Work-next Realtime provider probe preview', 'readiness action previews a no-mic provider probe and requires explicit spend confirmation before any OpenAI call')
           : fail('briefing.worknext_realtime_provider_probe_preview', 'Work-next Realtime provider probe preview', 'explicit realtime provider readiness action did not return a safe no-mic probe preview', providerProbePreview.data),
       );
     } else {

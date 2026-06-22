@@ -27,8 +27,8 @@
 - Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch, opening the compact compose input immediately when Realtime is blocked or unverified.
 - Wake handoff status that tells the pet/CUI whether the next invited turn should try Realtime or use local no-mic voice-command fallback, without starting the microphone from the status read.
 - Wake-command intake that combines wake plus local no-mic voice-command routing through `npm run wake -- "..."` and `/api/wake/command`.
-- Pet startup recovery probe: when provider health is warning/blocked and `OPENAI_API_KEY` is loaded, the pet first runs the no-mic Realtime provider probe and waits for a ready result before calling `getUserMedia`; failed recovery keeps the local voice-command fallback active.
-- Natural Realtime recovery probe: local voice-command intake recognizes billing/quota recovery phrases such as "充值好了，重试实时语音" and routes them to the no-mic provider-probe preview/execution path, so provider recovery can be checked without opening Terminal or starting microphone capture.
+- Pet startup recovery gate: when provider health is warning/blocked and `OPENAI_API_KEY` is loaded, the pet previews the no-mic Realtime provider probe and keeps local voice-command fallback active; it never spends OpenAI quota from startup without explicit confirmation.
+- Natural Realtime recovery probe: local voice-command intake recognizes billing/quota recovery phrases such as "充值好了，重试实时语音" and routes them to the no-mic provider-probe preview path, so provider recovery can be checked without opening Terminal, starting microphone capture, or spending quota until the user explicitly confirms the probe.
 - Global clipboard-to-Inbox capture hotkey.
 - Resident notifications for approvals and background task completion.
 - Push-to-talk voice mode.

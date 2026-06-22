@@ -1421,11 +1421,12 @@ export default {
         }),
     );
 
-    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
-    const spendGuard = spendGuardResponse.data?.spendGuard || {};
-    out.push(
-      spendGuardResponse.ok &&
-        spendGuard.mode === 'manual' &&
+	    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
+	    const spendGuard = spendGuardResponse.data?.spendGuard || {};
+	    const spendGuardTotalBefore = Number(spendGuard.counts?.total || 0);
+	    out.push(
+	      spendGuardResponse.ok &&
+	        spendGuard.mode === 'manual' &&
         spendGuard.unattendedDailyRequestLimit === 0 &&
         spendGuard.allowAutopilotCloud === false &&
         spendGuard.allowRendererStartupProbe === false &&
@@ -1436,25 +1437,59 @@ export default {
         : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to manual-only OpenAI usage, block unattended/autopilot calls, and disable renderer startup probes', {
           status: spendGuardResponse.status,
           body: spendGuardResponse.data,
-        }),
-    );
+	        }),
+	    );
+	    const unconfirmedProviderProbeResponse = await ctx.api('/api/realtime/provider/probe', {
+	      method: 'POST',
+	      body: {
+	        execute: true,
+	        source: 'cui_cli',
+	      },
+	      timeoutMs: 10000,
+	    });
+	    const unconfirmedProviderProbe = unconfirmedProviderProbeResponse.data || {};
+	    const spendGuardAfterUnconfirmedResponse = await ctx.api('/api/openai/spend-guard');
+	    const spendGuardAfterUnconfirmed = spendGuardAfterUnconfirmedResponse.data?.spendGuard || {};
+	    out.push(
+	      unconfirmedProviderProbeResponse.status === 428 &&
+	        unconfirmedProviderProbe.ok === false &&
+	        unconfirmedProviderProbe.executed === false &&
+	        unconfirmedProviderProbe.openAiSpendConfirmation?.required === true &&
+	        unconfirmedProviderProbe.openAiSpendConfirmation?.confirmed === false &&
+	        String(unconfirmedProviderProbe.output || '').includes('OpenAI spend confirmation required') &&
+	        spendGuardAfterUnconfirmedResponse.ok &&
+	        Number(spendGuardAfterUnconfirmed.counts?.total || 0) === spendGuardTotalBefore
+	        ? ok('resident.openai_spend_confirmation_gate', 'OpenAI provider probe confirmation gate', 'unconfirmed provider-probe execution returns 428 and does not reserve OpenAI spend')
+	        : fail('resident.openai_spend_confirmation_gate', 'OpenAI provider probe confirmation gate', 'expected unconfirmed provider-probe execution to stop before any OpenAI spend reservation', {
+	          status: unconfirmedProviderProbeResponse.status,
+	          body: unconfirmedProviderProbe,
+	          spendGuardBefore: spendGuard,
+	          spendGuardAfter: spendGuardAfterUnconfirmed,
+	        }),
+	    );
 
-    const envExampleSource = fs.readFileSync('.env.example', 'utf8');
-    const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
-    const hasOpenAiSpendGuardStatic =
-      mainSource.includes('OPENAI_SPEND_GUARD_FILE') &&
-      mainSource.includes('class OpenAiSpendGuardBlocked') &&
-      mainSource.includes('function assertOpenAiSpendAllowed') &&
-      mainSource.includes('const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === \'true\';') &&
-      mainSource.includes('OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT') &&
-      mainSource.includes('OPENAI_ALLOW_RENDERER_STARTUP_PROBE') &&
-      mainSource.includes('renderer_startup_probe_disabled') &&
-      mainSource.includes("kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session'") &&
-      mainSource.includes("api.get('/api/openai/spend-guard'") &&
-      mainSource.includes("manualOnlyReason = 'OpenAI provider probes can consume API quota and require explicit user action.'") &&
-      mainSource.includes('source: options.source || \'observe_vision\'') &&
-      rendererSource.includes("source: detail.source || 'renderer_provider_probe'") &&
-      envExampleSource.includes('JAVIS_OPENAI_CLOUD_MODE=manual') &&
+	    const envExampleSource = fs.readFileSync('.env.example', 'utf8');
+	    const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
+	    const hasOpenAiSpendGuardStatic =
+	      mainSource.includes('OPENAI_SPEND_GUARD_FILE') &&
+	      mainSource.includes('class OpenAiSpendGuardBlocked') &&
+	      mainSource.includes('function assertOpenAiSpendAllowed') &&
+	      mainSource.includes('function openAiSpendConfirmationSnapshot') &&
+	      mainSource.includes('openai_spend_confirmation_required') &&
+	      mainSource.includes('confirmOpenAiSpend') &&
+	      mainSource.includes('const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === \'true\';') &&
+	      mainSource.includes('OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT') &&
+	      mainSource.includes('OPENAI_ALLOW_RENDERER_STARTUP_PROBE') &&
+	      mainSource.includes('renderer_startup_probe_disabled') &&
+	      mainSource.includes("kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session'") &&
+	      mainSource.includes("api.get('/api/openai/spend-guard'") &&
+	      mainSource.includes("manualOnlyReason = 'OpenAI provider probes can consume API quota and require explicit user action.'") &&
+	      mainSource.includes('source: options.source || \'observe_vision\'') &&
+	      rendererSource.includes("source: detail.source || 'renderer_provider_probe'") &&
+	      rendererSource.includes("params.set('confirmOpenAiSpend', 'true')") &&
+	      packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
+	      packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe --confirm-openai-spend"') &&
+	      envExampleSource.includes('JAVIS_OPENAI_CLOUD_MODE=manual') &&
       envExampleSource.includes('JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0') &&
       envExampleSource.includes('JAVIS_OPENAI_ALLOW_AUTOPILOT=false') &&
       envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false');
@@ -1515,16 +1550,17 @@ export default {
         : fail('resident.push_to_talk_default', 'Push-to-talk default voice mode', 'expected renderer to default to PTT and expose compact hold-to-talk without open mic by default'),
     );
     out.push(
-      appSource.includes('runRealtimeProviderRecoveryProbe') &&
-        appSource.includes('shouldRetryRealtimeProviderBeforeMic') &&
-        appSource.includes("source: 'renderer_startup_recovery'") &&
-        appSource.includes('/api/realtime/provider/probe') &&
-        appSource.includes('成功后才会打开麦克风') &&
-        startupCheckIndex >= 0 &&
-        getUserMediaIndex > startupCheckIndex
-        ? ok('resident.pet_realtime_startup_probe_gate', 'Pet Realtime startup recovery gate', 'renderer retries a no-mic provider probe before getUserMedia when provider health is recoverable')
-        : fail('resident.pet_realtime_startup_probe_gate', 'Pet Realtime startup recovery gate', 'expected renderer startup to verify provider with a no-mic probe before opening the microphone'),
-    );
+	      appSource.includes('runRealtimeProviderRecoveryProbe') &&
+	        appSource.includes('shouldRetryRealtimeProviderBeforeMic') &&
+	        appSource.includes("source: 'renderer_startup_recovery'") &&
+	        appSource.includes('execute: false') &&
+	        appSource.includes('/api/realtime/provider/probe') &&
+	        appSource.includes('不会调用 OpenAI，也不会打开麦克风') &&
+	        startupCheckIndex >= 0 &&
+	        getUserMediaIndex > startupCheckIndex
+	        ? ok('resident.pet_realtime_startup_probe_gate', 'Pet Realtime startup recovery gate', 'renderer previews provider recovery before getUserMedia and never spends OpenAI quota from startup')
+	        : fail('resident.pet_realtime_startup_probe_gate', 'Pet Realtime startup recovery gate', 'expected renderer startup to preview provider recovery without OpenAI spend before opening the microphone'),
+	    );
 
     return out;
   },

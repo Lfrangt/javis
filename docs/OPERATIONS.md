@@ -130,20 +130,21 @@ npm run config -- --print-realtime-recovery
 curl http://127.0.0.1:3417/api/realtime/provider/recovery
 ```
 
-In the interactive CUI, option `1B` prints the same plan and can open the OpenAI API billing page after explicit confirmation. The recovery plan never starts microphone capture and keeps `/api/voice/command` / `npm run voice:chat` as the local fallback while billing or key changes are pending. The same recovery payload now includes `retryPolicy`, which says whether a no-mic provider probe is due, cooling down, or already running, plus whether the local fallback should be used until the next probe. When autopilot is enabled, the `readiness:realtime_voice_provider` work-next action may retry the no-mic provider probe after `JAVIS_REALTIME_PROVIDER_PROBE_FRESH_MS` (30 minutes by default); that probe calls the Realtime provider session endpoint only to verify provider readiness and still never opens the microphone. Local voice-command intake also recognizes phrases like `我已经充值好了，帮我重试实时语音 provider probe，先不要开麦` and routes them to the same no-mic provider-probe preview or execution path.
+In the interactive CUI, option `1B` prints the same plan and can open the OpenAI API billing page after explicit confirmation. The recovery plan never starts microphone capture and keeps `/api/voice/command` / `npm run voice:chat` as the local fallback while billing or key changes are pending. The same recovery payload now includes `retryPolicy`, which says whether a no-mic provider probe is due, cooling down, or already running, plus whether the local fallback should be used until the next probe. Provider probes can consume OpenAI API quota, so unattended/autopilot paths stay blocked by default. Local voice-command intake recognizes phrases like `我已经充值好了，帮我重试实时语音 provider probe，先不要开麦` and routes them to the same no-mic provider-probe preview path; actual execution still requires explicit OpenAI spend confirmation.
 
-Before opening a real microphone session, run the no-mic provider probe. It creates a renderer WebRTC offer without `getUserMedia`, calls the same OpenAI Realtime provider path with `probe=true`, records HTTP status/error evidence, and closes immediately:
+Before opening a real microphone session, preview the no-mic provider probe, then run it only with explicit OpenAI spend confirmation. Preview mode makes no OpenAI request. Confirmed run mode creates a renderer WebRTC offer without `getUserMedia`, calls the same OpenAI Realtime provider path with `probe=true`, records HTTP status/error evidence, and closes immediately:
 
 ```bash
 npm run config -- --print-realtime-provider-probe
-npm run config -- --run-realtime-provider-probe
+npm run config -- --run-realtime-provider-probe --confirm-openai-spend
 npm run dogfood:realtime-provider-probe
+npm run dogfood:realtime-provider-probe:run
 curl -X POST http://127.0.0.1:3417/api/realtime/provider/probe \
   -H 'Content-Type: application/json' \
-  -d '{"execute":true}'
+  -d '{"execute":true,"confirmOpenAiSpend":true}'
 ```
 
-The probe never starts microphone capture, screen capture, raw audio storage, or the live dogfood session. A successful probe proves the key/project/model/voice/provider path is ready; it does not count as a live voice session. The live run still requires `npm run dogfood:realtime-renderer -- --execute --confirm-mic` while the user is present.
+The default `npm run dogfood:realtime-provider-probe` is a preview and makes no OpenAI call. The `:run`, `--confirm-openai-spend`, or `confirmOpenAiSpend:true` forms are the explicit manual paths that may spend one provider-probe request. The probe never starts microphone capture, screen capture, raw audio storage, or the live dogfood session. A successful probe proves the key/project/model/voice/provider path is ready; it does not count as a live voice session. The live run still requires `npm run dogfood:realtime-renderer -- --execute --confirm-mic` while the user is present.
 
 The desktop renderer also reads Realtime provider health before microphone startup. If recent evidence already shows a known provider problem such as missing key, quota/rate-limit, auth/permission, provider error, or network failure, clicking the pet or triggering wake will not call `getUserMedia`; it shows the blocker and falls back to local speech instead. Realtime health, `/api/pet/status`, `/api/work/next`, and compact voice handoff also expose a structured local fallback pointing to `/api/voice/command`, with a compact `blocker` object for the provider kind/status/next action, so operators can keep routing typed or future local-STT commands while live WebRTC voice is blocked. When the input box already has a prompt, that fallback sends the transcript to `/api/voice/command`, queues background/Codex/Claude/local routes through the normal router, and holds quick-lane cloud calls unless `allowCloudQuick:true` is explicit. Run the no-mic provider probe again after fixing billing or replacing the key so the live microphone path can be retried with fresh provider evidence.
 

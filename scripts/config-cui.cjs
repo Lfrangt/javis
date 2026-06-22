@@ -3623,6 +3623,10 @@ function printRealtimeProviderProbe(result) {
     const guard = probe.spendGuard || result.spendGuard;
     console.log(`Spend guard: ${guard.allowed ? 'allowed' : 'blocked'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
   }
+  const confirmation = result?.openAiSpendConfirmation || probe.openAiSpendConfirmation;
+  if (confirmation?.required) {
+    console.log(`Spend confirmation: ${confirmation.confirmed ? 'confirmed' : 'required'} · ${compact(confirmation.prompt || '', 220)}`);
+  }
   if (probe.summary) console.log(`Summary: ${compact(probe.summary, 300)}`);
   if (probe.next) console.log(`Next: ${compact(probe.next, 300)}`);
   if (providerResult.error) console.log(`Error: ${compact(providerResult.error, 360)}`);
@@ -3872,7 +3876,11 @@ async function showRealtimeProviderProbe(options = {}) {
   let result = run
     ? await request('/api/realtime/provider/probe', {
         method: 'POST',
-        body: { execute: true, source: 'cui' },
+        body: {
+          execute: true,
+          source: options.source || 'cui',
+          confirmOpenAiSpend: options.confirmOpenAiSpend === true,
+        },
       })
     : await request('/api/realtime/provider/probe');
 
@@ -3905,7 +3913,7 @@ async function runRealtimeProviderProbeFromCui(rl) {
     console.log('\nNo provider probe started.');
     return;
   }
-  await showRealtimeProviderProbe({ run: true });
+  await showRealtimeProviderProbe({ run: true, confirmOpenAiSpend: true, source: 'cui' });
 }
 
 function printRealtimeDogfoodPack(result) {
@@ -4431,7 +4439,13 @@ async function main() {
   }
 
   if (process.argv.includes('--run-realtime-provider-probe')) {
-    await showRealtimeProviderProbe({ run: true });
+    const confirmed = process.argv.includes('--confirm-openai-spend') || process.argv.includes('--confirm-cloud-spend');
+    if (!confirmed) {
+      await showRealtimeProviderProbe();
+      console.log('\nNo OpenAI call was made. Re-run with --confirm-openai-spend to spend one manual provider-probe request.');
+      return;
+    }
+    await showRealtimeProviderProbe({ run: true, confirmOpenAiSpend: true, source: 'cui_cli' });
     return;
   }
 
