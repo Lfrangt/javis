@@ -24243,6 +24243,29 @@ function naturalBrowserLocalCommand(text) {
     };
   }
 
+  const workflowIntent = (() => {
+    if (/\b(research|compare)\b/i.test(raw) || /(调研|研究|比较|对比)/.test(compactPlain)) return 'research';
+    if (/\b(search|google|look up)\b/i.test(raw) || /(搜索|搜一下|查一下|检索)/.test(compactPlain)) return 'search';
+    if (/\b(fill[_ -]?draft|form[_ -]?draft|draft.*form)\b/i.test(raw) || /(表单|填写).*(草稿|预览|计划|不要提交|先别提交|先不要提交)/.test(compactPlain)) return 'fill_draft';
+    if (/\b(draft|write|compose)\b/i.test(raw) || /(起草|草稿|写一段|帮我写|生成回复|写回复)/.test(compactPlain)) return 'draft';
+    if (/\b(extract actions?|action items?|todos?|to-dos?|next steps?)\b/i.test(raw) || /(提取|整理|列出|找出).*(行动项|待办|下一步|事项|风险|截止|deadline|todo)/i.test(compactPlain)) return 'extract_actions';
+    if (/\b(answer|question|ask)\b/i.test(raw) || /(回答|问一下|问题|这页.*为什么|网页.*为什么)/.test(compactPlain)) return 'ask';
+    if (/\b(click|open link|browser action|act on)\b/i.test(raw) || /(点击|点一下|打开链接|操作网页|网页上操作)/.test(compactPlain)) return 'act';
+    return '';
+  })();
+  if (workflowIntent) {
+    return {
+      intent: 'browser_workflow',
+      label: 'Browser workflow',
+      requiresLocalExecution: true,
+      args: {
+        intent: workflowIntent,
+        instruction: raw,
+        mode: 'quick',
+      },
+    };
+  }
+
   const pageSignal = /\b(read|summari[sz]e|summary|extract|content|text|body|title|current page|webpage|web page|what.*page|page.*say)\b/i.test(raw)
     || /(读|阅读|总结|概括|提取|内容|正文|标题|当前网页|当前页面|网页内容|页面内容|网页说什么|页面说什么|看一下网页|看一下页面|看当前网页|看当前页面)/.test(compactTextNoSpace);
   if (pageSignal) {
@@ -24803,7 +24826,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25830,6 +25853,24 @@ function formatBrowserPageForLocalCommand(page = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatBrowserWorkflowForLocalCommand(result = {}, requestedExecute = false) {
+  const page = result.page || {};
+  const workflow = result.workflow || {};
+  const routing = result.routing || {};
+  const mode = result.mode || workflow.mode || 'quick';
+  const intent = result.intent || workflow.intent || '-';
+  return [
+    `Browser workflow: ${requestedExecute ? 'execute requested' : 'preview only'} · intent=${intent} · mode=${mode} · ok=${result.ok !== false ? 'yes' : 'no'}`,
+    `Page: ${page.available ? 'available' : 'unavailable'} · ${page.supported ? 'supported' : 'unsupported'} · ${page.app || workflow.target?.app || '-'}`,
+    page.title || page.url ? `Target: ${compactRecordText(page.title || page.url, 180)} · ${formatBrowserUrlForLocalCommand(page.url || workflow.target?.url || '')}` : '',
+    workflow.id ? `Workflow: ${workflow.id} · status=${workflow.status || '-'}` : '',
+    routing.id ? `Route: ${routing.id} · status=${routing.status || '-'}` : '',
+    result.output ? `Output: ${compactRecordText(result.output, 760)}` : '',
+    !requestedExecute ? 'Next: say "执行这个浏览器预览" or run the route/work-next action explicitly when you want policy-gated browser action or queued work.' : '',
+    '边界: preview 不点击、不填写、不提交表单、不启动麦克风或 Realtime；执行仍走 browser workflow、DOM/action policy、审批门和重观察。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatBrowserDomForLocalCommand(dom = {}) {
   const elements = Array.isArray(dom.elements) ? dom.elements.slice(0, 10) : [];
   const lines = [
@@ -26293,6 +26334,57 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatBrowserDomForLocalCommand(dom),
         data: { dom },
+      };
+    }
+
+    if (command.intent === 'browser_workflow') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const result = await runBrowserWorkflow({
+        ...(command.args || {}),
+        execute,
+        source: execute ? 'local_command_browser_workflow_execute' : 'local_command_browser_workflow_preview',
+        scope: `browser:${command.args?.intent || 'workflow'}`,
+      });
+      return {
+        ok: execute ? result.ok !== false : true,
+        executed: Boolean(result.executed),
+        queued: Boolean(result.queued),
+        localCommand: command,
+        output: formatBrowserWorkflowForLocalCommand(result, execute),
+        data: {
+          result,
+          browserWorkflow: {
+            version: 1,
+            requestedExecute: execute,
+            executed: Boolean(result.executed),
+            queued: Boolean(result.queued),
+            ok: result.ok !== false,
+            intent: result.intent || command.args?.intent || '',
+            mode: result.mode || command.args?.mode || 'quick',
+            workflowId: result.workflow?.id || '',
+            routeId: result.routing?.id || '',
+            page: result.page
+              ? {
+                  available: Boolean(result.page.available),
+                  supported: Boolean(result.page.supported),
+                  app: result.page.app || '',
+                  title: compactRecordText(result.page.title || '', 180),
+                  url: compactRecordText(result.page.url || '', 220),
+                  error: compactRecordText(result.page.error || '', 220),
+                }
+              : null,
+            output: compactRecordText(result.output || '', 900),
+            safety: {
+              previewOnly: !execute,
+              executesBrowserWorkflow: execute,
+              executesBrowserAction: Boolean(execute && result.executed),
+              startsMicrophone: false,
+              usesRealtime: false,
+              opensTerminal: false,
+              storesRawAudio: false,
+            },
+          },
+        },
       };
     }
 
@@ -27977,7 +28069,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

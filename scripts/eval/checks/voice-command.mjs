@@ -715,6 +715,53 @@ export default {
         : fail('voice_command.natural_browser_dom', 'Natural browser DOM voice command', 'natural browser DOM phrase did not use the local browser_dom fast path', naturalBrowserDom.data),
     );
 
+    const naturalBrowserWorkflow = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '提取当前网页行动项，先预览，不要点击',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_workflow_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserWorkflowData = naturalBrowserWorkflow.data || {};
+    const naturalBrowserWorkflowRoute = naturalBrowserWorkflowData.route || {};
+    const naturalBrowserWorkflowPayload = naturalBrowserWorkflowRoute.data?.browserWorkflow || {};
+    const mainSourceForBrowserWorkflow = fs.readFileSync('electron/main.cjs', 'utf8');
+    const browserWorkflowRespectsExecuteFlag =
+      mainSourceForBrowserWorkflow.includes("if (command.intent === 'browser_workflow')") &&
+      mainSourceForBrowserWorkflow.includes('const execute = options.execute === true') &&
+      mainSourceForBrowserWorkflow.includes('runBrowserWorkflow({') &&
+      mainSourceForBrowserWorkflow.includes('execute,') &&
+      !mainSourceForBrowserWorkflow.includes("runBrowserWorkflow({ ...(command.args || {}), execute: true");
+    out.push(
+      naturalBrowserWorkflow.ok &&
+        naturalBrowserWorkflowData.ok === true &&
+        naturalBrowserWorkflowData.executed === false &&
+        naturalBrowserWorkflowRoute.decision?.localCommand === 'browser_workflow' &&
+        naturalBrowserWorkflowRoute.localCommand?.intent === 'browser_workflow' &&
+        naturalBrowserWorkflowRoute.executed === false &&
+        naturalBrowserWorkflowRoute.output?.includes('Browser workflow: preview only') &&
+        naturalBrowserWorkflowPayload.requestedExecute === false &&
+        naturalBrowserWorkflowPayload.executed === false &&
+        naturalBrowserWorkflowPayload.intent === 'extract_actions' &&
+        naturalBrowserWorkflowPayload.safety?.previewOnly === true &&
+        naturalBrowserWorkflowPayload.safety?.executesBrowserWorkflow === false &&
+        naturalBrowserWorkflowPayload.safety?.executesBrowserAction === false &&
+        naturalBrowserWorkflowData.safety?.startsMicrophone === false &&
+        naturalBrowserWorkflowData.safety?.usesRealtime === false &&
+        naturalBrowserWorkflowData.safety?.callsOpenAIImmediately === false &&
+        browserWorkflowRespectsExecuteFlag
+        ? ok('voice_command.natural_browser_workflow_preview', 'Natural browser workflow voice command', '提取当前网页行动项 routes to browser_workflow preview without clicking or cloud/realtime')
+        : fail('voice_command.natural_browser_workflow_preview', 'Natural browser workflow voice command', 'natural browser workflow phrase did not safely preview browser workflow', {
+          body: naturalBrowserWorkflow.data,
+          browserWorkflowRespectsExecuteFlag,
+        }),
+    );
+
     const naturalAppUi = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
