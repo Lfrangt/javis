@@ -494,6 +494,24 @@ export default {
         }),
     );
 
+    const browserRecoveryRecommended = unblockPreviewApi.recommendedAction?.id === 'browser_recovery:open_supported_browser';
+    const browserRecoveryBlocker = Array.isArray(blockerStatus.blockers)
+      ? blockerStatus.blockers.find((item) => item.id === 'browser_recovery')
+      : null;
+    out.push(
+      !browserRecoveryRecommended ||
+        (
+          browserRecoveryBlocker &&
+          browserRecoveryBlocker.source === 'browser_recovery' &&
+          /Google Chrome/i.test(String(browserRecoveryBlocker.next || browserRecoveryBlocker.summary || ''))
+        )
+        ? ok('resident.blocker_status_browser_recovery', 'Blocker status browser recovery', browserRecoveryRecommended ? 'browser recovery is surfaced as the actionable blocker' : 'no browser recovery candidate active')
+        : fail('resident.blocker_status_browser_recovery', 'Blocker status browser recovery', 'expected /api/blockers and blocker_status voice path to surface browser_recovery when work-next recommends opening a supported browser', {
+          recommendedAction: unblockPreviewApi.recommendedAction,
+          blockers: blockerStatus.blockers,
+        }),
+    );
+
     const unblockPreviewCommandResponse = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -1192,6 +1210,17 @@ export default {
       hasPetBrowserRecoveryQuieting
         ? ok('resident.pet_browser_recovery_quieting', 'Pet browser recovery quieting', 'browser-window recovery stays in work-next while routine blocked routes are filtered from pet attention')
         : fail('resident.pet_browser_recovery_quieting', 'Pet browser recovery quieting', 'expected browser-window-unavailable routes to stay recoverable without making the pet interruptive'),
+    );
+
+    const hasBlockerBrowserRecovery =
+      mainSource.includes("blockerItem(\n      'browser_recovery'") &&
+      mainSource.includes('const browserBlockedRoutes = blockedRoutes.filter((route) => browserUnavailableRouteBlocker(route, route))') &&
+      mainSource.includes('const nonBrowserBlockedRoutes = browserRecovery') &&
+      mainSource.includes('browserRecovery.browserRecovery?.next');
+    out.push(
+      hasBlockerBrowserRecovery
+        ? ok('resident.blocker_browser_recovery_static', 'Blocker browser recovery wiring', 'browser-window blockers become an actionable blocker_status recovery item instead of only generic routed-work noise')
+        : fail('resident.blocker_browser_recovery_static', 'Blocker browser recovery wiring', 'expected blockerStatusSnapshot to split browser recovery from generic blocked_routes'),
     );
 
     const hasBrowserUnavailableFallbackTarget =

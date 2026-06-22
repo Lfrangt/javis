@@ -505,6 +505,8 @@ typing `RUN`. This is the manual path for recovering blocked jobs or routed work
 checking progress, preparing a real Realtime voice dogfood session, or delivering a completed workflow result without memorizing HTTP calls. Realtime voice actions print a small guide with the no-mic preparation path, CUI monitor, the prompts `后台现在怎么样` and `现在做到哪了？接下来做什么？`, and the expected `get_work_handoff` evidence. Internal
 smoke/verification workflows are not offered as deliverable results.
 
+When `/api/blockers`, `/unblock`, or natural blocker questions find browser work blocked by `browser_window_unavailable`, the operator-facing blocker is `browser_recovery` with the same "open or focus Google Chrome" recovery used by `/api/work/next`. The compact pet still stays quiet for routine browser preview misses; the actionable recovery stays in CUI/API and voice blocker status.
+
 Use option `16. Show autopilot status`, or `npm run config -- --print-autopilot`, to see the resident overnight loop, last tick, last result,
 the current decision preview, candidate auto-run counts, explicit waiting conditions, and the next workbench action without opening a separate UI.
 Realtime `get_autopilot_status` returns the same decision in a compact voice payload with response-size metadata; use the CUI/API status when you need the full decision preview and candidate detail.

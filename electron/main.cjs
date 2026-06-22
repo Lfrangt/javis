@@ -10436,17 +10436,38 @@ function blockerStatusSnapshot(options = {}) {
   }
   const blockedRoutes = (Array.isArray(progress.routingLedger) ? progress.routingLedger : [])
     .filter((route) => ['blocked', 'failed', 'needs_attention'].includes(String(route.status || '')));
-  if (blockedRoutes.length) {
+  const browserBlockedRoutes = blockedRoutes.filter((route) => browserUnavailableRouteBlocker(route, route));
+  const browserRecovery = browserBlockedRoutes.length
+    ? browserUnavailableRecoveryAction(browserBlockedRoutes, browserBlockedRoutes)
+    : null;
+  if (browserRecovery) {
+    blockers.push(blockerItem(
+      'browser_recovery',
+      'medium',
+      'Browser recovery',
+      browserRecovery.summary || `${browserBlockedRoutes.length} browser task(s) need a supported browser window.`,
+      {
+        source: 'browser_recovery',
+        count: browserRecovery.browserRecovery?.routeCount || browserBlockedRoutes.length,
+        next: browserRecovery.browserRecovery?.next || browserRecovery.label || '',
+        routeId: browserRecovery.browserRecovery?.firstRouteId || browserBlockedRoutes[0]?.id || '',
+      },
+    ));
+  }
+  const nonBrowserBlockedRoutes = browserRecovery
+    ? blockedRoutes.filter((route) => !browserUnavailableRouteBlocker(route, route))
+    : blockedRoutes;
+  if (nonBrowserBlockedRoutes.length) {
     blockers.push(blockerItem(
       'blocked_routes',
       'medium',
       'Routed work blocked',
-      `${blockedRoutes.length} routed task(s) need attention.`,
+      `${nonBrowserBlockedRoutes.length} routed task(s) need attention.`,
       {
         source: 'routing',
-        count: blockedRoutes.length,
-        next: blockedRoutes[0]?.nextAction || blockedRoutes[0]?.taskTitle || '',
-        routeId: blockedRoutes[0]?.id || '',
+        count: nonBrowserBlockedRoutes.length,
+        next: nonBrowserBlockedRoutes[0]?.nextAction || nonBrowserBlockedRoutes[0]?.taskTitle || '',
+        routeId: nonBrowserBlockedRoutes[0]?.id || '',
       },
     ));
   }
