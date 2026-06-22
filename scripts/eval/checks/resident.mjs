@@ -43,6 +43,7 @@ export default {
     const bundleRaw = JSON.stringify(bundle);
     const bundleVoiceStandby = bundle.voice?.standby || {};
     const bundleLocalVoice = bundle.voice?.localFallback || {};
+    const bundleRealtimeKind = bundle.voice?.realtime?.recovery?.kind || bundle.voice?.realtime?.kind || '';
     const bundlePolicy = bundle.automation?.policy || {};
     const bundleAllow = bundlePolicy.allow || {};
     const bundlePermissions = Array.isArray(bundle.permissions) ? bundle.permissions : [];
@@ -133,6 +134,7 @@ export default {
             ['probe_due', 'cooldown', 'probe_running'].includes(voiceStandbyRetryPolicy.state) &&
             voiceStandbyRetryPolicy.shouldUseLocalFallback === true &&
             voiceStandbyRetryPolicy.safety?.startsMicrophone === false)) &&
+        (!bundleRealtimeKind || bundleRealtimeKind === 'provider_unverified' || voiceStandby.provider?.kind === bundleRealtimeKind) &&
         voiceStandby.local?.available === true &&
         voiceStandby.local?.input?.endpoint === '/api/voice/command' &&
         voiceStandby.local?.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
@@ -1196,6 +1198,10 @@ export default {
             retryPolicy.safety?.storesRawAudio === false)) &&
         recovery.chatGptSubscriptionCoversApi === false &&
         String(recovery.subscriptionBoundary || '').includes('OpenAI API Platform billing') &&
+        (!recovery.billingLikely || (
+          String(recovery.next || '').includes('ChatGPT app subscriptions') &&
+          String(recovery.next || '').includes('API/Realtime usage')
+        )) &&
         recovery.localFallback?.endpoint === '/api/voice/command' &&
         String(recovery.localFallback?.command || '').includes('voice:chat') &&
         recovery.safety?.startsMicrophone === false &&

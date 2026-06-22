@@ -5235,7 +5235,7 @@ function localCapabilityStatusForContract(contract = {}) {
   });
 
   if (id === 'realtime') {
-    const health = realtimeVoiceHealthSnapshot();
+    const health = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
     if (health.status === 'blocked') return status('blocked', health.summary, health.next);
     if (health.status === 'warning') return status('limited', health.summary, health.next);
     return status('ready', 'Realtime voice can answer quickly, observe context, and hand durable work to specialist lanes.');
@@ -27619,7 +27619,7 @@ function localVoiceInputModeSnapshot() {
 
 function localVoiceStatusSnapshot(options = {}) {
   const conversation = options.conversation || conversationStateSnapshot();
-  const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation });
+  const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const fallback = voiceHealth.fallback || realtimeLocalVoiceFallbackSnapshot();
   const history = voiceCommandHistorySnapshot({ limit: 8 });
   const latest = history.items[0] || null;
@@ -36034,7 +36034,7 @@ function classifyRealtimeProviderIssue(details = {}) {
         ? 'Realtime voice last hit an OpenAI quota/rate-limit error (HTTP 429).'
         : 'Realtime voice last hit an OpenAI quota or billing error.',
       next: OPENAI_API_KEY
-        ? 'OPENAI_API_KEY is loaded, but the OpenAI project is out of usable quota or rate-limited. Add billing/credits, raise limits, or replace OPENAI_API_KEY with a project key that has Realtime quota, then restart JAVIS.'
+        ? 'OPENAI_API_KEY is loaded, but the OpenAI API project is out of usable quota or rate-limited. ChatGPT app subscriptions do not cover API/Realtime usage; add API Platform billing/credits, raise project limits, or replace OPENAI_API_KEY with a project key that has Realtime quota, then restart JAVIS.'
         : 'Add OPENAI_API_KEY to .env, confirm the project has Realtime quota, then restart JAVIS.',
     };
   }
@@ -56462,7 +56462,7 @@ function realtimeConfigSnapshot(options = {}) {
     audio: config.audio,
     screenPrivacy: screenPrivacySnapshot(),
     conversation: conversationStateSnapshot(),
-    voiceHealth: realtimeVoiceHealthSnapshot(),
+    voiceHealth: realtimeVoiceHealthSnapshot({ includeRecentAudit: true }),
     wake: wakeStatusSnapshot(),
     toolCount: toolNames.length,
     toolNames,
