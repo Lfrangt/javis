@@ -250,6 +250,7 @@ const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER 
 const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
 const WINDOW_PARK_MARGIN = Math.max(0, Math.min(160, Number(process.env.JAVIS_WINDOW_PARK_MARGIN || 24)));
 const WINDOW_NOTCH_TOP_OFFSET = Math.max(0, Math.min(40, Number(process.env.JAVIS_WINDOW_NOTCH_TOP_OFFSET || 5)));
+const WINDOW_COMPOSE_AUTO_PARK_MS = boundedRuntimeInteger(process.env.JAVIS_WINDOW_COMPOSE_AUTO_PARK_MS, 120000, 0, 600000);
 const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_CHROME_DEBUG_PORT || 9222)));
 const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR || path.join(DATA_DIR, 'chrome-cdp-profile');
 const AX_TREE_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_TREE_TIMEOUT_MS || 25000)));
@@ -936,6 +937,8 @@ let latestScreen = null;
 let latestAccessibilityTree = null;
 let apiServer;
 let mainWindow;
+let composeAutoParkTimer = null;
+let composeAutoParkStartedAt = 0;
 let rendererRecoveryTimer = null;
 let rendererRecoveryAttempts = 0;
 const rendererState = {
@@ -1225,6 +1228,37 @@ function normalizeWindowMode(mode) {
     : 'pet';
 }
 
+function clearComposeAutoParkTimer() {
+  if (!composeAutoParkTimer) return;
+  clearTimeout(composeAutoParkTimer);
+  composeAutoParkTimer = null;
+  composeAutoParkStartedAt = 0;
+}
+
+function scheduleComposeAutoPark(source = 'compose') {
+  clearComposeAutoParkTimer();
+  if (!WINDOW_COMPOSE_AUTO_PARK_MS) return;
+  composeAutoParkStartedAt = Date.now();
+  composeAutoParkTimer = setTimeout(() => {
+    composeAutoParkTimer = null;
+    if (currentWindowMode !== 'compose') return;
+    const ageMs = Math.max(0, Date.now() - composeAutoParkStartedAt);
+    composeAutoParkStartedAt = 0;
+    appendAudit('window.compose_auto_parked', {
+      source: compactRecordText(source, 80),
+      ageMs,
+      timeoutMs: WINDOW_COMPOSE_AUTO_PARK_MS,
+    });
+    applyWindowMode('pet', {
+      source: 'compose_auto_park',
+      focus: false,
+      park: true,
+      corner: currentParkCorner,
+    });
+  }, WINDOW_COMPOSE_AUTO_PARK_MS);
+  if (typeof composeAutoParkTimer.unref === 'function') composeAutoParkTimer.unref();
+}
+
 function displayForWindow(displayMode = WINDOW_PARK_DISPLAY) {
   try {
     if (displayMode === 'primary') {
@@ -1358,6 +1392,9 @@ function moveWindow(source = 'api', options = {}) {
 }
 
 function windowStateSnapshot() {
+  const composeAutoParkDueInMs = composeAutoParkTimer && composeAutoParkStartedAt
+    ? Math.max(0, WINDOW_COMPOSE_AUTO_PARK_MS - (Date.now() - composeAutoParkStartedAt))
+    : 0;
   return {
     mode: currentWindowMode,
     hotkey: TOGGLE_HOTKEY,
@@ -1371,6 +1408,12 @@ function windowStateSnapshot() {
     parkCorner: currentParkCorner,
     parkDisplay: WINDOW_PARK_DISPLAY,
     parkMargin: WINDOW_PARK_MARGIN,
+    composeAutoPark: {
+      enabled: WINDOW_COMPOSE_AUTO_PARK_MS > 0,
+      timeoutMs: WINDOW_COMPOSE_AUTO_PARK_MS,
+      active: Boolean(composeAutoParkTimer),
+      dueInMs: composeAutoParkDueInMs,
+    },
     ...windowModes[currentWindowMode],
   };
 }
@@ -1929,6 +1972,8 @@ function notifyCurrentAttention(source = 'attention', options = {}) {
 function applyWindowMode(mode, options = {}) {
   const nextMode = normalizeWindowMode(mode);
   currentWindowMode = nextMode;
+  if (nextMode === 'compose') scheduleComposeAutoPark(options.source || 'api');
+  else clearComposeAutoParkTimer();
   if (mainWindow && !mainWindow.isDestroyed()) {
     enforceWindowSize(nextMode);
     mainWindow.setAlwaysOnTop(true, 'floating');

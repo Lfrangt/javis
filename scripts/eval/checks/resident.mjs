@@ -781,16 +781,27 @@ export default {
         }),
     );
 
-    const win = await ctx.api('/api/window/state');
+    const win = await ctx.api('/api/window/mode', {
+      method: 'POST',
+      body: {
+        mode: 'pet',
+        focus: false,
+      },
+      timeoutMs: 10000,
+    });
     const win2 = win.data?.window;
     out.push(
       win.ok &&
         win2 &&
+        win2.mode === 'pet' &&
         win2.parkCorner === 'notch' &&
         Number(win2.width || 0) <= 148 &&
-        Number(win2.height || 0) <= 40
+        Number(win2.height || 0) <= 40 &&
+        win2.hotkeyRegistered === true &&
+        win2.summonHotkeyRegistered === true &&
+        win2.captureHotkeyRegistered === true
         ? ok('resident.window', 'Pet window + hotkeys', `mode=${win2.mode} ${win2.width}x${win2.height} park=${win2.parkCorner} hotkey=${win2.hotkeyRegistered ? 'on' : 'off'} summon=${win2.summonHotkeyRegistered ? 'on' : 'off'} capture=${win2.captureHotkeyRegistered ? 'on' : 'off'}`)
-        : warn('resident.window', 'Pet window + hotkeys', `GET /api/window/state ${win.status} ${win.error || ''}`),
+        : warn('resident.window', 'Pet window + hotkeys', `POST /api/window/mode pet ${win.status} ${win.error || ''}`, { window: win2 }),
     );
 
     const composeWindowResponse = await ctx.api('/api/window/mode', {
@@ -816,10 +827,14 @@ export default {
         composeWindow.mode === 'compose' &&
         Number(composeWindow.width || 0) <= 520 &&
         Number(composeWindow.height || 0) <= 56 &&
+        composeWindow.composeAutoPark?.enabled === true &&
+        composeWindow.composeAutoPark?.active === true &&
+        Number(composeWindow.composeAutoPark?.timeoutMs || 0) >= 60000 &&
         restoredWindowResponse.ok &&
         restoredWindow.mode === 'pet' &&
         Number(restoredWindow.width || 0) <= 148 &&
-        Number(restoredWindow.height || 0) <= 40
+        Number(restoredWindow.height || 0) <= 40 &&
+        restoredWindow.composeAutoPark?.active === false
         ? ok('resident.window_compose', 'Compose window mode', `compose=${composeWindow.width}x${composeWindow.height} restored=${restoredWindow.width}x${restoredWindow.height}`)
         : fail('resident.window_compose', 'Compose window mode', 'expected quiet local-input compose window to open and restore to pet', {
           composeStatus: composeWindowResponse.status,
