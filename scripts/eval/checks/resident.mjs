@@ -1012,6 +1012,7 @@ export default {
     const loopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
     const installSource = fs.readFileSync('scripts/install-launch-agent.cjs', 'utf8');
     const stopSource = fs.readFileSync('scripts/stop-resident-processes.cjs', 'utf8');
+    const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
     const hasLocalLoopApiTerminalBlock =
       mainSource.includes('function openLocalVoiceLoop') &&
       mainSource.includes('allowTerminal') &&
@@ -1032,7 +1033,8 @@ export default {
       loopSource.includes('localVoiceChatLockOwnerActive') &&
       loopSource.includes('reusedExisting: true') &&
       stopSource.includes('local-voice-chat.lock.json') &&
-      stopSource.includes('cleanupLocalVoiceLoopArtifacts');
+      stopSource.includes('cleanupLocalVoiceLoopArtifacts') &&
+      packageJson.scripts?.['resident:stop'] === 'node scripts/stop-resident-processes.cjs';
     out.push(
       hasLocalLoopApiTerminalBlock
         ? ok('resident.local_voice_loop_api_terminal_disabled', 'Local voice loop API Terminal disabled', 'resident/API loop requests always redirect to compose; manual CLI loop keeps its own lock')

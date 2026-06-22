@@ -21,6 +21,7 @@
     "start": "npm run start:desktop",
     "start:desktop": "electron .",
     "resident:prepare": "npm run build",
+    "resident:stop": "node scripts/stop-resident-processes.cjs",
     "resident:install": "node scripts/install-launch-agent.cjs",
     "resident:uninstall": "node scripts/uninstall-launch-agent.cjs",
     "resident:restart": "npm run resident:uninstall && npm run resident:install",
