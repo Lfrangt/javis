@@ -223,6 +223,48 @@ export default {
         : fail('voice_command.natural_realtime_dogfood_pack', 'Natural Realtime dogfood pack voice command', 'natural Realtime dogfood pack phrase did not use the local read-only pack path', naturalRealtimeDogfoodPack.data),
     );
 
+    const naturalRealtimeDogfoodArchive = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '保存实时语音验收证据 archive。',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_realtime_dogfood_archive',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalRealtimeDogfoodArchiveData = naturalRealtimeDogfoodArchive.data || {};
+    const realtimeDogfoodArchive = naturalRealtimeDogfoodArchiveData.route?.data?.realtimeDogfoodArchive || {};
+    out.push(
+      naturalRealtimeDogfoodArchive.ok &&
+        naturalRealtimeDogfoodArchiveData.ok === true &&
+        naturalRealtimeDogfoodArchiveData.executed === false &&
+        naturalRealtimeDogfoodArchiveData.route?.decision?.localCommand === 'realtime_dogfood_archive' &&
+        naturalRealtimeDogfoodArchiveData.route?.localCommand?.intent === 'realtime_dogfood_archive' &&
+        naturalRealtimeDogfoodArchiveData.route?.executed === false &&
+        typeof naturalRealtimeDogfoodArchiveData.route?.output === 'string' &&
+        naturalRealtimeDogfoodArchiveData.route.output.includes('Realtime dogfood archive: preview only') &&
+        naturalRealtimeDogfoodArchiveData.route.output.includes('边界:') &&
+        realtimeDogfoodArchive.saved === false &&
+        realtimeDogfoodArchive.archive?.kind === 'realtime_dogfood_archive' &&
+        realtimeDogfoodArchive.archive?.saved === false &&
+        realtimeDogfoodArchive.acceptance?.counts?.gates >= 20 &&
+        realtimeDogfoodArchive.safety?.startsMicrophone === false &&
+        realtimeDogfoodArchive.safety?.usesRealtime === false &&
+        realtimeDogfoodArchive.safety?.storesRawAudio === false &&
+        realtimeDogfoodArchive.safety?.savesArchive === false &&
+        realtimeDogfoodArchive.safety?.writesLocalJson === false &&
+        realtimeDogfoodArchive.safety?.opensTerminal === false &&
+        naturalRealtimeDogfoodArchiveData.safety?.startsMicrophone === false &&
+        naturalRealtimeDogfoodArchiveData.safety?.usesRealtime === false &&
+        naturalRealtimeDogfoodArchiveData.safety?.callsOpenAIImmediately === false &&
+        naturalRealtimeDogfoodArchiveData.speech?.dryRun === true
+        ? ok('voice_command.natural_realtime_dogfood_archive', 'Natural Realtime dogfood archive voice command', '保存实时语音验收证据 previews a local JSON archive without mic, Realtime, archive save, Terminal, or cloud')
+        : fail('voice_command.natural_realtime_dogfood_archive', 'Natural Realtime dogfood archive voice command', 'natural Realtime dogfood archive phrase did not use the local preview path', naturalRealtimeDogfoodArchive.data),
+    );
+
     const naturalRealtimeDogfoodScriptCopy = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

@@ -24120,6 +24120,32 @@ function naturalRealtimeDogfoodStatusLocalCommand(text) {
   };
 }
 
+function naturalRealtimeDogfoodArchiveLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsRealtimeDogfood = /\b(realtime|real[- ]?time|webrtc|live voice|voice)\b.*\b(dogfood|acceptance|evidence|drill|runbook|archive|audit)\b/i.test(raw)
+    || /\b(dogfood|acceptance|evidence|drill|runbook|archive|audit)\b.*\b(realtime|real[- ]?time|webrtc|live voice|voice)\b/i.test(raw)
+    || /(?:实时语音|实时对话|Realtime|realtime|WebRTC|webrtc|livevoice|语音).*(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|archive|归档|存档|留档|审计)/i.test(compactPlain)
+    || /(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|archive|归档|存档|留档|审计).*(?:实时语音|Realtime|realtime|WebRTC|webrtc|语音)/i.test(compactPlain);
+  if (!mentionsRealtimeDogfood) return null;
+
+  const archiveSignal = /\b(save|archive|persist|write|snapshot|audit trail|evidence archive)\b/i.test(raw)
+    || /(?:保存|归档|存档|留档|写入|记录|审计|保存证据|保存archive|保存验收)/i.test(compactPlain);
+  if (!archiveSignal) return null;
+
+  return {
+    intent: 'realtime_dogfood_archive',
+    label: 'Realtime dogfood archive',
+    requiresLocalExecution: true,
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalRealtimeDogfoodPromptCopyLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -24734,6 +24760,9 @@ function localCommandDecision(task) {
   const realtimeProviderProbeCommand = naturalRealtimeProviderProbeLocalCommand(text);
   if (realtimeProviderProbeCommand) return realtimeProviderProbeCommand;
 
+  const realtimeDogfoodArchiveCommand = naturalRealtimeDogfoodArchiveLocalCommand(text);
+  if (realtimeDogfoodArchiveCommand) return realtimeDogfoodArchiveCommand;
+
   const realtimeDogfoodScriptCopyCommand = naturalRealtimeDogfoodScriptCopyLocalCommand(text);
   if (realtimeDogfoodScriptCopyCommand) return realtimeDogfoodScriptCopyCommand;
 
@@ -25086,7 +25115,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25886,6 +25915,22 @@ function formatRealtimeDogfoodStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatRealtimeDogfoodArchiveForLocalCommand(control = {}) {
+  const archive = control.archive || {};
+  const acceptance = control.acceptance || {};
+  const counts = acceptance.counts || {};
+  const file = archive.file?.path || control.metadata?.file || acceptance.archive?.file || '';
+  const nextGap = acceptance.nextGap || null;
+  return [
+    `Realtime dogfood archive: ${control.saved ? 'saved' : 'preview only'} · gates ${counts.passed ?? 0}/${counts.gates ?? 0} · accepted=${acceptance.accepted ? 'yes' : 'no'}`,
+    file ? `文件: ${compactRecordText(file, 260)}` : '',
+    archive.archiveSummary || archive.summary ? `摘要: ${compactRecordText(archive.archiveSummary || archive.summary, 360)}` : '',
+    nextGap ? `下一缺口: ${nextGap.group || '-'} / ${nextGap.id || '-'} · ${compactRecordText(nextGap.label || '', 180)}` : '',
+    nextGap?.nextAction ? `下一步: ${compactRecordText(nextGap.nextAction, 260)}` : '',
+    `边界: ${control.saved ? '已保存本地 JSON archive。' : '预览未写文件；执行时才保存本地 JSON archive。'}不启动麦克风，不创建 Realtime session，不保存原始音频，不开 Terminal，不调用云模型。`,
+  ].filter(Boolean).join('\n');
+}
+
 function formatRealtimeDogfoodPackForLocalCommand(pack = {}) {
   const readiness = pack.readiness || {};
   const prompts = pack.prompts || {};
@@ -26546,6 +26591,59 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatRealtimeProviderProbeForLocalCommand(control),
         data: { providerProbeControl: control, result },
+      };
+    }
+
+    if (command.intent === 'realtime_dogfood_archive') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const archiveResult = execute
+        ? saveRealtimeDogfoodArchive({
+            promptLimit: 8,
+            sessionLimit: 4,
+            auditLimit: 20,
+            source: 'local_command_realtime_dogfood_archive',
+          })
+        : {
+            ok: true,
+            saved: false,
+            archive: realtimeDogfoodArchiveSnapshot({
+              promptLimit: 8,
+              sessionLimit: 4,
+              auditLimit: 20,
+              source: 'local_command_realtime_dogfood_archive_preview',
+            }),
+            metadata: null,
+          };
+      const archive = archiveResult.archive || {};
+      const acceptance = realtimeDogfoodAcceptanceVoicePayload(
+        realtimeDogfoodAcceptanceSnapshot({
+          archive,
+          source: 'local_command_archive',
+        }),
+        { source: 'local_command_archive' },
+      );
+      const control = {
+        ok: archiveResult.ok !== false,
+        saved: Boolean(archiveResult.saved),
+        archive,
+        metadata: archiveResult.metadata || realtimeDogfoodArchiveMetadata(archive, archive.file?.path || ''),
+        acceptance,
+        safety: {
+          startsMicrophone: false,
+          usesRealtime: false,
+          storesRawAudio: false,
+          savesArchive: Boolean(archiveResult.saved),
+          opensTerminal: false,
+          callsOpenAI: false,
+          writesLocalJson: Boolean(archiveResult.saved),
+        },
+      };
+      return {
+        ok: control.ok,
+        executed: Boolean(archiveResult.saved),
+        localCommand: command,
+        output: formatRealtimeDogfoodArchiveForLocalCommand(control),
+        data: { realtimeDogfoodArchive: control },
       };
     }
 
@@ -28759,7 +28857,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
