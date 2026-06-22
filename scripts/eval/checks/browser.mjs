@@ -45,7 +45,11 @@ export default {
       mainSource.includes("source: 'browser_recovery'") &&
       mainSource.includes("id: 'browser_recovery:open_supported_browser'") &&
       mainSource.includes("action.source === 'browser_recovery'") &&
-      mainSource.includes("await executeLocalAction(macAction") &&
+      mainSource.includes('async function ensureBrowserRecoveryReadableTarget') &&
+      mainSource.includes("safeBlankUrl: 'about:blank'") &&
+      mainSource.includes('ensuresReadableBlankTab: true') &&
+      mainSource.includes('make new window') &&
+      mainSource.includes('readableTarget: recoveryResult.ensure') &&
       mainSource.includes('browserRecovery: action.browserRecovery') &&
       mainSource.includes('browserRecoveryFollowUpAction') &&
       mainSource.includes('readinessAfter: compactBrowserRecoveryReadiness') &&
@@ -80,9 +84,14 @@ export default {
           browserRecoveryAction?.sendsMessages === false &&
           browserRecoveryAction?.mutatesUserFiles === false &&
           browserRecoveryAction?.mutatesUserRecords === false &&
+          browserRecoveryAction?.opensSafeBlankTab === true &&
+          browserRecoveryAction?.executesBrowserActions === false &&
+          browserRecoveryAction?.readsPageText === false &&
           Number(browserRecoveryAction?.autopilotCooldownMs || 0) >= 60000 &&
           browserRecoveryAction?.macAction?.action === 'open_app' &&
           browserRecoveryAction?.browserRecovery?.type === 'browser_window_unavailable' &&
+          browserRecoveryAction?.browserRecovery?.safeBlankUrl === 'about:blank' &&
+          browserRecoveryAction?.browserRecovery?.ensuresReadableBlankTab === true &&
           Number(browserRecoveryAction?.browserRecovery?.autopilotCooldownMs || 0) >= 60000 &&
           String(browserRecoveryAction?.browserRecovery?.retryActionId || '').startsWith('route:') &&
           browserRecoveryAction?.browserRecovery?.readinessEndpoint === '/api/browser/readiness'

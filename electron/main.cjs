@@ -36420,6 +36420,9 @@ function autopilotEligibilityDecision(action) {
       action.requiresMicConfirmation === false &&
       action.startsRecording === false &&
       action.startsWorkers === false &&
+      action.opensSafeBlankTab === true &&
+      action.executesBrowserActions === false &&
+      action.readsPageText === false &&
       action.executesTask === false &&
       action.sendsMessages !== true &&
       action.mutatesUserFiles !== true &&
@@ -36460,10 +36463,10 @@ function autopilotEligibilityDecision(action) {
           ? 'browser_recovery_blocked_by_policy'
           : 'browser_recovery_not_safe_for_autopilot',
       detail: executable
-        ? 'Autopilot may open or focus the supported browser once, then recheck readiness; it will not click, fill, submit, or start microphone capture.'
+        ? 'Autopilot may open or focus the supported browser once, ensure a safe blank tab is readable if needed, then recheck readiness; it will not click, fill, submit, read page text, or start microphone capture.'
         : blockedByPolicy
           ? (policyError || policyEvaluation?.reason || 'Current local action policy blocks this browser recovery.')
-          : 'Browser recovery must be a bounded open-app action with no microphone, recording, workers, task execution, messages, or file mutations.',
+          : 'Browser recovery must be a bounded open-app plus safe blank-tab action with no microphone, recording, workers, task execution, page reading, messages, or file mutations.',
       freshness: compactFreshness,
       policy: policyEvaluation
         ? {
@@ -48858,12 +48861,14 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
     id: 'browser_recovery:open_supported_browser',
     priority: 1.8,
     label: 'Open supported browser',
-    summary: `${blockedRoutes.length} browser task(s) are blocked because no readable supported browser window is available. Open or focus ${appName}, then rerun the browser work.`,
+    summary: `${blockedRoutes.length} browser task(s) are blocked because no readable supported browser window is available. Open or focus ${appName}, ensure a safe blank tab is readable, then rerun the browser work.`,
     source: 'browser_recovery',
     browserRecovery: {
       version: 1,
       type: 'browser_window_unavailable',
       app: appName,
+      safeBlankUrl: 'about:blank',
+      ensuresReadableBlankTab: true,
       routeCount: blockedRoutes.length,
       firstRouteId: first.record.id,
       firstTaskTitle: compactRecordText(first.record.taskTitle || '', 180),
@@ -48871,7 +48876,7 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
       readinessEndpoint: '/api/browser/readiness',
       workNextEndpoint: '/api/work/next',
       blocker: compactRecordText(first.entry?.blocker || 'browser_window_unavailable', 160),
-      next: `Open or focus ${appName}; JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
+      next: `Open or focus ${appName} and create a safe blank tab only if no readable tab exists; JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
       autopilotCooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
     },
     executable: true,
@@ -48885,6 +48890,9 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
     startsRecording: false,
     startsWorkers: false,
     startsApps: true,
+    opensSafeBlankTab: true,
+    executesBrowserActions: false,
+    readsPageText: false,
     executesTask: false,
     sendsMessages: false,
     mutatesUserFiles: false,
@@ -48894,6 +48902,132 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
       action: 'open_app',
       value: appName,
     },
+  };
+}
+
+async function ensureBrowserRecoveryReadableTarget(action = {}, options = {}) {
+  const browserRecovery = action.browserRecovery || {};
+  const macAction = action.macAction || { action: 'open_app', value: browserRecovery.app || 'Google Chrome' };
+  const appName = String(browserRecovery.app || macAction.value || 'Google Chrome').trim();
+  const safeBlankUrl = String(browserRecovery.safeBlankUrl || 'about:blank').trim() || 'about:blank';
+  const actionOutput = await executeLocalAction(macAction, {
+    approvalContext: {
+      source: options.source || 'work_next_browser_recovery',
+      reason: action.summary,
+    },
+  });
+
+  const ensure = {
+    attempted: false,
+    ok: false,
+    app: appName,
+    safeBlankUrl,
+    createdWindow: false,
+    createdTab: false,
+    url: '',
+    error: '',
+  };
+
+  if (process.platform === 'darwin' && appName && (CHROMIUM_BROWSER_APPS.has(appName) || SAFARI_BROWSER_APPS.has(appName))) {
+    ensure.attempted = true;
+    const quotedApp = appleScriptString(appName);
+    const quotedUrl = appleScriptString(safeBlankUrl);
+    const script = SAFARI_BROWSER_APPS.has(appName)
+      ? [
+          `tell application ${quotedApp}`,
+          '  activate',
+          '  set createdWindow to false',
+          '  set createdTab to false',
+          '  if not (exists front document) then',
+          `    make new document with properties {URL:${quotedUrl}}`,
+          '    set createdWindow to true',
+          '    set createdTab to true',
+          '  end if',
+          '  if (URL of front document) is "" then',
+          `    set URL of front document to ${quotedUrl}`,
+          '    set createdTab to true',
+          '  end if',
+          '  set pageUrl to URL of front document',
+          'end tell',
+          'return (createdWindow as text) & linefeed & (createdTab as text) & linefeed & pageUrl',
+        ].join('\n')
+      : [
+          `tell application ${quotedApp}`,
+          '  activate',
+          '  set createdWindow to false',
+          '  set createdTab to false',
+          '  if not (exists front window) then',
+          '    make new window',
+          '    set createdWindow to true',
+          '  end if',
+          '  if (count of tabs of front window) is 0 then',
+          `    make new tab at end of tabs of front window with properties {URL:${quotedUrl}}`,
+          '    set createdTab to true',
+          '  end if',
+          '  try',
+          '    if (URL of active tab of front window) is "" then',
+          `      set URL of active tab of front window to ${quotedUrl}`,
+          '      set createdTab to true',
+          '    end if',
+          '  on error',
+          `    make new tab at end of tabs of front window with properties {URL:${quotedUrl}}`,
+          '    set active tab index of front window to (count of tabs of front window)',
+          '    set createdTab to true',
+          '  end try',
+          '  set pageUrl to URL of active tab of front window',
+          'end tell',
+          'return (createdWindow as text) & linefeed & (createdTab as text) & linefeed & pageUrl',
+        ].join('\n');
+    try {
+      const { stdout } = await execFileAsync('osascript', ['-e', script], {
+        timeout: 5000,
+        maxBuffer: 1024 * 256,
+      });
+      const [createdWindow = '', createdTab = '', ...urlParts] = String(stdout || '').trimEnd().split(/\r?\n/);
+      ensure.ok = true;
+      ensure.createdWindow = /^true$/i.test(createdWindow);
+      ensure.createdTab = /^true$/i.test(createdTab);
+      ensure.url = urlParts.join('\n');
+    } catch (error) {
+      ensure.error = compactBrowserContextError(error);
+    }
+  }
+
+  await waitMs(Number(options.waitMs || 850));
+  const readinessAfter = await browserReadinessSnapshot({
+    source: options.readinessSource || options.source || 'work_next_browser_recovery_after_open',
+  }).catch((error) => ({
+    ok: false,
+    status: 'error',
+    label: 'Browser readiness check failed',
+    summary: error instanceof Error ? error.message : String(error),
+  }));
+
+  appendAudit('browser_recovery.readable_target', {
+    source: String(options.source || 'work_next_browser_recovery').slice(0, 80),
+    app: appName,
+    safeBlankUrl,
+    attempted: ensure.attempted,
+    ok: ensure.ok,
+    createdWindow: ensure.createdWindow,
+    createdTab: ensure.createdTab,
+    url: compactRecordText(ensure.url || '', 180),
+    error: compactRecordText(ensure.error || '', 180),
+    readinessStatus: readinessAfter?.status || readinessAfter?.overall || '',
+  });
+
+  return {
+    macAction,
+    ensure,
+    readinessAfter,
+    output: [
+      actionOutput,
+      ensure.attempted
+        ? ensure.ok
+          ? `Ensured ${appName} has a readable safe tab${ensure.createdWindow ? ' by creating a window' : ''}${ensure.createdTab ? ' and blank tab' : ''}.`
+          : `Opened ${appName}, but could not ensure a readable blank tab: ${ensure.error || 'unknown error'}.`
+        : '',
+    ].filter(Boolean).join('\n'),
   };
 }
 
@@ -50954,26 +51088,12 @@ async function workNextAction(options = {}) {
     });
     if (execute) {
       try {
-        const actionOutput = await executeLocalAction(macAction, {
-          approvalContext: {
-            source: options.source || 'work_next_browser_recovery',
-            reason: action.summary,
-          },
+        const recoveryResult = await ensureBrowserRecoveryReadableTarget(action, {
+          source: options.source || 'work_next_browser_recovery',
+          readinessSource: options.source || 'work_next_browser_recovery_after_open',
         });
-        await new Promise((resolve) => { setTimeout(resolve, 650); });
-        let readinessAfter = null;
-        try {
-          readinessAfter = await browserReadinessSnapshot({
-            source: options.source || 'work_next_browser_recovery_after_open',
-          });
-        } catch (error) {
-          readinessAfter = {
-            ok: false,
-            status: 'error',
-            label: 'Browser readiness check failed',
-            summary: error instanceof Error ? error.message : String(error),
-          };
-        }
+        const actionOutput = recoveryResult.output;
+        const readinessAfter = recoveryResult.readinessAfter;
         executed = true;
         browserRecoveryAutopilotState = {
           lastAttemptAt: Date.now(),
@@ -50997,8 +51117,9 @@ async function workNextAction(options = {}) {
         result = {
           ok: true,
           executed: true,
-          macAction,
+          macAction: recoveryResult.macAction || macAction,
           browserRecovery: action.browserRecovery,
+          readableTarget: recoveryResult.ensure,
           readinessAfter: compactBrowserRecoveryReadiness(readinessAfter),
           followUpAction: compactWorkNextActionPayload(followUpAction),
           output: actionOutput,
