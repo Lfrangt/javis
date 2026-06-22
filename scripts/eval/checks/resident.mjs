@@ -30,6 +30,45 @@ export default {
         : warn('resident.wake', 'Wake state', `GET /api/wake/status ${wake.status} ${wake.error || ''}`, { wake: w }),
     );
 
+    const wakeBeforeCount = Number(w?.triggerCount || 0);
+    const wakeTriggerResponse = await ctx.api('/api/wake/trigger', {
+      method: 'POST',
+      body: {
+        source: 'eval_resident_wake_trigger',
+        phrase: 'JAVIS eval wake trigger',
+      },
+    });
+    const wakeTrigger = wakeTriggerResponse.data?.wake || {};
+    const wakeTriggerSafety = wakeTriggerResponse.data?.safety || {};
+    const wakeTriggerHandoff = wakeTrigger.handoff || {};
+    out.push(
+      wakeTriggerResponse.ok &&
+        wakeTriggerResponse.data?.ok === true &&
+        wakeTrigger.pending === true &&
+        wakeTrigger.lastSource === 'eval_resident_wake_trigger' &&
+        wakeTrigger.lastPhrase === 'JAVIS eval wake trigger' &&
+        Number(wakeTrigger.triggerCount || 0) >= wakeBeforeCount + 1 &&
+        wakeTriggerHandoff.ready === true &&
+        ['local_voice_fallback', 'realtime_or_local'].includes(wakeTriggerHandoff.mode) &&
+        wakeTriggerHandoff.safety?.readOnly === true &&
+        wakeTriggerHandoff.safety?.startsMicrophone === false &&
+        wakeTriggerHandoff.safety?.usesRealtime === false &&
+        wakeTriggerHandoff.safety?.storesRawAudio === false &&
+        wakeTriggerSafety.wakeOnly === true &&
+        wakeTriggerSafety.startsMicrophone === false &&
+        wakeTriggerSafety.usesRealtime === false &&
+        wakeTriggerSafety.opensTerminal === false &&
+        wakeTriggerSafety.executesCommand === false &&
+        wakeTriggerSafety.mutatesFiles === false &&
+        wakeTriggerSafety.storesRawAudio === false &&
+        wakeTriggerSafety.storesScreenImage === false
+        ? ok('resident.wake_trigger', 'Wake trigger contract', `${wakeTrigger.lastSource} · handoff=${wakeTriggerHandoff.mode} · no mic/terminal/action`)
+        : fail('resident.wake_trigger', 'Wake trigger contract', 'wake trigger must only mark a pending wake and return a safe handoff without starting microphone, Realtime, Terminal, commands, or file mutations', {
+          status: wakeTriggerResponse.status,
+          body: wakeTriggerResponse.data,
+        }),
+    );
+
     const guide = await ctx.api('/api/setup/guide');
     const g = guide.data?.guide;
     out.push(

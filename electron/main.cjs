@@ -59249,7 +59249,20 @@ function startApiServer() {
   });
 
   api.post('/api/wake/trigger', express.json({ limit: '64kb' }), (req, res) => {
-    res.json({ ok: true, wake: triggerWake({ ...(req.body || {}), source: req.body?.source || 'api' }) });
+    res.json({
+      ok: true,
+      wake: triggerWake({ ...(req.body || {}), source: req.body?.source || 'api' }),
+      safety: {
+        wakeOnly: true,
+        startsMicrophone: false,
+        usesRealtime: false,
+        opensTerminal: false,
+        executesCommand: false,
+        mutatesFiles: false,
+        storesRawAudio: false,
+        storesScreenImage: false,
+      },
+    });
   });
 
   api.post('/api/wake/command', express.json({ limit: '1mb' }), async (req, res) => {
