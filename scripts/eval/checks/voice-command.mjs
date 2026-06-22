@@ -762,6 +762,49 @@ export default {
         }),
     );
 
+    const naturalObserveNow = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '看一下当前屏幕和窗口，先不要操作',
+        execute: false,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_observe_now',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalObserveNowData = naturalObserveNow.data || {};
+    const naturalObserveNowRoute = naturalObserveNowData.route || {};
+    const naturalObserveObservation = naturalObserveNowRoute.data?.observation || {};
+    const naturalObserveClipboard = naturalObserveObservation.mac?.clipboard || {};
+    const naturalObserveHidesClipboard =
+      naturalObserveObservation.safety?.includesClipboardText === false &&
+      !('text' in naturalObserveClipboard) &&
+      !String(naturalObserveClipboard.preview || '').trim() &&
+      (!naturalObserveClipboard.hasText || naturalObserveNowRoute.output.includes('content hidden'));
+    out.push(
+      naturalObserveNow.ok &&
+        naturalObserveNowData.ok === true &&
+        naturalObserveNowData.executed === false &&
+        naturalObserveNowRoute.decision?.localCommand === 'observe_now' &&
+        naturalObserveNowRoute.localCommand?.intent === 'observe_now' &&
+        naturalObserveNowRoute.executed === false &&
+        naturalObserveObservation.ok === true &&
+        typeof naturalObserveNowRoute.output === 'string' &&
+        naturalObserveNowRoute.output.includes('当前 App:') &&
+        naturalObserveNowRoute.output.includes('屏幕:') &&
+        naturalObserveNowRoute.output.includes('任务:') &&
+        naturalObserveHidesClipboard &&
+        naturalObserveNowData.safety?.startsMicrophone === false &&
+        naturalObserveNowData.safety?.usesRealtime === false &&
+        naturalObserveNowData.safety?.storesRawAudio === false &&
+        naturalObserveNowData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_observe_now', 'Natural observe-now voice command', '看一下当前屏幕 routes to local observe_now without action, clipboard text, cloud, mic, or Realtime')
+        : fail('voice_command.natural_observe_now', 'Natural observe-now voice command', 'natural observe phrase did not run the local observe_now preview path', naturalObserveNow.data),
+    );
+
     const naturalAppUi = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

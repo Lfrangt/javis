@@ -12602,9 +12602,9 @@ function clipboardSnapshot(includeText = false) {
   return {
     hasText: text.length > 0,
     length: text.length,
-    preview: text ? text.slice(0, maxPreview) : '',
+    preview: includeText && text ? text.slice(0, maxPreview) : '',
     text: includeText ? text : undefined,
-    truncated: text.length > maxPreview,
+    truncated: includeText && text.length > maxPreview,
   };
 }
 
@@ -24157,6 +24157,30 @@ function naturalUnblockPreviewLocalCommand(text) {
   };
 }
 
+function naturalObserveNowLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+  const english = /\b(look at|inspect|observe|check|read)\b.*\b(screen|desktop|current window|current view|current app|frontmost app|display)\b/i.test(raw)
+    || /\b(what'?s on|what is on)\b.*\b(screen|desktop|current window|display)\b/i.test(raw);
+  const chinese = /(?:看一下|看看|观察一下|观察|读一下|检查一下|检查).*(?:当前屏幕|屏幕|桌面|当前窗口|当前界面|前台应用|当前应用|电脑现在|显示器)/i.test(compactPlain)
+    || /(?:当前屏幕|当前窗口|当前界面|前台应用|当前应用|电脑现在).*(?:有什么|是什么|状态|画面|界面|内容)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'observe_now',
+    label: 'Observe now',
+    args: {
+      captureScreen: 'auto',
+      includeAccessibility: true,
+      screenMaxAgeMs: 15000,
+      accessibilityMaxAgeMs: 8000,
+      maxNodes: 100,
+      maxDepth: 6,
+    },
+  };
+}
+
 function naturalWorkNextLocalCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24546,6 +24570,9 @@ function localCommandDecision(task) {
     };
   }
 
+  const observeCommand = naturalObserveNowLocalCommand(text);
+  if (observeCommand) return observeCommand;
+
   const perceptionStatusCommand = naturalPerceptionStatusLocalCommand(text);
   if (perceptionStatusCommand) return perceptionStatusCommand;
 
@@ -24826,7 +24853,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25348,6 +25375,7 @@ function formatObservationForLocalCommand(observation) {
   const screenSnapshot = observation?.screen || mac.screen || null;
   const accessibility = observation?.accessibility || {};
   const queue = mac.queue || {};
+  const includesClipboardText = observation?.safety?.includesClipboardText === true;
   const lines = [
     `当前 App: ${frontmost.app || accessibility.app || '未知'}`,
     frontmost.windowTitle || accessibility.windowTitle
@@ -25365,7 +25393,7 @@ function formatObservationForLocalCommand(observation) {
       ? `浏览器: ${compactRecordText(browser.title || browser.url || browser.app, 140)}`
       : '',
     mac.clipboard?.hasText
-      ? `剪贴板: ${mac.clipboard.length || 0} chars · ${compactRecordText(mac.clipboard.preview || '', 100)}`
+      ? `剪贴板: ${mac.clipboard.length || 0} chars · ${includesClipboardText && mac.clipboard.preview ? compactRecordText(mac.clipboard.preview, 100) : 'content hidden'}`
       : '剪贴板: empty',
     `任务: running ${queue.running || 0}, queued ${queue.queued || 0}; approvals ${(mac.pendingApprovals || []).length}`,
     observation?.vision?.output ? `视觉: ${compactRecordText(observation.vision.output, 220)}` : '',
@@ -28069,7 +28097,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'browser_readiness', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -43084,6 +43112,15 @@ async function observeNow(options = {}) {
     accessibility: compactObserveTree(treeResult),
     vision: screenDescription ? { output: screenDescription } : null,
     errors,
+    safety: {
+      readOnly: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      callsOpenAI: Boolean(describeScreen),
+      executesActions: false,
+      includesClipboardText: includeClipboardText,
+    },
   };
 
   appendAudit('observe.now', {

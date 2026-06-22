@@ -1124,7 +1124,7 @@ type MacContext = {
   clipboard: {
     hasText: boolean
     length: number
-    preview: string
+    preview?: string
     truncated: boolean
   }
   activeJobs: string[]
@@ -3893,7 +3893,7 @@ function App() {
               </div>
               <div>
                 <strong>{macContext.clipboard.hasText ? `${macContext.clipboard.length} chars` : 'Empty'}</strong>
-                <span>{macContext.clipboard.preview || 'Clipboard'}</span>
+                <span>{macContext.clipboard.preview || (macContext.clipboard.hasText ? 'Content hidden' : 'Clipboard')}</span>
               </div>
               {macContext.browser.available ? (
                 <div className="browser-context">
