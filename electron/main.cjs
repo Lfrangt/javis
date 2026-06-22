@@ -1985,6 +1985,7 @@ function openTerminalCommand(command, options = {}) {
 
 const LOCAL_VOICE_LOOP_DEBOUNCE_MS = 60000;
 const LOCAL_VOICE_TERMINAL_LOOP_ENV = 'JAVIS_ALLOW_TERMINAL_VOICE_LOOP';
+const LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV = 'JAVIS_DEV_ALLOW_TERMINAL_VOICE_LOOP';
 let lastLocalVoiceLoopOpenAt = 0;
 
 function localVoiceLoopRunningSnapshot() {
@@ -2167,7 +2168,7 @@ function openConfigCui(source = 'api') {
 
 function openLocalVoiceLoop(source = 'api', options = {}) {
   const sourceText = String(source || 'api').slice(0, 80);
-  const terminalLoopEnabled = process.env[LOCAL_VOICE_TERMINAL_LOOP_ENV] === 'true';
+  const terminalLoopEnabled = process.env[LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV] === 'true';
   if (options.execute === false) {
     appendAudit('local_voice_loop.previewed', {
       source: sourceText,
@@ -2188,7 +2189,8 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
         available: true,
         command: 'npm run voice:chat',
         disabledByDefault: !terminalLoopEnabled,
-        enableEnv: LOCAL_VOICE_TERMINAL_LOOP_ENV,
+        enableEnv: LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV,
+        legacyEnableEnvIgnored: LOCAL_VOICE_TERMINAL_LOOP_ENV,
         requiresExplicitConfirmation: true,
       },
     };
@@ -2199,7 +2201,7 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
     const action = openLocalVoiceInput(sourceText, { execute: true });
     const reason = terminalLoopEnabled
       ? 'terminal_loop_requires_explicit_confirmation'
-      : 'terminal_loop_disabled_by_default';
+      : 'terminal_loop_disabled_product_default';
     appendAudit('local_voice_loop.redirected_to_compose', {
       source: sourceText,
       reason,
@@ -2222,7 +2224,8 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
         available: true,
         command: 'npm run voice:chat',
         disabledByDefault: !terminalLoopEnabled,
-        enableEnv: LOCAL_VOICE_TERMINAL_LOOP_ENV,
+        enableEnv: LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV,
+        legacyEnableEnvIgnored: LOCAL_VOICE_TERMINAL_LOOP_ENV,
         requestedTerminal,
         requiresExplicitConfirmation: true,
       },

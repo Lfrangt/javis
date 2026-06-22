@@ -877,10 +877,11 @@ export default {
         localLoopExplicitTerminal.redirectedToCompose === true &&
         localLoopExplicitTerminal.safety?.opensTerminal === false &&
         localLoopExplicitTerminal.terminalLoop?.disabledByDefault === true &&
-        localLoopExplicitTerminal.terminalLoop?.enableEnv === 'JAVIS_ALLOW_TERMINAL_VOICE_LOOP' &&
+        localLoopExplicitTerminal.terminalLoop?.enableEnv === 'JAVIS_DEV_ALLOW_TERMINAL_VOICE_LOOP' &&
+        localLoopExplicitTerminal.terminalLoop?.legacyEnableEnvIgnored === 'JAVIS_ALLOW_TERMINAL_VOICE_LOOP' &&
         localLoopExplicitRestore.ok &&
         localLoopExplicitRestore.data?.window?.mode === 'pet'
-        ? ok('resident.local_voice_loop_terminal_env_gate', 'Local voice loop Terminal env gate', 'even explicit Terminal requests redirect to compose unless JAVIS_ALLOW_TERMINAL_VOICE_LOOP=true')
+        ? ok('resident.local_voice_loop_terminal_env_gate', 'Local voice loop Terminal env gate', 'even explicit Terminal requests redirect to compose unless the dev-only Terminal loop env is set')
         : fail('resident.local_voice_loop_terminal_env_gate', 'Local voice loop Terminal env gate', 'expected explicit Terminal request to stay in pet compose by default', {
           status: localLoopExplicitTerminalResponse.status,
           body: localLoopExplicitTerminal,
@@ -899,9 +900,11 @@ export default {
       mainSource.includes('LOCAL_VOICE_LOOP_STATE_FILE') &&
       mainSource.includes('LOCAL_VOICE_LOOP_DEBOUNCE_MS') &&
       mainSource.includes('JAVIS_ALLOW_TERMINAL_VOICE_LOOP') &&
+      mainSource.includes('JAVIS_DEV_ALLOW_TERMINAL_VOICE_LOOP') &&
+      mainSource.includes('legacyEnableEnvIgnored') &&
       mainSource.includes('allowTerminal') &&
       mainSource.includes('confirmTerminal') &&
-      mainSource.includes('terminal_loop_disabled_by_default') &&
+      mainSource.includes('terminal_loop_disabled_product_default') &&
       mainSource.includes("appendAudit('local_voice_loop.redirected_to_compose'") &&
       mainSource.includes("appendAudit('local_voice_loop.reused'") &&
       mainSource.includes('reusedExisting: true') &&
