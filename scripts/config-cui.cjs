@@ -636,6 +636,8 @@ function printAutopilotDecision(decision, label = 'Decision') {
     });
     const more = waitingFor.length > waits.length ? ` | +${waitingFor.length - waits.length} more` : '';
     console.log(`Waiting for: ${waits.join(' | ')}${more}`);
+  } else {
+    console.log(`Waiting for: none${decision.outcome === 'ready' ? ' · ready' : ''}`);
   }
   const candidates = Array.isArray(decision.candidates) ? decision.candidates : [];
   if (candidates.length) {

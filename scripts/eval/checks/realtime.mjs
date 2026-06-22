@@ -81,6 +81,15 @@ function parseToolOutput(response) {
   }
 }
 
+function hasManualOperatorAction(actionPlan = {}) {
+  const manual = Array.isArray(actionPlan?.manual) ? actionPlan.manual : [];
+  return manual.some((action) => action?.requiresLiveVoice === true ||
+    action?.requiresMicConfirmation === true ||
+    action?.requiresUserPresence === true ||
+    action?.writesLocalJson === true ||
+    action?.readOnly === false);
+}
+
 export default {
   lane: 'realtime',
   async run(ctx) {
@@ -2650,7 +2659,7 @@ export default {
         liveDrillPackData?.requiresUserPresence === true &&
         liveDrillPackData?.autoEligible === false &&
         liveDrillPackData?.autopilotEligible === false &&
-        ['ready', 'blocked'].includes(liveDrillPackData.status) &&
+        ['ready', 'blocked', 'accepted'].includes(liveDrillPackData.status) &&
         liveDrillPackData?.commands?.start?.includes('--execute --confirm-mic') &&
         liveDrillPackData?.commands?.monitor?.includes('Watch Realtime voice evidence') &&
         liveDrillPackData?.commands?.saveArchive?.includes('--save-realtime-dogfood-archive') &&
@@ -2663,7 +2672,7 @@ export default {
         Array.isArray(liveDrillPackData.actionPlan.previewable) &&
         liveDrillPackData.actionPlan.previewable.some((action) => action.readOnly === true && action.startsMicrophone === false) &&
         Array.isArray(liveDrillPackData.actionPlan.manual) &&
-        liveDrillPackData.actionPlan.manual.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
+        hasManualOperatorAction(liveDrillPackData.actionPlan) &&
         liveDrillPackData.actionPlan.boundaries?.some((item) => /confirmMic:true|microphone capture/i.test(item)) &&
         typeof liveDrillPackData?.prompts?.next?.copyText === 'string' &&
         liveDrillPackData.prompts.next.copyText.length > 0 &&
@@ -3092,33 +3101,41 @@ export default {
       'route_recalled_shortcut',
       'archive_saved',
     ];
+    const acceptancePendingStateOk = acceptanceData?.accepted === false &&
+      acceptanceData?.status === 'pending' &&
+      acceptanceData?.counts?.gaps >= 1 &&
+      acceptanceData?.nextGap?.id &&
+      acceptanceData?.archive?.saved === false &&
+      acceptanceData?.archiveSource?.mode === 'current_preview';
+    const acceptanceAcceptedStateOk = acceptanceData?.accepted === true &&
+      acceptanceData?.status === 'accepted' &&
+      acceptanceData?.counts?.gates >= 18 &&
+      acceptanceData?.counts?.gaps === 0 &&
+      acceptanceData?.counts?.passed === acceptanceData?.counts?.gates &&
+      acceptanceData?.archive?.saved === true &&
+      ['latest_saved', 'saved_archive'].includes(acceptanceData?.archiveSource?.mode);
     out.push(
       acceptance.ok &&
         acceptanceData?.manualOnly === true &&
         acceptanceData?.startsMicrophone === false &&
         acceptanceData?.requiresUserPresence === true &&
-        acceptanceData?.accepted === false &&
-        acceptanceData?.status === 'pending' &&
         acceptanceData?.counts?.gates >= 18 &&
-        acceptanceData?.counts?.gaps >= 1 &&
+        (acceptancePendingStateOk || acceptanceAcceptedStateOk) &&
         acceptanceData?.actionPlan?.version === 1 &&
-        ['waiting_for_user', 'can_prepare', 'pending'].includes(acceptanceData.actionPlan.status) &&
+        ['waiting_for_user', 'can_prepare', 'pending', 'accepted'].includes(acceptanceData.actionPlan.status) &&
         acceptanceData.actionPlan.primary?.id &&
         Array.isArray(acceptanceData.actionPlan.nextActions) &&
         acceptanceData.actionPlan.nextActions.length >= 2 &&
         acceptanceData.actionPlan.previewable?.some((action) => action.readOnly === true && action.startsMicrophone === false) &&
-        acceptanceData.actionPlan.manual?.some((action) => action.requiresLiveVoice === true || action.requiresMicConfirmation === true) &&
+        hasManualOperatorAction(acceptanceData.actionPlan) &&
         acceptanceData.actionPlan.askUserOnlyFor?.some((item) => /microphone|WebRTC|approval/i.test(item)) &&
         acceptanceData.actionPlan.boundaries?.some((item) => /confirmMic:true|action policy/i.test(item)) &&
         requiredAcceptanceGates.every((id) => acceptanceGateIds.has(id)) &&
         ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'computer_tools', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
-        acceptanceData?.nextGap?.id &&
-        acceptanceData?.archive?.saved === false &&
-        acceptanceData?.archiveSource?.mode === 'current_preview' &&
         acceptanceData?.safety?.rawAudioStored === false &&
         acceptanceData?.safety?.screenImageIncluded === false &&
         acceptanceData?.safety?.actionPolicyBypassed === false
-        ? ok('realtime.dogfood_acceptance', 'Realtime dogfood acceptance report', `${acceptanceData.counts.passed}/${acceptanceData.counts.gates} gate(s) pass · next=${acceptanceData.nextGap?.id || '-'}`)
+        ? ok('realtime.dogfood_acceptance', 'Realtime dogfood acceptance report', `${acceptanceData.status} · ${acceptanceData.counts.passed}/${acceptanceData.counts.gates} gate(s) pass · next=${acceptanceData.nextGap?.id || '-'}`)
         : fail('realtime.dogfood_acceptance', 'Realtime dogfood acceptance report', `GET /api/realtime/dogfood/acceptance ${acceptance.status}`, acceptance.data),
     );
 

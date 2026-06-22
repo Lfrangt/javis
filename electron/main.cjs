@@ -29578,6 +29578,31 @@ function compactDelegateJob(job = {}) {
   };
 }
 
+function findActiveDelegateTask({ task = '', mode = '', owner = '', scope = '', access = '', parallelGroup = '' } = {}) {
+  const lane = normalizeRoutingLane(mode);
+  const scopeKey = normalizeOwnershipKey(scope) || String(scope || '').trim();
+  const taskPrompt = compactRecordText(task || '', 2000);
+  const ownerText = String(owner || '').trim();
+  const accessText = String(access || '').trim();
+  const groupText = String(parallelGroup || '').trim();
+  const candidates = Array.from(routingRecords.values())
+    .filter((record) => record.jobId)
+    .sort((a, b) => Number(b.updatedAt || b.createdAt || 0) - Number(a.updatedAt || a.createdAt || 0));
+  for (const record of candidates) {
+    const job = jobs.get(record.jobId);
+    if (!job || !['queued', 'running'].includes(job.status)) continue;
+    if (lane && record.lane !== lane) continue;
+    if (ownerText && String(record.owner || '').trim() !== ownerText) continue;
+    if (groupText && String(record.parallelGroup || '').trim() !== groupText) continue;
+    const recordScopeKey = normalizeOwnershipKey(record.scope || record.ownership?.key || '') || String(record.scope || '').trim();
+    if (scopeKey && recordScopeKey && scopeKey !== recordScopeKey) continue;
+    if (accessText && record.ownership?.access && String(record.ownership.access).trim() !== accessText) continue;
+    if (taskPrompt && record.taskPrompt && record.taskPrompt !== taskPrompt) continue;
+    return { job, routing: record };
+  }
+  return null;
+}
+
 function compactDelegateResult(item = {}) {
   const routing = compactDelegateRouting(item.routing || item.routeRecord || {});
   return {
@@ -29606,6 +29631,9 @@ function compactDelegateResult(item = {}) {
 function delegateTaskSpokenSummary(payload = {}) {
   const owner = payload.owner || payload.mode || 'worker';
   const scope = payload.scope || 'this task';
+  if (payload.reusedExisting) {
+    return `这个任务已经在 ${owner} 后台处理中，范围是 ${scope}；我复用了现有 job，没有再启动一个。`;
+  }
   if (payload.requiresConfirmation) {
     return `已准备把任务交给 ${owner}，范围是 ${scope}；还没有启动，需要你确认后才会执行。`;
   }
@@ -29637,6 +29665,82 @@ async function delegateTaskPayload(options = {}) {
   const shouldExecute = executeRequested && confirm;
   const requiresConfirmation = executeRequested && !confirm;
   const source = String(options.source || 'voice_delegate').slice(0, 80);
+  const dedupe = options.dedupe !== false && String(options.dedupe || '').toLowerCase() !== 'false';
+  if (shouldExecute && dedupe) {
+    const existing = findActiveDelegateTask({ task, mode, owner, scope, access, parallelGroup });
+    if (existing) {
+      const job = compactDelegateJob(existing.job);
+      const routing = compactDelegateRouting(existing.routing);
+      const ownership = compactDelegateOwnership(existing.routing?.ownership || {});
+      const output = `Reused active delegated job ${job?.id || existing.job.id}: ${job?.title || existing.job.title}. No new worker was started.`;
+      const payload = {
+        ok: true,
+        status: 'reused_existing',
+        task: compactRecordText(task, 420),
+        mode,
+        owner,
+        scope,
+        access,
+        parallelGroup,
+        source,
+        executeRequested,
+        confirm,
+        requiresConfirmation: false,
+        previewOnly: false,
+        executed: false,
+        queued: true,
+        reusedExisting: true,
+        result: {
+          ok: true,
+          queued: true,
+          output,
+          routing,
+          job,
+          ownership,
+        },
+        routing,
+        job,
+        ownership,
+        counts: { total: 1, ok: 1, queued: 0, reused: 1 },
+        routingLedger: routing ? [routing] : [],
+        safety: {
+          localOnly: true,
+          startsWorkers: false,
+          reusesExistingWorker: true,
+          startsMicrophone: false,
+          mutatesFilesDirectly: false,
+          workerMayMutateFiles: access === 'write',
+          serializesOverlappingWriteScopes: true,
+          confirmationRequiredForExecution: true,
+          usesWorkerPolicy: true,
+        },
+        output,
+        responseBudget: {
+          compact: true,
+          maxTargetBytes: 8000,
+          omitted: [
+            'raw job log',
+            'full routing records',
+            'full task prompt',
+          ],
+        },
+      };
+      payload.spokenSummary = delegateTaskSpokenSummary(payload);
+      payload.responseBudget.outputBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
+      appendAudit('task_delegate.reused', {
+        source,
+        status: payload.status,
+        mode,
+        owner,
+        scope,
+        access,
+        parallelGroup,
+        jobId: existing.job.id,
+        routeId: existing.routing?.id || '',
+      });
+      return payload;
+    }
+  }
   const delegatedTask = {
     task,
     mode,

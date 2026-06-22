@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 
 import { ok, warn, fail } from '../_client.mjs';
@@ -51,6 +52,133 @@ export default {
             ? ok('workers.contract', 'Worker fields', 'jobs carry status, visible log, and cancelRequested')
             : warn('workers.contract', 'Worker fields', `job missing one of status/log/cancelRequested (${Object.keys(sample).slice(0, 8).join(',')})`))
           : warn('workers.contract', 'Worker fields', 'no jobs yet to inspect the worker contract'),
+      );
+    }
+
+    const delegateScope = `eval/delegate-api/${Date.now()}`;
+    const delegateTask = 'Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.';
+    const delegatePreview = await ctx.api('/api/tasks/delegate', {
+      method: 'POST',
+      body: {
+        task: delegateTask,
+        mode: 'codex',
+        owner: 'Eval Codex',
+        scope: delegateScope,
+        access: 'read',
+        source: 'eval_workers_delegate_api_preview',
+      },
+      timeoutMs: 15000,
+    });
+    const delegateGate = await ctx.api('/api/tasks/delegate', {
+      method: 'POST',
+      body: {
+        task: delegateTask,
+        mode: 'codex',
+        owner: 'Eval Codex',
+        scope: delegateScope,
+        access: 'read',
+        execute: true,
+        source: 'eval_workers_delegate_api_gate',
+      },
+      timeoutMs: 15000,
+    });
+    out.push(
+      delegatePreview.ok &&
+        delegatePreview.data?.ok === true &&
+        delegatePreview.data?.status === 'preview' &&
+        delegatePreview.data?.previewOnly === true &&
+        delegatePreview.data?.executed === false &&
+        delegatePreview.data?.queued === false &&
+        delegatePreview.data?.requiresConfirmation === false &&
+        delegatePreview.data?.safety?.startsWorkers === false &&
+        delegatePreview.data?.safety?.confirmationRequiredForExecution === true &&
+        delegateGate.ok &&
+        delegateGate.data?.ok === true &&
+        delegateGate.data?.status === 'confirmation_required' &&
+        delegateGate.data?.previewOnly === true &&
+        delegateGate.data?.executeRequested === true &&
+        delegateGate.data?.confirm === false &&
+        delegateGate.data?.requiresConfirmation === true &&
+        delegateGate.data?.queued === false &&
+        delegateGate.data?.safety?.startsWorkers === false
+        ? ok('workers.delegate_api_gate', 'Delegate API preview and confirmation gate', `${delegateScope} preview + confirmation gate without starting workers`)
+        : fail('workers.delegate_api_gate', 'Delegate API preview and confirmation gate', 'expected direct /api/tasks/delegate to preview and require confirmation before worker start', {
+            preview: delegatePreview.data,
+            gate: delegateGate.data,
+          }),
+    );
+
+    const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    out.push(
+      mainSource.includes('function findActiveDelegateTask') &&
+        mainSource.includes("status: 'reused_existing'") &&
+        mainSource.includes("appendAudit('task_delegate.reused'") &&
+        mainSource.includes('reusesExistingWorker: true') &&
+        mainSource.includes('No new worker was started')
+        ? ok('workers.delegate_dedupe_contract', 'Delegate duplicate worker guard', 'confirmed delegate requests can reuse an active matching job instead of starting another worker')
+        : fail('workers.delegate_dedupe_contract', 'Delegate duplicate worker guard', 'expected delegate_task to expose active-job reuse and no-new-worker safety evidence'),
+    );
+
+    if (process.env.JAVIS_EVAL_DELEGATE_LIVE === 'true') {
+      const liveScope = `eval/delegate-live/${Date.now()}`;
+      const liveTask = `Read-only delegate dedupe smoke ${Date.now()}: answer with OK only.`;
+      const firstDelegate = await ctx.api('/api/tasks/delegate', {
+        method: 'POST',
+        body: {
+          task: liveTask,
+          mode: 'background',
+          owner: 'Eval Background',
+          scope: liveScope,
+          access: 'read',
+          execute: true,
+          confirm: true,
+          source: 'eval_workers_delegate_live',
+        },
+        timeoutMs: 15000,
+      });
+      const secondDelegate = await ctx.api('/api/tasks/delegate', {
+        method: 'POST',
+        body: {
+          task: liveTask,
+          mode: 'background',
+          owner: 'Eval Background',
+          scope: liveScope,
+          access: 'read',
+          execute: true,
+          confirm: true,
+          source: 'eval_workers_delegate_live',
+        },
+        timeoutMs: 15000,
+      });
+      const liveJobId = firstDelegate.data?.job?.id || secondDelegate.data?.job?.id || '';
+      if (liveJobId) {
+        const liveJob = await waitForJob(ctx, liveJobId, 8000);
+        if (liveJob && ['queued', 'running'].includes(liveJob.status)) {
+          await ctx.api(`/api/jobs/${encodeURIComponent(liveJobId)}/cancel`, {
+            method: 'POST',
+            body: { reason: 'eval delegate dedupe cleanup' },
+            retries: 0,
+          });
+        }
+      }
+      out.push(
+        firstDelegate.ok &&
+          firstDelegate.data?.ok === true &&
+          firstDelegate.data?.status === 'queued' &&
+          firstDelegate.data?.queued === true &&
+          firstDelegate.data?.safety?.startsWorkers === true &&
+          secondDelegate.ok &&
+          secondDelegate.data?.ok === true &&
+          secondDelegate.data?.status === 'reused_existing' &&
+          secondDelegate.data?.reusedExisting === true &&
+          secondDelegate.data?.job?.id === firstDelegate.data?.job?.id &&
+          secondDelegate.data?.safety?.startsWorkers === false &&
+          secondDelegate.data?.safety?.reusesExistingWorker === true
+          ? ok('workers.delegate_dedupe_live', 'Delegate duplicate worker live guard', `${liveScope} reused ${secondDelegate.data.job.id}`)
+          : fail('workers.delegate_dedupe_live', 'Delegate duplicate worker live guard', 'expected duplicate confirmed delegate request to reuse the first active background job', {
+              first: firstDelegate.data,
+              second: secondDelegate.data,
+            }),
       );
     }
 
