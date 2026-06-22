@@ -279,6 +279,16 @@ const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = process.env.JAVIS_OPENAI_ALLOW_RENDE
 const OPENAI_EGRESS_GUARD_ENABLED = process.env.JAVIS_OPENAI_EGRESS_GUARD !== 'false';
 const OPENAI_REQUIRE_SPEND_LEASE = process.env.JAVIS_OPENAI_REQUIRE_SPEND_LEASE !== 'false';
 const OPENAI_SPEND_LEASE_TTL_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_LEASE_TTL_MS, 60000, 5000, 300000);
+const OPENAI_CHILD_ENV_GUARD_ENABLED = process.env.JAVIS_OPENAI_CHILD_ENV_GUARD !== 'false';
+const OPENAI_CHILD_ENV_CREDENTIAL_KEYS = [
+  'OPENAI_API_KEY',
+  'OPENAI_ADMIN_KEY',
+  'OPENAI_ORG_ID',
+  'OPENAI_ORGANIZATION',
+  'OPENAI_PROJECT',
+  'JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE',
+  'JAVIS_API_TOKEN',
+];
 const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true';
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
@@ -2612,6 +2622,7 @@ function openAiSpendGuardSnapshot() {
     requireSpendLease: OPENAI_REQUIRE_SPEND_LEASE,
     spendLeaseTtlMs: OPENAI_SPEND_LEASE_TTL_MS,
     spendLease: openAiSpendLeaseStateSnapshot(),
+    childEnvGuard: openAiChildEnvGuardSnapshot(),
     autopilotRequiresExplicitEnv: true,
     autopilotEnabled: AUTOPILOT_ENABLED,
     day: state.day,
@@ -2630,6 +2641,7 @@ function openAiSpendGuardSnapshot() {
       oneRequestLeaseRequired: OPENAI_REQUIRE_SPEND_LEASE,
       off: OPENAI_CLOUD_MODE === 'off',
       unscopedOpenAiEgressBlocked: OPENAI_EGRESS_GUARD_ENABLED,
+      childProcessOpenAiCredentialsBlocked: OPENAI_CHILD_ENV_GUARD_ENABLED,
     },
   };
 }
@@ -2781,6 +2793,123 @@ function assertOpenAiSpendAllowed(options = {}) {
   const decision = evaluateOpenAiSpendGuard({ ...options, reserve: true });
   if (!decision.allowed) throw new OpenAiSpendGuardBlocked(decision);
   return decision;
+}
+
+function openAiCredentialEnvKeys(env = process.env) {
+  return OPENAI_CHILD_ENV_CREDENTIAL_KEYS.filter((key) => {
+    if (!Object.prototype.hasOwnProperty.call(env, key)) return false;
+    return String(env[key] || '').trim() !== '';
+  });
+}
+
+function openAiCredentialEnvPattern() {
+  const escaped = OPENAI_CHILD_ENV_CREDENTIAL_KEYS.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
+  return new RegExp(`(?:^|[\\s;&|()])(?:export\\s+)?(?:${escaped})\\s*=`, 'i');
+}
+
+function commandContainsOpenAiCredentialEnv(command = '') {
+  return openAiCredentialEnvPattern().test(String(command || ''));
+}
+
+function openAiChildEnvGuardSnapshot() {
+  const presentCredentialKeys = openAiCredentialEnvKeys(process.env);
+  return {
+    version: 1,
+    enabled: OPENAI_CHILD_ENV_GUARD_ENABLED,
+    protectedKeys: OPENAI_CHILD_ENV_CREDENTIAL_KEYS,
+    presentCredentialKeyCount: presentCredentialKeys.length,
+    presentCredentialKeys,
+    defaultChildReceivesOpenAiCredentials: !OPENAI_CHILD_ENV_GUARD_ENABLED,
+    blocksInlineCredentialEnv: OPENAI_CHILD_ENV_GUARD_ENABLED,
+    bypassEnv: 'JAVIS_OPENAI_CHILD_ENV_GUARD=false',
+    safety: {
+      stripsOpenAiApiKeyFromWorkers: OPENAI_CHILD_ENV_GUARD_ENABLED,
+      blocksInlineOpenAiApiKeyAssignments: OPENAI_CHILD_ENV_GUARD_ENABLED,
+      preservesParentEnvFile: true,
+      callsOpenAi: false,
+      startsProcess: false,
+      exposesSecretValues: false,
+    },
+  };
+}
+
+function sanitizeChildProcessEnv(options = {}) {
+  const env = { ...process.env };
+  const allowOpenAiCredentialEnv = options.allowOpenAiCredentialEnv === true || OPENAI_CHILD_ENV_GUARD_ENABLED === false;
+  const redactedKeys = [];
+  if (!allowOpenAiCredentialEnv) {
+    for (const key of OPENAI_CHILD_ENV_CREDENTIAL_KEYS) {
+      if (Object.prototype.hasOwnProperty.call(env, key)) {
+        delete env[key];
+        redactedKeys.push(key);
+      }
+    }
+  }
+  env.JAVIS_OPENAI_CHILD_ENV_GUARD = OPENAI_CHILD_ENV_GUARD_ENABLED ? 'true' : 'false';
+  env.JAVIS_OPENAI_CHILD_ENV_REDACTED_KEYS = redactedKeys.join(',');
+  return env;
+}
+
+function assertOpenAiChildEnvCommandAllowed(command = '', options = {}) {
+  if (!OPENAI_CHILD_ENV_GUARD_ENABLED) return true;
+  if (!commandContainsOpenAiCredentialEnv(command)) return true;
+  const source = compactRecordText(options.source || 'child_process', 80);
+  const commandName = compactRecordText(shellCommandName(command) || options.commandName || '', 80);
+  const decision = {
+    id: crypto.randomUUID(),
+    at: new Date().toISOString(),
+    allowed: false,
+    kind: 'child_env_guard',
+    source,
+    commandName,
+    reasons: ['inline_openai_credential_env_blocked'],
+    summary: 'OpenAI credential environment injection is blocked by JAVIS child env guard.',
+  };
+  appendAudit('openai.child_env_guard_blocked', {
+    ...decision,
+    command: redactCommandForLog(command),
+  });
+  throw new OpenAiSpendGuardBlocked(decision);
+}
+
+function openAiChildEnvGuardProbe(options = {}) {
+  const command = String(options.command || 'OPENAI_API_KEY=sk-test echo should-block').slice(0, 500);
+  let inlineInjectionBlocked = false;
+  let inlineInjectionReason = '';
+  try {
+    assertOpenAiChildEnvCommandAllowed(command, { source: options.source || 'child_env_guard_probe' });
+  } catch (error) {
+    if (error instanceof OpenAiSpendGuardBlocked) {
+      inlineInjectionBlocked = true;
+      inlineInjectionReason = error.decision?.reasons?.[0] || 'child_env_guard_blocked';
+    } else {
+      throw error;
+    }
+  }
+  const sanitized = sanitizeChildProcessEnv({ source: options.source || 'child_env_guard_probe' });
+  const sanitizedCredentialKeys = openAiCredentialEnvKeys(sanitized);
+  return {
+    version: 1,
+    ok: OPENAI_CHILD_ENV_GUARD_ENABLED
+      ? sanitizedCredentialKeys.length === 0 && inlineInjectionBlocked
+      : true,
+    guard: openAiChildEnvGuardSnapshot(),
+    parentHasOpenAiCredentials: openAiCredentialEnvKeys(process.env).length > 0,
+    sanitizedHasOpenAiCredentials: sanitizedCredentialKeys.length > 0,
+    sanitizedCredentialKeys,
+    redactedKeys: String(sanitized.JAVIS_OPENAI_CHILD_ENV_REDACTED_KEYS || '').split(',').filter(Boolean),
+    inlineInjectionBlocked,
+    inlineInjectionReason,
+    commandPreview: redactCommandForLog(command),
+    safety: {
+      readOnly: true,
+      startsProcess: false,
+      callsOpenAi: false,
+      usesRealtime: false,
+      startsMicrophone: false,
+      exposesApiKey: false,
+    },
+  };
 }
 
 const ORIGINAL_GLOBAL_FETCH = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
@@ -26264,6 +26393,35 @@ function naturalBrowserLocalCommand(text) {
   return null;
 }
 
+function naturalBrowserActivityLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsBrowser = /\b(browser|chrome|safari|arc|brave|edge|web|webpage|web page|page|tab|website|site|url|browsing)\b/i.test(raw)
+    || /(浏览器|Chrome|chrome|Safari|safari|Arc|arc|Brave|brave|Edge|edge|网页|页面|标签页|网站|网址|浏览记录|上网)/i.test(compactTextNoSpace);
+  if (!mentionsBrowser) return null;
+
+  const activitySignal = /\b(recent|recently|lately|earlier|just now|history|activity|timeline|opened|visited|viewed|looked at|what.*see|what.*open|which.*pages|what.*pages)\b/i.test(raw)
+    || /(最近|刚才|刚刚|之前|上一会|过去|历史|记录|活动|时间线|打开了哪些|打开过哪些|看了什么|看过什么|访问了什么|访问过什么|哪些网页|哪些页面|什么网页|什么页面|浏览了什么|上网看了什么)/i.test(compactPlain);
+  if (!activitySignal) return null;
+
+  const pageBodySignal = /\b(read|summari[sz]e|extract|content|text|body|answer|ask|explain)\b/i.test(raw)
+    || /(读|阅读|总结|概括|提取|正文|内容|回答|解释|分析)/i.test(compactPlain);
+  if (pageBodySignal) return null;
+
+  return {
+    intent: 'browser_activity',
+    label: 'Browser activity',
+    args: {
+      query: raw,
+      limit: 8,
+      eventLimit: 120,
+    },
+  };
+}
+
 function naturalBrowserActLocalCommand(text) {
   const raw = String(text || '').trim();
   if (!raw) return null;
@@ -26418,6 +26576,7 @@ function naturalAppUiLocalCommand(text) {
     args: {
       maxNodes: 80,
       maxDepth: 6,
+      maxAgeMs: Math.max(APP_UI_CACHE_MAX_AGE_MS, 30000),
     },
   };
 }
@@ -26582,6 +26741,9 @@ function localCommandDecision(task) {
 
   const openAiSpendStatusCommand = naturalOpenAiSpendStatusLocalCommand(text);
   if (openAiSpendStatusCommand) return openAiSpendStatusCommand;
+
+  const browserActivityCommand = naturalBrowserActivityLocalCommand(text);
+  if (browserActivityCommand) return browserActivityCommand;
 
   const browserRecoveryCommand = naturalBrowserRecoveryLocalCommand(text);
   if (browserRecoveryCommand) return browserRecoveryCommand;
@@ -27134,7 +27296,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -27219,6 +27381,14 @@ function buildContextPlan(message, options = {}) {
       needs.screen = true;
       needs.accessibility = true;
       needs.vision = localCommand === 'describe_screen';
+    } else if (['browser_activity'].includes(localCommand)) {
+      needs.browserActivity = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
+      needs.browserContext = false;
+      needs.browserPage = false;
+      needs.browserDom = false;
     } else if (['browser_readiness'].includes(localCommand)) {
       needs.browserContext = true;
     } else if (['browser_recovery'].includes(localCommand)) {
@@ -27697,6 +27867,27 @@ function formatRecentActivityForLocalCommand(activity = {}) {
     lines.length ? `时间线:\n${lines.join('\n')}` : '时间线: none',
     activity.nextAction ? `下一步: ${compactRecordText(activity.nextAction, 260)}` : '',
     '边界: 这里只读本地 ambient 元数据；不主动截屏，不返回图片，不读取网页正文，不读剪贴板文本，不启动麦克风或 Realtime，不执行电脑动作。',
+  ].filter(Boolean).join('\n');
+}
+
+function formatBrowserActivityForLocalCommand(activity = {}) {
+  const current = activity.current || null;
+  const recent = Array.isArray(activity.recent) ? activity.recent.slice(0, 6) : [];
+  const topHosts = Array.isArray(activity.topHosts)
+    ? activity.topHosts.slice(0, 4).map((item) => `${item.host || '-'}${item.count ? ` ${item.count}` : ''}`)
+    : [];
+  const lines = recent.map((item) => {
+    const target = [item.app, item.host || item.title].filter(Boolean).join(' · ');
+    return `- ${compactRecordText(target || '-', 220)} · age=${item.ageMs ?? '-'}ms`;
+  });
+  return [
+    `Browser activity: ${activity.enabled ? 'on' : 'off'} · samples=${activity.count ?? 0} · recent=${recent.length}`,
+    activity.summary ? `摘要: ${compactRecordText(activity.summary, 420)}` : '',
+    current ? `Latest: ${compactRecordText([current.app, current.host || current.title].filter(Boolean).join(' · '), 240)}` : '',
+    topHosts.length ? `常见站点: ${topHosts.join(', ')}` : '',
+    lines.length ? `时间线:\n${lines.join('\n')}` : '时间线: none',
+    activity.nextAction ? `下一步: ${compactRecordText(activity.nextAction, 260)}` : '',
+    '边界: 这里只读本地浏览器 ambient 元数据；不读取网页正文，不返回截图，不读剪贴板文本，不启动麦克风或 Realtime，不调用云模型。',
   ].filter(Boolean).join('\n');
 }
 
@@ -28514,6 +28705,19 @@ async function runLocalCommand(command, options = {}) {
         ok: true,
         localCommand: command,
         output: formatRecentActivityForLocalCommand(activity),
+        data: { activity },
+      };
+    }
+
+    if (command.intent === 'browser_activity') {
+      const activity = browserActivitySnapshot({
+        ...(command.args || {}),
+        source: 'local_command',
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatBrowserActivityForLocalCommand(activity),
         data: { activity },
       };
     }
@@ -30800,6 +31004,7 @@ const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
   'approval_status',
   'autopilot_status',
   'blocker_status',
+  'browser_activity',
   'browser_dom',
   'browser_page',
   'browser_readiness',
@@ -31329,7 +31534,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -49395,9 +49600,17 @@ async function callLocalTextWorkerFallback(args = {}, options = {}) {
     failureKind: options.failureKind || '',
     model: args.model || '',
   });
+  assertOpenAiChildEnvCommandAllowed(baseCommand, {
+    source: options.source || 'model_worker_fallback',
+    commandName: shellCommandName(baseCommand),
+  });
   const { stdout, stderr } = await execFileAsync('/bin/zsh', ['-lc', `${baseCommand} ${shellQuote(prompt)}`], {
     cwd: process.cwd(),
-    env: process.env,
+    env: sanitizeChildProcessEnv({
+      source: options.source || 'model_worker_fallback',
+      mode,
+      command: baseCommand,
+    }),
     timeout: evaluation.timeoutMs,
     maxBuffer: 1024 * 1024 * 4,
   });
@@ -56191,11 +56404,15 @@ function cliCommandPolicySnapshot(command, timeoutMs) {
 function evaluateCliCommand(command, options = {}) {
   const snapshot = cliCommandPolicySnapshot(command, options.timeoutMs);
   if (!snapshot.enabled) throw new Error('CLI command execution is disabled by policy.');
+  if (!snapshot.command) throw new Error('Missing CLI command.');
+  if (!snapshot.commandName) throw new Error('Could not identify the CLI command name.');
+  assertOpenAiChildEnvCommandAllowed(snapshot.command, {
+    source: options.source || 'cli_command_policy',
+    commandName: snapshot.commandName,
+  });
   if (!LOCAL_EXEC_ENABLED) {
     throw new Error('CLI commands require JAVIS_ENABLE_LOCAL_EXEC=true.');
   }
-  if (!snapshot.command) throw new Error('Missing CLI command.');
-  if (!snapshot.commandName) throw new Error('Could not identify the CLI command name.');
   if (snapshot.commandLength > snapshot.maxCommandLength) {
     throw new Error(`CLI command exceeds maxCommandLength policy (${snapshot.commandLength} > ${snapshot.maxCommandLength}).`);
   }
@@ -56340,11 +56557,27 @@ function stopJobRun(run, signal = 'SIGTERM') {
   }
 }
 
-function runShellJob(job, command, timeoutMs = 180000) {
+function runShellJob(job, command, timeoutMs = 180000, options = {}) {
   return new Promise((resolve, reject) => {
+    const policyCommand = options.policyCommand || command;
+    try {
+      assertOpenAiChildEnvCommandAllowed(policyCommand, {
+        source: options.source || `job_${job.mode || 'worker'}`,
+        commandName: shellCommandName(policyCommand),
+      });
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const childEnv = sanitizeChildProcessEnv({
+      source: options.source || `job_${job.mode || 'worker'}`,
+      mode: job.mode,
+      command: policyCommand,
+    });
+    const redactedKeys = String(childEnv.JAVIS_OPENAI_CHILD_ENV_REDACTED_KEYS || '').split(',').filter(Boolean);
     const child = spawn('/bin/zsh', ['-lc', command], {
       cwd: process.cwd(),
-      env: process.env,
+      env: childEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: true,
     });
@@ -56353,7 +56586,16 @@ function runShellJob(job, command, timeoutMs = 180000) {
     const run = { child, cancelled: false };
     activeJobRuns.set(job.id, run);
     setJob(job.id, { pid: child.pid || null });
-    appendAudit('job.process_start', { id: job.id, mode: job.mode, pid: child.pid || null });
+    appendAudit('job.process_start', {
+      id: job.id,
+      mode: job.mode,
+      pid: child.pid || null,
+      openAiChildEnvGuard: {
+        enabled: OPENAI_CHILD_ENV_GUARD_ENABLED,
+        redactedKeys,
+        childReceivesOpenAiCredentials: openAiCredentialEnvKeys(childEnv).length > 0,
+      },
+    });
 
     const timer = setTimeout(() => {
       run.cancelled = true;
@@ -56463,13 +56705,17 @@ function evaluateCodeAgentPlan(plan, options = {}) {
   const commandName = shellCommandName(command);
   const maxTimeoutMs = Number(config.maxTimeoutMs || DEFAULT_ACTION_POLICY.allow.code_agent.maxTimeoutMs);
   if (config.enabled === false) throw new Error('Code agent execution is disabled by policy.');
+  if (!commandName) throw new Error('Could not identify the code agent command name.');
+  assertOpenAiChildEnvCommandAllowed(command, {
+    source: options.source || 'code_agent_policy',
+    commandName,
+  });
   if (!LOCAL_EXEC_ENABLED) {
     if (options.preview) {
       return { dryRun: Boolean(actionPolicy.dryRun), needsApproval: true, blocked: true, reason: 'local_execution_disabled', controlMode: controlModeSnapshot() };
     }
     throw new Error('Code agent execution requires JAVIS_ENABLE_LOCAL_EXEC=true.');
   }
-  if (!commandName) throw new Error('Could not identify the code agent command name.');
   if (!valueMatchesAllowlist(commandName, config.allowedCommands || [])) {
     throw new Error(`Code agent command ${commandName} is not allowed by policy.`);
   }
@@ -56673,7 +56919,10 @@ async function runDelegatedJob(job, task) {
         summary: plan.summary,
         startedAt,
       });
-      const result = await runShellJob(job, command, evaluation.timeoutMs);
+      const result = await runShellJob(job, command, evaluation.timeoutMs, {
+        source: `code_agent_${mode}`,
+        policyCommand: baseCommand,
+      });
       addJobAttempt(job, {
         tool: mode,
         command: baseCommand,
@@ -56717,7 +56966,10 @@ async function runCliJob(job, command) {
   });
   appendJobLog(job.id, `Starting CLI command: ${evaluation.commandName}`);
   try {
-    const result = await runShellJob(job, command, evaluation.timeoutMs);
+    const result = await runShellJob(job, command, evaluation.timeoutMs, {
+      source: 'cli_command',
+      policyCommand: command,
+    });
     addJobAttempt(job, {
       tool: 'cli',
       command,
@@ -62076,6 +62328,14 @@ function startApiServer() {
 
   api.get('/api/openai/egress-guard', (_req, res) => {
     res.json({ egressGuard: openAiEgressGuardSnapshot(), spendGuard: openAiSpendGuardSnapshot() });
+  });
+
+  api.post('/api/openai/child-env-guard/probe', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      res.json({ childEnvGuard: openAiChildEnvGuardProbe({ ...(req.body || {}), source: req.body?.source || 'api_child_env_guard_probe' }) });
+    } catch (error) {
+      jsonError(res, 500, 'OpenAI child env guard probe failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.post('/api/openai/egress-guard/probe', async (_req, res) => {

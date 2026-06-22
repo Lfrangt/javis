@@ -1199,6 +1199,42 @@ export default {
         : fail('voice_command.natural_browser_readiness', 'Natural browser readiness voice command', 'natural browser readiness phrase did not use the local browser_readiness fast path', naturalBrowserReady.data),
     );
 
+    const naturalBrowserActivity = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '最近浏览器打开了哪些网页？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_activity',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserActivityData = naturalBrowserActivity.data || {};
+    const naturalBrowserActivityRoute = naturalBrowserActivityData.route || {};
+    const browserActivity = naturalBrowserActivityRoute.data?.activity || {};
+    out.push(
+      naturalBrowserActivity.ok &&
+        naturalBrowserActivityData.ok === true &&
+        naturalBrowserActivityData.executed === false &&
+        naturalBrowserActivityRoute.decision?.localCommand === 'browser_activity' &&
+        naturalBrowserActivityRoute.localCommand?.intent === 'browser_activity' &&
+        browserActivity.ok === true &&
+        browserActivity.privacy?.metadataOnly === true &&
+        browserActivity.privacy?.noPageText === true &&
+        typeof naturalBrowserActivityRoute.output === 'string' &&
+        naturalBrowserActivityRoute.output.includes('Browser activity:') &&
+        naturalBrowserActivityRoute.output.includes('不读取网页正文') &&
+        naturalBrowserActivityData.context?.skippedPreRouteContext === true &&
+        naturalBrowserActivityData.safety?.startsMicrophone === false &&
+        naturalBrowserActivityData.safety?.usesRealtime === false &&
+        naturalBrowserActivityData.safety?.storesRawAudio === false &&
+        naturalBrowserActivityData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_browser_activity', 'Natural browser activity voice command', '浏览器最近网页问题 routes to metadata-only browser_activity instead of recovery or page text')
+        : fail('voice_command.natural_browser_activity', 'Natural browser activity voice command', 'natural browser activity phrase did not use the metadata-only browser activity fast path', naturalBrowserActivity.data),
+    );
+
     const naturalBrowserRecovery = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

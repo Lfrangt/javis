@@ -1542,13 +1542,17 @@ export default {
 	        spendGuard.allowAutopilotCloud === false &&
 		        spendGuard.allowRendererStartupProbe === false &&
 		        spendGuard.requireSpendConfirmationPhrase === true &&
-		        spendGuard.requireSpendLease === true &&
-		        spendGuard.spendLease?.oneRequestOnly === true &&
-		        Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
-		        spendGuard.autopilotRequiresExplicitEnv === true &&
-		        spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
-		        spendGuard.safety?.oneRequestLeaseRequired === true &&
-		        egressGuard.enabled === true &&
+			    spendGuard.requireSpendLease === true &&
+			    spendGuard.spendLease?.oneRequestOnly === true &&
+			    Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
+			    spendGuard.childEnvGuard?.enabled === true &&
+			    spendGuard.childEnvGuard?.defaultChildReceivesOpenAiCredentials === false &&
+			    spendGuard.childEnvGuard?.blocksInlineCredentialEnv === true &&
+			    spendGuard.autopilotRequiresExplicitEnv === true &&
+			    spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
+			    spendGuard.safety?.oneRequestLeaseRequired === true &&
+			    spendGuard.safety?.childProcessOpenAiCredentialsBlocked === true &&
+			    egressGuard.enabled === true &&
 	        egressGuard.installed === true &&
 	        egressGuard.mode === 'scoped_allow_only' &&
 	        egressGuard.safety?.blocksUnscopedOpenAiFetch === true &&
@@ -1616,6 +1620,36 @@ export default {
 	          body: unconfirmedProviderProbe,
 	          spendGuardBefore: spendGuard,
 	          spendGuardAfter: spendGuardAfterUnconfirmed,
+		        }),
+		    );
+
+		    const childEnvProbeResponse = await ctx.api('/api/openai/child-env-guard/probe', {
+		      method: 'POST',
+		      body: {
+		        command: 'OPENAI_API_KEY=sk-test echo should-not-run',
+		        source: 'eval_resident_child_env_guard',
+		      },
+		    });
+		    const childEnvProbe = childEnvProbeResponse.data?.childEnvGuard || {};
+		    out.push(
+		      childEnvProbeResponse.ok &&
+		        childEnvProbe.ok === true &&
+		        childEnvProbe.guard?.enabled === true &&
+		        childEnvProbe.guard?.defaultChildReceivesOpenAiCredentials === false &&
+		        childEnvProbe.guard?.blocksInlineCredentialEnv === true &&
+		        childEnvProbe.sanitizedHasOpenAiCredentials === false &&
+		        childEnvProbe.inlineInjectionBlocked === true &&
+		        childEnvProbe.inlineInjectionReason === 'inline_openai_credential_env_blocked' &&
+		        childEnvProbe.safety?.readOnly === true &&
+		        childEnvProbe.safety?.startsProcess === false &&
+		        childEnvProbe.safety?.callsOpenAi === false &&
+		        childEnvProbe.safety?.usesRealtime === false &&
+		        childEnvProbe.safety?.startsMicrophone === false &&
+		        childEnvProbe.safety?.exposesApiKey === false
+		        ? ok('resident.openai_child_env_guard_probe', 'OpenAI child env guard probe', `guarded=${childEnvProbe.guard?.enabled} · parentHasCreds=${childEnvProbe.parentHasOpenAiCredentials ? 'yes' : 'no'} · sanitizedCreds=${childEnvProbe.sanitizedHasOpenAiCredentials ? 'yes' : 'no'} · inline=${childEnvProbe.inlineInjectionBlocked ? 'blocked' : 'allowed'}`)
+		        : fail('resident.openai_child_env_guard_probe', 'OpenAI child env guard probe', 'expected child process env guard to strip OpenAI credentials and block inline OPENAI_API_KEY assignment without starting a process', {
+		          status: childEnvProbeResponse.status,
+		          body: childEnvProbeResponse.data,
 		        }),
 		    );
 
@@ -1699,14 +1733,19 @@ export default {
 		      mainSource.includes('OPENAI_EGRESS_GUARD_ENABLED') &&
 		      mainSource.includes('OPENAI_REQUIRE_SPEND_LEASE') &&
 		      mainSource.includes('OPENAI_SPEND_LEASE_TTL_MS') &&
+		      mainSource.includes('OPENAI_CHILD_ENV_GUARD_ENABLED') &&
 		      mainSource.includes('function createOpenAiSpendLease') &&
+		      mainSource.includes('function sanitizeChildProcessEnv') &&
+		      mainSource.includes('function assertOpenAiChildEnvCommandAllowed') &&
+		      mainSource.includes('function openAiChildEnvGuardProbe') &&
 		      mainSource.includes('spend_lease_required') &&
 		      mainSource.includes('renderer_startup_probe_disabled') &&
 	      mainSource.includes('function installOpenAiEgressGuard') &&
 	      mainSource.includes('function openAiEgressGuardSnapshot') &&
 	      mainSource.includes('unscoped_openai_egress_blocked') &&
-	      mainSource.includes("api.post('/api/openai/egress-guard/probe'") &&
-	      mainSource.includes('await withOpenAiEgressAllowed(spendDecision') &&
+		      mainSource.includes("api.post('/api/openai/egress-guard/probe'") &&
+		      mainSource.includes("api.post('/api/openai/child-env-guard/probe'") &&
+		      mainSource.includes('await withOpenAiEgressAllowed(spendDecision') &&
 	      mainSource.includes("kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session'") &&
 		      mainSource.includes("api.get('/api/openai/spend-guard'") &&
 		      mainSource.includes("api.post('/api/openai/spend-guard/check'") &&
@@ -1731,10 +1770,11 @@ export default {
 		      envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false') &&
 		      envExampleSource.includes('JAVIS_OPENAI_EGRESS_GUARD=true') &&
 		      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_LEASE=true') &&
-		      envExampleSource.includes('JAVIS_OPENAI_SPEND_LEASE_TTL_MS=60000');
+		      envExampleSource.includes('JAVIS_OPENAI_SPEND_LEASE_TTL_MS=60000') &&
+		      envExampleSource.includes('JAVIS_OPENAI_CHILD_ENV_GUARD=true');
     out.push(
-	      hasOpenAiSpendGuardStatic
-	        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls are guarded, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')
+		      hasOpenAiSpendGuardStatic
+		        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls and worker child env are guarded, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')
 	        : fail('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'expected source to guard OpenAI calls and document zero-spend defaults'),
 	    );
 
