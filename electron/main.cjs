@@ -1,6 +1,8 @@
 const crypto = require('node:crypto');
 const { execFile, execFileSync, spawn } = require('node:child_process');
 const fs = require('node:fs');
+const http = require('node:http');
+const https = require('node:https');
 const os = require('node:os');
 const path = require('node:path');
 const { fileURLToPath } = require('node:url');
@@ -273,6 +275,7 @@ const OPENAI_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENA
 const OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT, 0, 0, 10000);
 const OPENAI_ALLOW_AUTOPILOT = process.env.JAVIS_OPENAI_ALLOW_AUTOPILOT === 'true';
 const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = process.env.JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE === 'true';
+const OPENAI_EGRESS_GUARD_ENABLED = process.env.JAVIS_OPENAI_EGRESS_GUARD !== 'false';
 const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true';
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
@@ -2524,6 +2527,8 @@ function openAiSpendGuardSnapshot() {
     version: 1,
     mode: OPENAI_CLOUD_MODE,
     hardSpendLock: OPENAI_HARD_SPEND_LOCK,
+    egressGuardEnabled: OPENAI_EGRESS_GUARD_ENABLED,
+    egressGuardMode: OPENAI_EGRESS_GUARD_ENABLED ? 'scoped_allow_only' : 'off',
     file: OPENAI_SPEND_GUARD_FILE,
     dailyRequestLimit: OPENAI_DAILY_REQUEST_LIMIT,
     unattendedDailyRequestLimit: OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT,
@@ -2547,6 +2552,7 @@ function openAiSpendGuardSnapshot() {
       hardSpendLockDefault: OPENAI_HARD_SPEND_LOCK,
       confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
       off: OPENAI_CLOUD_MODE === 'off',
+      unscopedOpenAiEgressBlocked: OPENAI_EGRESS_GUARD_ENABLED,
     },
   };
 }
@@ -2573,6 +2579,10 @@ function evaluateOpenAiSpendGuard(options = {}) {
   }
   if (!manual && (OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT <= 0 || Number(state.counts.unattended || 0) >= OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT)) {
     reasons.push('unattended_request_limit_reached');
+  }
+  for (const reason of Array.isArray(options.forceBlockedReasons) ? options.forceBlockedReasons : []) {
+    const text = compactRecordText(reason, 120);
+    if (text && !reasons.includes(text)) reasons.push(text);
   }
 
   const allowed = reasons.length === 0;
@@ -2671,6 +2681,160 @@ function assertOpenAiSpendAllowed(options = {}) {
   const decision = evaluateOpenAiSpendGuard({ ...options, reserve: true });
   if (!decision.allowed) throw new OpenAiSpendGuardBlocked(decision);
   return decision;
+}
+
+const ORIGINAL_GLOBAL_FETCH = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
+const ORIGINAL_HTTP_REQUEST = http.request.bind(http);
+const ORIGINAL_HTTP_GET = http.get.bind(http);
+const ORIGINAL_HTTPS_REQUEST = https.request.bind(https);
+const ORIGINAL_HTTPS_GET = https.get.bind(https);
+let openAiEgressGuardInstalled = false;
+let openAiEgressAllowDepth = 0;
+
+function openAiEgressHostIsGuarded(hostname = '') {
+  const host = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
+  return (
+    host === 'api.openai.com' ||
+    host.endsWith('.api.openai.com') ||
+    host === 'realtime.openai.com' ||
+    host.endsWith('.realtime.openai.com')
+  );
+}
+
+function urlFromFetchInput(input) {
+  try {
+    if (!input) return null;
+    if (typeof input === 'string') return new URL(input);
+    if (input instanceof URL) return input;
+    if (typeof Request !== 'undefined' && input instanceof Request) return new URL(input.url);
+    if (typeof input.url === 'string') return new URL(input.url);
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function urlFromRequestArgs(args = [], fallbackProtocol = 'https:') {
+  const [target, options] = args;
+  try {
+    if (typeof target === 'string' || target instanceof URL) {
+      const base = new URL(target);
+      const extra = options && typeof options === 'object' && !(options instanceof Function) ? options : {};
+      const protocol = extra.protocol || base.protocol || fallbackProtocol;
+      const hostname = extra.hostname || extra.host || base.hostname;
+      if (!hostname) return base;
+      const pathname = extra.path || extra.pathname || `${base.pathname || '/'}${base.search || ''}`;
+      const port = extra.port || base.port;
+      return new URL(`${protocol}//${hostname}${port ? `:${port}` : ''}${String(pathname || '/').startsWith('/') ? pathname : `/${pathname}`}`);
+    }
+    if (target && typeof target === 'object') {
+      if (typeof target.href === 'string') return new URL(target.href);
+      const protocol = target.protocol || fallbackProtocol;
+      const hostname = target.hostname || target.host;
+      if (!hostname) return null;
+      const pathname = target.path || target.pathname || '/';
+      const port = target.port || '';
+      return new URL(`${protocol}//${hostname}${port ? `:${port}` : ''}${String(pathname).startsWith('/') ? pathname : `/${pathname}`}`);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function makeOpenAiEgressBlockedDecision(kind, url, source = 'network_egress_guard') {
+  const decision = evaluateOpenAiSpendGuard({
+    kind,
+    source,
+    model: 'direct_openai_egress',
+    recordBlocked: true,
+    forceBlockedReasons: ['unscoped_openai_egress_blocked'],
+    targetHost: url?.hostname || '',
+  });
+  appendAudit('openai.egress_guard_blocked', {
+    kind,
+    source,
+    host: compactRecordText(url?.hostname || '', 120),
+    pathname: compactRecordText(url?.pathname || '', 160),
+    decisionId: decision.id,
+    reasons: decision.reasons,
+  });
+  return decision;
+}
+
+function assertOpenAiEgressAllowed(kind, url, source) {
+  if (!OPENAI_EGRESS_GUARD_ENABLED || !url || !openAiEgressHostIsGuarded(url.hostname)) return;
+  if (openAiEgressAllowDepth > 0) return;
+  throw new OpenAiSpendGuardBlocked(makeOpenAiEgressBlockedDecision(kind, url, source));
+}
+
+async function withOpenAiEgressAllowed(decision, fn) {
+  if (!decision?.allowed) {
+    throw new OpenAiSpendGuardBlocked(decision || makeOpenAiEgressBlockedDecision('egress_scope', null, 'missing_spend_reservation'));
+  }
+  openAiEgressAllowDepth += 1;
+  try {
+    return await fn();
+  } finally {
+    openAiEgressAllowDepth = Math.max(0, openAiEgressAllowDepth - 1);
+  }
+}
+
+function installOpenAiEgressGuard() {
+  if (!OPENAI_EGRESS_GUARD_ENABLED || openAiEgressGuardInstalled) return false;
+  openAiEgressGuardInstalled = true;
+  if (ORIGINAL_GLOBAL_FETCH) {
+    globalThis.fetch = async function javisGuardedFetch(input, init) {
+      assertOpenAiEgressAllowed('egress_fetch', urlFromFetchInput(input), 'global_fetch');
+      return ORIGINAL_GLOBAL_FETCH(input, init);
+    };
+  }
+  http.request = function javisGuardedHttpRequest(...args) {
+    assertOpenAiEgressAllowed('egress_http', urlFromRequestArgs(args, 'http:'), 'http_request');
+    return ORIGINAL_HTTP_REQUEST(...args);
+  };
+  http.get = function javisGuardedHttpGet(...args) {
+    assertOpenAiEgressAllowed('egress_http_get', urlFromRequestArgs(args, 'http:'), 'http_get');
+    return ORIGINAL_HTTP_GET(...args);
+  };
+  https.request = function javisGuardedHttpsRequest(...args) {
+    assertOpenAiEgressAllowed('egress_https', urlFromRequestArgs(args, 'https:'), 'https_request');
+    return ORIGINAL_HTTPS_REQUEST(...args);
+  };
+  https.get = function javisGuardedHttpsGet(...args) {
+    assertOpenAiEgressAllowed('egress_https_get', urlFromRequestArgs(args, 'https:'), 'https_get');
+    return ORIGINAL_HTTPS_GET(...args);
+  };
+  appendAudit('openai.egress_guard_installed', {
+    fetch: Boolean(ORIGINAL_GLOBAL_FETCH),
+    http: true,
+    https: true,
+    mode: 'scoped_allow_only',
+  });
+  return true;
+}
+
+function openAiEgressGuardSnapshot() {
+  return {
+    version: 1,
+    enabled: OPENAI_EGRESS_GUARD_ENABLED,
+    installed: openAiEgressGuardInstalled,
+    mode: OPENAI_EGRESS_GUARD_ENABLED ? 'scoped_allow_only' : 'off',
+    guardedHosts: ['api.openai.com', '*.api.openai.com', 'realtime.openai.com', '*.realtime.openai.com'],
+    guardedApis: {
+      fetch: Boolean(ORIGINAL_GLOBAL_FETCH),
+      httpRequest: true,
+      httpGet: true,
+      httpsRequest: true,
+      httpsGet: true,
+    },
+    safety: {
+      blocksUnscopedOpenAiFetch: OPENAI_EGRESS_GUARD_ENABLED && openAiEgressGuardInstalled,
+      requiresSpendReservationScope: true,
+      callsOpenAiDuringProbe: false,
+      exposesApiToken: false,
+    },
+  };
 }
 
 function xmlEscape(value) {
@@ -13269,7 +13433,8 @@ function overnightCloudLocked(spendGuard = {}) {
       Number(spendGuard.dailyRequestLimit || 0) === 0 &&
       Number(spendGuard.unattendedDailyRequestLimit || 0) === 0 &&
       spendGuard.allowAutopilotCloud === false &&
-      spendGuard.allowRendererStartupProbe === false,
+      spendGuard.allowRendererStartupProbe === false &&
+      spendGuard.egressGuardEnabled === true,
   );
 }
 
@@ -48363,7 +48528,7 @@ async function callOpenAIResponses({
     userContent.push({ type: 'input_image', image_url: imageDataUrl });
   }
 
-  const response = await fetch('https://api.openai.com/v1/responses', {
+  const response = await withOpenAiEgressAllowed(spendDecision, () => fetch('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -48377,7 +48542,7 @@ async function callOpenAIResponses({
       max_output_tokens: maxOutputTokens,
     }),
     signal,
-  });
+  }));
 
   const data = await response.json().catch(() => ({}));
   appendAudit('openai.responses.completed', {
@@ -60787,7 +60952,7 @@ function startApiServer() {
   });
 
   api.get('/api/openai/spend-guard', (_req, res) => {
-    res.json({ spendGuard: openAiSpendGuardSnapshot() });
+    res.json({ spendGuard: openAiSpendGuardSnapshot(), egressGuard: openAiEgressGuardSnapshot() });
   });
 
   api.post('/api/openai/spend-guard/check', (req, res) => {
@@ -60806,6 +60971,53 @@ function startApiServer() {
         recordBlocked: false,
       }),
     });
+  });
+
+  api.get('/api/openai/egress-guard', (_req, res) => {
+    res.json({ egressGuard: openAiEgressGuardSnapshot(), spendGuard: openAiSpendGuardSnapshot() });
+  });
+
+  api.post('/api/openai/egress-guard/probe', async (_req, res) => {
+    const before = openAiSpendGuardSnapshot();
+    try {
+      await fetch('https://api.openai.com/v1/models', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer javis-egress-guard-probe' },
+      });
+      res.status(409).json({
+        ok: false,
+        blocked: false,
+        output: 'Unexpectedly reached the OpenAI fetch path. Egress guard did not block the unscoped probe.',
+        before,
+        after: openAiSpendGuardSnapshot(),
+        egressGuard: openAiEgressGuardSnapshot(),
+        safety: {
+          callsOpenAi: true,
+          exposesApiToken: false,
+        },
+      });
+    } catch (error) {
+      if (error instanceof OpenAiSpendGuardBlocked) {
+        const after = openAiSpendGuardSnapshot();
+        res.json({
+          ok: true,
+          blocked: true,
+          output: 'Unscoped OpenAI egress was blocked locally before any API request could leave JAVIS.',
+          decision: error.decision,
+          before,
+          after,
+          egressGuard: openAiEgressGuardSnapshot(),
+          safety: {
+            callsOpenAi: false,
+            usesRealtime: false,
+            startsMicrophone: false,
+            exposesApiToken: false,
+          },
+        });
+        return;
+      }
+      jsonError(res, 500, 'OpenAI egress guard probe failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/status', (_req, res) => {
@@ -62272,14 +62484,14 @@ function startApiServer() {
     fd.set('session', JSON.stringify(createRealtimeSessionConfig({ micMode })));
 
     try {
-      const response = await fetch('https://api.openai.com/v1/realtime/calls', {
+      const response = await withOpenAiEgressAllowed(spendDecision, () => fetch('https://api.openai.com/v1/realtime/calls', {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${OPENAI_API_KEY}`,
           'OpenAI-Safety-Identifier': hashSafetyIdentifier(),
         },
         body: fd,
-      });
+      }));
       const sdp = await response.text();
       recordProviderAttempt({
         micMode,
@@ -63529,6 +63741,7 @@ function handleSecondInstance(_event, argv = [], workingDirectory = '', addition
 }
 
 function startJavisApp() {
+  installOpenAiEgressGuard();
   app.on('second-instance', handleSecondInstance);
 
   app.whenReady().then(async () => {

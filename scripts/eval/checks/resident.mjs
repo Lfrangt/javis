@@ -181,6 +181,8 @@ export default {
 	        overnight.openAiSpendGuard?.hardSpendLock === true &&
 	        overnight.openAiSpendGuard?.mode === 'off' &&
 	        overnight.openAiSpendGuard?.dailyRequestLimit === 0 &&
+	        overnight.openAiSpendGuard?.egressGuardEnabled === true &&
+	        overnight.openAiSpendGuard?.safety?.unscopedOpenAiEgressBlocked === true &&
 	        ['local_fallback_ready', 'realtime_ready'].includes(overnight.voice?.standby?.mode) &&
 	        typeof overnight.autopilot?.enabled === 'boolean' &&
 	        overnight.autopilot?.safety?.enabledByOvernight === false &&
@@ -1511,26 +1513,61 @@ export default {
 
 	    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
 	    const spendGuard = spendGuardResponse.data?.spendGuard || {};
+	    const egressGuard = spendGuardResponse.data?.egressGuard || {};
 		const spendGuardTotalBefore = Number(spendGuard.counts?.total || 0);
 		out.push(
 		  spendGuardResponse.ok &&
 		    spendGuard.mode === 'off' &&
 		    spendGuard.hardSpendLock === true &&
+	        spendGuard.egressGuardEnabled === true &&
+	        spendGuard.egressGuardMode === 'scoped_allow_only' &&
 		    spendGuard.dailyRequestLimit === 0 &&
 	        spendGuard.unattendedDailyRequestLimit === 0 &&
 	        spendGuard.allowAutopilotCloud === false &&
 	        spendGuard.allowRendererStartupProbe === false &&
 	        spendGuard.requireSpendConfirmationPhrase === true &&
 	        spendGuard.autopilotRequiresExplicitEnv === true &&
+	        spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
+	        egressGuard.enabled === true &&
+	        egressGuard.installed === true &&
+	        egressGuard.mode === 'scoped_allow_only' &&
+	        egressGuard.safety?.blocksUnscopedOpenAiFetch === true &&
 	        spendGuard.safety?.off === true &&
 	        spendGuard.safety?.zeroBudgetDefault === true &&
 	        spendGuard.safety?.hardSpendLockDefault === true &&
 	        spendGuard.safety?.confirmationPhraseRequired === true &&
 	        spendGuard.safety?.unattendedCloudDefaultBlocked === true
-	        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
+	        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
 	        : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to zero-spend OpenAI usage, hard-lock cloud calls, block unattended/autopilot calls, and disable renderer startup probes', {
 	          status: spendGuardResponse.status,
 	          body: spendGuardResponse.data,
+	        }),
+	    );
+	    const egressProbeResponse = await ctx.api('/api/openai/egress-guard/probe', {
+	      method: 'POST',
+	      body: { source: 'eval_unscoped_openai_egress_probe' },
+	      timeoutMs: 10000,
+	    });
+	    const egressProbe = egressProbeResponse.data || {};
+	    const spendGuardAfterEgressProbeResponse = await ctx.api('/api/openai/spend-guard');
+	    const spendGuardAfterEgressProbe = spendGuardAfterEgressProbeResponse.data?.spendGuard || {};
+	    out.push(
+	      egressProbeResponse.ok &&
+	        egressProbe.ok === true &&
+	        egressProbe.blocked === true &&
+	        egressProbe.decision?.allowed === false &&
+	        Array.isArray(egressProbe.decision?.reasons) &&
+	        egressProbe.decision.reasons.includes('unscoped_openai_egress_blocked') &&
+	        egressProbe.safety?.callsOpenAi === false &&
+	        egressProbe.egressGuard?.installed === true &&
+	        spendGuardAfterEgressProbeResponse.ok &&
+	        Number(spendGuardAfterEgressProbe.counts?.total || 0) === spendGuardTotalBefore
+	        ? ok('resident.openai_egress_guard_probe', 'OpenAI egress guard probe', 'unscoped fetch to api.openai.com was blocked locally before any API request could leave JAVIS')
+	        : fail('resident.openai_egress_guard_probe', 'OpenAI egress guard probe', 'expected unscoped OpenAI fetch probe to be blocked locally without incrementing OpenAI spend total', {
+	          status: egressProbeResponse.status,
+	          body: egressProbe,
+	          spendGuardBefore: spendGuard,
+	          spendGuardAfter: spendGuardAfterEgressProbe,
 	        }),
 	    );
 	    const unconfirmedProviderProbeResponse = await ctx.api('/api/realtime/provider/probe', {
@@ -1607,7 +1644,13 @@ export default {
 	      mainSource.includes('const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === \'true\';') &&
 	      mainSource.includes('OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT') &&
 	      mainSource.includes('OPENAI_ALLOW_RENDERER_STARTUP_PROBE') &&
+	      mainSource.includes('OPENAI_EGRESS_GUARD_ENABLED') &&
 	      mainSource.includes('renderer_startup_probe_disabled') &&
+	      mainSource.includes('function installOpenAiEgressGuard') &&
+	      mainSource.includes('function openAiEgressGuardSnapshot') &&
+	      mainSource.includes('unscoped_openai_egress_blocked') &&
+	      mainSource.includes("api.post('/api/openai/egress-guard/probe'") &&
+	      mainSource.includes('await withOpenAiEgressAllowed(spendDecision') &&
 	      mainSource.includes("kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session'") &&
 	      mainSource.includes("api.get('/api/openai/spend-guard'") &&
 	      mainSource.includes("api.post('/api/openai/spend-guard/check'") &&
@@ -1626,7 +1669,8 @@ export default {
 	      envExampleSource.includes('JAVIS_OPENAI_DAILY_REQUEST_LIMIT=0') &&
 	      envExampleSource.includes('JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0') &&
 	      envExampleSource.includes('JAVIS_OPENAI_ALLOW_AUTOPILOT=false') &&
-	      envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false');
+	      envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false') &&
+	      envExampleSource.includes('JAVIS_OPENAI_EGRESS_GUARD=true');
     out.push(
 	      hasOpenAiSpendGuardStatic
 	        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls are guarded, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')

@@ -3710,7 +3710,8 @@ function printOpenAiSpendGuard(result) {
   console.log(`Mode: ${guard.mode || 'off'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · daily=${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · remaining=${remaining.total ?? 0}`);
   console.log(`Unattended: ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · manual=${counts.manual || 0} · blocked=${counts.blocked || 0}`);
   console.log(`Autopilot cloud: ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · renderer startup probe: ${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'}`);
-  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'}`);
+  console.log(`Egress guard: ${guard.egressGuardEnabled ? 'on' : 'off'} · ${guard.egressGuardMode || '-'}`);
+  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'}`);
   console.log('\nTo intentionally spend later: set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase for one request.');
   if (recent.length) {
     console.log('\nRecent OpenAI guard events:');
@@ -3844,7 +3845,7 @@ function printOvernight(result) {
   if (overnight.summary) console.log(`Summary: ${compact(overnight.summary, 520)}`);
   console.log(`Resident: loaded=${overnight.resident?.loaded ? 'yes' : 'no'} matchesProject=${overnight.resident?.matchesProject ? 'yes' : 'no'}${overnight.resident?.pid ? ` pid=${overnight.resident.pid}` : ''}`);
   console.log(`Keep-awake: active=${keepAwake.active ? 'yes' : 'no'} running=${keepAwake.running ? 'yes' : 'no'} · ${keepAwake.plan?.commandLine || 'npm run keepawake:start'}`);
-  console.log(`OpenAI: mode=${spendGuard.mode || '-'} hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} daily=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit ?? 0} · blocked=${spendGuard.counts?.blocked || 0}`);
+  console.log(`OpenAI: mode=${spendGuard.mode || '-'} hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} egress=${spendGuard.egressGuardEnabled ? 'on' : 'off'} daily=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit ?? 0} · blocked=${spendGuard.counts?.blocked || 0}`);
   console.log(`Voice: ${overnight.voice?.standby?.mode || '-'} · provider=${overnight.voice?.health?.status || '-'}`);
   console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · canActNow=${autopilot.canActNow ? 'yes' : 'no'}${autopilot.nextWait ? ` · ${compact(autopilot.nextWait, 160)}` : ''}`);
   console.log(`Work: ${compact(progress.spokenSummary || 'No work progress available.', 320)}`);
