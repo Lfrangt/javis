@@ -265,8 +265,11 @@ const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(pro
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
 const LEARNING_AUTO_MEMORY_ENABLED = process.env.JAVIS_LEARNING_AUTO_MEMORY !== 'false';
 const LEARNING_AUTO_MEMORY_MIN_EVENTS = Math.max(5, Math.min(200, Number(process.env.JAVIS_LEARNING_AUTO_MEMORY_MIN_EVENTS || 20)));
-const OPENAI_CLOUD_MODE = normalizeOpenAiCloudMode(process.env.JAVIS_OPENAI_CLOUD_MODE || process.env.JAVIS_CLOUD_CALL_MODE || 'manual');
-const OPENAI_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_DAILY_REQUEST_LIMIT, 20, 0, 10000);
+const OPENAI_HARD_SPEND_LOCK = process.env.JAVIS_OPENAI_HARD_SPEND_LOCK !== 'false';
+const OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE = process.env.JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE !== 'false';
+const OPENAI_SPEND_CONFIRMATION_PHRASE = String(process.env.JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE || 'SPEND OPENAI').trim();
+const OPENAI_CLOUD_MODE = normalizeOpenAiCloudMode(process.env.JAVIS_OPENAI_CLOUD_MODE || process.env.JAVIS_CLOUD_CALL_MODE || 'off');
+const OPENAI_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_DAILY_REQUEST_LIMIT, 0, 0, 10000);
 const OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT, 0, 0, 10000);
 const OPENAI_ALLOW_AUTOPILOT = process.env.JAVIS_OPENAI_ALLOW_AUTOPILOT === 'true';
 const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = process.env.JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE === 'true';
@@ -2520,11 +2523,14 @@ function openAiSpendGuardSnapshot() {
   return {
     version: 1,
     mode: OPENAI_CLOUD_MODE,
+    hardSpendLock: OPENAI_HARD_SPEND_LOCK,
     file: OPENAI_SPEND_GUARD_FILE,
     dailyRequestLimit: OPENAI_DAILY_REQUEST_LIMIT,
     unattendedDailyRequestLimit: OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT,
     allowAutopilotCloud: OPENAI_ALLOW_AUTOPILOT,
     allowRendererStartupProbe: OPENAI_ALLOW_RENDERER_STARTUP_PROBE,
+    requireSpendConfirmationPhrase: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
+    spendConfirmationPhrase: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE ? 'configured' : 'not_required',
     autopilotRequiresExplicitEnv: true,
     autopilotEnabled: AUTOPILOT_ENABLED,
     day: state.day,
@@ -2536,7 +2542,10 @@ function openAiSpendGuardSnapshot() {
     recent: state.events.slice(-10).reverse(),
     safety: {
       unattendedCloudDefaultBlocked: OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT === 0 && !OPENAI_ALLOW_AUTOPILOT,
+      zeroBudgetDefault: OPENAI_DAILY_REQUEST_LIMIT === 0,
       manualOnlyByDefault: OPENAI_CLOUD_MODE === 'manual',
+      hardSpendLockDefault: OPENAI_HARD_SPEND_LOCK,
+      confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
       off: OPENAI_CLOUD_MODE === 'off',
     },
   };
@@ -2547,10 +2556,13 @@ function evaluateOpenAiSpendGuard(options = {}) {
   const source = compactRecordText(options.source || 'unspecified', 80);
   const model = compactRecordText(options.model || '', 120);
   const manual = isManualOpenAiSource(source, { ...options, kind });
+  const confirmed = openAiSpendConfirmationIsValid(options);
   const state = readOpenAiSpendState();
   const reasons = [];
 
+  if (OPENAI_HARD_SPEND_LOCK) reasons.push('hard_spend_lock_enabled');
   if (OPENAI_CLOUD_MODE === 'off') reasons.push('cloud_mode_off');
+  if (OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE && !confirmed) reasons.push('explicit_spend_confirmation_required');
   if (!manual && OPENAI_CLOUD_MODE !== 'auto') reasons.push('manual_mode_blocks_unattended');
   if (!manual && !OPENAI_ALLOW_AUTOPILOT) reasons.push('autopilot_cloud_disabled');
   if (kind === 'realtime_provider_probe' && /^renderer(_|$)|renderer_startup/.test(source.toLowerCase()) && !OPENAI_ALLOW_RENDERER_STARTUP_PROBE) {
@@ -2573,6 +2585,9 @@ function evaluateOpenAiSpendGuard(options = {}) {
     source,
     model,
     manual,
+    confirmed,
+    hardSpendLock: OPENAI_HARD_SPEND_LOCK,
+    confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
     mode: OPENAI_CLOUD_MODE,
     reasons,
   };
@@ -2605,19 +2620,50 @@ function truthyRequestValue(value) {
   return value === true || ['true', '1', 'yes', 'y', 'confirm', 'confirmed'].includes(String(value || '').trim().toLowerCase());
 }
 
+function openAiSpendConfirmationPhraseFromOptions(options = {}) {
+  return String(
+    options.confirmOpenAiSpendPhrase ||
+      options.openAiSpendPhrase ||
+      options.spendConfirmationPhrase ||
+      options.confirmationPhrase ||
+      '',
+  ).trim();
+}
+
+function openAiSpendConfirmationPhraseMatches(options = {}) {
+  if (!OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE) return true;
+  const expected = OPENAI_SPEND_CONFIRMATION_PHRASE;
+  if (!expected) return false;
+  return openAiSpendConfirmationPhraseFromOptions(options) === expected;
+}
+
+function openAiSpendConfirmationIsValid(options = {}) {
+  const requested = truthyRequestValue(options.confirmOpenAiSpend || options.confirmCloud);
+  if (!requested) return false;
+  return openAiSpendConfirmationPhraseMatches(options);
+}
+
 function openAiSpendConfirmationSnapshot(options = {}) {
   const kind = compactRecordText(options.kind || 'openai', 80);
   const source = compactRecordText(options.source || 'unspecified', 80);
   const manual = isManualOpenAiSource(source, { ...options, kind });
-  const confirmed = truthyRequestValue(options.confirmOpenAiSpend || options.confirmCloud);
+  const requested = truthyRequestValue(options.confirmOpenAiSpend || options.confirmCloud);
+  const phraseMatched = openAiSpendConfirmationPhraseMatches(options);
+  const confirmed = requested && phraseMatched;
   return {
     version: 1,
     required: Boolean(options.required ?? kind === 'realtime_provider_probe'),
+    requested,
     confirmed,
+    hardSpendLock: OPENAI_HARD_SPEND_LOCK,
+    phraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
+    phraseMatched,
     manual,
     kind,
     source,
-    prompt: 'This OpenAI Realtime provider probe can consume API quota. Confirm with confirmOpenAiSpend:true, CUI RUN, or --confirm-openai-spend.',
+    prompt: OPENAI_HARD_SPEND_LOCK
+      ? 'OpenAI spending is hard-locked. To spend, set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set a positive daily limit, restart JAVIS, then confirm the one request with the configured spend phrase.'
+      : 'This OpenAI call can consume API quota. Confirm one request with confirmOpenAiSpend:true plus confirmOpenAiSpendPhrase, or type the exact spend phrase in the CUI.',
   };
 }
 
@@ -26892,7 +26938,11 @@ function realtimeProviderProbeControlPayload(result = {}, execute = false) {
       ? {
         version: Number(confirmation.version || 0),
         required: Boolean(confirmation.required),
+        requested: Boolean(confirmation.requested),
         confirmed: Boolean(confirmation.confirmed),
+        hardSpendLock: Boolean(confirmation.hardSpendLock),
+        phraseRequired: Boolean(confirmation.phraseRequired),
+        phraseMatched: Boolean(confirmation.phraseMatched),
         manual: Boolean(confirmation.manual),
         kind: compactRecordText(confirmation.kind || '', 80),
         source: compactRecordText(confirmation.source || '', 80),
@@ -36821,7 +36871,7 @@ function autopilotEligibilityDecision(action) {
     return {
       executable: false,
       reason: 'openai_spend_confirmation_required',
-      detail: 'Realtime provider probing can consume OpenAI quota, so it remains manual-only and requires one-request explicit spend confirmation.',
+      detail: 'Realtime provider probing can consume OpenAI quota, so it remains manual-only, hard-spend-locked by default, and requires one-request phrase confirmation after the lock is disabled.',
       freshness: compactFreshness,
     };
   }
@@ -43785,7 +43835,7 @@ function realtimeRendererDogfoodPreflight(options = {}) {
       scriptPreview: 'npm run dogfood:realtime-renderer',
       scriptExecute: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
       scriptAcceptanceOnly: 'npm run dogfood:realtime-renderer -- --acceptance-only --no-save-archive',
-      providerProbe: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
+      providerProbe: 'npm run config -- --print-realtime-provider-probe',
       providerProbePreview: 'npm run config -- --print-realtime-provider-probe',
       cui: 'npm run config -> R. Run renderer Realtime dogfood',
       monitor: 'npm run config -> V. Watch Realtime voice evidence',
@@ -43918,8 +43968,8 @@ function realtimeProviderProbeSnapshot(options = {}) {
     next: !OPENAI_API_KEY
       ? 'Add OPENAI_API_KEY to .env and restart JAVIS.'
       : issue?.next || (providerReady
-        ? 'The provider lane is ready; start the mic-confirmed live Realtime dogfood only when the user is present.'
-        : 'Preview with npm run dogfood:realtime-provider-probe, then explicitly run npm run dogfood:realtime-provider-probe:run before opening a live microphone session.'),
+        ? 'The provider lane is ready; keep OpenAI spend locked unless the user is present and explicitly unlocks a one-request check.'
+        : 'Preview with npm run dogfood:realtime-provider-probe. Do not run a provider check until the hard spend lock is disabled and the exact spend phrase is typed.'),
     result,
     issue,
     createdAt: realtimeProviderProbeState.createdAt,
@@ -43929,14 +43979,14 @@ function realtimeProviderProbeSnapshot(options = {}) {
     events: (realtimeProviderProbeState.events || []).slice(-20),
     commands: {
       preview: 'npm run config -- --print-realtime-provider-probe',
-      execute: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
+      execute: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend --confirm-openai-spend-phrase "<phrase>"',
       liveVoice: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
     },
     endpoint: {
       method: 'POST',
       path: '/api/realtime/provider/probe',
       previewBody: { execute: false },
-      executeBody: { execute: true, confirmOpenAiSpend: true },
+      executeBody: { execute: true, confirmOpenAiSpend: true, confirmOpenAiSpendPhrase: '<type spend phrase>' },
     },
     safety: {
       startsMicrophone: false,
@@ -43962,12 +44012,20 @@ async function startRealtimeProviderProbe(options = {}) {
     source,
     confirmOpenAiSpend: options.confirmOpenAiSpend,
     confirmCloud: options.confirmCloud,
+    confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase,
+    openAiSpendPhrase: options.openAiSpendPhrase,
+    spendConfirmationPhrase: options.spendConfirmationPhrase,
   });
   const spendPreview = evaluateOpenAiSpendGuard({
     kind: 'realtime_provider_probe',
     source,
     model: models.realtime,
     isProviderProbe: true,
+    confirmOpenAiSpend: options.confirmOpenAiSpend,
+    confirmCloud: options.confirmCloud,
+    confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase,
+    openAiSpendPhrase: options.openAiSpendPhrase,
+    spendConfirmationPhrase: options.spendConfirmationPhrase,
     reserve: false,
     recordBlocked: false,
   });
@@ -43989,7 +44047,7 @@ async function startRealtimeProviderProbe(options = {}) {
       method: 'POST',
       path: '/api/realtime/provider/probe',
       previewBody: { execute: false },
-      executeBody: { execute: true, confirmOpenAiSpend: true },
+      executeBody: { execute: true, confirmOpenAiSpend: true, confirmOpenAiSpendPhrase: '<type spend phrase>' },
     },
     detail: {
       action: 'probe',
@@ -44013,7 +44071,7 @@ async function startRealtimeProviderProbe(options = {}) {
       ok: false,
       status: 428,
       executed: false,
-      output: 'OpenAI spend confirmation required before running the no-mic Realtime provider probe. Re-run with confirmOpenAiSpend:true, type RUN in the CUI, or pass --confirm-openai-spend.',
+      output: 'OpenAI spend confirmation required before running the no-mic Realtime provider probe. Unlock the hard spend lock first, then confirm one request with confirmOpenAiSpend:true plus the configured spend phrase.',
     };
   }
   if (!OPENAI_API_KEY) {
@@ -44068,6 +44126,7 @@ async function startRealtimeProviderProbe(options = {}) {
   const dispatch = await dispatchRendererDogfoodCommand({
     ...preview.detail,
     confirmOpenAiSpend: true,
+    confirmOpenAiSpendPhrase: openAiSpendConfirmationPhraseFromOptions(options),
   });
   if (!dispatch.ok) {
     recordRealtimeProviderProbeEvent({ runId, type: 'error', status: 'error', detail: dispatch.error || 'Renderer dispatch failed.' });
@@ -44246,11 +44305,11 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
     {
       id: 'probe_provider_no_mic',
       label: 'Probe Realtime provider without mic',
-      command: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
+      command: 'npm run config -- --print-realtime-provider-probe',
       endpoint: '/api/realtime/provider/probe',
       startsMicrophone: false,
       requiresMicConfirmation: false,
-      nextAction: 'Verify the API key, project quota, model, voice, and Realtime endpoint before opening the microphone.',
+      nextAction: 'Preview provider readiness. Only run the paid provider check after disabling the hard spend lock and typing the spend phrase.',
     },
     {
       id: 'start_live_voice',
@@ -44297,7 +44356,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
   const commands = {
     pack: 'npm run config -- --print-realtime-dogfood-pack',
     preflight: 'npm run dogfood:realtime-renderer',
-    providerProbe: 'npm run config -- --run-realtime-provider-probe --confirm-openai-spend',
+    providerProbe: 'npm run config -- --print-realtime-provider-probe',
     start: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
     startRequireAcceptance: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
     monitor: 'npm run config -> V. Watch Realtime voice evidence',
@@ -44344,7 +44403,7 @@ function realtimeDogfoodLiveDrillPackSnapshot(options = {}) {
     api: {
       pack: { method: 'GET', path: '/api/realtime/dogfood/pack' },
       preflight: { method: 'GET', path: '/api/realtime/dogfood/renderer' },
-      providerProbe: { method: 'POST', path: '/api/realtime/provider/probe', body: { execute: true } },
+      providerProbe: { method: 'POST', path: '/api/realtime/provider/probe', body: { execute: false } },
       start: {
         method: 'POST',
         path: '/api/realtime/dogfood/renderer/start',
@@ -47973,7 +48032,20 @@ function extractOutputText(payload) {
   return chunks.join('\n').trim();
 }
 
-async function callOpenAIResponses({ model, instructions, input, imageDataUrl, maxOutputTokens = 700, signal, source = 'unspecified' }) {
+async function callOpenAIResponses({
+  model,
+  instructions,
+  input,
+  imageDataUrl,
+  maxOutputTokens = 700,
+  signal,
+  source = 'unspecified',
+  confirmOpenAiSpend,
+  confirmCloud,
+  confirmOpenAiSpendPhrase,
+  openAiSpendPhrase,
+  spendConfirmationPhrase,
+}) {
   if (!OPENAI_API_KEY) {
     return 'OpenAI API key is not configured. Add OPENAI_API_KEY to .env and restart JAVIS.';
   }
@@ -47982,6 +48054,11 @@ async function callOpenAIResponses({ model, instructions, input, imageDataUrl, m
     kind: imageDataUrl ? 'responses_vision' : 'responses_text',
     source,
     model,
+    confirmOpenAiSpend,
+    confirmCloud,
+    confirmOpenAiSpendPhrase,
+    openAiSpendPhrase,
+    spendConfirmationPhrase,
   });
   const userContent = [{ type: 'input_text', text: input }];
   if (imageDataUrl) {
@@ -53159,6 +53236,9 @@ function readinessSnapshot(options = {}) {
   const openAiSpendGuard = openAiSpendGuardSnapshot();
   const openAiSpendCounts = openAiSpendGuard.counts || {};
   const openAiSpendGuardLoose =
+    !openAiSpendGuard.hardSpendLock ||
+    openAiSpendGuard.mode !== 'off' ||
+    openAiSpendGuard.dailyRequestLimit > 0 ||
     openAiSpendGuard.mode === 'auto' ||
     openAiSpendGuard.allowAutopilotCloud ||
     openAiSpendGuard.allowRendererStartupProbe ||
@@ -53203,10 +53283,10 @@ function readinessSnapshot(options = {}) {
       'openai_spend_guard',
       'OpenAI spend guard',
       openAiSpendGuardLoose ? 'warning' : 'ready',
-      `Cloud mode ${openAiSpendGuard.mode}; today ${openAiSpendCounts.total || 0}/${openAiSpendGuard.dailyRequestLimit} total, ${openAiSpendCounts.unattended || 0}/${openAiSpendGuard.unattendedDailyRequestLimit} unattended, ${openAiSpendCounts.blocked || 0} blocked; autopilot cloud ${openAiSpendGuard.allowAutopilotCloud ? 'allowed' : 'blocked'}.`,
+      `Cloud mode ${openAiSpendGuard.mode}; hard lock ${openAiSpendGuard.hardSpendLock ? 'on' : 'off'}; phrase ${openAiSpendGuard.requireSpendConfirmationPhrase ? 'required' : 'off'}; today ${openAiSpendCounts.total || 0}/${openAiSpendGuard.dailyRequestLimit} total, ${openAiSpendCounts.unattended || 0}/${openAiSpendGuard.unattendedDailyRequestLimit} unattended, ${openAiSpendCounts.blocked || 0} blocked; autopilot cloud ${openAiSpendGuard.allowAutopilotCloud ? 'allowed' : 'blocked'}.`,
       openAiSpendGuardLoose
-        ? 'For maximum cost safety use JAVIS_OPENAI_CLOUD_MODE=manual, JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_ALLOW_AUTOPILOT=false, and JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false.'
-        : 'Manual OpenAI calls are allowed within the daily cap; unattended/background calls are blocked by default.',
+        ? 'For maximum cost safety use JAVIS_OPENAI_HARD_SPEND_LOCK=true, JAVIS_OPENAI_CLOUD_MODE=off, JAVIS_OPENAI_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_ALLOW_AUTOPILOT=false, and JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false.'
+        : 'Zero-spend mode is active: OpenAI cloud calls are hard-locked, daily cap is 0, and unattended/background calls are blocked by default.',
       { spendGuard: openAiSpendGuard },
     ),
     readinessItem(
@@ -60384,6 +60464,24 @@ function startApiServer() {
     res.json({ spendGuard: openAiSpendGuardSnapshot() });
   });
 
+  api.post('/api/openai/spend-guard/check', (req, res) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    res.json({
+      decision: evaluateOpenAiSpendGuard({
+        kind: body.kind || 'responses_text',
+        source: body.source || 'spend_guard_check',
+        model: body.model || models.fast,
+        confirmOpenAiSpend: body.confirmOpenAiSpend,
+        confirmCloud: body.confirmCloud,
+        confirmOpenAiSpendPhrase: body.confirmOpenAiSpendPhrase,
+        openAiSpendPhrase: body.openAiSpendPhrase,
+        spendConfirmationPhrase: body.spendConfirmationPhrase,
+        reserve: false,
+        recordBlocked: false,
+      }),
+    });
+  });
+
   api.get('/api/status', (_req, res) => {
     const readiness = readinessSnapshot({ includeRecentAudit: true });
     const presence = presenceStateSnapshot({ readiness, limit: 5 });
@@ -61756,6 +61854,13 @@ function startApiServer() {
       ? String(req.query.source || 'renderer_provider_probe').slice(0, 80)
       : String(req.query.source || 'renderer').slice(0, 80);
     const confirmOpenAiSpend = truthyRequestValue(req.query.confirmOpenAiSpend || req.query.confirmCloud);
+    const confirmOpenAiSpendPhrase = String(
+      req.query.confirmOpenAiSpendPhrase ||
+        req.query.openAiSpendPhrase ||
+        req.query.spendConfirmationPhrase ||
+        req.query.confirmationPhrase ||
+        '',
+    ).slice(0, 160);
     const sessionId = isProviderProbe ? runId : conversationState.sessionId;
     const offerBytes = Buffer.byteLength(String(req.body || ''), 'utf8');
     const recordProviderAttempt = (payload = {}) => {
@@ -61795,6 +61900,7 @@ function startApiServer() {
       kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session',
       source,
       confirmOpenAiSpend,
+      confirmOpenAiSpendPhrase,
       required: isProviderProbe,
     });
     if (spendConfirmation.required && !spendConfirmation.confirmed) {
@@ -61817,6 +61923,7 @@ function startApiServer() {
         model: models.realtime,
         isProviderProbe,
         confirmOpenAiSpend,
+        confirmOpenAiSpendPhrase,
         confirmCloud: confirmOpenAiSpend,
       });
     } catch (error) {

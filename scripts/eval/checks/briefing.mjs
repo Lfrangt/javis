@@ -283,9 +283,10 @@ export default {
           providerProbeResult.executed === false &&
 	          providerProbeResult.startsMicrophone === false &&
 	          providerProbeResult.requiresMicConfirmation === false &&
-	          providerProbeResult.endpoint?.path === '/api/realtime/provider/probe' &&
-	          providerProbeResult.endpoint?.executeBody?.confirmOpenAiSpend === true &&
-	          providerProbeResult.requiresOpenAiSpendConfirmation === true &&
+		          providerProbeResult.endpoint?.path === '/api/realtime/provider/probe' &&
+		          providerProbeResult.endpoint?.executeBody?.confirmOpenAiSpend === true &&
+		          providerProbeResult.endpoint?.executeBody?.confirmOpenAiSpendPhrase === '<type spend phrase>' &&
+		          providerProbeResult.requiresOpenAiSpendConfirmation === true &&
 	          providerProbeResult.openAiSpendConfirmation?.required === true &&
 	          String(providerProbeNext.output || '').includes('Preview no-mic Realtime provider probe') &&
 	          String(providerProbeNext.output || '').includes('Preview mode: no provider request was sent')

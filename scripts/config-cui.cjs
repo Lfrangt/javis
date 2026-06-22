@@ -50,6 +50,7 @@ function positionalText() {
     '--action-id',
     '--agent',
     '--arguments',
+    '--confirm-openai-spend-phrase',
     '--id',
     '--instruction',
     '--job-limit',
@@ -58,6 +59,7 @@ function positionalText() {
     '--max-steps',
     '--message',
     '--query',
+    '--openai-spend-phrase',
     '--route-id',
     '--server',
     '--source',
@@ -283,7 +285,7 @@ async function printStatus() {
     if (status.api?.openAiSpendGuard) {
       const guard = status.api.openAiSpendGuard;
       const counts = guard.counts || {};
-      console.log(`OpenAI spend guard: mode ${guard.mode || 'manual'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? '-'} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
+      console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
     }
     if (status.voiceHealth?.kind === 'quota_or_rate_limit') {
       console.log(`OpenAI provider: quota/rate-limit · ${compact(status.voiceHealth.next || status.voiceHealth.summary || '', 180)}`);
@@ -404,6 +406,7 @@ async function printStatus() {
   console.log('\nActions');
   console.log('1. Set / replace OpenAI API key');
   console.log('1B. Show OpenAI API billing/quota recovery');
+  console.log('SG. Show OpenAI spend guard');
   console.log('2. Open .env');
   console.log('M. Open Microphone settings');
   console.log('3. Open Screen Recording settings');
@@ -1368,7 +1371,7 @@ async function showPermissionMatrix() {
   if (status.api?.openAiSpendGuard) {
     const guard = status.api.openAiSpendGuard;
     const counts = guard.counts || {};
-    console.log(`OpenAI spend guard: mode ${guard.mode || 'manual'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? '-'} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
+    console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
   }
   console.log('Note: macOS privacy panes still require your manual toggle. JAVIS can open the pane and verify evidence after you grant it.');
 
@@ -3621,11 +3624,12 @@ function printRealtimeProviderProbe(result) {
   console.log(`Provider: ${probe.providerReady ? 'ready' : 'not-ready'}${providerResult.statusCode ? ` · HTTP ${providerResult.statusCode}` : ''}${providerResult.durationMs ? ` · ${providerResult.durationMs}ms` : ''}`);
   if (probe.spendGuard || result?.spendGuard) {
     const guard = probe.spendGuard || result.spendGuard;
-    console.log(`Spend guard: ${guard.allowed ? 'allowed' : 'blocked'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
+    const state = guard.state || {};
+    console.log(`Spend guard: ${guard.allowed ? 'allowed' : 'blocked'} · mode ${state.mode || guard.mode || '-'} · hard lock ${state.hardSpendLock ? 'on' : 'off'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
   }
   const confirmation = result?.openAiSpendConfirmation || probe.openAiSpendConfirmation;
   if (confirmation?.required) {
-    console.log(`Spend confirmation: ${confirmation.confirmed ? 'confirmed' : 'required'} · ${compact(confirmation.prompt || '', 220)}`);
+    console.log(`Spend confirmation: ${confirmation.confirmed ? 'confirmed' : 'required'} · phrase ${confirmation.phraseRequired ? (confirmation.phraseMatched ? 'matched' : 'required') : 'off'} · hard lock ${confirmation.hardSpendLock ? 'on' : 'off'} · ${compact(confirmation.prompt || '', 220)}`);
   }
   if (probe.summary) console.log(`Summary: ${compact(probe.summary, 300)}`);
   if (probe.next) console.log(`Next: ${compact(probe.next, 300)}`);
@@ -3691,6 +3695,34 @@ async function showRealtimeProviderRecoveryFromCui(rl) {
     return;
   }
   await setupAction('open_openai_platform_billing');
+}
+
+function printOpenAiSpendGuard(result) {
+  const guard = result?.spendGuard || result || {};
+  const counts = guard.counts || {};
+  const remaining = guard.remaining || {};
+  const safety = guard.safety || {};
+  const recent = Array.isArray(guard.recent) ? guard.recent : [];
+  console.log('JAVIS OpenAI Spend Guard');
+  console.log('========================');
+  console.log(`Mode: ${guard.mode || 'off'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · daily=${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · remaining=${remaining.total ?? 0}`);
+  console.log(`Unattended: ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · manual=${counts.manual || 0} · blocked=${counts.blocked || 0}`);
+  console.log(`Autopilot cloud: ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · renderer startup probe: ${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'}`);
+  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'}`);
+  console.log('\nTo intentionally spend later: set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase for one request.');
+  if (recent.length) {
+    console.log('\nRecent OpenAI guard events:');
+    for (const event of recent.slice(0, 8)) {
+      const reasons = Array.isArray(event.reasons) && event.reasons.length ? ` · ${event.reasons.join(', ')}` : '';
+      console.log(`- ${event.at || '-'} · ${event.allowed ? 'allowed' : 'blocked'} · ${event.kind || '-'} · ${event.source || '-'}${reasons}`);
+    }
+  }
+}
+
+async function showOpenAiSpendGuard() {
+  const result = await request('/api/openai/spend-guard');
+  printOpenAiSpendGuard(result);
+  return result;
 }
 
 function printSetupRecoveryBundle(result) {
@@ -3880,6 +3912,7 @@ async function showRealtimeProviderProbe(options = {}) {
           execute: true,
           source: options.source || 'cui',
           confirmOpenAiSpend: options.confirmOpenAiSpend === true,
+          confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase || '',
         },
       })
     : await request('/api/realtime/provider/probe');
@@ -3908,12 +3941,23 @@ async function runRealtimeProviderProbeFromCui(rl) {
     console.log('\nUnexpected safety state: probe claims it starts microphone. Refusing.');
     return;
   }
-  const answer = (await rl.question('\nRun no-mic provider probe now? Type RUN to call OpenAI Realtime without microphone capture: ')).trim();
-  if (answer !== 'RUN') {
+  const confirmation = preview.openAiSpendConfirmation || preview.probe?.openAiSpendConfirmation || {};
+  if (confirmation.hardSpendLock) {
+    console.log('\nNo provider probe started. OpenAI hard spend lock is on; use SG/openai:spend to review the guard before intentionally unlocking cloud spend.');
+    return;
+  }
+  const phrase = getEnvValue('JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE') || 'SPEND OPENAI';
+  const answer = (await rl.question(`\nRun no-mic provider probe now? Type ${phrase} to spend one OpenAI API request: `)).trim();
+  if (answer !== phrase) {
     console.log('\nNo provider probe started.');
     return;
   }
-  await showRealtimeProviderProbe({ run: true, confirmOpenAiSpend: true, source: 'cui' });
+  await showRealtimeProviderProbe({
+    run: true,
+    confirmOpenAiSpend: true,
+    confirmOpenAiSpendPhrase: answer,
+    source: 'cui',
+  });
 }
 
 function printRealtimeDogfoodPack(result) {
@@ -4440,12 +4484,23 @@ async function main() {
 
   if (process.argv.includes('--run-realtime-provider-probe')) {
     const confirmed = process.argv.includes('--confirm-openai-spend') || process.argv.includes('--confirm-cloud-spend');
+    const confirmOpenAiSpendPhrase = argvValue('--confirm-openai-spend-phrase') || argvValue('--openai-spend-phrase');
     if (!confirmed) {
       await showRealtimeProviderProbe();
-      console.log('\nNo OpenAI call was made. Re-run with --confirm-openai-spend to spend one manual provider-probe request.');
+      console.log('\nNo OpenAI call was made. Re-run interactively and type the spend phrase if you intentionally want one provider-probe request.');
       return;
     }
-    await showRealtimeProviderProbe({ run: true, confirmOpenAiSpend: true, source: 'cui_cli' });
+    if (!confirmOpenAiSpendPhrase) {
+      await showRealtimeProviderProbe();
+      console.log('\nNo OpenAI call was made. --confirm-openai-spend now also requires --confirm-openai-spend-phrase "<phrase>", and the hard spend lock must be off.');
+      return;
+    }
+    await showRealtimeProviderProbe({
+      run: true,
+      confirmOpenAiSpend: true,
+      confirmOpenAiSpendPhrase,
+      source: 'cui_cli',
+    });
     return;
   }
 
@@ -4749,6 +4804,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-openai-spend-guard') || process.argv.includes('--openai-spend-guard')) {
+    await showOpenAiSpendGuard();
+    return;
+  }
+
   if (!process.stdin.isTTY) {
     await printStatus();
     return;
@@ -4761,6 +4821,7 @@ async function main() {
       const answer = (await rl.question('\nChoose: ')).trim().toLowerCase();
       if (answer === '1') await setOpenAiKey(rl);
       else if (answer === '1b' || answer === 'billing' || answer === 'quota' || answer === 'realtime recovery') await showRealtimeProviderRecoveryFromCui(rl);
+      else if (answer === 'sg' || answer === 'spend' || answer === 'spend guard' || answer === 'openai spend') await showOpenAiSpendGuard();
       else if (answer === '2') await setupAction('prepare_env_file');
       else if (answer === 'm' || answer === 'mic' || answer === 'microphone') await setupAction('open_microphone_settings');
       else if (answer === '3') await setupAction('open_screen_settings');
