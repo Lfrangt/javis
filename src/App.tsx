@@ -421,6 +421,14 @@ type PetTrafficLight = {
   pulse: 'off' | 'slow' | 'live' | 'attention' | string
   label: string
   reason: string
+  meaning?: string
+  nextAction?: string
+  legend?: Array<{
+    color: 'red' | 'yellow' | 'green' | string
+    label: string
+    meaning: string
+    nextAction: string
+  }>
   accessibleLabel: string
   startsMicrophone: boolean
   passiveByDefault: boolean
@@ -3565,7 +3573,7 @@ function App() {
   const petStatusLabel = talking ? 'Hearing you' : compactPushToTalk ? 'Hold to talk' : petTrafficLight?.label || petMoodLabel(mood, presence, false)
   const petStatusDetail = compactPushToTalk
     ? 'Hold the capsule or press Space. Release to send.'
-    : petTrafficLight?.reason || presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
+    : petTrafficLight?.nextAction || petTrafficLight?.reason || presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
   const petAccessibleLabel = compactPushToTalk
     ? `${petStatusLabel}. ${petStatusDetail}`
     : petTrafficLight?.accessibleLabel || `${petStatusLabel}. ${petStatusDetail}`

@@ -642,6 +642,7 @@ export default {
       : [];
     const queue = Array.isArray(p.queue) ? p.queue : [];
     const traffic = p.pet?.trafficLight || {};
+    const trafficLegend = Array.isArray(traffic.legend) ? traffic.legend : [];
     const trafficColors = new Set(['red', 'yellow', 'green']);
     const trafficStates = new Set(['idle', 'fallback_ready', 'watching', 'waking', 'connecting', 'listening', 'working', 'attention', 'blocked']);
     const trafficUrgency = new Set(['quiet', 'ambient', 'active', 'interrupt']);
@@ -698,8 +699,21 @@ export default {
         typeof traffic.sourceMode === 'string' &&
         typeof traffic.label === 'string' &&
         typeof traffic.reason === 'string' &&
+        typeof traffic.meaning === 'string' &&
+        traffic.meaning.length > 0 &&
+        typeof traffic.nextAction === 'string' &&
+        traffic.nextAction.length > 0 &&
+        trafficLegend.length === 3 &&
+        ['green', 'yellow', 'red'].every((color) => trafficLegend.some((item) =>
+          item.color === color &&
+          typeof item.meaning === 'string' &&
+          item.meaning.length > 0 &&
+          typeof item.nextAction === 'string' &&
+          item.nextAction.length > 0,
+        )) &&
         typeof traffic.accessibleLabel === 'string' &&
         traffic.accessibleLabel.includes('JAVIS') &&
+        traffic.accessibleLabel.includes('Next:') &&
         traffic.startsMicrophone === false &&
         traffic.passiveByDefault === true &&
         voiceFallback.available === true &&

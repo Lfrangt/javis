@@ -34552,6 +34552,27 @@ function petPresenceStatusSnapshot(presence = {}) {
   };
 }
 
+const PET_TRAFFIC_LIGHT_LEGEND = [
+  {
+    color: 'green',
+    label: 'Available',
+    meaning: 'JAVIS is passive, watching or standing by, and does not need attention.',
+    nextAction: 'Speak, press Alt+Space, or click the pet when you want help.',
+  },
+  {
+    color: 'yellow',
+    label: 'Active',
+    meaning: 'JAVIS is listening, waking, connecting, working, or using a local fallback.',
+    nextAction: 'Let it continue, or click the pet to talk, stop, or open local input depending on the current state.',
+  },
+  {
+    color: 'red',
+    label: 'Attention',
+    meaning: 'JAVIS needs setup, approval, recovery, or another user decision.',
+    nextAction: 'Open the pet or CUI to resolve the exact blocker.',
+  },
+];
+
 function petTrafficLightSnapshot(options = {}) {
   const presence = options.presence || {};
   const mode = String(presence.mode || 'standby');
@@ -34570,6 +34591,9 @@ function petTrafficLightSnapshot(options = {}) {
     pulse: 'off',
     label: presence.label || 'Standby',
     reason,
+    meaning: 'JAVIS is passive and ready for you to summon it.',
+    nextAction: reason,
+    legend: PET_TRAFFIC_LIGHT_LEGEND,
     accessibleLabel: '',
     startsMicrophone: false,
     passiveByDefault: true,
@@ -34583,6 +34607,8 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'interrupt',
       pulse: 'attention',
       label: presence.label || 'Setup blocked',
+      meaning: 'Red means JAVIS needs setup or recovery before the normal voice path is reliable.',
+      nextAction: reason,
     });
   } else if (mode === 'fallback_ready') {
     Object.assign(base, {
@@ -34593,6 +34619,8 @@ function petTrafficLightSnapshot(options = {}) {
       pulse: 'off',
       label: presence.label || 'Local fallback ready',
       reason: 'Realtime voice is recovering; local no-mic input is ready.',
+      meaning: 'Yellow means the premium Realtime lane is not the primary path, but local no-mic input is available.',
+      nextAction: 'Click the pet to open local input, or run a no-mic Realtime provider probe from CUI.',
     });
   } else if (mode === 'needs_attention' || intervention.shouldNotify) {
     Object.assign(base, {
@@ -34602,6 +34630,8 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'interrupt',
       pulse: 'attention',
       label: presence.label || 'Needs attention',
+      meaning: 'Red means JAVIS is waiting on approval, setup, or a blocker that needs user intent.',
+      nextAction: reason,
     });
   } else if (mode === 'listening') {
     Object.assign(base, {
@@ -34611,6 +34641,8 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'active',
       pulse: 'live',
       label: presence.label || 'Listening',
+      meaning: 'Yellow means the live voice lane is active.',
+      nextAction: 'Speak now, use push-to-talk if enabled, or click the pet to stop voice.',
     });
   } else if (mode === 'connecting' || mode === 'waking') {
     Object.assign(base, {
@@ -34620,6 +34652,8 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'active',
       pulse: 'slow',
       label: presence.label || (mode === 'waking' ? 'Wake pending' : 'Connecting'),
+      meaning: 'Yellow means JAVIS is transitioning into an active voice state.',
+      nextAction: reason,
     });
   } else if (mode === 'working') {
     Object.assign(base, {
@@ -34629,6 +34663,8 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'ambient',
       pulse: 'slow',
       label: presence.label || 'Working',
+      meaning: 'Yellow means a background task is queued or running.',
+      nextAction: reason,
     });
   } else if (mode === 'watching') {
     Object.assign(base, {
@@ -34638,10 +34674,14 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'quiet',
       pulse: 'off',
       label: presence.label || 'Watching',
+      meaning: 'Green means JAVIS is passively observing local context and will not intervene until invited.',
+      nextAction: 'Speak, press Alt+Space, or click the pet when you want help.',
     });
   }
 
-  base.accessibleLabel = compactRecordText(`JAVIS ${base.label}: ${base.reason}`, 220);
+  base.meaning = compactRecordText(base.meaning || '', 220);
+  base.nextAction = compactRecordText(base.nextAction || base.reason || '', 180);
+  base.accessibleLabel = compactRecordText(`JAVIS ${base.label}: ${base.meaning} Next: ${base.nextAction}`, 260);
   return base;
 }
 
