@@ -15,6 +15,17 @@ const ENV_EXAMPLE_FILE = path.join(process.cwd(), '.env.example');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const PARK_CORNERS = ['notch', 'bottom-right', 'bottom-left', 'top-right', 'top-left'];
 const CONTROL_MODES = ['observe_only', 'ask_before_action', 'trusted_local', 'takeover_supervised'];
+const OPENAI_ZERO_SPEND_ENV = {
+  JAVIS_OPENAI_HARD_SPEND_LOCK: 'true',
+  JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE: 'true',
+  JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE: 'SPEND OPENAI',
+  JAVIS_OPENAI_CLOUD_MODE: 'off',
+  JAVIS_OPENAI_DAILY_REQUEST_LIMIT: '0',
+  JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT: '0',
+  JAVIS_OPENAI_ALLOW_AUTOPILOT: 'false',
+  JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE: 'false',
+  JAVIS_OPENAI_EGRESS_GUARD: 'true',
+};
 
 function formatTime(value) {
   const number = Number(value || 0);
@@ -186,6 +197,32 @@ function getEnvValue(key) {
     .split(/\r?\n/)
     .find((item) => item.startsWith(`${key}=`));
   return line ? line.slice(key.length + 1).trim() : '';
+}
+
+function applyOpenAiZeroSpendEnv() {
+  ensureEnvFile();
+  const phrase = getEnvValue('JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE') || OPENAI_ZERO_SPEND_ENV.JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE;
+  const values = {
+    ...OPENAI_ZERO_SPEND_ENV,
+    JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE: phrase,
+  };
+  const changed = [];
+  for (const [key, value] of Object.entries(values)) {
+    const before = getEnvValue(key);
+    if (before !== value) changed.push(key);
+    setEnvValue(key, value);
+  }
+  try {
+    fs.chmodSync(ENV_FILE, 0o600);
+  } catch {
+    // macOS may ignore chmod for synced folders.
+  }
+  return {
+    envFile: ENV_FILE,
+    values,
+    changed,
+    restartRequired: true,
+  };
 }
 
 function commandName(commandLine) {
@@ -407,6 +444,7 @@ async function printStatus() {
   console.log('1. Set / replace OpenAI API key');
   console.log('1B. Show OpenAI API billing/quota recovery');
   console.log('SG. Show OpenAI spend guard');
+  console.log('SL. Lock OpenAI spend to zero');
   console.log('2. Open .env');
   console.log('M. Open Microphone settings');
   console.log('3. Open Screen Recording settings');
@@ -452,6 +490,7 @@ async function printStatus() {
   console.log('CR. Show local control readiness');
   console.log('S. Show routing speed policy');
   console.log('BR. Show browser readiness');
+  console.log('BP. Prepare browser target');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
   console.log('K. Show knowledge workflow benchmarks');
@@ -725,8 +764,13 @@ function printBrowserRecoveryGuide(action = {}) {
   if (action.source !== 'browser_recovery' || !action.browserRecovery) return false;
   const recovery = action.browserRecovery || {};
   const appName = recovery.app || action.macAction?.value || 'supported browser';
-  console.log(`Guide: Open or focus ${appName} before retrying browser work.`);
+  if (recovery.type === 'browser_ready_retry') {
+    console.log(`Guide: Retry browser work in ${appName}; the browser target is already prepared.`);
+  } else {
+    console.log(`Guide: Open or focus ${appName} before retrying browser work.`);
+  }
   if (recovery.type) console.log(`Browser recovery: ${recovery.type}`);
+  if (recovery.preparedTarget?.readinessStatus) console.log(`Prepared target: ${recovery.preparedTarget.readinessStatus}`);
   if (recovery.firstTaskTitle) console.log(`Blocked task: ${compact(recovery.firstTaskTitle, 180)}`);
   if (action.macAction?.action) console.log(`Local action: ${action.macAction.action} ${compact(action.macAction.value || appName, 140)}`);
   if (recovery.retryActionId) console.log(`Retry action: ${recovery.retryActionId}`);
@@ -2355,6 +2399,7 @@ function printBrowserReadiness(result) {
   }
   console.log('\nCommands');
   console.log(`- readiness: ${commands.readiness || 'npm run browser:ready'}`);
+  console.log(`- prepare: ${commands.prepare || 'npm run browser:prepare'}`);
   console.log(`- page: ${commands.page || 'curl http://127.0.0.1:3417/api/browser/page'}`);
   console.log(`- DOM: ${commands.dom || 'curl "http://127.0.0.1:3417/api/browser/dom?limit=20"'}`);
   console.log(`- benchmarks: ${commands.benchmarks || 'npm run config -- --print-browser-benchmarks'}`);
@@ -2366,6 +2411,46 @@ async function showBrowserReadiness() {
   const result = await request('/api/browser/readiness');
   console.log('');
   printBrowserReadiness(result);
+}
+
+function printBrowserPrepare(result) {
+  const prepare = result?.prepare || result || {};
+  const before = prepare.before || {};
+  const after = prepare.after || {};
+  const recovery = prepare.recoveryResult || {};
+  const ensure = recovery.ensure || {};
+  const action = prepare.action || {};
+  const safety = prepare.safety || {};
+  console.log('JAVIS Browser Prepare');
+  console.log('=====================');
+  console.log(`Status: ${prepare.executed ? 'executed' : 'preview'} · ok=${prepare.ok ? 'yes' : 'no'}`);
+  if (action.summary) console.log(`Action: ${compact(action.summary, 320)}`);
+  console.log(`Before: ${before.status || '-'} · ${compact(before.summary || '', 260)}`);
+  console.log(`After: ${after.status || '-'} · ${compact(after.summary || '', 260)}`);
+  if (ensure.attempted !== undefined) {
+    console.log(`Ensure: attempted=${ensure.attempted ? 'yes' : 'no'} ok=${ensure.ok ? 'yes' : 'no'} app=${ensure.app || '-'} safe=${ensure.safeBlankUrl || '-'}`);
+    if (ensure.createdWindow || ensure.createdTab) console.log(`Created: window=${ensure.createdWindow ? 'yes' : 'no'} tab=${ensure.createdTab ? 'yes' : 'no'}`);
+    if (ensure.url) console.log(`URL: ${compact(ensure.url, 220)}`);
+    if (ensure.error) console.log(`Ensure error: ${compact(ensure.error, 220)}`);
+  }
+  if (prepare.output) console.log(`\n${compact(prepare.output, 700)}`);
+  console.log('\nSafety');
+  console.log(`- starts browser=${safety.startsBrowser ? 'yes' : 'no'} safe blank tab=${safety.opensSafeBlankTab ? 'yes' : 'no'} reads page text=${safety.readsPageText ? 'yes' : 'no'} executes browser actions=${safety.executesBrowserActions ? 'yes' : 'no'} executes JS=${safety.executesPageJavaScript ? 'yes' : 'no'} calls OpenAI=${safety.callsOpenAi ? 'yes' : 'no'} asks window=${safety.asksWhichWindow ? 'yes' : 'no'}`);
+}
+
+async function prepareBrowserTarget(options = {}) {
+  const execute = options.execute !== false;
+  const result = await request('/api/browser/prepare', {
+    method: 'POST',
+    body: {
+      execute,
+      app: options.app || argvValue('--app', ''),
+      source: options.source || 'cui_browser_prepare',
+    },
+  });
+  console.log('');
+  printBrowserPrepare(result);
+  return result;
 }
 
 function printBrowserBenchmarks(result) {
@@ -3728,6 +3813,53 @@ async function showOpenAiSpendGuard() {
   return result;
 }
 
+async function lockOpenAiSpendDown(options = {}) {
+  const result = applyOpenAiZeroSpendEnv();
+  console.log('JAVIS OpenAI Zero-Spend Lockdown');
+  console.log('=================================');
+  console.log(`Env: ${result.envFile}`);
+  console.log(`Changed: ${result.changed.length ? result.changed.join(', ') : 'already locked'}`);
+  console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on');
+  console.log('OPENAI_API_KEY was preserved; API key presence still does not grant spend permission.');
+
+  if (options.restart === false) {
+    console.log('\nRestart skipped. Run npm run resident:restart so the running resident reloads the zero-spend env.');
+    return result;
+  }
+
+  await restartJavis();
+  let lastError = null;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (attempt > 0) await sleep(800);
+    try {
+      const status = await request('/api/openai/spend-guard');
+      printOpenAiSpendGuard(status);
+      return { ...result, status };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  try {
+    const status = await showOpenAiSpendGuard();
+    return { ...result, status };
+  } catch (error) {
+    console.log('\nCould not read runtime spend guard after restart.');
+    console.log(lastError instanceof Error ? lastError.message : error instanceof Error ? error.message : String(error));
+    return result;
+  }
+}
+
+async function lockOpenAiSpendInteractive(rl) {
+  console.log('\nThis preserves OPENAI_API_KEY but forces all OpenAI spend controls back to zero-spend defaults.');
+  console.log('It will set hard lock on, cloud mode off, daily budget 0, unattended budget 0, and egress guard on.');
+  const answer = (await rl.question('Type LOCK to enforce zero-spend lockdown and restart JAVIS: ')).trim();
+  if (answer !== 'LOCK') {
+    console.log('\nNo change made.');
+    return;
+  }
+  await lockOpenAiSpendDown({ restart: true });
+}
+
 function printSetupRecoveryBundle(result) {
   const bundle = result?.bundle || result || {};
   const resident = bundle.resident || {};
@@ -3868,6 +4000,7 @@ function printOvernight(result) {
   console.log(`- status: ${commands.status || 'npm run overnight'}`);
   console.log(`- prepare: ${commands.prepare || 'npm run overnight:start'}`);
   console.log(`- spend guard: ${commands.openAiSpend || 'npm run openai:spend'}`);
+  console.log(`- zero-spend lockdown: ${commands.openAiLockdown || 'npm run openai:lockdown'}`);
   console.log('\nSafety');
   console.log(`- calls OpenAI=${safety.callsOpenAi ? 'yes' : 'no'} starts mic=${safety.startsMicrophone ? 'yes' : 'no'} realtime=${safety.usesRealtime ? 'yes' : 'no'} starts workers=${safety.startsWorkers ? 'yes' : 'no'} enables autopilot=${safety.enablesAutopilot ? 'yes' : 'no'} mutates user files=${safety.mutatesUserFiles ? 'yes' : 'no'} launchd change=${safety.changesLaunchdJob ? 'yes' : 'no'}`);
   if (result?.output) console.log(`\n${compact(result.output, 700)}`);
@@ -4769,6 +4902,14 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--prepare-browser') || process.argv.includes('--browser-prepare')) {
+    await prepareBrowserTarget({
+      execute: !process.argv.includes('--preview') && !process.argv.includes('--dry-run'),
+      source: 'cui_cli_browser_prepare',
+    });
+    return;
+  }
+
   if (process.argv.includes('--print-learning-evolution') || process.argv.includes('--learning-evolution')) {
     await showLearningEvolution();
     return;
@@ -4898,6 +5039,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--lock-openai-spend') || process.argv.includes('--openai-lockdown')) {
+    await lockOpenAiSpendDown({ restart: !process.argv.includes('--no-restart') });
+    return;
+  }
+
   if (!process.stdin.isTTY) {
     await printStatus();
     return;
@@ -4911,6 +5057,7 @@ async function main() {
       if (answer === '1') await setOpenAiKey(rl);
       else if (answer === '1b' || answer === 'billing' || answer === 'quota' || answer === 'realtime recovery') await showRealtimeProviderRecoveryFromCui(rl);
       else if (answer === 'sg' || answer === 'spend' || answer === 'spend guard' || answer === 'openai spend') await showOpenAiSpendGuard();
+      else if (answer === 'sl' || answer === 'lockdown' || answer === 'openai lockdown' || answer === 'lock openai' || answer === 'zero spend') await lockOpenAiSpendInteractive(rl);
       else if (answer === '2') await setupAction('prepare_env_file');
       else if (answer === 'm' || answer === 'mic' || answer === 'microphone') await setupAction('open_microphone_settings');
       else if (answer === '3') await setupAction('open_screen_settings');
@@ -5003,6 +5150,8 @@ async function main() {
         await showRoutingSpeedPolicy();
       } else if (answer === 'br' || answer === 'browser readiness' || answer === 'browser ready') {
         await showBrowserReadiness();
+      } else if (answer === 'bp' || answer === 'browser prepare' || answer === 'prepare browser') {
+        await prepareBrowserTarget({ execute: true, source: 'cui_browser_prepare' });
       } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {
         await showBrowserBenchmarks();
       } else if (answer === 'f' || answer === 'file benchmark' || answer === 'file benchmarks') {

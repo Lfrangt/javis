@@ -425,7 +425,7 @@ export default {
         output.includes('Recovery: route_preview_execute') &&
         output.includes('Run: POST /api/work/next {"actionId":"route:') &&
         output.includes('预览模式');
-      const hasBrowserRecoveryGuide =
+      const hasBrowserOpenRecoveryGuide =
         output.includes('Guide: Open or focus Google Chrome before retrying browser work.') &&
         output.includes('Browser recovery: browser_window_unavailable') &&
         output.includes('Retry action: route:') &&
@@ -433,6 +433,14 @@ export default {
         output.includes('Preview: GET /api/work/next?actionId=browser_recovery%3Aopen_supported_browser') &&
         output.includes('Run: POST /api/work/next {"actionId":"browser_recovery:open_supported_browser","execute":true}') &&
         output.includes('Preview browser recovery');
+      const hasBrowserRetryRecoveryGuide =
+        output.includes('Guide: Retry browser work in Google Chrome; the browser target is already prepared.') &&
+        output.includes('Browser recovery: browser_ready_retry') &&
+        output.includes('Prepared target:') &&
+        output.includes('Retry action: route:') &&
+        output.includes('Preview: GET /api/work/next?actionId=browser_recovery%3Aretry_browser_work') &&
+        output.includes('Run: POST /api/work/next {"actionId":"browser_recovery:retry_browser_work","execute":true}');
+      const hasBrowserRecoveryGuide = hasBrowserOpenRecoveryGuide || hasBrowserRetryRecoveryGuide;
       const hasRealtimeWorkbenchGuide =
         output.includes('Monitor: npm run config -> V. Watch Realtime voice evidence') &&
         output.includes('现在做到哪了') &&

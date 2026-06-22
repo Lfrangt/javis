@@ -173,9 +173,10 @@ export default {
 	        typeof overnight.readyForOvernight === 'boolean' &&
 	        overnight.endpoints?.status === '/api/overnight/status' &&
 	        overnight.endpoints?.prepare === '/api/overnight/prepare' &&
-	        overnight.commands?.status === 'npm run overnight' &&
-	        overnight.commands?.prepare === 'npm run overnight:start' &&
-	        overnight.commands?.openAiSpend === 'npm run openai:spend' &&
+        overnight.commands?.status === 'npm run overnight' &&
+        overnight.commands?.prepare === 'npm run overnight:start' &&
+        overnight.commands?.openAiSpend === 'npm run openai:spend' &&
+        overnight.commands?.openAiLockdown === 'npm run openai:lockdown' &&
 	        typeof overnight.resident?.loaded === 'boolean' &&
 	        typeof overnight.keepAwake?.active === 'boolean' &&
 	        overnight.openAiSpendGuard?.hardSpendLock === true &&
@@ -612,7 +613,7 @@ export default {
         }),
     );
 
-    const browserRecoveryRecommended = unblockPreviewApi.recommendedAction?.id === 'browser_recovery:open_supported_browser';
+    const browserRecoveryRecommended = String(unblockPreviewApi.recommendedAction?.id || '').startsWith('browser_recovery:');
     const browserRecoveryBlocker = Array.isArray(blockerStatus.blockers)
       ? blockerStatus.blockers.find((item) => item.id === 'browser_recovery')
       : null;
@@ -621,10 +622,10 @@ export default {
         (
           browserRecoveryBlocker &&
           browserRecoveryBlocker.source === 'browser_recovery' &&
-          /Google Chrome/i.test(String(browserRecoveryBlocker.next || browserRecoveryBlocker.summary || ''))
+          /Google Chrome|browser|route:/i.test(String(browserRecoveryBlocker.next || browserRecoveryBlocker.summary || ''))
         )
         ? ok('resident.blocker_status_browser_recovery', 'Blocker status browser recovery', browserRecoveryRecommended ? 'browser recovery is surfaced as the actionable blocker' : 'no browser recovery candidate active')
-        : fail('resident.blocker_status_browser_recovery', 'Blocker status browser recovery', 'expected /api/blockers and blocker_status voice path to surface browser_recovery when work-next recommends opening a supported browser', {
+        : fail('resident.blocker_status_browser_recovery', 'Blocker status browser recovery', 'expected /api/blockers and blocker_status voice path to surface browser_recovery when work-next recommends opening or retrying supported browser work', {
           recommendedAction: unblockPreviewApi.recommendedAction,
           blockers: blockerStatus.blockers,
         }),
@@ -1660,9 +1661,10 @@ export default {
 	      rendererSource.includes("source: detail.source || 'renderer_provider_probe'") &&
 	      rendererSource.includes("params.set('confirmOpenAiSpend', 'true')") &&
 	      rendererSource.includes("params.set('confirmOpenAiSpendPhrase', detail.confirmOpenAiSpendPhrase)") &&
-	      packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
-	      packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
-	      envExampleSource.includes('JAVIS_OPENAI_HARD_SPEND_LOCK=true') &&
+      packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
+      packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
+      packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&
+      envExampleSource.includes('JAVIS_OPENAI_HARD_SPEND_LOCK=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE=SPEND OPENAI') &&
 	      envExampleSource.includes('JAVIS_OPENAI_CLOUD_MODE=off') &&

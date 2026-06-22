@@ -292,6 +292,7 @@ const REALTIME_PROVIDER_PROBE_FRESH_MS = Math.max(60000, Math.min(86400000, Numb
 const RECORD_REPLAY_TEACHING_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_RECORD_REPLAY_TEACHING_FRESH_MS || 43200000)));
 const PRODUCTIVITY_DOGFOOD_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_PRODUCTIVITY_DOGFOOD_FRESH_MS || 43200000)));
 const BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS = Math.max(60000, Math.min(3600000, Number(process.env.JAVIS_BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS || 600000)));
+const BROWSER_PREPARE_READY_FRESH_MS = boundedRuntimeInteger(process.env.JAVIS_BROWSER_PREPARE_READY_FRESH_MS, 600000, 30000, 3600000);
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
 const RENDERER_DOGFOOD_EVENT_NAME = 'javis:realtime-dogfood';
@@ -1022,6 +1023,17 @@ let browserRecoveryAutopilotState = {
   lastApp: '',
   lastReadinessStatus: '',
   runCount: 0,
+};
+let browserPrepareState = {
+  lastPreparedAt: 0,
+  source: '',
+  app: '',
+  safeBlankUrl: '',
+  readinessStatus: '',
+  readinessSummary: '',
+  ensureOk: false,
+  createdWindow: false,
+  createdTab: false,
 };
 let maintenanceState = {
   lastSnapshotAt: 0,
@@ -13524,7 +13536,7 @@ async function overnightStatusSnapshot(options = {}) {
       'high',
       'OpenAI spend is not zero-locked',
       'OpenAI cloud calls are not fully hard-locked to zero spend.',
-      'Run npm run openai:spend and restore hard lock/off/0 daily limits before unattended use.',
+      'Run npm run openai:lockdown to restore hard lock/off/0 daily limits before unattended use.',
     ));
   }
   if (voiceStandby.safety?.startsMicrophone || voiceStandby.safety?.usesRealtime) {
@@ -13546,7 +13558,7 @@ async function overnightStatusSnapshot(options = {}) {
     nextActions.push({ id: 'start_keep_awake', label: 'Start keep-awake', command: 'npm run overnight:start', endpoint: '/api/overnight/prepare' });
   }
   if (issues.some((item) => item.id === 'openai_spend_unlocked')) {
-    nextActions.push({ id: 'review_spend_guard', label: 'Review OpenAI spend guard', command: 'npm run openai:spend', endpoint: '/api/openai/spend-guard' });
+    nextActions.push({ id: 'lock_openai_spend', label: 'Lock OpenAI spend to zero', command: 'npm run openai:lockdown', endpoint: '/api/openai/spend-guard' });
   }
   const topBlockers = Array.isArray(blockers.blockers) ? blockers.blockers.slice(0, 5) : [];
   if (topBlockers.length) {
@@ -13619,6 +13631,7 @@ async function overnightStatusSnapshot(options = {}) {
       keepAwakeStatus: 'npm run keepawake',
       keepAwakeStart: 'npm run keepawake:start',
       openAiSpend: 'npm run openai:spend',
+      openAiLockdown: 'npm run openai:lockdown',
       autopilot: 'npm run autonomy',
       workNext: 'npm run work:next',
       workHandoff: 'npm run config -- --print-work-handoff',
@@ -20582,6 +20595,9 @@ function browserReadinessNextActions({ context = {}, cdp = {}, supportedRunning 
       id: 'open_supported_browser',
       label: 'Open or focus a supported browser',
       summary: 'JAVIS defaults to the frontmost supported browser tab, then the first running supported browser tab. No window picker is required.',
+      endpoint: '/api/browser/prepare',
+      method: 'POST',
+      prepareCommand: 'npm run browser:prepare',
       command: `open -a ${JSON.stringify(appName)}`,
     });
     actions.push({
@@ -20726,6 +20742,7 @@ async function browserReadinessSnapshot(options = {}) {
     },
     endpoints: [
       '/api/browser/context',
+      '/api/browser/prepare',
       '/api/browser/page',
       '/api/browser/javascript',
       '/api/browser/dom?limit=20',
@@ -20735,6 +20752,7 @@ async function browserReadinessSnapshot(options = {}) {
     ],
     commands: {
       readiness: 'npm run browser:ready',
+      prepare: 'npm run browser:prepare',
       context: 'curl http://127.0.0.1:3417/api/browser/context',
       page: 'curl http://127.0.0.1:3417/api/browser/page',
       javascript: 'curl http://127.0.0.1:3417/api/browser/javascript',
@@ -25857,7 +25875,6 @@ function naturalBrowserRecoveryLocalCommand(text) {
     label: 'Browser recovery',
     requiresLocalExecution: true,
     args: {
-      actionId: 'browser_recovery:open_supported_browser',
       query: raw,
     },
   };
@@ -28474,9 +28491,14 @@ async function runLocalCommand(command, options = {}) {
 
     if (command.intent === 'browser_recovery') {
       const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const requestedActionId = String(command.args?.actionId || '').trim();
+      const currentBrowserRecoveryActionId = requestedActionId || (
+        workflowBriefing({ workflowLimit: 6, jobLimit: 6, source: 'local_command_browser_recovery_select' })
+          .nextActions || []
+      ).find((item) => item?.source === 'browser_recovery')?.id || 'browser_recovery:open_supported_browser';
       const result = await workNextAction({
         execute,
-        actionId: command.args?.actionId || 'browser_recovery:open_supported_browser',
+        actionId: currentBrowserRecoveryActionId,
         source: execute ? 'local_command_browser_recovery_execute' : 'local_command_browser_recovery_preview',
       });
       if (!result.action) {
@@ -49772,6 +49794,22 @@ function browserUnavailableRouteBlocker(record, entry = routingLedgerEntry(recor
   return /browser_window_unavailable|browser_context_unavailable|browser target unavailable|browser context unavailable|no supported browser/.test(text);
 }
 
+function browserPreparedTargetSnapshot() {
+  const ageMs = browserPrepareState.lastPreparedAt ? Date.now() - Number(browserPrepareState.lastPreparedAt || 0) : 0;
+  const fresh = Boolean(browserPrepareState.lastPreparedAt && ageMs >= 0 && ageMs <= BROWSER_PREPARE_READY_FRESH_MS);
+  const ready = fresh &&
+    browserPrepareState.ensureOk === true &&
+    ['ready', 'limited'].includes(String(browserPrepareState.readinessStatus || ''));
+  return {
+    version: 1,
+    fresh,
+    ready,
+    ageMs,
+    maxAgeMs: BROWSER_PREPARE_READY_FRESH_MS,
+    ...browserPrepareState,
+  };
+}
+
 function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = []) {
   const routeEntriesById = new Map(routingLedger.map((entry) => [entry.id, entry]));
   const blockedRoutes = activeRoutes
@@ -49783,6 +49821,51 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
   if (!blockedRoutes.length) return null;
   const appName = 'Google Chrome';
   const first = blockedRoutes[0];
+  const prepared = browserPreparedTargetSnapshot();
+  if (prepared.ready) {
+    return {
+      id: 'browser_recovery:retry_browser_work',
+      priority: 1.75,
+      label: 'Retry browser work',
+      summary: `${blockedRoutes.length} browser task(s) were blocked by browser availability, but ${prepared.app || appName} is now prepared (${prepared.readinessStatus}). Retry the first blocked browser route.`,
+      source: 'browser_recovery',
+      browserRecovery: {
+        version: 1,
+        type: 'browser_ready_retry',
+        app: prepared.app || appName,
+        safeBlankUrl: prepared.safeBlankUrl || 'about:blank',
+        preparedTarget: prepared,
+        routeCount: blockedRoutes.length,
+        firstRouteId: first.record.id,
+        firstTaskTitle: compactRecordText(first.record.taskTitle || '', 180),
+        retryActionId: first.record.id ? `route:${first.record.id}` : '',
+        readinessEndpoint: '/api/browser/readiness',
+        workNextEndpoint: '/api/work/next',
+        blocker: compactRecordText(first.entry?.blocker || 'browser_window_unavailable', 160),
+        next: `Browser target is ready enough for retry. Run ${first.record.id ? `route:${first.record.id}` : 'work-next'} to continue the blocked browser task; JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
+        autopilotCooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
+      },
+      executable: Boolean(first.record.id),
+      autoEligible: Boolean(first.record.id),
+      autopilotEligible: Boolean(first.record.id),
+      autopilotCooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
+      manualOnly: false,
+      requiresUserPresence: false,
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      startsRecording: false,
+      startsWorkers: false,
+      startsApps: false,
+      opensSafeBlankTab: false,
+      executesBrowserActions: false,
+      readsPageText: false,
+      executesTask: true,
+      sendsMessages: false,
+      mutatesUserFiles: false,
+      mutatesUserRecords: false,
+      riskLevel: 2,
+    };
+  }
   return {
     id: 'browser_recovery:open_supported_browser',
     priority: 1.8,
@@ -49828,6 +49911,104 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
       action: 'open_app',
       value: appName,
     },
+  };
+}
+
+async function browserPrepareAction(options = {}) {
+  const source = String(options.source || 'browser_prepare').slice(0, 80);
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const requestedApp = String(options.app || '').trim();
+  const appName = requestedApp || 'Google Chrome';
+  const safeBlankUrl = String(options.safeBlankUrl || options.url || 'about:blank').trim() || 'about:blank';
+  const before = await browserReadinessSnapshot({
+    app: requestedApp,
+    source,
+  });
+  const action = {
+    id: 'browser_prepare:open_supported_browser',
+    label: 'Prepare browser target',
+    summary: `Open or focus ${appName}, ensure a safe blank tab is readable, then recheck browser readiness.`,
+    source: 'browser_prepare',
+    browserRecovery: {
+      version: 1,
+      type: 'prepare_browser_target',
+      app: appName,
+      safeBlankUrl,
+      ensuresReadableBlankTab: true,
+      readinessEndpoint: '/api/browser/readiness',
+      prepareEndpoint: '/api/browser/prepare',
+      next: `Open or focus ${appName} and create a safe blank tab only if no readable tab exists. JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
+    },
+    macAction: {
+      action: 'open_app',
+      value: appName,
+    },
+  };
+  const safety = {
+    callsOpenAi: false,
+    startsMicrophone: false,
+    usesRealtime: false,
+    capturesScreen: false,
+    readsPageText: false,
+    storesPageText: false,
+    executesPageJavaScript: false,
+    executesBrowserActions: false,
+    asksWhichWindow: false,
+    mutatesUserFiles: false,
+    mutatesUserRecords: false,
+    opensSafeBlankTab: execute,
+    startsBrowser: execute,
+  };
+
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      preview: true,
+      action,
+      before,
+      after: before,
+      output: `Preview only. Would open or focus ${appName}, ensure a safe ${safeBlankUrl} tab if needed, then recheck /api/browser/readiness.`,
+      safety: {
+        ...safety,
+        opensSafeBlankTab: false,
+        startsBrowser: false,
+      },
+    };
+  }
+
+  const recoveryResult = await ensureBrowserRecoveryReadableTarget(action, {
+    source,
+    readinessSource: `${source}_after_prepare`,
+    waitMs: options.waitMs || 850,
+  });
+  const after = recoveryResult.readinessAfter || await browserReadinessSnapshot({
+    app: requestedApp,
+    source: `${source}_after_prepare_fallback`,
+  });
+  appendAudit('browser_prepare.completed', {
+    source,
+    app: appName,
+    safeBlankUrl,
+    readinessBefore: before.status || '',
+    readinessAfter: after.status || after.overall || '',
+    ensureOk: Boolean(recoveryResult.ensure?.ok),
+    createdWindow: Boolean(recoveryResult.ensure?.createdWindow),
+    createdTab: Boolean(recoveryResult.ensure?.createdTab),
+  });
+  return {
+    ok: true,
+    executed: true,
+    preview: false,
+    action,
+    before,
+    after,
+    recoveryResult,
+    output: [
+      recoveryResult.output,
+      after?.status ? `Browser readiness after prepare: ${after.status} · ${compactRecordText(after.summary || '', 220)}` : '',
+    ].filter(Boolean).join('\n'),
+    safety,
   };
 }
 
@@ -49941,6 +50122,17 @@ async function ensureBrowserRecoveryReadableTarget(action = {}, options = {}) {
     error: compactRecordText(ensure.error || '', 180),
     readinessStatus: readinessAfter?.status || readinessAfter?.overall || '',
   });
+  browserPrepareState = {
+    lastPreparedAt: Date.now(),
+    source: String(options.source || 'work_next_browser_recovery').slice(0, 80),
+    app: appName,
+    safeBlankUrl,
+    readinessStatus: String(readinessAfter?.status || readinessAfter?.overall || ''),
+    readinessSummary: compactRecordText(readinessAfter?.summary || '', 260),
+    ensureOk: Boolean(ensure.ok),
+    createdWindow: Boolean(ensure.createdWindow),
+    createdTab: Boolean(ensure.createdTab),
+  };
 
   return {
     macAction,
@@ -52014,7 +52206,42 @@ async function workNextAction(options = {}) {
     const followUpAction = browserRecoveryFollowUpAction(action.browserRecovery, {
       source: options.source || 'work_next_browser_recovery',
     });
-    if (execute) {
+    if (action.browserRecovery?.type === 'browser_ready_retry') {
+      if (execute && followUpAction?.routeRecovery?.recommended?.executable) {
+        const routeExecution = await executeRoutingRecoveryCandidate(followUpAction.routeRecovery.recommended, {
+          source: options.source || 'work_next_browser_recovery_retry',
+          autopilot: options.autopilot,
+          maxNodes: options.maxNodes,
+          maxDepth: options.maxDepth,
+        });
+        executed = Boolean(routeExecution?.executed || routeExecution?.queued || routeExecution?.ok);
+        result = {
+          ok: true,
+          executed,
+          browserRecovery: action.browserRecovery,
+          preparedTarget: action.browserRecovery.preparedTarget || null,
+          followUpAction: compactWorkNextActionPayload(followUpAction),
+          routeExecution,
+        };
+        output = [
+          `Browser target is prepared in ${action.browserRecovery.app || 'supported browser'}; retried ${followUpAction.id}.`,
+          routeExecution?.output || 'Route retry was attempted.',
+        ].filter(Boolean).join('\n');
+      } else {
+        result = {
+          ok: true,
+          executed: false,
+          browserRecovery: action.browserRecovery,
+          preparedTarget: action.browserRecovery.preparedTarget || null,
+          followUpAction: compactWorkNextActionPayload(followUpAction),
+        };
+        output = [
+          `Browser target is prepared in ${action.browserRecovery.app || 'supported browser'} (${action.browserRecovery.preparedTarget?.readinessStatus || 'ready'}).`,
+          followUpAction?.id ? `Next: preview or run ${followUpAction.id} to retry the blocked browser route.` : 'Next: run /api/work/next again to continue browser work.',
+          'No browser action was executed in preview mode.',
+        ].filter(Boolean).join('\n');
+      }
+    } else if (execute) {
       try {
         const recoveryResult = await ensureBrowserRecoveryReadableTarget(action, {
           source: options.source || 'work_next_browser_recovery',
@@ -62286,6 +62513,31 @@ function startApiServer() {
       res.json({ readiness });
     } catch (error) {
       jsonError(res, 500, 'Browser readiness failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/browser/prepare', async (req, res) => {
+    try {
+      const result = await browserPrepareAction({
+        app: req.query.app,
+        execute: false,
+        source: 'api_browser_prepare_preview',
+      });
+      res.json({ prepare: result });
+    } catch (error) {
+      jsonError(res, 500, 'Browser prepare preview failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/browser/prepare', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await browserPrepareAction({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_browser_prepare',
+      });
+      res.status(result.ok ? 200 : 409).json({ prepare: result });
+    } catch (error) {
+      jsonError(res, 400, 'Browser prepare failed', error instanceof Error ? error.message : String(error));
     }
   });
 

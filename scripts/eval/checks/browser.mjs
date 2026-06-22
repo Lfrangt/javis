@@ -32,16 +32,56 @@ export default {
         r?.safety?.readsPageText === false &&
         r?.capabilities?.context?.endpoint === '/api/browser/context' &&
         r?.capabilities?.page?.endpoint === '/api/browser/page' &&
+        r?.commands?.prepare === 'npm run browser:prepare' &&
         r?.commands?.readiness === 'npm run browser:ready' &&
+        Array.isArray(r?.endpoints) &&
+        r.endpoints.includes('/api/browser/prepare') &&
         Array.isArray(r?.nextActions)
         ? ok('browser.readiness', 'Browser readiness packet', `${r.status || 'unknown'} · default=${r.defaultTarget.mode} · no window picker`)
         : fail('browser.readiness', 'Browser readiness packet', `GET /api/browser/readiness ${readiness.status}`, readiness.data),
     );
 
+    const preparePreview = await ctx.api('/api/browser/prepare', {
+      method: 'POST',
+      body: {
+        execute: false,
+        source: 'eval_browser_prepare_preview',
+      },
+    });
+    const prepare = preparePreview.data?.prepare || {};
+    out.push(
+      preparePreview.ok &&
+        prepare.ok === true &&
+        prepare.executed === false &&
+        prepare.preview === true &&
+        prepare.action?.id === 'browser_prepare:open_supported_browser' &&
+        prepare.action?.browserRecovery?.ensuresReadableBlankTab === true &&
+        prepare.action?.browserRecovery?.prepareEndpoint === '/api/browser/prepare' &&
+        prepare.safety?.startsBrowser === false &&
+        prepare.safety?.opensSafeBlankTab === false &&
+        prepare.safety?.readsPageText === false &&
+        prepare.safety?.executesPageJavaScript === false &&
+        prepare.safety?.executesBrowserActions === false &&
+        prepare.safety?.callsOpenAi === false &&
+        prepare.safety?.asksWhichWindow === false
+        ? ok('browser.prepare_preview', 'Browser prepare preview', 'preview exposes safe open/focus+blank-tab preparation without starting browser, reading page text, executing JS, or asking which window')
+        : fail('browser.prepare_preview', 'Browser prepare preview', 'expected /api/browser/prepare preview to expose safe no-side-effect browser preparation contract', {
+            status: preparePreview.status,
+            body: preparePreview.data,
+          }),
+    );
+
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    const packageSource = fs.readFileSync('package.json', 'utf8');
     const hasBrowserWorkNextRecovery =
       mainSource.includes('function browserUnavailableRecoveryAction') &&
+      mainSource.includes('async function browserPrepareAction') &&
+      mainSource.includes('function browserPreparedTargetSnapshot') &&
+      mainSource.includes('browser_recovery:retry_browser_work') &&
+      mainSource.includes('browser_ready_retry') &&
       mainSource.includes('browser_window_unavailable') &&
+      mainSource.includes("api.post('/api/browser/prepare'") &&
+      mainSource.includes("'browser_prepare:open_supported_browser'") &&
       mainSource.includes("source: 'browser_recovery'") &&
       mainSource.includes("id: 'browser_recovery:open_supported_browser'") &&
       mainSource.includes("action.source === 'browser_recovery'") &&
@@ -57,7 +97,8 @@ export default {
       mainSource.includes('eligible_browser_recovery') &&
       mainSource.includes("reason: 'browser_recovery_fresh'") &&
       mainSource.includes("appendAudit('browser_recovery.autopilot_attempted'") &&
-      mainSource.includes('After execution, JAVIS will recheck browser readiness');
+      mainSource.includes('After execution, JAVIS will recheck browser readiness') &&
+      packageSource.includes('"browser:prepare": "node scripts/config-cui.cjs --prepare-browser"');
     out.push(
       hasBrowserWorkNextRecovery
         ? ok('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'browser_window_unavailable routes can surface a cooldown-guarded autopilot browser recovery candidate')
@@ -71,7 +112,12 @@ export default {
     const workNextActions = Array.isArray(workNext.data?.next?.briefing?.nextActions)
       ? workNext.data.next.briefing.nextActions
       : [];
-    const browserRecoveryAction = workNextActions.find((action) => action?.id === 'browser_recovery:open_supported_browser');
+    const browserRecoveryAction = workNextActions.find((action) => (
+      action?.id === 'browser_recovery:open_supported_browser' ||
+      action?.id === 'browser_recovery:retry_browser_work'
+    ));
+    const browserRecoveryIsOpen = browserRecoveryAction?.id === 'browser_recovery:open_supported_browser';
+    const browserRecoveryIsRetry = browserRecoveryAction?.id === 'browser_recovery:retry_browser_work';
     out.push(
       hasBrowserUnavailableBlocker
         ? workNext.ok &&
@@ -79,23 +125,26 @@ export default {
           browserRecoveryAction?.executable === true &&
           browserRecoveryAction?.autoEligible === true &&
           browserRecoveryAction?.autopilotEligible === true &&
-          browserRecoveryAction?.startsApps === true &&
-          browserRecoveryAction?.executesTask === false &&
+          (browserRecoveryIsOpen ? browserRecoveryAction?.startsApps === true : browserRecoveryAction?.startsApps === false) &&
+          (browserRecoveryIsRetry ? browserRecoveryAction?.executesTask === true : browserRecoveryAction?.executesTask === false) &&
           browserRecoveryAction?.sendsMessages === false &&
           browserRecoveryAction?.mutatesUserFiles === false &&
           browserRecoveryAction?.mutatesUserRecords === false &&
-          browserRecoveryAction?.opensSafeBlankTab === true &&
+          (browserRecoveryIsOpen ? browserRecoveryAction?.opensSafeBlankTab === true : browserRecoveryAction?.opensSafeBlankTab === false) &&
           browserRecoveryAction?.executesBrowserActions === false &&
           browserRecoveryAction?.readsPageText === false &&
           Number(browserRecoveryAction?.autopilotCooldownMs || 0) >= 60000 &&
-          browserRecoveryAction?.macAction?.action === 'open_app' &&
-          browserRecoveryAction?.browserRecovery?.type === 'browser_window_unavailable' &&
-          browserRecoveryAction?.browserRecovery?.safeBlankUrl === 'about:blank' &&
-          browserRecoveryAction?.browserRecovery?.ensuresReadableBlankTab === true &&
+          (browserRecoveryIsRetry || browserRecoveryAction?.macAction?.action === 'open_app') &&
+          ['browser_window_unavailable', 'browser_ready_retry'].includes(browserRecoveryAction?.browserRecovery?.type) &&
+          (browserRecoveryIsRetry || browserRecoveryAction?.browserRecovery?.safeBlankUrl === 'about:blank') &&
+          (browserRecoveryIsRetry || browserRecoveryAction?.browserRecovery?.ensuresReadableBlankTab === true) &&
+          (browserRecoveryIsOpen || browserRecoveryAction?.browserRecovery?.preparedTarget?.ready === true) &&
           Number(browserRecoveryAction?.browserRecovery?.autopilotCooldownMs || 0) >= 60000 &&
           String(browserRecoveryAction?.browserRecovery?.retryActionId || '').startsWith('route:') &&
           browserRecoveryAction?.browserRecovery?.readinessEndpoint === '/api/browser/readiness'
-          ? ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'current browser_window_unavailable blocker exposes autopilot-eligible open-supported-browser recovery with cooldown')
+          ? ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', browserRecoveryIsRetry
+              ? 'current browser_window_unavailable blocker now exposes retry-browser-work after browser target preparation'
+              : 'current browser_window_unavailable blocker exposes autopilot-eligible open-supported-browser recovery with cooldown')
           : fail('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'expected current browser_window_unavailable blocker to produce a browser_recovery work-next action', {
               actions: workNextActions.slice(0, 6),
               progress: progress.data?.progress?.output || '',
