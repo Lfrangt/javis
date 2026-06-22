@@ -704,6 +704,16 @@ export default {
         : fail('resident.voice_terminal_loop_guard', 'Voice Terminal loop guard', 'expected app-level terminal opener to block voice:chat loops by default'),
     );
 
+    const stopResidentSource = fs.readFileSync('scripts/stop-resident-processes.cjs', 'utf8');
+    out.push(
+      stopResidentSource.includes('repeat with t in tabs of w') &&
+        stopResidentSource.includes('contents of t contains "JAVIS Local Voice Command Loop"') &&
+        stopResidentSource.includes('contents of t contains "npm run voice:chat"') &&
+        stopResidentSource.includes('contents of t contains "local-voice-command-dogfood"')
+        ? ok('resident.voice_terminal_cleanup_all_tabs', 'Voice Terminal cleanup scans all tabs', 'resident stop/restart closes stale voice:chat Terminal windows even when the loop is not the selected tab')
+        : fail('resident.voice_terminal_cleanup_all_tabs', 'Voice Terminal cleanup scans all tabs', 'expected stop-resident cleanup to inspect every Terminal tab for stale voice:chat loops'),
+    );
+
     const pet = await ctx.api('/api/pet/status');
     const p = pet.data || {};
     const hasOwn = (key) => Object.prototype.hasOwnProperty.call(p, key);
