@@ -1476,6 +1476,12 @@ function attentionPetState(level, reasons = []) {
   return 'green';
 }
 
+function isQuietBrowserRecoveryAttentionRoute(route) {
+  const status = String(route?.status || '');
+  if (!['blocked', 'failed', 'needs_attention'].includes(status)) return false;
+  return browserUnavailableRouteBlocker(route, route);
+}
+
 function attentionPolicySnapshot(options = {}) {
   const now = Date.now();
   const readiness = options.readiness || readinessSnapshot();
@@ -1551,7 +1557,9 @@ function attentionPolicySnapshot(options = {}) {
     ));
   }
 
-  const blockedRoutes = activeRoutes.filter((route) => ['blocked', 'failed', 'needs_attention'].includes(String(route.status || '')));
+  const blockedRoutes = activeRoutes
+    .filter((route) => ['blocked', 'failed', 'needs_attention'].includes(String(route.status || '')))
+    .filter((route) => !isQuietBrowserRecoveryAttentionRoute(route));
   if (blockedRoutes.length) {
     reasons.push(attentionReason(
       'blocked_routes',
@@ -35160,6 +35168,7 @@ function petPresenceSnapshot(options = {}) {
   const screenAge = latestScreenAgeMs();
   const mode = presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, conversation });
   const activeRoutes = activeRoutingSnapshot(3).map(routingLedgerEntry).filter(Boolean);
+  const petAttentionRoutes = activeRoutes.filter((route) => !isQuietBrowserRecoveryAttentionRoute(route));
   let nextIntervention = 'Standing by until you speak or ask for help.';
   if (conversation.status === 'live') {
     nextIntervention = 'Voice conversation is live.';
@@ -35171,8 +35180,8 @@ function petPresenceSnapshot(options = {}) {
     nextIntervention = `Waiting for approval: ${compactRecordText(pendingApprovals[0].summary, 120)}`;
   } else if (activeJobs[0]) {
     nextIntervention = `Background work running: ${compactRecordText(activeJobs[0].title, 120)}`;
-  } else if (activeRoutes[0]) {
-    nextIntervention = `Routed work needs attention: ${compactRecordText(activeRoutes[0].taskTitle, 100)}`;
+  } else if (petAttentionRoutes[0]) {
+    nextIntervention = `Routed work needs attention: ${compactRecordText(petAttentionRoutes[0].taskTitle, 100)}`;
   } else if (wake.pending) {
     nextIntervention = 'Wake trigger is pending.';
   } else if (readiness.primaryIssue) {
@@ -35188,7 +35197,7 @@ function petPresenceSnapshot(options = {}) {
     mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
     mode === 'waking' ? 'Wake trigger received.' : '',
     mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
-    activeRoutes.length ? `${activeRoutes.length} routed task(s) active or blocked.` : '',
+    petAttentionRoutes.length ? `${petAttentionRoutes.length} routed task(s) active or blocked.` : '',
     mode === 'needs_attention'
       ? readiness.overall === 'degraded'
         ? `Needs attention: ${readiness.summary}`
@@ -35225,7 +35234,7 @@ function petPresenceSnapshot(options = {}) {
       maxAutoRiskLevel: actionPolicy.maxAutoRiskLevel,
       requireApprovalAtRiskLevel: actionPolicy.requireApprovalAtRiskLevel,
       next: nextIntervention,
-      attentionLevel: pendingApprovals.length ? 'high' : activeJobs.length || activeRoutes.length ? 'normal' : 'low',
+      attentionLevel: pendingApprovals.length ? 'high' : activeJobs.length || petAttentionRoutes.length ? 'normal' : 'low',
       shouldNotify: false,
     },
     conversation,

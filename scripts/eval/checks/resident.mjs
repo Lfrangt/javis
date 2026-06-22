@@ -1182,6 +1182,18 @@ export default {
         : fail('resident.routing_noise_filter', 'Routing noise filter', 'expected active routing/workflow blockers to filter transient unsupported-browser preview failures'),
     );
 
+    const hasPetBrowserRecoveryQuieting =
+      mainSource.includes('function isQuietBrowserRecoveryAttentionRoute') &&
+      mainSource.includes('const petAttentionRoutes = activeRoutes.filter((route) => !isQuietBrowserRecoveryAttentionRoute(route))') &&
+      mainSource.includes('browserUnavailableRouteBlocker(route, route)') &&
+      mainSource.includes('!isQuietBrowserRecoveryAttentionRoute(route)') &&
+      mainSource.includes('function browserUnavailableRecoveryAction');
+    out.push(
+      hasPetBrowserRecoveryQuieting
+        ? ok('resident.pet_browser_recovery_quieting', 'Pet browser recovery quieting', 'browser-window recovery stays in work-next while routine blocked routes are filtered from pet attention')
+        : fail('resident.pet_browser_recovery_quieting', 'Pet browser recovery quieting', 'expected browser-window-unavailable routes to stay recoverable without making the pet interruptive'),
+    );
+
     const hasBrowserUnavailableFallbackTarget =
       mainSource.includes('let lastSupportedResult = null') &&
       mainSource.includes('function compactBrowserContextError') &&
