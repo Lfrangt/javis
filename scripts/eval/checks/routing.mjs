@@ -9,20 +9,23 @@ const execFileAsync = promisify(execFile);
 const USER_SKILLS_DIR = path.join(os.homedir(), '.agents', 'skills');
 
 function writeEvalRoutingSkill() {
-  const name = `eval-routing-skill-${Date.now().toString(36)}`;
+  const suffix = Date.now().toString(36);
+  const name = `eval_routing_skill_${suffix}`;
+  const trigger = `target_panel_saved_state_${suffix}`;
   const dir = path.join(USER_SKILLS_DIR, name);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, 'SKILL.md'), [
     '---',
     `name: ${name}`,
-    'description: Restore target panel saved state with an audited replay plan.',
+    `description: Restore target panel saved state for ${trigger} with an audited replay plan.`,
     '---',
     '',
     '# Purpose',
-    'Use this skill when a task mentions target panel saved state and needs a previewed plan before any action.',
+    `Use this skill when a task mentions ${trigger} and needs a previewed plan before any action.`,
     '',
     '# Triggers',
     'target panel saved state',
+    trigger,
     '',
     '# Workflow',
     '1. Observe the current target panel instead of replaying old coordinates.',
@@ -37,13 +40,13 @@ function writeEvalRoutingSkill() {
     'Source: explicit UI demonstration',
     '',
   ].join('\n'), 'utf8');
-  return { name, dir };
+  return { name, dir, trigger };
 }
 
 function cleanupEvalRoutingSkill(skill) {
   const root = path.resolve(USER_SKILLS_DIR);
   const dir = path.resolve(skill?.dir || '');
-  if (dir.startsWith(`${root}${path.sep}`) && path.basename(dir).startsWith('eval-routing-skill-')) {
+  if (dir.startsWith(`${root}${path.sep}`) && /^eval[-_]routing[-_]skill[-_]/.test(path.basename(dir))) {
     fs.rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -169,10 +172,11 @@ export default {
     let evalShortcutId = '';
     try {
       evalSkill = writeEvalRoutingSkill();
+      await sleep(150);
       const routedWithSkill = await ctx.api('/api/tasks/route', {
         method: 'POST',
         body: {
-          message: `Prepare the target panel saved state workflow with ${evalSkill.name}; preview only.`,
+          message: `Prepare the ${evalSkill.trigger} workflow with ${evalSkill.name}; preview only.`,
           execute: false,
           useMemory: true,
           source: 'eval_skill_plan',
@@ -225,7 +229,7 @@ export default {
       const shortcutRoute = await ctx.api('/api/tasks/route', {
         method: 'POST',
         body: {
-          message: `${shortcutPhrase} for target panel saved state`,
+          message: `${shortcutPhrase} for ${evalSkill.trigger}`,
           execute: false,
           useMemory: false,
           source: 'eval_shortcut_route',
@@ -248,7 +252,7 @@ export default {
       const routedWorker = await ctx.api('/api/tasks/route', {
         method: 'POST',
         body: {
-          message: `Prepare the target panel saved state workflow with ${evalSkill.name}; start worker but do not mutate anything.`,
+          message: `Prepare the ${evalSkill.trigger} workflow with ${evalSkill.name}; start worker but do not mutate anything.`,
           execute: true,
           mode: 'background',
           useMemory: true,

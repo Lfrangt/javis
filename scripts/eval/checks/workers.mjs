@@ -55,6 +55,65 @@ export default {
       );
     }
 
+    const taskQueue = await ctx.api('/api/tasks?limit=3');
+    const directTaskScope = `eval/tasks-api/${Date.now()}`;
+    const directTask = 'Read-only inspect docs/OPERATIONS.md and return one sentence. Do not write files.';
+    const directTaskPreview = await ctx.api('/api/tasks', {
+      method: 'POST',
+      body: {
+        task: directTask,
+        mode: 'background',
+        owner: 'Eval Background',
+        scope: directTaskScope,
+        access: 'read',
+        source: 'eval_workers_task_queue_preview',
+      },
+      timeoutMs: 15000,
+    });
+    const directTaskGate = await ctx.api('/api/tasks', {
+      method: 'POST',
+      body: {
+        task: directTask,
+        mode: 'background',
+        owner: 'Eval Background',
+        scope: directTaskScope,
+        access: 'read',
+        execute: true,
+        source: 'eval_workers_task_queue_gate',
+      },
+      timeoutMs: 15000,
+    });
+    out.push(
+      taskQueue.ok &&
+        taskQueue.data?.ok === true &&
+        taskQueue.data?.taskQueue?.policy === 'preview_first' &&
+        taskQueue.data?.taskQueue?.confirmationRequiredForExecution === true &&
+        taskQueue.data?.taskQueue?.duplicateActiveTasksReuseWorker === true &&
+        Array.isArray(taskQueue.data?.jobs) &&
+        directTaskPreview.ok &&
+        directTaskPreview.data?.kind === 'task_queue' &&
+        directTaskPreview.data?.taskQueue?.previewFirst === true &&
+        directTaskPreview.data?.status === 'preview' &&
+        directTaskPreview.data?.previewOnly === true &&
+        directTaskPreview.data?.executed === false &&
+        directTaskPreview.data?.queued === false &&
+        directTaskPreview.data?.safety?.startsWorkers === false &&
+        directTaskGate.ok &&
+        directTaskGate.data?.kind === 'task_queue' &&
+        directTaskGate.data?.status === 'confirmation_required' &&
+        directTaskGate.data?.executeRequested === true &&
+        directTaskGate.data?.confirm === false &&
+        directTaskGate.data?.requiresConfirmation === true &&
+        directTaskGate.data?.queued === false &&
+        directTaskGate.data?.safety?.startsWorkers === false
+        ? ok('workers.direct_task_queue_gate', 'Direct task queue preview and confirmation gate', `${directTaskScope} preview + confirmation gate without starting workers`)
+        : fail('workers.direct_task_queue_gate', 'Direct task queue preview and confirmation gate', 'expected /api/tasks to expose preview-first queue status and require confirmation before worker start', {
+            queue: taskQueue.data,
+            preview: directTaskPreview.data,
+            gate: directTaskGate.data,
+          }),
+    );
+
     const delegateScope = `eval/delegate-api/${Date.now()}`;
     const delegateTask = 'Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.';
     const delegatePreview = await ctx.api('/api/tasks/delegate', {

@@ -58110,6 +58110,24 @@ function startApiServer() {
     });
   });
 
+  api.get('/api/tasks', (req, res) => {
+    const limit = Number(req.query.limit || 50);
+    const jobItems = jobSnapshot(limit);
+    res.json({
+      ok: true,
+      taskQueue: {
+        endpoint: '/api/tasks',
+        policy: 'preview_first',
+        confirmationRequiredForExecution: true,
+        duplicateActiveTasksReuseWorker: true,
+      },
+      jobs: jobItems,
+      routes: Object.fromEntries(jobItems.map((job) => [job.id, routingRecordsForJob(job.id)])),
+      counts: queueCounts(),
+      routing: routingCounts(),
+    });
+  });
+
   api.get('/api/jobs/recovery', (req, res) => {
     res.json({
       recovery: jobRecoverySnapshot({
@@ -60665,51 +60683,37 @@ function startApiServer() {
     res.status(result.ok ? 200 : result.status || 404).json(result);
   });
 
-  api.post('/api/tasks', (req, res) => {
-    const task = String(req.body?.task || '').trim();
-    const requestedMode = String(req.body?.mode || 'background');
-    const mode = ['background', 'codex', 'claude'].includes(requestedMode) ? requestedMode : 'background';
-    if (!task) {
-      jsonError(res, 400, 'Missing task');
-      return;
+  api.post('/api/tasks', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const rawBody = req.body || {};
+      const task = String(rawBody.task || rawBody.message || rawBody.instruction || rawBody.title || '').trim();
+      if (!task) {
+        jsonError(res, 400, 'Missing task');
+        return;
+      }
+      const mode = normalizeDelegateMode(rawBody.mode || rawBody.lane || 'background');
+      const result = await delegateTaskPayload({
+        ...rawBody,
+        task,
+        mode,
+        owner: rawBody.owner || ownerForRoutingLane(mode),
+        parallelGroup: rawBody.parallelGroup || rawBody.group || `task:${mode}`,
+        source: rawBody.source || 'api_task',
+      });
+      res.status(result.ok === false ? 400 : 200).json({
+        ...result,
+        kind: 'task_queue',
+        endpoint: '/api/tasks',
+        taskQueue: {
+          previewFirst: true,
+          confirmationRequiredForExecution: true,
+          duplicateActiveTasksReuseWorker: true,
+          directApi: true,
+        },
+      });
+    } catch (error) {
+      jsonError(res, 400, 'Task queue request failed', error instanceof Error ? error.message : String(error));
     }
-    const memoryContext = memoryContextForTask(task, {
-      useMemory: req.body?.useMemory !== false,
-      memoryLimit: req.body?.memoryLimit,
-    });
-    const jobTask = [memoryContext.prompt, 'Task:', task].filter(Boolean).join('\n\n');
-    const job = createJob(jobTask, mode, 'api', { title: task });
-    const decision = {
-      lane: mode,
-      mode,
-      label: mode === 'background' ? 'Deep' : mode === 'codex' ? 'Codex' : 'Claude',
-      confidence: 1,
-      reason: 'user selected task mode',
-      execute: true,
-      requiresOpenAiKey: mode === 'background',
-      requiresLocalExecution: mode === 'codex' || mode === 'claude',
-    };
-    const routing = createRoutingRecord({
-      task,
-      decision,
-      source: 'api',
-      execute: true,
-      status: job.status,
-      jobId: job.id,
-      owner: req.body?.owner || ownerForRoutingLane(mode),
-      memoryMatches: memoryContext.matches.length,
-      resultSummary: job.log,
-      parallelGroup: req.body?.parallelGroup || req.body?.group || mode,
-      scope: req.body?.scope || '',
-    });
-    res.json({
-      job,
-      routing,
-      memory: {
-        matches: memoryContext.matches,
-        count: memoryContext.matches.length,
-      },
-    });
   });
 
   api.post('/api/tools/execute', async (req, res) => {
