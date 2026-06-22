@@ -94,6 +94,34 @@ export default {
         : ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'no current browser_window_unavailable blocker to recover'),
     );
 
+    const blockers = await ctx.api('/api/blockers');
+    const progressPayload = progress.data?.progress || {};
+    const blockerPayload = blockers.data?.blockers || {};
+    const blockerItems = Array.isArray(blockerPayload.blockers) ? blockerPayload.blockers : [];
+    const visibleBrowserUnavailableWorkflows = Array.isArray(progressPayload.blockedWorkflows)
+      ? progressPayload.blockedWorkflows.filter((workflow) => /browser_window_unavailable|browser_context_unavailable|browser target unavailable|browser context unavailable|no supported browser/i.test([
+        workflow.result,
+        workflow.request,
+        workflow.title,
+        workflow.target?.error,
+      ].filter(Boolean).join('\n')))
+      : [];
+    const blockedWorkflowItem = blockerItems.find((item) => item.id === 'blocked_workflows') || null;
+    out.push(
+      browserRecoveryAction
+        ? blockers.ok &&
+          mainSource.includes('function isBrowserUnavailableWorkflowBlocker') &&
+          mainSource.includes('browserRecovery && isBrowserUnavailableWorkflowBlocker(workflow)') &&
+          visibleBrowserUnavailableWorkflows.length === 0 &&
+          !(blockedWorkflowItem && Number(progressPayload.counts?.blockedWorkflows || 0) === 0)
+          ? ok('browser.recovery_folds_workflow_noise', 'Browser recovery folds workflow noise', 'browser_window_unavailable workflows are folded into browser_recovery instead of duplicate blocked_workflows noise')
+          : fail('browser.recovery_folds_workflow_noise', 'Browser recovery folds workflow noise', 'expected browser recovery to hide duplicate browser_window_unavailable workflow blockers from progress/blockers', {
+              blockerItems: blockerItems.slice(0, 5),
+              blockedWorkflows: progressPayload.blockedWorkflows,
+            })
+        : ok('browser.recovery_folds_workflow_noise', 'Browser recovery folds workflow noise', 'no current browser recovery action to fold'),
+    );
+
     const javascript = await ctx.api('/api/browser/javascript');
     const js = javascript.data?.javascript;
     out.push(
