@@ -469,6 +469,34 @@ export default {
         }),
     );
 
+    const blockerItems = Array.isArray(blockerStatus.blockers) ? blockerStatus.blockers : [];
+    const explicitAutopilotBlockersResponse = await ctx.api('/api/blockers?includeAutopilot=true&jobLimit=5&workflowLimit=5&approvalLimit=5', {
+      timeoutMs: 10000,
+    });
+    const explicitAutopilotBlockers = explicitAutopilotBlockersResponse.data?.blockers || {};
+    const explicitAutopilotItems = Array.isArray(explicitAutopilotBlockers.blockers) ? explicitAutopilotBlockers.blockers : [];
+    const autopilotDetailPresent = blockerStatus.autopilot &&
+      typeof blockerStatus.autopilot.enabled === 'boolean' &&
+      Array.isArray(blockerStatus.autopilot.waitingFor);
+    out.push(
+      !blockerItems.some((item) => item.id === 'autopilot_waiting' || item.id === 'autopilot_disabled') &&
+        autopilotDetailPresent &&
+        (
+          !blockerStatus.autopilot.enabled ||
+          blockerStatus.autopilot.canActNow ||
+          (
+            explicitAutopilotBlockersResponse.ok &&
+            explicitAutopilotItems.some((item) => item.id === 'autopilot_waiting' || item.id === 'autopilot_disabled')
+          )
+        )
+        ? ok('resident.blocker_status_autopilot_quiet_default', 'Blocker status keeps autopilot quiet by default', 'autopilot wait details remain in the payload and are opt-in as blocker rows')
+        : fail('resident.blocker_status_autopilot_quiet_default', 'Blocker status keeps autopilot quiet by default', 'expected default blockers to omit autopilot_waiting while preserving explicit autopilot evidence', {
+            blockerItems,
+            autopilot: blockerStatus.autopilot,
+            explicitAutopilotItems,
+          }),
+    );
+
     const unblockPreviewApiResponse = await ctx.api('/api/unblock/preview?jobLimit=5&workflowLimit=5&approvalLimit=5', {
       timeoutMs: 10000,
     });

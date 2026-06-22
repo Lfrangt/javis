@@ -10337,6 +10337,9 @@ function dedupeBlockers(items = []) {
 
 function blockerStatusSnapshot(options = {}) {
   const source = compactRecordText(options.source || 'local_command', 80);
+  const includeAutopilotBlocker = options.includeAutopilot === true ||
+    options.includeAutopilotWait === true ||
+    String(options.includeAutopilot || options.includeAutopilotWait || '').toLowerCase() === 'true';
   const readiness = readinessSnapshot({ includeRecentAudit: true });
   const conversation = conversationStateSnapshot();
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
@@ -10471,7 +10474,7 @@ function blockerStatusSnapshot(options = {}) {
       },
     ));
   }
-  if (autopilot.enabled && !autopilot.canActNow) {
+  if (includeAutopilotBlocker && autopilot.enabled && !autopilot.canActNow) {
     blockers.push(blockerItem(
       'autopilot_waiting',
       'low',
@@ -10483,7 +10486,7 @@ function blockerStatusSnapshot(options = {}) {
         next: autopilot.nextWait || autopilot.nextAction,
       },
     ));
-  } else if (!autopilot.enabled) {
+  } else if (includeAutopilotBlocker && !autopilot.enabled) {
     blockers.push(blockerItem(
       'autopilot_disabled',
       'info',
@@ -59314,6 +59317,8 @@ function startApiServer() {
           jobLimit: req.query.jobLimit,
           workflowLimit: req.query.workflowLimit,
           approvalLimit: req.query.approvalLimit,
+          includeAutopilot: req.query.includeAutopilot,
+          includeAutopilotWait: req.query.includeAutopilotWait,
           source: 'api',
         }),
       });
