@@ -359,6 +359,14 @@ function summarize(data = {}) {
           localVoiceMode: data.handoff?.localVoiceMode || data.wake.handoff?.localVoiceMode || '',
         }
       : null,
+    wakeTranscript: data.wakeTranscript
+      ? {
+          strippedWakeWord: Boolean(data.wakeTranscript.strippedWakeWord),
+          removedWakeWord: data.wakeTranscript.removedWakeWord || '',
+          originalLength: Number(data.wakeTranscript.originalLength || 0),
+          routedLength: Number(data.wakeTranscript.routedLength || 0),
+        }
+      : null,
     session: data.session
       ? {
           requested: Boolean(data.session.requested),

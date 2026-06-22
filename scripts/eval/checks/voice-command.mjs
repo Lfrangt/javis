@@ -2081,6 +2081,12 @@ export default {
         wakeCommandData.wake?.pending === true &&
         ['local_voice_fallback', 'realtime_or_local'].includes(wakeCommandData.handoff?.mode) &&
         wakeCommandData.handoff?.input?.endpoint === '/api/voice/command' &&
+        wakeCommandData.wakeTranscript?.strippedWakeWord === true &&
+        wakeCommandData.wakeTranscript?.removedWakeWord === '贾维斯' &&
+        wakeCommandData.wakeTranscript?.original === '贾维斯，唤起后走本地语音指挥，先不要执行。' &&
+        wakeCommandData.wakeTranscript?.routed === '唤起后走本地语音指挥，先不要执行。' &&
+        wakeCommandData.transcript === '唤起后走本地语音指挥，先不要执行。' &&
+        wakeCommandData.voice?.transcript === '唤起后走本地语音指挥，先不要执行。' &&
         wakeCommandData.requestedExecute === false &&
         wakeCommandData.executed === false &&
         wakeCommandData.safety?.startsMicrophone === false &&
@@ -2217,6 +2223,8 @@ export default {
           wakeCli.previewOnly === true &&
           wakeCli.wake?.pending === true &&
           ['local_voice_fallback', 'realtime_or_local'].includes(wakeCli.wake?.handoffMode) &&
+          wakeCli.wakeTranscript?.strippedWakeWord === true &&
+          wakeCli.wakeTranscript?.removedWakeWord === '贾维斯' &&
           wakeCli.safety?.startsMicrophone === false &&
           wakeCli.safety?.usesRealtime === false &&
           wakeCli.safety?.storesRawAudio === false &&

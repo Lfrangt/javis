@@ -31446,15 +31446,77 @@ async function runVoiceCommand(options = {}) {
   return result;
 }
 
+function stripWakeWordFromTranscript(value, options = {}) {
+  const original = compactRecordText(value, 1600).trim();
+  const phrase = String(options.phrase || options.wakePhrase || '').trim();
+  const wakeWords = [phrase, ...WAKE_WORDS]
+    .map((item) => String(item || '').trim())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const seen = new Set();
+  const uniqueWakeWords = wakeWords.filter((item) => {
+    const key = item.toLocaleLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const explicitSeparatorPattern = /^[\s,，:：;；.!！?？、_\-—~]+/u;
+  const implicitCjkCommandPattern = /^[\p{Script=Han}]/u;
+  for (const wakeWord of uniqueWakeWords) {
+    if (!original) break;
+    const head = original.slice(0, wakeWord.length);
+    if (head.toLocaleLowerCase() !== wakeWord.toLocaleLowerCase()) continue;
+    const rest = original.slice(wakeWord.length);
+    if (!rest) {
+      return {
+        original,
+        routed: '',
+        removedWakeWord: wakeWord,
+        strippedWakeWord: true,
+        separator: '',
+      };
+    }
+    const explicitSeparator = rest.match(explicitSeparatorPattern)?.[0] || '';
+    if (explicitSeparator) {
+      return {
+        original,
+        routed: rest.slice(explicitSeparator.length).trim(),
+        removedWakeWord: wakeWord,
+        strippedWakeWord: true,
+        separator: explicitSeparator,
+      };
+    }
+    if (/[^\x00-\x7F]/.test(wakeWord) && implicitCjkCommandPattern.test(rest)) {
+      return {
+        original,
+        routed: rest.trim(),
+        removedWakeWord: wakeWord,
+        strippedWakeWord: true,
+        separator: 'implicit_cjk',
+      };
+    }
+  }
+  return {
+    original,
+    routed: original,
+    removedWakeWord: '',
+    strippedWakeWord: false,
+    separator: '',
+  };
+}
+
 async function runWakeCommand(options = {}) {
   const source = String(options.source || 'wake_command').slice(0, 80);
   const phrase = String(options.phrase || options.wakePhrase || '贾维斯').slice(0, 120);
+  const wakeTranscript = stripWakeWordFromTranscript(options.transcript || options.message || options.text || '', { phrase });
+  const routedTranscript = wakeTranscript.routed || wakeTranscript.original;
   const wake = triggerWake({
     source,
     phrase,
   });
   const voice = await runVoiceCommand({
     ...options,
+    transcript: routedTranscript,
     source: `${source}_voice`,
   });
   const result = {
@@ -31462,6 +31524,12 @@ async function runWakeCommand(options = {}) {
     ok: voice.ok !== false,
     channel: 'wake_voice_command',
     wake,
+    wakeTranscript: {
+      ...wakeTranscript,
+      routed: routedTranscript,
+      originalLength: wakeTranscript.original.length,
+      routedLength: routedTranscript.length,
+    },
     handoff: wake.handoff || wakeHandoffSnapshot(),
     voice,
     safety: {
@@ -31478,6 +31546,9 @@ async function runWakeCommand(options = {}) {
     phrase,
     ok: result.ok,
     transcriptLength: String(voice.transcript || '').length,
+    originalTranscriptLength: wakeTranscript.original.length,
+    strippedWakeWord: Boolean(wakeTranscript.strippedWakeWord),
+    removedWakeWord: wakeTranscript.removedWakeWord,
     lane: voice.route?.decision?.lane || '',
     queued: Boolean(voice.route?.queued || voice.route?.job?.id),
     executed: Boolean(voice.executed),
