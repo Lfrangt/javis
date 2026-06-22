@@ -826,10 +826,12 @@ type PetStatusPayload = Pick<
   payloadContract?: {
     version: number
     maxTargetBytes: number
+    minHeadroomBytes?: number
+    headroomBytes?: number
     outputBytes: number
     allowedTopLevel: string[]
     forbiddenTopLevel: string[]
-    omittedTopLevel: string[]
+    omittedTopLevel?: string[]
     screenImagesAllowed: boolean
     rawLogsAllowed: boolean
     rawRuntimePathsAllowed: boolean

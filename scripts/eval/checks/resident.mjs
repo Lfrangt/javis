@@ -641,6 +641,8 @@ export default {
     const wakeBlocker = petWakeHandoff.blocker || {};
     const raw = JSON.stringify(p);
     const rawBytes = Buffer.byteLength(raw, 'utf8');
+    const contractMinHeadroom = Number(contract.minHeadroomBytes || 0);
+    const contractHeadroom = Number(contract.headroomBytes || 0);
     const hasForbiddenNestedKey = (value, forbidden) => {
       if (!value || typeof value !== 'object') return false;
       if (Array.isArray(value)) return value.some((item) => hasForbiddenNestedKey(item, forbidden));
@@ -656,7 +658,10 @@ export default {
         p.pet.excludes.includes('model identifiers') &&
         contract.version === 1 &&
         contract.maxTargetBytes >= rawBytes &&
-        contract.outputBytes > 0 &&
+        contract.outputBytes === rawBytes &&
+        contractMinHeadroom >= 500 &&
+        contractHeadroom === contract.maxTargetBytes - rawBytes &&
+        contractHeadroom >= contractMinHeadroom &&
         rawBytes <= contract.maxTargetBytes &&
         contract.screenImagesAllowed === false &&
         contract.rawLogsAllowed === false &&
@@ -770,13 +775,15 @@ export default {
         unexpectedTopLevel.length === 0 &&
         !hasForbiddenNestedKey(p, forbiddenNestedKeys) &&
         queue.every((job) => !Object.prototype.hasOwnProperty.call(job, 'log') && !Object.prototype.hasOwnProperty.call(job, 'result'))
-        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${traffic.color}/${traffic.state} · ${p.presence.mode} · localVoice=${localVoice.mode} · ${rawBytes}/${contract.maxTargetBytes} bytes`)
+        ? ok('resident.pet_status_lightweight', 'Pet status lightweight payload', `${traffic.color}/${traffic.state} · ${p.presence.mode} · localVoice=${localVoice.mode} · ${rawBytes}/${contract.maxTargetBytes} bytes · headroom=${contractHeadroom}`)
         : fail('resident.pet_status_lightweight', 'Pet status lightweight payload', `expected slim pet payload, got ${pet.status}`, {
           forbiddenTopLevel,
           unexpectedTopLevel,
           hasImage: Boolean(p.screen?.imageDataUrl),
           hasRuntimeDataDir: Boolean(p.runtime?.dataDir),
           rawBytes,
+          contractHeadroom,
+          contractMinHeadroom,
           contract,
           pet: p.pet,
           traffic,

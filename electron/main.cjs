@@ -33922,6 +33922,19 @@ function petReadinessSummary(readiness = petReadinessSnapshot()) {
   };
 }
 
+function finalizePetPayloadContract(snapshot) {
+  const contract = snapshot?.payloadContract;
+  if (!contract || typeof contract !== 'object') return snapshot;
+  for (let index = 0; index < 5; index += 1) {
+    const bytes = Buffer.byteLength(JSON.stringify(snapshot), 'utf8');
+    const headroom = Math.max(0, Number(contract.maxTargetBytes || 0) - bytes);
+    if (contract.outputBytes === bytes && contract.headroomBytes === headroom) break;
+    contract.outputBytes = bytes;
+    contract.headroomBytes = headroom;
+  }
+  return snapshot;
+}
+
 function petStatusSnapshot() {
   const conversation = conversationStateSnapshot();
   const wake = wakeStatusSnapshot();
@@ -33933,6 +33946,8 @@ function petStatusSnapshot() {
   const trafficLight = petTrafficLightSnapshot({ presence });
   const screenFrame = latestScreenSnapshot();
   const rawVoiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const maxTargetBytes = 12000;
+  const minHeadroomBytes = 500;
   const allowedTopLevel = [
     'pet',
     'api',
@@ -33986,15 +34001,10 @@ function petStatusSnapshot() {
       excludes: [
         'screen.imageDataUrl',
         'runtime.dataDir',
-        'models',
-        'memory',
-        'learning',
-        'routing.recent',
-        'workflow logs/results',
-        'notification bodies',
         'model identifiers',
-        'collaboration ledger',
-        'ambient event log',
+        'memory/learning profiles',
+        'routing/workflow logs',
+        'notification bodies',
       ],
       mode: presence.mode,
       label: presence.label,
@@ -34100,10 +34110,11 @@ function petStatusSnapshot() {
     })),
     payloadContract: {
       version: 1,
-      maxTargetBytes: 12000,
+      maxTargetBytes,
+      minHeadroomBytes,
+      headroomBytes: 0,
       allowedTopLevel,
       forbiddenTopLevel,
-      omittedTopLevel: forbiddenTopLevel,
       screenImagesAllowed: false,
       rawLogsAllowed: false,
       rawRuntimePathsAllowed: false,
@@ -34111,8 +34122,7 @@ function petStatusSnapshot() {
       outputBytes: 0,
     },
   };
-  snapshot.payloadContract.outputBytes = Buffer.byteLength(JSON.stringify(snapshot), 'utf8');
-  return snapshot;
+  return finalizePetPayloadContract(snapshot);
 }
 
 function formatRealtimeContextAction(action, index) {
