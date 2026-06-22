@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -466,6 +466,7 @@ function loopDelegateConfirmRequested() {
 function loopHelpText() {
   return [
     'Loop commands:',
+    '  /try      Show context-ranked things to say next without microphone, Realtime, Terminal, or model calls.',
     '  /voice    Read Realtime/live voice blocker, local fallback, and next recovery step.',
     '  /see      Read screen/privacy/ambient perception status without capturing a new frame.',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
@@ -952,6 +953,24 @@ function formatLoopAppAmbient(data = {}) {
   ];
   if (!ambient.enabled) lines.push('Note: ambient observation is disabled; add --full-app for a live read.');
   return lines.join('\n');
+}
+
+function formatLoopPromptSuggestions(data = {}) {
+  const standby = data.standby || {};
+  const promptPack = standby.promptPack || standby.local?.promptPack || {};
+  const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
+  const lines = [
+    `Try: ${compactText(promptPack.nextUtterance || '-', 160)}`,
+  ];
+  if (examples.length) {
+    lines.push('Examples:');
+    for (const item of examples.slice(0, 4)) {
+      lines.push(`- ${compactText(item.utterance || item.label || item.id || '-', 140)}`);
+    }
+  }
+  lines.push(`Local: ${standby.local?.mode || '-'} · ${standby.local?.input?.endpoint || '/api/voice/command'}`);
+  lines.push('Safety: read-only; does not start microphone, Realtime, Terminal, screen capture, or model calls.');
+  return lines.filter(Boolean).join('\n');
 }
 
 function normalizeBrowserWorkflowIntentForLoop(value) {
@@ -1564,6 +1583,15 @@ async function runLoopCommand(transcript) {
         elapsedMs: Math.round(performance.now() - base.startedAt),
         output: loopHelpText(),
       };
+    }
+    if (command === 'try' || command === 'suggest' || command === 'suggestions' || command === 'prompts' || command === 'prompt') {
+      const endpoint = '/api/voice/standby';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopPromptSuggestions(response.data || {}), {
+        command,
+        endpoint,
+        detailLevel: 'fast',
+      });
     }
     if (command === 'status') {
       const full = loopFullMode('status');

@@ -244,6 +244,44 @@ export default {
         : fail('voice_command.natural_learning_distillation', 'Natural learning distillation voice command', 'natural learning phrase did not use the local learning_distillation fast path', naturalLearning.data),
     );
 
+    const naturalPromptSuggestions = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '我现在可以说什么，下一句怎么叫你？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_prompt_suggestions',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalPromptSuggestionsData = naturalPromptSuggestions.data || {};
+    const naturalPromptPack = naturalPromptSuggestionsData.route?.data?.promptPack || {};
+    out.push(
+      naturalPromptSuggestions.ok &&
+        naturalPromptSuggestionsData.ok === true &&
+        naturalPromptSuggestionsData.executed === false &&
+        naturalPromptSuggestionsData.route?.decision?.localCommand === 'prompt_suggestions' &&
+        naturalPromptSuggestionsData.route?.localCommand?.intent === 'prompt_suggestions' &&
+        typeof naturalPromptSuggestionsData.route?.output === 'string' &&
+        naturalPromptSuggestionsData.route.output.includes('可以这样叫我:') &&
+        naturalPromptSuggestionsData.route.output.includes('建议:') &&
+        naturalPromptSuggestionsData.route.output.includes('不启动麦克风') &&
+        naturalPromptSuggestionsData.route.output.includes('不调用云模型') &&
+        typeof naturalPromptPack.nextUtterance === 'string' &&
+        naturalPromptPack.nextUtterance.length > 0 &&
+        Array.isArray(naturalPromptPack.examples) &&
+        naturalPromptSuggestionsData.route?.data?.standby?.version === 1 &&
+        naturalPromptSuggestionsData.safety?.startsMicrophone === false &&
+        naturalPromptSuggestionsData.safety?.usesRealtime === false &&
+        naturalPromptSuggestionsData.safety?.storesRawAudio === false &&
+        naturalPromptSuggestionsData.safety?.callsOpenAIImmediately === false &&
+        naturalPromptSuggestionsData.speech?.dryRun === true
+        ? ok('voice_command.natural_prompt_suggestions', 'Natural prompt-suggestion voice command', '我现在可以说什么 reads the standby prompt pack without cloud/realtime')
+        : fail('voice_command.natural_prompt_suggestions', 'Natural prompt-suggestion voice command', 'natural prompt-suggestion phrase did not use the local prompt_suggestions fast path', naturalPromptSuggestions.data),
+    );
+
     const naturalWindowPreview = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -971,7 +1009,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/learn\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/try\\n/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/learn\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -986,6 +1024,7 @@ export default {
       const turns = Array.isArray(loop.turns) ? loop.turns : [];
       const commandTurns = turns.filter((turn) => turn.kind === 'loop_command');
       const voiceTurns = turns.filter((turn) => turn.kind !== 'loop_command');
+      const tryTurn = commandTurns.find((turn) => turn.command === 'try') || {};
       const statusTurn = commandTurns.find((turn) => turn.command === 'status') || {};
       const appTurn = commandTurns.find((turn) => turn.command === 'app') || {};
       const uiTurn = commandTurns.find((turn) => turn.command === 'ui') || {};
@@ -1019,13 +1058,18 @@ export default {
           loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 17 &&
+          loop.turnCount === 18 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 15 &&
-          ['status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'learn', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 16 &&
+          ['try', 'status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'learn', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          tryTurn.detailLevel === 'fast' &&
+          tryTurn.endpoint === '/api/voice/standby' &&
+          tryTurn.output.includes('Try:') &&
+          tryTurn.output.includes('Examples:') &&
+          tryTurn.output.includes('Safety: read-only') &&
           statusTurn.detailLevel === 'fast' &&
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&

@@ -927,6 +927,20 @@ export default {
         : fail('resident.local_voice_loop_voice_status', 'Local voice loop voice-status command', 'expected /voice slash command to read /api/voice/standby with read-only safety copy'),
     );
 
+    const hasPromptSuggestionsFastPath =
+      mainSource.includes('function naturalPromptSuggestionsLocalCommand') &&
+      mainSource.includes("intent: 'prompt_suggestions'") &&
+      mainSource.includes('formatPromptSuggestionsForLocalCommand') &&
+      mainSource.includes('不调用云模型') &&
+      loopSource.includes("command === 'try'") &&
+      loopSource.includes('formatLoopPromptSuggestions') &&
+      loopSource.includes('does not start microphone, Realtime, Terminal, screen capture, or model calls.');
+    out.push(
+      hasPromptSuggestionsFastPath
+        ? ok('resident.voice_prompt_suggestions_fast_path', 'Voice prompt suggestions fast path', 'natural prompt questions and /try read the standby prompt pack without model, microphone, or Terminal')
+        : fail('resident.voice_prompt_suggestions_fast_path', 'Voice prompt suggestions fast path', 'expected local prompt_suggestions intent and /try to read /api/voice/standby safely'),
+    );
+
     const hasPerceptionStatusLoop =
       loopSource.includes("command === 'see'") &&
       loopSource.includes('/api/perception/consent?limit=5') &&

@@ -24250,6 +24250,24 @@ function naturalVoiceStatusLocalCommand(text) {
   };
 }
 
+function naturalPromptSuggestionsLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+  const english = /\b(what can i say|what should i say|what can i ask|what should i ask|suggest(?:ed)? prompts?|prompt suggestions?|try saying|next prompt|how should i ask|how do i talk to you|how do i summon you)\b/i.test(raw)
+    || /\b(give|show|suggest).*(?:examples?|prompts?|things to say|things to ask)\b/i.test(raw);
+  const chinese = /(?:可以说什么|该说什么|能说什么|可以问什么|该问什么|能问什么|下一句|下句|提示词|提示语|话术|怎么叫你|怎么喊你|怎么和你说|我现在.*(?:问什么|说什么|让你做什么)|有什么可以问|有什么能问|给我几个例子|给我点例子|给我提示|给几个提示|建议.*(?:说|问)|推荐.*(?:说|问))/i.test(compactPlain);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'prompt_suggestions',
+    label: 'Voice prompt suggestions',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalPerceptionStatusLocalCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24622,6 +24640,9 @@ function localCommandDecision(task) {
 
   const voiceStatusCommand = naturalVoiceStatusLocalCommand(text);
   if (voiceStatusCommand) return voiceStatusCommand;
+
+  const promptSuggestionsCommand = naturalPromptSuggestionsLocalCommand(text);
+  if (promptSuggestionsCommand) return promptSuggestionsCommand;
 
   const browserCommand = naturalBrowserLocalCommand(text);
   if (browserCommand) return browserCommand;
@@ -25696,6 +25717,23 @@ function formatVoiceStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatPromptSuggestionsForLocalCommand(status = {}) {
+  const standby = status.standby || {};
+  const local = standby.local || {};
+  const promptPack = status.promptPack || standby.promptPack || local.promptPack || {};
+  const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
+  const suggestionLines = examples
+    .slice(0, 4)
+    .map((item) => `- ${compactRecordText(item.utterance || item.label || item.id || '-', 120)}`);
+  return [
+    `可以这样叫我: ${compactRecordText(promptPack.nextUtterance || standby.next || '后台现在怎么样？', 160)}`,
+    suggestionLines.length ? `建议:\n${suggestionLines.join('\n')}` : '',
+    standby.label || standby.mode ? `状态: ${standby.label || standby.mode} · ${local.mode || '-'}` : '',
+    `入口: ${local.input?.endpoint || '/api/voice/command'} · ${standby.primaryAction?.label || 'Open local input'}`,
+    '边界: 这里只读待机提示；不启动麦克风，不创建 Realtime session，不开 Terminal，不读取屏幕，不调用云模型。',
+  ].filter(Boolean).join('\n');
+}
+
 function perceptionStatusSnapshot(options = {}) {
   const limit = Math.max(1, Math.min(12, Number(options.limit || 5)));
   const perception = perceptionConsentSnapshot({
@@ -26084,6 +26122,36 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatLearningDistillationForLocalCommand(distillation),
         data: { distillation },
+      };
+    }
+
+    if (command.intent === 'prompt_suggestions') {
+      const conversation = conversationStateSnapshot();
+      const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+      const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+      const wake = wakeHandoffSnapshot({ conversation, voiceHealth, localVoice });
+      const standby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice, wake });
+      const promptPack = standby.promptPack || localVoice.promptPack || null;
+      const promptSuggestions = {
+        standby,
+        promptPack,
+        safety: {
+          readOnly: true,
+          startsMicrophone: false,
+          usesRealtime: false,
+          storesRawAudio: false,
+          opensTerminal: false,
+          storesScreenImage: false,
+          storesClipboardText: false,
+          storesAccessibilityNodes: false,
+          callsOpenAI: false,
+        },
+      };
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatPromptSuggestionsForLocalCommand(promptSuggestions),
+        data: { promptSuggestions, promptPack, standby },
       };
     }
 
@@ -26886,6 +26954,9 @@ function voiceCommandAck(route = {}, options = {}) {
     return output;
   }
   if (route.localCommand?.intent === 'learning_distillation' && output) {
+    return output;
+  }
+  if (route.localCommand?.intent === 'prompt_suggestions' && output) {
     return output;
   }
   const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
@@ -28013,7 +28084,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'learning_distillation', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
