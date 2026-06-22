@@ -28,6 +28,8 @@
     "doctor": "node scripts/doctor.mjs",
     "setup:bundle": "node scripts/config-cui.cjs --print-setup-recovery-bundle",
     "collab": "node scripts/collab.mjs",
+    "overnight": "node scripts/config-cui.cjs --print-overnight",
+    "overnight:start": "node scripts/config-cui.cjs --start-overnight",
     "keepawake": "node scripts/config-cui.cjs --print-keep-awake",
     "keepawake:start": "node scripts/config-cui.cjs --start-keep-awake",
     "keepawake:stop": "node scripts/config-cui.cjs --stop-keep-awake",

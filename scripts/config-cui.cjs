@@ -421,6 +421,8 @@ async function printStatus() {
   console.log('12. Run doctor');
   console.log('13. Test wake trigger');
   console.log('RB. Show resident recovery bundle');
+  console.log('ON. Show overnight resident status');
+  console.log('OP. Prepare overnight resident (keep-awake only)');
   console.log('KA. Show keep-awake status');
   console.log('KS. Start keep-awake');
   console.log('KX. Stop keep-awake');
@@ -3825,6 +3827,79 @@ async function showSetupRecoveryBundle() {
   return result;
 }
 
+function printOvernight(result) {
+  const overnight = result?.overnight || result || {};
+  const keepAwake = overnight.keepAwake || {};
+  const spendGuard = overnight.openAiSpendGuard || {};
+  const autopilot = overnight.autopilot || {};
+  const progress = overnight.progress || {};
+  const blockers = overnight.blockers || {};
+  const commands = overnight.commands || {};
+  const safety = result?.safety || overnight.safety || {};
+  const issues = Array.isArray(overnight.issues) ? overnight.issues : [];
+  const nextActions = Array.isArray(overnight.nextActions) ? overnight.nextActions : [];
+  console.log('JAVIS Overnight Resident');
+  console.log('========================');
+  console.log(`Status: ${overnight.status || '-'} · ready=${overnight.readyForOvernight ? 'yes' : 'no'}`);
+  if (overnight.summary) console.log(`Summary: ${compact(overnight.summary, 520)}`);
+  console.log(`Resident: loaded=${overnight.resident?.loaded ? 'yes' : 'no'} matchesProject=${overnight.resident?.matchesProject ? 'yes' : 'no'}${overnight.resident?.pid ? ` pid=${overnight.resident.pid}` : ''}`);
+  console.log(`Keep-awake: active=${keepAwake.active ? 'yes' : 'no'} running=${keepAwake.running ? 'yes' : 'no'} · ${keepAwake.plan?.commandLine || 'npm run keepawake:start'}`);
+  console.log(`OpenAI: mode=${spendGuard.mode || '-'} hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} daily=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit ?? 0} · blocked=${spendGuard.counts?.blocked || 0}`);
+  console.log(`Voice: ${overnight.voice?.standby?.mode || '-'} · provider=${overnight.voice?.health?.status || '-'}`);
+  console.log(`Autopilot: ${autopilot.enabled ? 'on' : 'off'} · canActNow=${autopilot.canActNow ? 'yes' : 'no'}${autopilot.nextWait ? ` · ${compact(autopilot.nextWait, 160)}` : ''}`);
+  console.log(`Work: ${compact(progress.spokenSummary || 'No work progress available.', 320)}`);
+  console.log(`Blockers: ${blockers.count || 0}${blockers.spokenSummary ? ` · ${compact(blockers.spokenSummary, 240)}` : ''}`);
+  if (issues.length) {
+    console.log('\nIssues');
+    for (const issue of issues.slice(0, 6)) {
+      const next = issue.next ? ` · next: ${compact(issue.next, 140)}` : '';
+      console.log(`- ${issue.severity || 'info'} ${issue.label || issue.id}: ${compact(issue.summary || '', 180)}${next}`);
+    }
+  }
+  if (nextActions.length) {
+    console.log('\nNext');
+    for (const action of nextActions.slice(0, 5)) {
+      const target = action.command || action.endpoint || '';
+      console.log(`- ${action.label || action.id}${target ? ` · ${target}` : ''}`);
+    }
+  }
+  console.log('\nCommands');
+  console.log(`- status: ${commands.status || 'npm run overnight'}`);
+  console.log(`- prepare: ${commands.prepare || 'npm run overnight:start'}`);
+  console.log(`- spend guard: ${commands.openAiSpend || 'npm run openai:spend'}`);
+  console.log('\nSafety');
+  console.log(`- calls OpenAI=${safety.callsOpenAi ? 'yes' : 'no'} starts mic=${safety.startsMicrophone ? 'yes' : 'no'} realtime=${safety.usesRealtime ? 'yes' : 'no'} starts workers=${safety.startsWorkers ? 'yes' : 'no'} enables autopilot=${safety.enablesAutopilot ? 'yes' : 'no'} mutates user files=${safety.mutatesUserFiles ? 'yes' : 'no'} launchd change=${safety.changesLaunchdJob ? 'yes' : 'no'}`);
+  if (result?.output) console.log(`\n${compact(result.output, 700)}`);
+}
+
+async function showOvernightStatus() {
+  const result = await request('/api/overnight/status');
+  printOvernight(result);
+  return result;
+}
+
+async function prepareOvernightFromCui(options = {}) {
+  const result = await request('/api/overnight/prepare', {
+    method: 'POST',
+    body: {
+      execute: options.execute === true,
+      source: options.source || 'cui_cli',
+    },
+  });
+  printOvernight(result);
+  return result;
+}
+
+async function prepareOvernightInteractive(rl) {
+  await prepareOvernightFromCui({ execute: false, source: 'cui_preview' });
+  const answer = (await rl.question('\nStart overnight keep-awake now? Type START to continue: ')).trim();
+  if (answer !== 'START') {
+    console.log('\nOvernight prep left unchanged.');
+    return;
+  }
+  await prepareOvernightFromCui({ execute: true, source: 'cui' });
+}
+
 function printKeepAwake(result) {
   const keepAwake = result?.keepAwake || result || {};
   const plan = keepAwake.plan || {};
@@ -4408,6 +4483,19 @@ async function movePetCorner(rl) {
 }
 
 async function main() {
+  if (process.argv.includes('--print-overnight') || process.argv.includes('--overnight')) {
+    await showOvernightStatus();
+    return;
+  }
+
+  if (process.argv.includes('--start-overnight') || process.argv.includes('--prepare-overnight')) {
+    await prepareOvernightFromCui({
+      execute: process.argv.includes('--execute') || process.argv.includes('--run') || process.argv.includes('--start-overnight'),
+      source: 'cui_cli',
+    });
+    return;
+  }
+
   if (process.argv.includes('--print-realtime-evidence') || process.argv.includes('--realtime-evidence')) {
     const result = await request('/api/realtime/evidence');
     printRealtimeEvidence(result);
@@ -4851,6 +4939,10 @@ async function main() {
         console.log(`\nWake trigger queued. Pending: ${result.wake?.pending ? 'yes' : 'no'}`);
       } else if (answer === 'rb' || answer === 'recovery bundle' || answer === 'setup recovery' || answer === 'resident recovery') {
         await showSetupRecoveryBundle();
+      } else if (answer === 'on' || answer === 'overnight' || answer === 'overnight status' || answer === 'night') {
+        await showOvernightStatus();
+      } else if (answer === 'op' || answer === 'overnight prepare' || answer === 'prepare overnight' || answer === 'night prep') {
+        await prepareOvernightInteractive(rl);
       } else if (answer === 'ka' || answer === 'keep awake' || answer === 'keep-awake') {
         await showKeepAwakeStatus();
       } else if (answer === 'ks' || answer === 'keep awake start' || answer === 'start keep awake' || answer === 'start keep-awake') {

@@ -13252,6 +13252,304 @@ async function keepAwakeStatusSnapshot() {
   };
 }
 
+function overnightIssue(id, severity, label, summary, next = '') {
+  return {
+    id: compactRecordText(id || label || 'overnight_issue', 100),
+    severity: compactRecordText(severity || 'info', 40),
+    label: compactRecordText(label || id || 'Overnight issue', 140),
+    summary: compactRecordText(summary || '', 280),
+    next: compactRecordText(next || '', 280),
+  };
+}
+
+function overnightCloudLocked(spendGuard = {}) {
+  return Boolean(
+    spendGuard.hardSpendLock === true &&
+      spendGuard.mode === 'off' &&
+      Number(spendGuard.dailyRequestLimit || 0) === 0 &&
+      Number(spendGuard.unattendedDailyRequestLimit || 0) === 0 &&
+      spendGuard.allowAutopilotCloud === false &&
+      spendGuard.allowRendererStartupProbe === false,
+  );
+}
+
+function overnightStatusFromIssues(issues = []) {
+  if (issues.some((item) => item.id === 'openai_spend_unlocked')) return 'unsafe_cloud';
+  if (issues.some((item) => item.id === 'resident_not_loaded' || item.id === 'resident_project_mismatch')) return 'blocked';
+  if (issues.some((item) => item.id === 'keep_awake_off')) return 'needs_keep_awake';
+  if (issues.some((item) => ['critical', 'high'].includes(item.severity))) return 'attention';
+  return 'ready';
+}
+
+function overnightSummary(status, issues = [], progress = {}, autopilot = {}) {
+  if (status === 'ready') {
+    const work = progress.spokenSummary || 'No active background work.';
+    const auto = autopilot.enabled
+      ? `Autopilot is enabled but still bounded by existing policy: ${compactRecordText(autopilot.spokenSummary || autopilot.nextWait || '', 180)}`
+      : 'Autopilot is disabled; JAVIS will stay resident and keep local state available without starting new work by itself.';
+    return compactRecordText(`Overnight resident mode is ready. ${work} ${auto}`, 520);
+  }
+  const first = issues[0] || {};
+  return compactRecordText(`Overnight resident mode needs attention: ${first.summary || first.label || status}.`, 420);
+}
+
+async function overnightStatusSnapshot(options = {}) {
+  const source = compactRecordText(options.source || 'overnight_status', 80);
+  const [resident, keepAwake] = await Promise.all([
+    residentStatusSnapshot(),
+    keepAwakeStatusSnapshot(),
+  ]);
+  const readiness = readinessSnapshot({ includeRecentAudit: true });
+  const conversation = conversationStateSnapshot();
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const voiceStandby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
+  const spendGuard = openAiSpendGuardSnapshot();
+  const progress = workProgressCheckIn({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    includeInternal: false,
+    source,
+  });
+  const autopilot = autopilotStatusVoicePayload(
+    autopilotVoiceStatusSnapshot({
+      source,
+      workflowLimit: options.workflowLimit || 6,
+      jobLimit: options.jobLimit || 6,
+    }),
+    { source },
+  );
+  const blockers = blockerStatusSnapshot({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    approvalLimit: options.approvalLimit || 5,
+    includeAutopilot: true,
+    source,
+  });
+  const issues = [];
+  if (!resident.loaded) {
+    issues.push(overnightIssue(
+      'resident_not_loaded',
+      'critical',
+      'Resident not loaded',
+      'The JAVIS LaunchAgent is not loaded, so the resident may not keep running overnight.',
+      'Run npm run resident:install.',
+    ));
+  } else if (!resident.matchesProject) {
+    issues.push(overnightIssue(
+      'resident_project_mismatch',
+      'high',
+      'Resident project mismatch',
+      'The loaded resident does not appear to match this project directory.',
+      'Run npm run resident:install from /Users/Haoge/Documents/javis.',
+    ));
+  }
+  if (!keepAwake.active) {
+    issues.push(overnightIssue(
+      'keep_awake_off',
+      'medium',
+      'Keep-awake is off',
+      'macOS system sleep can pause resident/background work.',
+      'Run npm run overnight:start or npm run keepawake:start before sleeping.',
+    ));
+  }
+  if (!overnightCloudLocked(spendGuard)) {
+    issues.push(overnightIssue(
+      'openai_spend_unlocked',
+      'high',
+      'OpenAI spend is not zero-locked',
+      'OpenAI cloud calls are not fully hard-locked to zero spend.',
+      'Run npm run openai:spend and restore hard lock/off/0 daily limits before unattended use.',
+    ));
+  }
+  if (voiceStandby.safety?.startsMicrophone || voiceStandby.safety?.usesRealtime) {
+    issues.push(overnightIssue(
+      'voice_standby_not_local',
+      'medium',
+      'Voice standby is not local-only',
+      'The current voice standby path may start microphone or Realtime.',
+      'Use local fallback while unattended; only start live voice while present.',
+    ));
+  }
+
+  const status = overnightStatusFromIssues(issues);
+  const nextActions = [];
+  if (issues.some((item) => item.id === 'resident_not_loaded' || item.id === 'resident_project_mismatch')) {
+    nextActions.push({ id: 'install_resident', label: 'Install resident', command: 'npm run resident:install' });
+  }
+  if (issues.some((item) => item.id === 'keep_awake_off')) {
+    nextActions.push({ id: 'start_keep_awake', label: 'Start keep-awake', command: 'npm run overnight:start', endpoint: '/api/overnight/prepare' });
+  }
+  if (issues.some((item) => item.id === 'openai_spend_unlocked')) {
+    nextActions.push({ id: 'review_spend_guard', label: 'Review OpenAI spend guard', command: 'npm run openai:spend', endpoint: '/api/openai/spend-guard' });
+  }
+  const topBlockers = Array.isArray(blockers.blockers) ? blockers.blockers.slice(0, 5) : [];
+  if (topBlockers.length) {
+    nextActions.push({ id: 'review_blockers', label: 'Review blockers', command: 'npm run config -> /blockers', endpoint: '/api/blockers' });
+  }
+
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    source,
+    status,
+    readyForOvernight: status === 'ready',
+    summary: overnightSummary(status, issues, progress, autopilot),
+    issues,
+    resident,
+    keepAwake,
+    openAiSpendGuard: spendGuard,
+    voice: {
+      standby: {
+        mode: voiceStandby.mode,
+        label: voiceStandby.label,
+        primaryAction: voiceStandby.primaryAction,
+        local: voiceStandby.local,
+        provider: voiceStandby.provider,
+        safety: voiceStandby.safety,
+      },
+      health: {
+        status: voiceHealth.status,
+        kind: voiceHealth.kind,
+        summary: compactRecordText(voiceHealth.summary || '', 320),
+        next: compactRecordText(voiceHealth.next || '', 320),
+      },
+    },
+    autopilot: {
+      enabled: autopilot.enabled,
+      running: autopilot.running,
+      busy: autopilot.busy,
+      canActNow: autopilot.canActNow,
+      reason: autopilot.reason,
+      nextWait: autopilot.nextWait,
+      spokenSummary: autopilot.spokenSummary,
+      selectedAction: autopilot.selectedAction,
+      firstAction: autopilot.firstAction,
+      candidateCounts: autopilot.candidateCounts,
+      safety: {
+        enabledByOvernight: false,
+        startsAutomaticallyFromPrepare: false,
+      },
+    },
+    progress: {
+      spokenSummary: progress.spokenSummary,
+      workerSummary: progress.workerSummary,
+      counts: progress.counts,
+      version: progress.version,
+      activeJobs: Array.isArray(progress.activeJobs) ? progress.activeJobs.length : 0,
+      activeWorkflows: Array.isArray(progress.activeWorkflows) ? progress.activeWorkflows.length : 0,
+      workerGroups: Array.isArray(progress.workerGroups) ? progress.workerGroups.slice(0, 5) : [],
+      nextActions: Array.isArray(progress.nextActions) ? progress.nextActions.slice(0, 3) : [],
+    },
+    blockers: {
+      status: blockers.status,
+      count: Number(blockers.counts?.total || blockers.count || topBlockers.length || 0),
+      counts: blockers.counts || {},
+      blockers: topBlockers,
+      spokenSummary: blockers.spokenSummary || blockers.summary || '',
+    },
+    commands: {
+      status: 'npm run overnight',
+      prepare: 'npm run overnight:start',
+      keepAwakeStatus: 'npm run keepawake',
+      keepAwakeStart: 'npm run keepawake:start',
+      openAiSpend: 'npm run openai:spend',
+      autopilot: 'npm run autonomy',
+      workNext: 'npm run work:next',
+      workHandoff: 'npm run config -- --print-work-handoff',
+    },
+    endpoints: {
+      status: '/api/overnight/status',
+      prepare: '/api/overnight/prepare',
+      keepAwake: '/api/keep-awake/status',
+      openAiSpendGuard: '/api/openai/spend-guard',
+      blockers: '/api/blockers',
+      workProgress: '/api/work/progress',
+    },
+    nextActions,
+    safety: {
+      readOnly: true,
+      previewOnly: true,
+      callsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      capturesAudio: false,
+      storesRawAudio: false,
+      capturesScreen: false,
+      startsWorkers: false,
+      enablesAutopilot: false,
+      mutatesUserFiles: false,
+      mutatesProjectFiles: false,
+      changesLaunchdJob: false,
+      exposesApiToken: false,
+    },
+  };
+}
+
+async function prepareOvernight(options = {}) {
+  const source = compactRecordText(options.source || 'overnight_prepare', 80);
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const before = await overnightStatusSnapshot({ ...options, source });
+  if (!execute) {
+    return {
+      ok: true,
+      executed: false,
+      preview: true,
+      overnight: before,
+      keepAwakeResult: null,
+      output: before.keepAwake.active
+        ? 'Preview only. Overnight keep-awake is already active; no launchd change is needed.'
+        : 'Preview only. Would start JAVIS keep-awake; no OpenAI, microphone, Realtime, worker, or autopilot action would start.',
+      safety: {
+        callsOpenAi: false,
+        startsMicrophone: false,
+        usesRealtime: false,
+        capturesAudio: false,
+        storesRawAudio: false,
+        capturesScreen: false,
+        startsWorkers: false,
+        enablesAutopilot: false,
+        mutatesUserFiles: false,
+        mutatesProjectFiles: false,
+        changesLaunchdJob: false,
+      },
+    };
+  }
+  const keepAwakeResult = before.keepAwake.running
+    ? { ok: true, executed: false, alreadyRunning: true, output: 'Keep-awake is already running.', keepAwake: before.keepAwake }
+    : await startKeepAwake({ execute: true, source });
+  const after = await overnightStatusSnapshot({ ...options, source });
+  appendAudit('overnight.prepared', {
+    source,
+    executed: Boolean(keepAwakeResult.executed),
+    keepAwakeRunning: Boolean(after.keepAwake.running),
+    status: after.status,
+  });
+  return {
+    ok: true,
+    executed: Boolean(keepAwakeResult.executed),
+    preview: false,
+    overnight: after,
+    keepAwakeResult,
+    output: after.keepAwake.active
+      ? 'Overnight resident prep is active. Keep-awake is on; no cloud, microphone, Realtime, workers, or autopilot were started by this command.'
+      : 'Overnight resident prep ran, but keep-awake is still not active.',
+    safety: {
+      callsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      capturesAudio: false,
+      storesRawAudio: false,
+      capturesScreen: false,
+      startsWorkers: false,
+      enablesAutopilot: false,
+      mutatesUserFiles: false,
+      mutatesProjectFiles: false,
+      changesLaunchdJob: !before.keepAwake.running,
+    },
+  };
+}
+
 async function startKeepAwake(options = {}) {
   const source = String(options.source || 'api').slice(0, 80);
   const execute = options.execute === true;
@@ -59796,6 +60094,34 @@ function startApiServer() {
       res.json({ keepAwake: await keepAwakeStatusSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Keep-awake status failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/overnight/status', async (req, res) => {
+    try {
+      res.json({
+        overnight: await overnightStatusSnapshot({
+          jobLimit: req.query.jobLimit,
+          workflowLimit: req.query.workflowLimit,
+          approvalLimit: req.query.approvalLimit,
+          source: 'api',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Overnight status failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/overnight/prepare', async (req, res) => {
+    try {
+      const result = await prepareOvernight({
+        ...(req.body || {}),
+        execute: req.body?.execute === true,
+        source: req.body?.source || 'api',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Overnight prepare failed', error instanceof Error ? error.message : String(error));
     }
   });
 

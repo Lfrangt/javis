@@ -36,10 +36,14 @@ resident process records the event and summons the pet instead of starting a sec
 Unattended overnight work:
 
 ```bash
+npm run overnight
+npm run overnight:start
 npm run keepawake
 npm run keepawake:start
 npm run keepawake:stop
 ```
+
+`npm run overnight` is the safe sleep-before-you-leave status pack. It combines resident LaunchAgent state, keep-awake, OpenAI spend guard, local voice fallback, work progress, blockers, and bounded-autopilot posture without calling OpenAI, starting microphone capture, starting Realtime, starting workers, enabling autopilot, capturing screen, or mutating user files. `npm run overnight:start` prepares only the local keep-awake job and then prints the same pack.
 
 Keep-awake starts a launchd-managed `/usr/bin/caffeinate -i -m -s` job under `com.haoge.javis.keepawake` by default. This keeps the Mac available for resident/background work while allowing the display to sleep. Display sleep is not the same as system sleep; a black screen is fine, but closed-lid sleep can still depend on macOS clamshell, power, and external-display conditions. The status command checks both launchd and `pmset` assertions.
 

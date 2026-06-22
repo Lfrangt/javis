@@ -144,10 +144,98 @@ export default {
           status: recoveryBundleResponse.status,
           bundle,
         }),
-    );
+	    );
 
-    const setupNextPreviewResponse = await ctx.api('/api/setup/next', {
-      method: 'POST',
+	    const overnightResponse = await ctx.api('/api/overnight/status');
+	    const overnight = overnightResponse.data?.overnight || {};
+	    const overnightRaw = JSON.stringify(overnight);
+	    const overnightPreparePreviewResponse = await ctx.api('/api/overnight/prepare', {
+	      method: 'POST',
+	      body: {
+	        execute: false,
+	        source: 'eval_resident_overnight_preview',
+	      },
+	    });
+	    const overnightPreparePreview = overnightPreparePreviewResponse.data || {};
+	    const overnightCui = spawnSync('npm', ['run', 'overnight'], {
+	      cwd: process.cwd(),
+	      encoding: 'utf8',
+	      timeout: 20000,
+	      env: {
+	        ...process.env,
+	        ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+	      },
+	    });
+	    out.push(
+	      overnightResponse.ok &&
+	        overnight.version === 1 &&
+	        ['ready', 'needs_keep_awake', 'unsafe_cloud', 'blocked', 'attention'].includes(overnight.status) &&
+	        typeof overnight.readyForOvernight === 'boolean' &&
+	        overnight.endpoints?.status === '/api/overnight/status' &&
+	        overnight.endpoints?.prepare === '/api/overnight/prepare' &&
+	        overnight.commands?.status === 'npm run overnight' &&
+	        overnight.commands?.prepare === 'npm run overnight:start' &&
+	        overnight.commands?.openAiSpend === 'npm run openai:spend' &&
+	        typeof overnight.resident?.loaded === 'boolean' &&
+	        typeof overnight.keepAwake?.active === 'boolean' &&
+	        overnight.openAiSpendGuard?.hardSpendLock === true &&
+	        overnight.openAiSpendGuard?.mode === 'off' &&
+	        overnight.openAiSpendGuard?.dailyRequestLimit === 0 &&
+	        ['local_fallback_ready', 'realtime_ready'].includes(overnight.voice?.standby?.mode) &&
+	        typeof overnight.autopilot?.enabled === 'boolean' &&
+	        overnight.autopilot?.safety?.enabledByOvernight === false &&
+	        overnight.autopilot?.safety?.startsAutomaticallyFromPrepare === false &&
+	        overnight.progress?.counts &&
+	        typeof overnight.blockers?.count === 'number' &&
+	        overnight.safety?.readOnly === true &&
+	        overnight.safety?.callsOpenAi === false &&
+	        overnight.safety?.startsMicrophone === false &&
+	        overnight.safety?.usesRealtime === false &&
+	        overnight.safety?.capturesScreen === false &&
+	        overnight.safety?.startsWorkers === false &&
+	        overnight.safety?.enablesAutopilot === false &&
+	        overnight.safety?.mutatesUserFiles === false &&
+	        overnight.safety?.changesLaunchdJob === false &&
+	        !/sk-[A-Za-z0-9_-]{16,}/.test(overnightRaw) &&
+	        !overnightRaw.includes('imageDataUrl')
+	        ? ok('resident.overnight_status', 'Overnight resident status pack', `${overnight.status} · keepAwake=${overnight.keepAwake?.active ? 'active' : 'off'} · cloud=${overnight.openAiSpendGuard?.mode}/${overnight.openAiSpendGuard?.dailyRequestLimit}`)
+	        : fail('resident.overnight_status', 'Overnight resident status pack', 'expected no-cloud overnight pack with resident, keep-awake, spend guard, voice fallback, progress, blockers, autopilot posture, and safety contract', {
+	          status: overnightResponse.status,
+	          overnight,
+	        }),
+	    );
+	    out.push(
+	      overnightPreparePreviewResponse.ok &&
+	        overnightPreparePreview.ok === true &&
+	        overnightPreparePreview.executed === false &&
+	        overnightPreparePreview.preview === true &&
+	        overnightPreparePreview.keepAwakeResult === null &&
+	        overnightPreparePreview.overnight?.version === 1 &&
+	        overnightPreparePreview.safety?.callsOpenAi === false &&
+	        overnightPreparePreview.safety?.startsMicrophone === false &&
+	        overnightPreparePreview.safety?.usesRealtime === false &&
+	        overnightPreparePreview.safety?.startsWorkers === false &&
+	        overnightPreparePreview.safety?.enablesAutopilot === false &&
+	        overnightPreparePreview.safety?.mutatesUserFiles === false &&
+	        overnightPreparePreview.safety?.mutatesProjectFiles === false &&
+	        overnightPreparePreview.safety?.changesLaunchdJob === false &&
+	        overnightCui.status === 0 &&
+	        overnightCui.stdout.includes('JAVIS Overnight Resident') &&
+	        overnightCui.stdout.includes('calls OpenAI=no') &&
+	        overnightCui.stdout.includes('starts mic=no') &&
+	        overnightCui.stdout.includes('starts workers=no')
+	        ? ok('resident.overnight_prepare_preview', 'Overnight prepare preview/CUI', 'preview and CUI are no-cloud/no-mic/no-worker and make no launchd change')
+	        : fail('resident.overnight_prepare_preview', 'Overnight prepare preview/CUI', 'expected overnight prepare preview and npm run overnight to avoid side effects and expose the safety contract', {
+	          status: overnightPreparePreviewResponse.status,
+	          preview: overnightPreparePreview,
+	          cuiStatus: overnightCui.status,
+	          stdout: overnightCui.stdout,
+	          stderr: overnightCui.stderr,
+	        }),
+	    );
+
+	    const setupNextPreviewResponse = await ctx.api('/api/setup/next', {
+	      method: 'POST',
       body: {
         execute: false,
         source: 'eval_resident_setup_next_preview',
