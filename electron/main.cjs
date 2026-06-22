@@ -36081,6 +36081,29 @@ function autopilotDecisionPreview(options = {}) {
   });
 }
 
+function autopilotTickSafetySnapshot({ execute = false, action = null } = {}) {
+  const canExecute = execute === true;
+  return {
+    previewOnly: !canExecute,
+    usesExistingActionPolicy: true,
+    startsMicrophone: Boolean(canExecute && action?.startsMicrophone),
+    usesRealtime: Boolean(canExecute && (action?.usesRealtime || action?.requiresLiveVoice)),
+    opensTerminal: Boolean(canExecute && action?.opensTerminal),
+    startsWorkers: Boolean(canExecute && action?.startsWorkers),
+    startsApps: Boolean(canExecute && action?.startsApps),
+    executesTask: Boolean(canExecute && action?.executesTask),
+    executesProductivityActions: Boolean(canExecute && action?.executesProductivityActions),
+    mutatesFiles: Boolean(canExecute && action?.mutatesUserFiles),
+    mutatesRecords: Boolean(canExecute && action?.mutatesUserRecords),
+    sendsMessages: Boolean(canExecute && action?.sendsMessages),
+    storesRawAudio: false,
+    bypassesApprovals: false,
+    maxAutoRiskLevel: Number(actionPolicy?.maxAutoRiskLevel || 0),
+    requireApprovalAtRiskLevel: Number(actionPolicy?.requireApprovalAtRiskLevel || 0),
+    actionRiskLevel: Number(action?.riskLevel || 0),
+  };
+}
+
 function autopilotVoiceStatusSnapshot(options = {}) {
   const preview = autopilotDecisionPreview({
     source: options.source || 'voice_tool',
@@ -36391,8 +36414,50 @@ async function autopilotTick(options = {}) {
   const source = String(options.source || 'api').slice(0, 80);
   const execute = options.execute !== false;
   let decision = null;
+  if (!execute) {
+    const briefing = workflowBriefing({
+      workflowLimit: options.workflowLimit || 6,
+      jobLimit: options.jobLimit || 6,
+      includeMaintenance: true,
+      forceMaintenance: options.forceMaintenance,
+    });
+    const firstAction = (briefing.nextActions || [])[0] || null;
+    const action = firstAutopilotExecutableAction(briefing.nextActions);
+    const conversation = conversationStateSnapshot();
+    const reason = autopilotSkipReason({ execute, selectedAction: action, firstAction, conversation });
+    decision = autopilotDecisionSnapshot({
+      source,
+      execute,
+      briefing,
+      selectedAction: action,
+      firstAction,
+      reason,
+      outcome: 'preview',
+      resultSummary: 'Previewed one autopilot tick without updating tick counters or executing work-next.',
+    });
+    return {
+      ok: true,
+      executed: false,
+      skipped: false,
+      previewOnly: true,
+      reason,
+      action: action || firstAction,
+      selectedAction: action,
+      briefing,
+      decision,
+      safety: autopilotTickSafetySnapshot({ execute, action }),
+      autopilot: autopilotStateSnapshot(),
+    };
+  }
   if (autopilotBusy) {
-    return { ok: true, executed: false, skipped: true, reason: 'autopilot_busy', autopilot: autopilotStateSnapshot() };
+    return {
+      ok: true,
+      executed: false,
+      skipped: true,
+      reason: 'autopilot_busy',
+      safety: autopilotTickSafetySnapshot({ execute }),
+      autopilot: autopilotStateSnapshot(),
+    };
   }
   autopilotBusy = true;
   autopilotState = {
@@ -36444,7 +36509,18 @@ async function autopilotTick(options = {}) {
           decision: candidate.decision.reason,
         })),
       });
-      return { ok: true, executed: false, skipped: true, reason, action: action || firstAction, selectedAction: action, briefing, autopilot: autopilotStateSnapshot() };
+      return {
+        ok: true,
+        executed: false,
+        skipped: true,
+        reason,
+        action: action || firstAction,
+        selectedAction: action,
+        briefing,
+        decision,
+        safety: autopilotTickSafetySnapshot({ execute, action }),
+        autopilot: autopilotStateSnapshot(),
+      };
     }
 
     const result = await workNextAction({
@@ -36473,7 +36549,17 @@ async function autopilotTick(options = {}) {
       actionSource: action.source,
       outputLength: result.output ? String(result.output).length : 0,
     });
-    return { ok: true, executed: true, skipped: false, action, result, briefing, autopilot: autopilotStateSnapshot() };
+    return {
+      ok: true,
+      executed: true,
+      skipped: false,
+      action,
+      result,
+      briefing,
+      decision: autopilotState.lastDecision,
+      safety: autopilotTickSafetySnapshot({ execute, action }),
+      autopilot: autopilotStateSnapshot(),
+    };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : String(error);
     autopilotState = {
@@ -36484,7 +36570,14 @@ async function autopilotTick(options = {}) {
         : autopilotState.lastDecision,
     };
     appendAudit('autopilot.failed', { source, error: autopilotState.lastError });
-    return { ok: false, executed: false, skipped: false, error: autopilotState.lastError, autopilot: autopilotStateSnapshot() };
+    return {
+      ok: false,
+      executed: false,
+      skipped: false,
+      error: autopilotState.lastError,
+      safety: autopilotTickSafetySnapshot({ execute }),
+      autopilot: autopilotStateSnapshot(),
+    };
   } finally {
     autopilotBusy = false;
     autopilotState = {

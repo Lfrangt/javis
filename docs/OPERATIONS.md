@@ -492,6 +492,10 @@ Realtime `get_autopilot_status` returns the same decision in a compact voice pay
 
 Use option `17. Run one autopilot tick` to preview and then manually advance the resident loop once.
 It calls `/api/autopilot/tick` and requires typing `RUN` before executing.
+API callers can also post `{ "execute": false }` to `/api/autopilot/tick` for a read-only tick
+preview. That preview returns the selected candidate, decision, and safety summary, but does not set
+autopilot busy/running, increment tick/skipped/executed counters, update `lastDecision`, open Terminal,
+start microphone/Realtime, start workers, mutate files, send messages, or call work-next.
 
 Use option `18. Toggle overnight autopilot` to write `JAVIS_AUTOPILOT_ENABLED` in `.env`. Enabling it
 also aligns local execution, trusted local mode, and Level 3 auto-run so the resident can keep making

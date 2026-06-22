@@ -187,6 +187,65 @@ export default {
             }),
     );
 
+    const autopilotTickBefore = await ctx.api('/api/autopilot');
+    const beforeTickState = autopilotTickBefore.data?.autopilot || {};
+    const beforeLastDecision = JSON.stringify(beforeTickState.lastDecision || null);
+    const tickPreviewResponse = await ctx.api('/api/autopilot/tick', {
+      method: 'POST',
+      body: {
+        execute: false,
+        source: 'eval_autonomy_autopilot_tick_preview',
+        workflowLimit: 6,
+        jobLimit: 6,
+      },
+      timeoutMs: 15000,
+    });
+    const tickPreview = tickPreviewResponse.data?.tick || {};
+    const tickPreviewState = tickPreview.autopilot || {};
+    const afterTickState = tickPreviewResponse.data?.autopilot || {};
+    const stateCountersUnchanged = ['tickCount', 'skippedCount', 'executedCount', 'lastTickAt', 'lastExecutedAt']
+      .every((key) => Number(afterTickState[key] || 0) === Number(beforeTickState[key] || 0) &&
+        Number(tickPreviewState[key] || 0) === Number(beforeTickState[key] || 0));
+    const lastDecisionUnchanged =
+      JSON.stringify(afterTickState.lastDecision || null) === beforeLastDecision &&
+      JSON.stringify(tickPreviewState.lastDecision || null) === beforeLastDecision;
+    const tickSafety = tickPreview.safety || {};
+    out.push(
+      autopilotTickBefore.ok &&
+        tickPreviewResponse.ok &&
+        tickPreview.ok === true &&
+        tickPreview.previewOnly === true &&
+        tickPreview.executed === false &&
+        tickPreview.skipped === false &&
+        typeof tickPreview.reason === 'string' &&
+        tickPreview.reason.length > 0 &&
+        tickPreview.decision?.execute === false &&
+        tickPreview.decision?.outcome === 'preview' &&
+        Array.isArray(tickPreview.briefing?.nextActions) &&
+        stateCountersUnchanged &&
+        lastDecisionUnchanged &&
+        tickPreviewState.running === beforeTickState.running &&
+        tickPreviewState.busy === beforeTickState.busy &&
+        afterTickState.running === beforeTickState.running &&
+        afterTickState.busy === beforeTickState.busy &&
+        tickSafety.previewOnly === true &&
+        tickSafety.usesExistingActionPolicy === true &&
+        tickSafety.startsMicrophone === false &&
+        tickSafety.usesRealtime === false &&
+        tickSafety.opensTerminal === false &&
+        tickSafety.startsWorkers === false &&
+        tickSafety.executesTask === false &&
+        tickSafety.mutatesFiles === false &&
+        tickSafety.sendsMessages === false &&
+        tickSafety.bypassesApprovals === false
+        ? ok('autonomy.autopilot_tick_preview_contract', 'Autopilot tick preview contract', `${tickPreview.decision.candidateCounts?.executable || 0} executable candidate(s) · state unchanged`)
+        : fail('autonomy.autopilot_tick_preview_contract', 'Autopilot tick preview contract', 'expected execute=false to return a read-only tick preview without counters, busy state, workers, mic, Realtime, terminal, or task execution', {
+            before: beforeTickState,
+            tick: tickPreview,
+            after: afterTickState,
+          }),
+    );
+
     const voiceTool = await ctx.api('/api/tools/execute', {
       method: 'POST',
       body: {
