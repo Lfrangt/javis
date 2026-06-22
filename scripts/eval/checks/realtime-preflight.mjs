@@ -246,7 +246,24 @@ export default {
     const missingExpectedGroups = [...EXPECTED_ACCEPTANCE_GROUPS].filter((id) => !acceptanceGroupIds.has(id));
     const gaps = acceptanceGaps(acceptance);
     const unexpectedGaps = gaps.filter((id) => !EXPECTED_ACCEPTANCE_GATES.has(id));
-    out.push(
+    const acceptanceAcceptedOk = acceptanceResponse.ok &&
+      acceptance.accepted === true &&
+      acceptance.status === 'accepted' &&
+      acceptance.manualOnly === true &&
+      acceptance.startsMicrophone === false &&
+      acceptance.requiresUserPresence === true &&
+      Number(acceptance.counts?.gates || 0) >= EXPECTED_ACCEPTANCE_GATES.size &&
+      Number(acceptance.counts?.gaps || 0) === 0 &&
+      missingExpectedGates.length === 0 &&
+      missingExpectedGroups.length === 0 &&
+      acceptance.actionPlan?.accepted === true &&
+      acceptance.actionPlan?.status === 'accepted' &&
+      ['accepted', 'archive_accepted_run'].includes(acceptance.actionPlan?.primary?.id) &&
+      acceptance.safety?.rawAudioStored === false &&
+      acceptance.safety?.screenImageIncluded === false &&
+      acceptance.safety?.actionPolicyBypassed === false &&
+      gaps.length === 0;
+    const acceptancePendingOk =
       acceptanceResponse.ok &&
         acceptance.accepted === false &&
         acceptance.status === 'pending' &&
@@ -273,12 +290,44 @@ export default {
         acceptance.safety?.screenImageIncluded === false &&
         acceptance.safety?.actionPolicyBypassed === false &&
         gaps.length > 0 &&
-        unexpectedGaps.length === 0
-        ? ok('realtime_preflight.acceptance_remaining', 'Realtime pre-live acceptance gaps', `${acceptance.counts.passed}/${acceptance.counts.gates} passed; remaining=${gaps.join(', ')}`)
+        unexpectedGaps.length === 0;
+    out.push(
+      acceptanceAcceptedOk
+        ? ok('realtime_preflight.acceptance_remaining', 'Realtime pre-live acceptance gaps', `${acceptance.counts.passed}/${acceptance.counts.gates} accepted; no remaining gaps`)
+        : acceptancePendingOk
+          ? ok('realtime_preflight.acceptance_remaining', 'Realtime pre-live acceptance gaps', `${acceptance.counts.passed}/${acceptance.counts.gates} passed; remaining=${gaps.join(', ')}`)
         : fail('realtime_preflight.acceptance_remaining', 'Realtime pre-live acceptance gaps', `GET /api/realtime/dogfood/acceptance ${acceptanceResponse.status}`, { gaps, unexpectedGaps, missingExpectedGates, missingExpectedGroups, acceptance }),
     );
 
     const evidenceData = evidence.data?.evidence || {};
+    const evidenceReadyOk = evidence.ok &&
+      evidenceData.status === 'ready' &&
+      evidenceData.phase === 'ready' &&
+      evidenceData.checks?.providerReady === true &&
+      evidenceData.checks?.sessionNegotiated === true &&
+      evidenceData.checks?.voiceSessionLive === true &&
+      evidenceData.checks?.progressInjectedFromRenderer === true &&
+      evidenceData.checks?.progressVersionSynced === true &&
+      evidenceData.checks?.passiveContextOnly === true &&
+      evidenceData.checks?.spokenSummaryReady === true &&
+      !evidenceData.blocker &&
+      evidenceData.voiceHealth?.status === 'ready';
+    const evidenceRendererControl = evidenceData.rendererControl || {};
+    const evidenceControl = evidenceRendererControl.control || {};
+    const evidenceConversation = evidenceRendererControl.conversation || {};
+    const evidencePostStopOk = evidence.ok &&
+      evidenceData.checks?.providerReady === true &&
+      evidenceData.checks?.sessionNegotiated === true &&
+      evidenceData.checks?.voiceSessionLive === false &&
+      evidenceData.checks?.progressInjectedFromRenderer === true &&
+      evidenceData.checks?.passiveContextOnly === true &&
+      evidenceData.checks?.spokenSummaryReady === true &&
+      evidenceData.blocker?.id === 'voice_session_live' &&
+      evidenceData.voiceHealth?.status === 'ready' &&
+      evidenceConversation.active === false &&
+      evidenceConversation.status === 'idle' &&
+      evidenceControl.action === 'stop' &&
+      ['stopped', 'already_idle'].includes(evidenceControl.status);
     const evidenceQuotaGated = evidence.ok &&
       evidenceData.checks?.providerReady === false &&
       evidenceData.checks?.spokenSummaryReady === true &&
@@ -288,13 +337,17 @@ export default {
       evidenceData.voiceHealth?.recovery?.active === true &&
       evidenceData.voiceHealth?.recovery?.localFallback?.available === true;
     out.push(
-      evidence.ok &&
+      evidenceReadyOk
+        ? ok('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `${evidenceData.status}/${evidenceData.phase} · live evidence ready`)
+        : evidencePostStopOk
+          ? ok('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `${evidenceData.status || 'pending'}/${evidenceData.phase || 'needs_live_voice'} · renderer stopped live voice`)
+        : evidence.ok &&
         evidenceData.checks?.providerReady === true &&
         evidenceData.checks?.spokenSummaryReady === true &&
         evidenceData.checks?.sessionNegotiated === false &&
         evidenceData.blocker?.id === 'session_negotiated' &&
         evidenceData.voiceHealth?.status === 'ready'
-        ? ok('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `${evidenceData.status || 'pending'}/${evidenceData.phase || 'needs_live_session'} · blocker=${evidenceData.blocker.id}`)
+          ? ok('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `${evidenceData.status || 'pending'}/${evidenceData.phase || 'needs_live_session'} · blocker=${evidenceData.blocker.id}`)
         : evidenceQuotaGated
           ? warn('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `${evidenceData.status || 'pending'}/${evidenceData.phase || 'provider_attention'} · ${providerHealthLabel(evidenceData.voiceHealth)} gated · fallback available`)
         : fail('realtime_preflight.evidence_state', 'Realtime evidence pre-live state', `GET /api/realtime/evidence ${evidence.status}`, evidence.data),

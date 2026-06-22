@@ -58,6 +58,7 @@ Renderer
 - Realtime config snapshot lane: exposes a read-only `/api/realtime/config` check for model/voice, tool inventory, wake/control guardrails, preflight status, and screen privacy without returning the full prompt text.
 - Pet session lane: one click starts voice and requests screen sharing, then pushes the first permitted screen frame into Realtime context.
 - Conversation state lane: renderer-reported connecting/live/idle/error voice lifecycle with heartbeats so the resident can expose whether it is truly listening.
+- Realtime renderer control lane: `/api/realtime/renderer/control` previews or dispatches a local stop request to the renderer so CUI/API can end an active WebRTC voice session without starting microphone capture, opening Terminal, or adding controls to the compact pet.
 - Realtime preflight lane: one silent text context pushed into each new voice session with presence, current app/browser, screen freshness, active work, next actions, and guardrails.
 - Recent activity lane: `/api/activity/recent`, local `recent_activity`, and Realtime `get_recent_activity` summarize recent app/window/browser metadata from ambient observations so JAVIS can answer "what was I just doing?" without screenshots, page text, clipboard text, or Accessibility trees.
 - Browser activity lane: exposes metadata-only recent browser app/host/title activity from ambient observations to presence, CUI, API, Realtime preflight, and the `get_browser_activity` Realtime tool without page text.

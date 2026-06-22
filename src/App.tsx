@@ -72,7 +72,10 @@ type RealtimeLatencyReceipt = RealtimeLatencyTimeline & {
 
 type RealtimeRendererDogfoodCommand = {
   action?: string
+  id?: string
   runId?: string
+  reason?: string
+  stopScreen?: boolean
   screenLive?: boolean
   prompts?: string[]
   promptDelayMs?: number
@@ -2669,6 +2672,7 @@ function App() {
   const sendRealtimeUserTextRef = useRef(sendRealtimeUserText)
   const startScreenRef = useRef(startScreen)
   const startVoiceRef = useRef(startVoice)
+  const stopScreenRef = useRef(stopScreen)
   const stopVoiceRef = useRef(stopVoice)
 
   useEffect(() => {
@@ -2676,8 +2680,9 @@ function App() {
     sendRealtimeUserTextRef.current = sendRealtimeUserText
     startScreenRef.current = startScreen
     startVoiceRef.current = startVoice
+    stopScreenRef.current = stopScreen
     stopVoiceRef.current = stopVoice
-  }, [postRendererDogfoodEvent, sendRealtimeUserText, startScreen, startVoice, stopVoice])
+  }, [postRendererDogfoodEvent, sendRealtimeUserText, startScreen, startVoice, stopScreen, stopVoice])
 
   useEffect(() => {
     let disposed = false
@@ -2699,10 +2704,17 @@ function App() {
       })
     }
 
+    const postRendererControlEvent = async (payload: Record<string, unknown>) => {
+      await apiJson<{ rendererControl: unknown }>('/api/realtime/renderer/control/event', {
+        method: 'POST',
+        body: JSON.stringify({ source: 'renderer', ...payload }),
+      })
+    }
+
     const handleRendererDogfood = (rawEvent: Event) => {
       const event = rawEvent as CustomEvent<RealtimeRendererDogfoodCommand>
       const detail = event.detail || {}
-      const runId = detail.runId || crypto.randomUUID()
+      const runId = detail.runId || detail.id || crypto.randomUUID()
       if (detail.action === 'probe') {
         void (async () => {
           let peer: RTCPeerConnection | null = null
@@ -2785,6 +2797,49 @@ function App() {
             dataChannel?.close()
             peer?.close()
           }
+        })()
+        return
+      }
+      if (detail.action === 'stop') {
+        void (async () => {
+          const sessionId = voiceSessionIdRef.current
+          const wasActive = voiceStatusRef.current === 'live' || voiceStatusRef.current === 'connecting'
+          await postRendererControlEvent({
+            id: runId,
+            runId,
+            action: 'stop',
+            type: 'received',
+            status: wasActive ? 'stopping' : 'already_idle',
+            detail: wasActive
+              ? (detail.reason || 'Renderer received Realtime voice stop control.')
+              : 'Renderer received stop control while Realtime voice was already idle.',
+            sessionId,
+          }).catch(() => null)
+          if (!wasActive) {
+            await postRendererControlEvent({
+              id: runId,
+              runId,
+              action: 'stop',
+              type: 'already_idle',
+              status: 'already_idle',
+              detail: 'No live renderer WebRTC voice session was active.',
+              sessionId,
+            }).catch(() => null)
+            return
+          }
+          stopVoiceRef.current()
+          if (detail.stopScreen) stopScreenRef.current()
+          await postRendererControlEvent({
+            id: runId,
+            runId,
+            action: 'stop',
+            type: 'stopped',
+            status: 'stopped',
+            detail: detail.stopScreen
+              ? 'Renderer stopped Realtime voice and screen context.'
+              : 'Renderer stopped Realtime voice.',
+            sessionId,
+          }).catch(() => null)
         })()
         return
       }

@@ -2617,6 +2617,55 @@ export default {
           }),
     );
 
+    const rendererControlStopWired =
+      rendererDogfoodListener.includes("detail.action === 'stop'") &&
+      rendererSource.includes('/api/realtime/renderer/control/event') &&
+      rendererDogfoodListener.includes('postRendererControlEvent') &&
+      rendererDogfoodListener.includes('stopVoiceRef.current()') &&
+      rendererDogfoodListener.includes("type: 'stopped'") &&
+      rendererDogfoodListener.includes("type: 'already_idle'") &&
+      rendererDogfoodListener.includes('stopScreenRef.current()');
+    out.push(
+      rendererControlStopWired
+        ? ok('realtime.renderer_voice_stop_listener', 'Renderer voice stop listener', 'renderer can receive a local stop control, stop WebRTC voice, and acknowledge without starting mic')
+        : fail('realtime.renderer_voice_stop_listener', 'Renderer voice stop listener', 'expected renderer stop control wiring for Realtime voice cleanup', {
+            hasStopAction: rendererDogfoodListener.includes("detail.action === 'stop'"),
+            hasControlEvent: rendererSource.includes('/api/realtime/renderer/control/event'),
+            callsControlEvent: rendererDogfoodListener.includes('postRendererControlEvent'),
+            stopsVoice: rendererDogfoodListener.includes('stopVoiceRef.current()'),
+            reportsStopped: rendererDogfoodListener.includes("type: 'stopped'"),
+            reportsAlreadyIdle: rendererDogfoodListener.includes("type: 'already_idle'"),
+          }),
+    );
+
+    const rendererControlStatus = await ctx.api('/api/realtime/renderer/control');
+    const rendererControlPreview = await ctx.api('/api/realtime/renderer/control', {
+      method: 'POST',
+      body: {
+        action: 'stop',
+        execute: false,
+        source: 'eval',
+      },
+    });
+    out.push(
+      rendererControlStatus.ok &&
+        rendererControlStatus.data?.rendererControl?.endpoint === '/api/realtime/renderer/control' &&
+        rendererControlStatus.data?.rendererControl?.safety?.startsMicrophone === false &&
+        rendererControlStatus.data?.rendererControl?.safety?.startsRealtimeSession === false &&
+        rendererControlStatus.data?.rendererControl?.safety?.storesRawAudio === false &&
+        rendererControlPreview.ok &&
+        rendererControlPreview.data?.executed === false &&
+        rendererControlPreview.data?.action === 'stop' &&
+        rendererControlPreview.data?.safety?.startsMicrophone === false &&
+        rendererControlPreview.data?.safety?.startsRealtimeSession === false &&
+        rendererControlPreview.data?.safety?.storesRawAudio === false
+        ? ok('realtime.renderer_voice_stop_control', 'Renderer voice stop control API', 'stop preview is available through local API without starting microphone or a new session')
+        : fail('realtime.renderer_voice_stop_control', 'Renderer voice stop control API', 'expected preview-first renderer Realtime stop control', {
+            status: rendererControlStatus.data,
+            preview: rendererControlPreview.data,
+          }),
+    );
+
     const rendererPreflight = await ctx.api('/api/realtime/dogfood/renderer');
     const rendererPreflightData = rendererPreflight.data?.rendererDogfood || {};
     const preflight = rendererPreflightData.preflight || {};

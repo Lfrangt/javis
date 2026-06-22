@@ -419,6 +419,7 @@ async function printStatus() {
   console.log('V. Watch Realtime voice evidence');
   console.log('D. Start Realtime dogfood drill');
   console.log('R. Run renderer Realtime dogfood (starts mic)');
+  console.log('RX. Stop renderer Realtime voice');
   console.log('RP. Probe Realtime provider (no mic)');
   console.log('O. Show Realtime live drill pack');
   console.log('B. Show Realtime dogfood brief');
@@ -3468,6 +3469,62 @@ function printRendererDogfood(result) {
   }
 }
 
+function printRealtimeRendererControl(result) {
+  const payload = result?.rendererControl || result?.rendererControlState || result || {};
+  const control = payload.control || payload.rendererControl?.control || {};
+  const conversation = payload.conversation || result?.conversation || {};
+  const safety = payload.safety || result?.safety || {};
+  const rendererReady = payload.rendererAvailable ?? result?.rendererAvailable;
+  console.log('JAVIS Realtime Renderer Control');
+  console.log('===============================');
+  console.log(`Renderer: ${rendererReady ? 'ready' : 'missing'} · action=${control.action || result?.action || 'stop'} · status=${control.status || 'idle'}`);
+  console.log(`Voice: ${conversation.status || '-'} · active=${conversation.active ? 'yes' : 'no'} · mic=${conversation.micMode || '-'} · session=${conversation.sessionId || '-'}`);
+  console.log(`Safety: starts mic=${safety.startsMicrophone ? 'yes' : 'no'} · starts session=${safety.startsRealtimeSession ? 'yes' : 'no'} · stores raw audio=${safety.storesRawAudio ? 'yes' : 'no'} · opens Terminal=${safety.opensTerminal ? 'yes' : 'no'}`);
+  if (result?.output || payload.nextAction) console.log(`\n${compact(result?.output || payload.nextAction, 1000)}`);
+  const events = Array.isArray(control.events) ? control.events : [];
+  if (events.length) {
+    console.log('\nRecent control events:');
+    for (const event of events.slice(-8)) {
+      console.log(`- ${event.createdAtIso || event.createdAt || '-'} · ${event.type || '-'} · ${event.status || '-'}${event.sessionId ? ` · ${compact(event.sessionId, 80)}` : ''}${event.detail ? ` · ${compact(event.detail, 160)}` : ''}`);
+    }
+  }
+}
+
+async function showRealtimeRendererControl(options = {}) {
+  const execute = options.execute === true;
+  const result = execute
+    ? await request('/api/realtime/renderer/control', {
+        method: 'POST',
+        body: {
+          action: 'stop',
+          execute: true,
+          stopScreen: options.stopScreen === true,
+          source: options.source || 'cui_cli',
+        },
+      })
+    : await request('/api/realtime/renderer/control');
+  printRealtimeRendererControl(result);
+  return result;
+}
+
+async function stopRealtimeRendererVoiceFromCui(rl) {
+  const preview = await request('/api/realtime/renderer/control', {
+    method: 'POST',
+    body: { action: 'stop', execute: false, source: 'cui_preview' },
+  });
+  printRealtimeRendererControl(preview);
+  const answer = (await rl.question('\nStop the current renderer Realtime voice session? Type STOP VOICE to continue: ')).trim();
+  if (answer !== 'STOP VOICE') {
+    console.log('\nRealtime voice left unchanged.');
+    return;
+  }
+  const result = await request('/api/realtime/renderer/control', {
+    method: 'POST',
+    body: { action: 'stop', execute: true, source: 'cui' },
+  });
+  printRealtimeRendererControl(result);
+}
+
 function printRealtimeProviderProbe(result) {
   const probe = result?.probe || result?.providerProbe || result || {};
   const providerResult = probe.result || result?.result || {};
@@ -4264,6 +4321,20 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-realtime-renderer-control') || process.argv.includes('--realtime-renderer-control')) {
+    await showRealtimeRendererControl();
+    return;
+  }
+
+  if (process.argv.includes('--stop-realtime-renderer') || process.argv.includes('--stop-realtime-voice')) {
+    await showRealtimeRendererControl({
+      execute: true,
+      stopScreen: process.argv.includes('--stop-screen'),
+      source: 'cui_cli',
+    });
+    return;
+  }
+
   if (process.argv.includes('--print-realtime-provider-probe') || process.argv.includes('--realtime-provider-probe')) {
     await showRealtimeProviderProbe();
     return;
@@ -4617,6 +4688,8 @@ async function main() {
         await startRealtimeDogfoodDrillFromCui(rl);
       } else if (answer === 'r' || answer === 'renderer dogfood' || answer === 'realtime renderer') {
         await startRendererRealtimeDogfoodFromCui(rl);
+      } else if (answer === 'rx' || answer === 'stop realtime' || answer === 'stop voice' || answer === 'realtime stop') {
+        await stopRealtimeRendererVoiceFromCui(rl);
       } else if (answer === 'rp' || answer === 'provider probe' || answer === 'realtime provider probe') {
         await runRealtimeProviderProbeFromCui(rl);
       } else if (answer === 'o' || answer === 'pack' || answer === 'drill pack' || answer === 'live drill pack') {

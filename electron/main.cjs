@@ -1024,6 +1024,20 @@ let realtimeRendererDogfoodState = {
   error: '',
   events: [],
 };
+let realtimeRendererControlState = {
+  active: false,
+  id: '',
+  action: '',
+  status: 'idle',
+  source: '',
+  startsMicrophone: false,
+  usesRealtime: false,
+  startedAt: 0,
+  updatedAt: 0,
+  completedAt: 0,
+  error: '',
+  events: [],
+};
 let realtimeProviderProbeState = {
   active: false,
   runId: '',
@@ -43520,6 +43534,84 @@ function recordRealtimeRendererDogfoodEvent(options = {}) {
   return realtimeRendererDogfoodSnapshot();
 }
 
+function realtimeRendererControlSnapshot() {
+  const conversation = conversationStateSnapshot();
+  return {
+    ok: true,
+    version: 1,
+    rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    conversation: {
+      status: conversation.status,
+      active: Boolean(conversation.active),
+      stale: Boolean(conversation.stale),
+      sessionId: conversation.sessionId || '',
+      micMode: conversation.micMode || '',
+      screenLive: Boolean(conversation.screenLive),
+      updatedAt: Number(conversation.updatedAt || 0),
+      lastHeartbeatAt: Number(conversation.lastHeartbeatAt || 0),
+      ageMs: conversation.ageMs ?? null,
+      activeForMs: conversation.activeForMs ?? null,
+    },
+    control: {
+      ...realtimeRendererControlState,
+      events: (realtimeRendererControlState.events || []).slice(-30),
+    },
+    supportedActions: ['stop'],
+    endpoint: '/api/realtime/renderer/control',
+    safety: {
+      startsMicrophone: false,
+      startsRealtimeSession: false,
+      storesRawAudio: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      executesUserTask: false,
+    },
+    nextAction: conversation.active
+      ? 'POST /api/realtime/renderer/control with action=stop and execute=true to ask the renderer to stop the current WebRTC voice session.'
+      : 'Realtime voice is already idle.',
+  };
+}
+
+function recordRealtimeRendererControlEvent(options = {}) {
+  const now = Date.now();
+  const id = String(options.id || options.runId || realtimeRendererControlState.id || '').slice(0, 120);
+  const type = compactRecordText(options.type || options.event || 'event', 80);
+  const status = compactRecordText(options.status || type || '', 80);
+  const event = {
+    id,
+    action: compactRecordText(options.action || realtimeRendererControlState.action || '', 80),
+    type,
+    status,
+    detail: compactRecordText(options.detail || options.message || '', 300),
+    sessionId: String(options.sessionId || '').slice(0, 120),
+    createdAt: now,
+    createdAtIso: new Date(now).toISOString(),
+  };
+  const events = [...(realtimeRendererControlState.events || []), event].slice(-60);
+  const terminal = ['stopped', 'done', 'error', 'timeout', 'already_idle'].includes(type)
+    || ['stopped', 'done', 'error', 'timeout', 'already_idle'].includes(status);
+  realtimeRendererControlState = {
+    ...realtimeRendererControlState,
+    id: id || realtimeRendererControlState.id,
+    action: event.action || realtimeRendererControlState.action,
+    status: status || realtimeRendererControlState.status,
+    active: terminal ? false : realtimeRendererControlState.active,
+    completedAt: terminal ? now : realtimeRendererControlState.completedAt,
+    error: type === 'error' || status === 'error' ? event.detail : realtimeRendererControlState.error,
+    updatedAt: now,
+    events,
+  };
+  appendAudit('realtime.renderer_control_event', {
+    id: event.id,
+    action: event.action,
+    type: event.type,
+    status: event.status,
+    sessionId: event.sessionId,
+    detail: event.detail,
+  });
+  return realtimeRendererControlSnapshot();
+}
+
 async function dispatchRendererDogfoodCommand(detail = {}) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return { ok: false, status: 409, error: 'Renderer window is not available.' };
@@ -43530,6 +43622,143 @@ async function dispatchRendererDogfoodCommand(detail = {}) {
     true,
   );
   return { ok: true };
+}
+
+async function requestRealtimeRendererControl(options = {}) {
+  const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+  const action = compactRecordText(options.action || 'stop', 80);
+  const source = compactRecordText(options.source || 'api', 80);
+  const conversation = conversationStateSnapshot();
+  const id = String(options.id || crypto.randomUUID()).slice(0, 120);
+  const preview = {
+    ok: true,
+    executed: false,
+    preview: true,
+    id,
+    action,
+    rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
+    conversation,
+    rendererControl: realtimeRendererControlSnapshot(),
+    output: action === 'stop'
+      ? conversation.active
+        ? 'Preview only. Would ask the renderer to stop the current Realtime WebRTC voice session.'
+        : 'Realtime voice is already idle; no renderer stop is needed.'
+      : `Unsupported renderer control action: ${action}.`,
+    safety: {
+      startsMicrophone: false,
+      startsRealtimeSession: false,
+      storesRawAudio: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      executesUserTask: false,
+      stopScreen: options.stopScreen === true,
+    },
+  };
+
+  if (action !== 'stop') {
+    return {
+      ...preview,
+      ok: false,
+      status: 400,
+      output: `Unsupported renderer control action: ${action}.`,
+    };
+  }
+  if (!execute) return preview;
+  if (!conversation.active) {
+    recordRealtimeRendererControlEvent({
+      id,
+      action,
+      type: 'already_idle',
+      status: 'already_idle',
+      sessionId: conversation.sessionId,
+      detail: 'Realtime voice was already idle when stop was requested.',
+    });
+    return {
+      ...preview,
+      executed: false,
+      preview: false,
+      alreadyIdle: true,
+      rendererControl: realtimeRendererControlSnapshot(),
+      output: 'Realtime voice is already idle; no renderer stop was dispatched.',
+    };
+  }
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return {
+      ...preview,
+      ok: false,
+      status: 409,
+      executed: false,
+      preview: false,
+      output: 'Renderer window is not available, so JAVIS cannot ask it to stop the live WebRTC session.',
+    };
+  }
+
+  realtimeRendererControlState = {
+    active: true,
+    id,
+    action,
+    status: 'dispatching',
+    source,
+    startsMicrophone: false,
+    usesRealtime: false,
+    startedAt: Date.now(),
+    updatedAt: Date.now(),
+    completedAt: 0,
+    error: '',
+    events: [],
+  };
+  recordRealtimeRendererControlEvent({
+    id,
+    action,
+    type: 'created',
+    status: 'dispatching',
+    sessionId: conversation.sessionId,
+    detail: 'Renderer voice stop control created.',
+  });
+  const dispatch = await dispatchRendererDogfoodCommand({
+    action: 'stop',
+    id,
+    runId: id,
+    source,
+    reason: compactRecordText(options.reason || 'operator requested Realtime voice stop', 180),
+    stopScreen: options.stopScreen === true,
+    createdAt: Date.now(),
+  });
+  if (!dispatch.ok) {
+    recordRealtimeRendererControlEvent({
+      id,
+      action,
+      type: 'error',
+      status: 'error',
+      sessionId: conversation.sessionId,
+      detail: dispatch.error || 'Renderer dispatch failed.',
+    });
+    return {
+      ...preview,
+      ok: false,
+      status: dispatch.status || 409,
+      executed: true,
+      preview: false,
+      rendererControl: realtimeRendererControlSnapshot(),
+      output: dispatch.error || 'Renderer dispatch failed.',
+    };
+  }
+  recordRealtimeRendererControlEvent({
+    id,
+    action,
+    type: 'dispatched',
+    status: 'waiting_for_renderer',
+    sessionId: conversation.sessionId,
+    detail: 'Renderer voice stop control dispatched.',
+  });
+  return {
+    ...preview,
+    ok: true,
+    executed: true,
+    preview: false,
+    rendererControl: realtimeRendererControlSnapshot(),
+    output: 'Renderer Realtime voice stop requested. Watch /api/realtime/renderer/control for the renderer acknowledgement.',
+  };
 }
 
 async function startRealtimeRendererDogfood(options = {}) {
@@ -44214,6 +44443,7 @@ function realtimeVoiceEvidenceSnapshot() {
       lastRealtimeProgressInjection: injection,
       lastRealtimeLatencyReceipt: latency,
     },
+    rendererControl: realtimeRendererControlSnapshot(),
     latency,
     voiceHealth,
     dogfoodStart,
@@ -58778,6 +59008,7 @@ function startApiServer() {
       presence,
       conversation,
       voiceHealth,
+      realtimeRendererControl: realtimeRendererControlSnapshot(),
       localVoice,
       voiceStandby,
       progressVersion: workProgressSnapshot(),
@@ -58904,6 +59135,34 @@ function startApiServer() {
       res.json({ evidence: realtimeVoiceEvidenceSnapshot() });
     } catch (error) {
       jsonError(res, 500, 'Realtime evidence failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/renderer/control', (_req, res) => {
+    try {
+      res.json({ rendererControl: realtimeRendererControlSnapshot() });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime renderer control snapshot failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/renderer/control', express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      const result = await requestRealtimeRendererControl({
+        ...(req.body || {}),
+        source: req.body?.source || 'api_realtime_renderer_control',
+      });
+      res.status(result.ok === false ? (result.status || 409) : 200).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Realtime renderer control failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/realtime/renderer/control/event', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      res.json({ rendererControl: recordRealtimeRendererControlEvent(req.body || {}) });
+    } catch (error) {
+      jsonError(res, 400, 'Realtime renderer control event failed', error instanceof Error ? error.message : String(error));
     }
   });
 
