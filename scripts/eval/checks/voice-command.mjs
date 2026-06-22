@@ -166,10 +166,38 @@ export default {
         : fail('voice_command.context_metadata', 'Voice command context metadata', `expected metadata-only context, got ${screenContext.status}`, screenContext.data),
     );
 
-    const quickHeld = await ctx.api('/api/voice/command', {
+    const quickLocalAnswer = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
         transcript: '你能用一句话回答我吗？',
+        execute: true,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_quick_hold',
+      },
+      timeoutMs: 30000,
+    });
+    const localAnswerData = quickLocalAnswer.data || {};
+    out.push(
+      quickLocalAnswer.ok &&
+        localAnswerData.ok === true &&
+        localAnswerData.requestedExecute === true &&
+        localAnswerData.executed === true &&
+        localAnswerData.heldReason === 'quick_lane_local_answer' &&
+        localAnswerData.localQuickAnswer?.reason === 'one_sentence_ack' &&
+        localAnswerData.route?.decision?.lane === 'quick' &&
+        localAnswerData.safety?.callsOpenAIImmediately === false &&
+        localAnswerData.safety?.usesLocalQuickAnswer === true &&
+        localAnswerData.speech?.dryRun === true &&
+        String(localAnswerData.output || '').includes('本地')
+        ? ok('voice_command.quick_local_answer', 'Quick lane local answer', 'simple quick execute is answered locally without spending OpenAI quota')
+        : fail('voice_command.quick_local_answer', 'Quick lane local answer', `expected local quick answer, got ${quickLocalAnswer.status}`, quickLocalAnswer.data),
+    );
+
+    const quickHeld = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '请用一句话解释量子纠缠的数学形式？',
         execute: true,
         useMemory: false,
         speak: true,
@@ -186,8 +214,9 @@ export default {
         heldData.heldReason === 'quick_lane_cloud_call_not_allowed' &&
         heldData.route?.decision?.lane === 'quick' &&
         heldData.safety?.callsOpenAIImmediately === false &&
+        heldData.safety?.usesLocalQuickAnswer === false &&
         heldData.speech?.dryRun === true
-        ? ok('voice_command.quick_hold', 'Quick lane cloud hold', 'execute request is held locally instead of spending cloud quota')
+        ? ok('voice_command.quick_hold', 'Quick lane cloud hold', 'unhandled quick execute is held locally instead of spending cloud quota')
         : fail('voice_command.quick_hold', 'Quick lane cloud hold', `expected held quick lane, got ${quickHeld.status}`, quickHeld.data),
     );
 

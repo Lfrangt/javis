@@ -29479,6 +29479,17 @@ function routeTaskDecision(message, options = {}) {
 async function answerQuickLane(options = {}) {
   const task = String(options.message || options.task || '').trim();
   if (!task) throw new Error('Missing message');
+  if (openAiZeroSpendModeActive()) {
+    const local = localQuickAnswerCandidate(task, { source: options.source || 'quick_lane_local_fallback' });
+    if (local) {
+      appendAudit('quick_lane.local_answer', {
+        source: options.source || 'quick_lane',
+        reason: local.reason,
+        chars: task.length,
+      });
+      return local.output;
+    }
+  }
   let imageDataUrl;
   if (options.includeScreen && latestScreen?.imageDataUrl) {
     try {
@@ -29519,6 +29530,54 @@ async function answerQuickLane(options = {}) {
 function quickLaneOutputOk(output) {
   const text = String(output || '').trim();
   return Boolean(text) && !text.startsWith('OpenAI API key is not configured.');
+}
+
+function normalizeLocalQuickAnswerText(value = '') {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/[。！？!?.,，、；;：:]+$/g, '')
+    .trim();
+}
+
+function localQuickAnswerCandidate(task = {}, options = {}) {
+  const text = normalizeLocalQuickAnswerText(task);
+  if (!text) return null;
+  const source = compactRecordText(options.source || 'local_quick_answer', 80);
+  const answer = (output, reason) => ({
+    ok: true,
+    output,
+    reason,
+    source,
+    safety: {
+      callsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      readsScreenImage: false,
+      readsClipboardText: false,
+      executesActions: false,
+    },
+  });
+
+  if (/^(hi|hello|hey|你好|哈喽|嗨|在吗|贾维斯|javis|jarvis)$/i.test(text)) {
+    return answer('我在。现在是零消耗本地模式；简单问题我可以马上回，复杂任务我会先预览再交给后台。', 'greeting');
+  }
+  if (/你是谁|你是什么|who are you|what are you|自我介绍/i.test(text)) {
+    return answer('我是 JAVIS，常驻在这台 Mac 上的本地优先助手；默认不花 OpenAI 额度，只有明确解锁后才会调用云端。', 'identity');
+  }
+  if (/你能做什么|能干什么|可以做什么|what can you do|capabilit/i.test(text)) {
+    return answer('我可以做本地状态查询、屏幕/浏览器/应用观察、文件和浏览器工作流预览、后台任务分流、Codex/Claude 交接，以及需要确认的 Mac 自动化。', 'capability');
+  }
+  if (/能.*一句话.*回答|可以.*一句话.*回答|能不能.*一句话.*回答|can you.*one sentence|can you.*single sentence/i.test(text)) {
+    return answer('可以；我会先用本地规则短答，超出本地能力时再提示你走后台或云端。', 'one_sentence_ack');
+  }
+  if (/现在几点|当前时间|现在时间|今天几号|今天日期|what time|current time|today'?s date|date today/i.test(text)) {
+    return answer(`现在是 ${new Date().toLocaleString()}。`, 'local_time');
+  }
+  if (/api.*(耗|花|扣|费|额度)|openai.*(spend|quota|cost|charge)|会不会.*(耗|花).*api|消耗.*api|花钱|扣费|额度/i.test(text)) {
+    const guard = openAiSpendGuardSnapshot();
+    return answer(`现在不会无端消耗 OpenAI API：cloud=${guard.mode}，hard lock=${guard.hardSpendLock ? 'on' : 'off'}，daily=${guard.counts?.total || 0}/${guard.dailyRequestLimit}，一次性花费票=${guard.spendLease?.activeCount || 0}。`, 'openai_spend_status');
+  }
+  return null;
 }
 
 function booleanOption(value) {
@@ -30808,12 +30867,32 @@ async function runVoiceCommand(options = {}) {
   let route = previewRoute;
   let heldReason = '';
   let executeRouteMs = 0;
+  let localQuickAnswer = null;
   const previewLane = previewRoute.decision?.lane || '';
   const previewRouteLane = previewRoute.routing?.lane || previewRoute.routeRecord?.lane || '';
   const previewIsLocalCommand = Boolean(previewRoute.localCommand || previewRoute.decision?.localCommand || previewRouteLane === 'local');
   const canExecute = requestedExecute && (previewIsLocalCommand || allowCloudQuick || previewLane !== 'quick');
   if (requestedExecute && !canExecute) {
-    heldReason = 'quick_lane_cloud_call_not_allowed';
+    localQuickAnswer = previewLane === 'quick'
+      ? localQuickAnswerCandidate(transcript, { source: `${source}_local_quick` })
+      : null;
+    if (localQuickAnswer) {
+      heldReason = 'quick_lane_local_answer';
+      route = {
+        ...previewRoute,
+        ok: true,
+        executed: true,
+        queued: false,
+        output: localQuickAnswer.output,
+        localQuickAnswer,
+        data: {
+          ...(previewRoute.data || {}),
+          localQuickAnswer,
+        },
+      };
+    } else {
+      heldReason = 'quick_lane_cloud_call_not_allowed';
+    }
   } else if (canExecute) {
     const executeStartedAt = Date.now();
     route = await routeTask({
@@ -30857,6 +30936,7 @@ async function runVoiceCommand(options = {}) {
     routePreview: previewRoute,
     output: route.output || spokenAck,
     data: route.data || null,
+    localQuickAnswer,
     context: contextSnapshot,
     spokenAck,
     speech,
@@ -30869,6 +30949,7 @@ async function runVoiceCommand(options = {}) {
       skippedPreRouteContext: Boolean(contextSnapshot.skippedPreRouteContext),
       usesAccessibilityMetadata: Boolean(contextSnapshot.accessibility?.requested),
       callsOpenAIImmediately: Boolean(canExecute && previewLane === 'quick' && allowCloudQuick && !previewIsLocalCommand),
+      usesLocalQuickAnswer: Boolean(localQuickAnswer),
       mayQueueCloudModel: Boolean(canExecute && previewLane === 'background'),
       mayQueueLocalWorker: Boolean(canExecute && ['codex', 'claude'].includes(previewLane)),
       executesLocalCommand: Boolean(canExecute && previewIsLocalCommand),
