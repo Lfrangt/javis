@@ -25461,17 +25461,19 @@ function localCommandDecision(task) {
   }
 
   const startSessionMatch =
-    text.match(/^(?:start session|start work session|new session|focus on)[:：]?\s+(.+)$/i)
-    || text.match(/^(?:开始会话|开始工作会话|新建会话|专注)[:：]?\s*(.+)$/i);
+    text.match(/^(?:start session|start work session|start a work session|new session|new work session|focus on)[:：]?\s+(.+)$/i)
+    || text.match(/^(?:开始(?:一个|一段)?会话|开始(?:一个|一段)?工作会话|新建(?:一个)?会话|新开(?:一个)?工作会话|进入专注|专注)[:：]?\s*(.+)$/i);
   if (startSessionMatch?.[1]?.trim()) {
     return { intent: 'start_session', label: 'Start session', args: { goal: startSessionMatch[1].trim() } };
   }
 
   const sessionNoteMatch =
-    text.match(/^(?:session note|note session|log session)[:：]?\s+(.+)$/i)
-    || text.match(/^(?:会话记录|记录会话|session记录)[:：]?\s*(.+)$/i);
-  if (sessionNoteMatch?.[1]?.trim()) {
-    return { intent: 'session_note', label: 'Session note', args: { text: sessionNoteMatch[1].trim() } };
+    text.match(/^(?:session note|note session|log session|add session note|add note(?: to)? session|note this in session|record this in session)[:：]?\s+(.+)$/i)
+    || text.match(/^(?:会话记录|记录会话|session记录|工作会话记录|会话备注|工作备注|记到当前会话|记进当前会话|记录到当前会话|给当前会话记一下|给工作会话记一下)[:：]?\s*(.+)$/i)
+    || text.match(/^把\s*([\s\S]+?)\s*(?:记到当前会话|记进当前会话|记录到当前会话|加到当前会话|加进工作会话|写进工作会话|写到工作会话)$/i);
+  const sessionNoteText = sessionNoteMatch?.[1]?.trim();
+  if (sessionNoteText) {
+    return { intent: 'session_note', label: 'Session note', requiresLocalExecution: true, args: { text: sessionNoteText } };
   }
 
   if (/^(inbox|show inbox|list inbox|what'?s in inbox)$/i.test(text)
@@ -25605,7 +25607,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'incident_report', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'incident_report', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'start_session', 'resume_session', 'session_note', 'end_session', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25870,6 +25872,21 @@ function buildContextPlan(message, options = {}) {
       needs.macContext = false;
       needs.screen = false;
       needs.accessibility = false;
+    } else if (['session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
+      needs.browserContext = false;
+      needs.browserPage = false;
+      needs.browserDom = false;
+      needs.recentActivity = false;
+      needs.browserActivity = false;
+      needs.files = false;
+      needs.knowledge = false;
+      needs.clipboard = false;
+      needs.clipboardText = false;
+      needs.localExecution = ['start_session', 'resume_session', 'session_note', 'end_session'].includes(localCommand);
     } else if (['app_ui_status'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
@@ -26761,6 +26778,25 @@ function formatIncidentReportForLocalCommand(report = {}) {
     `Audit: scanned ${report.audit?.scanned ?? 0}, returned ${report.audit?.returned ?? 0}, window ${Math.round((report.audit?.sinceMs || 0) / 60000)}m`,
     '边界: 这里只读本地审计元数据；不启动麦克风，不创建 Realtime session，不截屏，不读剪贴板文本，不读网页正文，不返回完整 AX 树，不执行动作，不开 Terminal。',
   ].filter(Boolean).join('\n');
+}
+
+function sessionLocalCommandSafety(mutatesLocalSession = false) {
+  return {
+    readOnly: !mutatesLocalSession,
+    readsLocalSession: true,
+    mutatesLocalSession: Boolean(mutatesLocalSession),
+    startsMicrophone: false,
+    usesRealtime: false,
+    storesRawAudio: false,
+    capturesScreen: false,
+    readsClipboardText: false,
+    returnsScreenImage: false,
+    returnsBrowserPageText: false,
+    returnsFullAccessibilityTree: false,
+    opensTerminal: false,
+    executesActions: false,
+    mutatesUserFiles: false,
+  };
 }
 
 function formatWorkNextForLocalCommand(next = {}, requestedExecute = false) {
@@ -27861,6 +27897,7 @@ async function runLocalCommand(command, options = {}) {
     if (command.intent === 'session_status') {
       const active = activeSessionSnapshot();
       const counts = sessionCounts();
+      const safety = sessionLocalCommandSafety(false);
       const output = active
         ? `当前会话: ${active.title}\n目标: ${active.goal}\n事件: ${active.events.length}`
         : `当前没有 active session。历史 session 共 ${counts.total} 个。`;
@@ -27868,57 +27905,62 @@ async function runLocalCommand(command, options = {}) {
         ok: true,
         localCommand: command,
         output,
-        data: { active, counts, recent: sessionSnapshot(5) },
+        data: { active, counts, recent: sessionSnapshot(5), safety },
       };
     }
 
     if (command.intent === 'session_check_in') {
       const checkIn = sessionCheckIn({ source: 'local_command' });
+      const safety = sessionLocalCommandSafety(false);
       return {
         ok: true,
         localCommand: command,
         output: checkIn.output,
-        data: { checkIn },
+        data: { checkIn, safety },
       };
     }
 
     if (command.intent === 'start_session') {
       const session = startWorkSession({ goal: command.args.goal, source: 'local_command' });
+      const safety = sessionLocalCommandSafety(true);
       return {
         ok: true,
         localCommand: command,
         output: `已开始工作会话: ${session.title}`,
-        data: { session, counts: sessionCounts() },
+        data: { session, counts: sessionCounts(), safety },
       };
     }
 
     if (command.intent === 'resume_session') {
       const result = resumeWorkSession({ source: 'local_command' });
+      const safety = sessionLocalCommandSafety(true);
       return {
         ok: true,
         localCommand: command,
         output: `已继续上次工作会话: ${result.session.title}\n${result.checkIn.output}`,
-        data: { result },
+        data: { result, safety },
       };
     }
 
     if (command.intent === 'session_note') {
       const result = addWorkSessionEvent('', { text: command.args.text, type: 'note', source: 'local_command' });
+      const safety = sessionLocalCommandSafety(true);
       return {
         ok: true,
         localCommand: command,
         output: `已记录到会话: ${result.event.text}`,
-        data: { session: result.session, event: result.event },
+        data: { session: result.session, event: result.event, safety },
       };
     }
 
     if (command.intent === 'end_session') {
       const session = endWorkSession('', { source: 'local_command' });
+      const safety = sessionLocalCommandSafety(true);
       return {
         ok: true,
         localCommand: command,
         output: `已结束工作会话:\n${session.summary}`,
-        data: { session, counts: sessionCounts() },
+        data: { session, counts: sessionCounts(), safety },
       };
     }
 

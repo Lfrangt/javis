@@ -1,10 +1,62 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promisify } from 'node:util';
 
 import { ok, fail } from '../_client.mjs';
 
 const execFileAsync = promisify(execFile);
+
+function spawnWithInput(command, args = [], options = {}, input = '') {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timeoutMs = Number(options.timeout || 30000);
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      reject(new Error(`Command timed out after ${timeoutMs}ms: ${command} ${args.join(' ')}`));
+    }, timeoutMs);
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      if (stdout.length > Number(options.maxBuffer || 1024 * 1024)) {
+        child.kill('SIGTERM');
+      }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) {
+        resolve({ stdout, stderr });
+      } else {
+        const error = new Error(`Command exited with code ${code}: ${stderr || stdout}`);
+        error.stdout = stdout;
+        error.stderr = stderr;
+        error.code = code;
+        reject(error);
+      }
+    });
+    child.stdin.end(input);
+  });
+}
 
 function parseJson(text) {
   const raw = String(text || '').trim();
@@ -1997,6 +2049,171 @@ export default {
           timeoutMs: 10000,
         });
         await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+    }
+
+    const sessionNoteText = `eval natural session note ${Date.now()}`;
+    let cleanupNaturalSessionId = '';
+    try {
+      const sessionsBefore = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+      let targetSession = sessionsBefore.data?.sessions?.active || null;
+      if (!targetSession?.id) {
+        const startSession = await ctx.api('/api/sessions/start', {
+          method: 'POST',
+          body: {
+            goal: `eval natural session note ${Date.now()}`,
+            source: 'eval_voice_command_session_note_setup',
+          },
+          timeoutMs: 10000,
+        });
+        targetSession = startSession.data?.session || null;
+        cleanupNaturalSessionId = targetSession?.id || '';
+      }
+
+      const noteCommand = targetSession?.id
+        ? await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: `记到当前会话：${sessionNoteText}`,
+            execute: true,
+            includeScreen: false,
+            includeAccessibility: false,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_note_natural',
+          },
+          timeoutMs: 20000,
+        })
+        : { ok: false, status: 0, data: { error: 'missing target session' } };
+      const noteRoute = noteCommand.data?.route || {};
+      const noteData = noteRoute.data || {};
+      const noteEvent = noteData.event || null;
+      const noteSafety = noteData.safety || {};
+      const sessionsAfter = targetSession?.id
+        ? await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 })
+        : { ok: false, data: null };
+      const activeAfter = sessionsAfter.data?.sessions?.active || null;
+      const persistedNote = activeAfter?.id === targetSession?.id
+        ? (activeAfter.events || []).find((event) => event.type === 'note' && event.text === sessionNoteText) || null
+        : null;
+
+      out.push(
+        targetSession?.id &&
+          noteCommand.ok &&
+          noteCommand.data?.ok === true &&
+          noteCommand.data?.executed === true &&
+          noteRoute.localCommand?.intent === 'session_note' &&
+          noteRoute.decision?.localCommand === 'session_note' &&
+          String(noteRoute.output || '').includes('已记录到会话') &&
+          noteEvent?.text === sessionNoteText &&
+          persistedNote?.text === sessionNoteText &&
+          noteSafety.readOnly === false &&
+          noteSafety.mutatesLocalSession === true &&
+          noteSafety.mutatesUserFiles === false &&
+          noteSafety.startsMicrophone === false &&
+          noteSafety.usesRealtime === false &&
+          noteSafety.opensTerminal === false &&
+          noteSafety.capturesScreen === false &&
+          noteRoute.contextPlan?.needs?.screen === false &&
+          noteRoute.contextPlan?.needs?.accessibility === false
+          ? ok('voice_command.natural_session_note', 'Natural session note voice command', `${targetSession.title} recorded ${noteEvent.id}`)
+          : fail('voice_command.natural_session_note', 'Natural session note voice command', 'expected natural session note to write one local session event without mic, Realtime, Terminal, screen, or file mutation', {
+              targetSession,
+              noteCommand: noteCommand.data,
+              activeAfter,
+            }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.natural_session_note', 'Natural session note voice command', error instanceof Error ? error.message : String(error)));
+    } finally {
+      if (cleanupNaturalSessionId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupNaturalSessionId)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_voice_command_session_note_cleanup',
+            note: 'Cleaning up eval-created natural session note.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupNaturalSessionId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+    }
+
+    const loopSessionGoal = `eval loop session ${Date.now()}`;
+    const loopSessionNote = `eval loop note ${Date.now()}`;
+    let loopCleanupSessionId = '';
+    try {
+      const sessionsBeforeLoop = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+      const activeBeforeLoop = sessionsBeforeLoop.data?.sessions?.active || null;
+      if (activeBeforeLoop?.source === 'local_voice_loop_session_start' && String(activeBeforeLoop.goal || '').startsWith('eval loop session')) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(activeBeforeLoop.id)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_voice_command_loop_session_cleanup',
+            note: 'Cleaning up stale eval loop session.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(activeBeforeLoop.id)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+
+      const { stdout } = await spawnWithInput('npm', ['run', 'voice:chat', '--', '--json'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_LOCAL_VOICE_CLI: 'true',
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      }, `/session start ${loopSessionGoal}\n/note ${loopSessionNote}\n/session end eval loop cleanup\n/exit\n`);
+      const loopSession = parseJson(stdout);
+      const turns = Array.isArray(loopSession.turns) ? loopSession.turns : [];
+      const startTurn = turns.find((turn) => turn.command === 'session' && String(turn.output || '').includes(loopSessionGoal));
+      const noteTurn = turns.find((turn) => turn.command === 'note' && String(turn.output || '').includes(loopSessionNote));
+      const endTurn = turns.find((turn) => turn.command === 'session' && String(turn.output || '').includes('Summary:'));
+      const sessionsAfterLoop = await ctx.api('/api/sessions?limit=5', { timeoutMs: 10000 });
+      const endedLoopSession = (sessionsAfterLoop.data?.sessions?.items || []).find((session) =>
+        session.goal === loopSessionGoal || session.title === loopSessionGoal);
+      loopCleanupSessionId = endedLoopSession?.id || '';
+
+      out.push(
+        loopSession.ok === true &&
+          loopSession.turnCount === 3 &&
+          startTurn?.ok === true &&
+          noteTurn?.ok === true &&
+          endTurn?.ok === true &&
+          startTurn.previewOnly === false &&
+          noteTurn.previewOnly === false &&
+          endTurn.previewOnly === false &&
+          startTurn.safety?.mutatesLocalSession === true &&
+          noteTurn.safety?.mutatesLocalSession === true &&
+          endTurn.safety?.mutatesLocalSession === true &&
+          startTurn.safety?.startsMicrophone === false &&
+          noteTurn.safety?.usesRealtime === false &&
+          endTurn.safety?.storesRawAudio === false &&
+          String(noteTurn.output || '').includes(loopSessionNote) &&
+          endedLoopSession?.status === 'done' &&
+          (endedLoopSession.events || []).some((event) => event.type === 'note' && event.text === loopSessionNote)
+          ? ok('voice_command.local_loop_session_commands', 'Local voice loop session commands', `${endedLoopSession?.id || 'session'} start/note/end without mic or Realtime`)
+          : fail('voice_command.local_loop_session_commands', 'Local voice loop session commands', 'expected /session start, /note, and /session end to mutate only local session state', {
+              loopSession,
+              endedLoopSession,
+            }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.local_loop_session_commands', 'Local voice loop session commands', error instanceof Error ? error.message : String(error)));
+    } finally {
+      if (loopCleanupSessionId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(loopCleanupSessionId)}`, {
           method: 'DELETE',
           timeoutMs: 10000,
         });

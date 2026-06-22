@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -470,6 +470,8 @@ function loopHelpText() {
     '  /voice    Read Realtime/live voice blocker, local fallback, and next recovery step.',
     '  /see      Read screen/privacy/ambient perception status without capturing a new frame.',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
+    '  /session  Read, start, resume, note, or end a local work session.',
+    '  /note     Add a local note to the active work session.',
     '  /app      Fast-read recent Mac app and screen metadata; add --full-app for live UI outline.',
     '  /ui       Preview a local app/UI workflow plan; add --run to execute through policy.',
     '  /file     List, search, read, or preview organize/rename/convert file workflows.',
@@ -1455,6 +1457,59 @@ function formatLoopIncident(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function normalizeLoopSessionRequest(transcript, command) {
+  const raw = String(transcript || '').replace(/^\/(?:session|sessions|note)\b/i, '').trim();
+  if (command === 'note') {
+    return raw
+      ? { action: 'note', text: raw }
+      : { error: 'Usage: /note <text to add to the active work session>' };
+  }
+  if (!raw || /^(?:status|check|checkin|check-in|where|summary|当前|状态|汇报|进展)$/i.test(raw)) {
+    return { action: 'checkin' };
+  }
+  const start = raw.match(/^(?:start|new|begin|focus|开始|新建|新开|专注)[:：]?\s+([\s\S]+)$/i);
+  if (start?.[1]?.trim()) return { action: 'start', goal: start[1].trim() };
+  const note = raw.match(/^(?:note|log|record|add note|记|记录|备注)[:：]?\s+([\s\S]+)$/i);
+  if (note?.[1]?.trim()) return { action: 'note', text: note[1].trim() };
+  const end = raw.match(/^(?:end|finish|stop|close|结束|完成|停止)(?:[:：]?\s+([\s\S]+))?$/i);
+  if (end) return { action: 'end', note: (end[1] || '').trim() };
+  if (/^(?:resume|continue|pick up|恢复|继续|接着)$/i.test(raw)) return { action: 'resume' };
+  if (/^(?:list|history|recent|列表|历史|最近)$/i.test(raw)) return { action: 'list' };
+  return { error: 'Usage: /session [start <goal> | note <text> | end [note] | resume | list]' };
+}
+
+function formatLoopSession(data = {}, request = {}) {
+  const sessions = data.sessions || {};
+  const active = sessions.active || data.session || data.result?.session || data.checkIn?.active || null;
+  const counts = sessions.counts || data.counts || data.checkIn?.counts || {};
+  const event = data.event || data.result?.event || null;
+  const items = Array.isArray(sessions.items) ? sessions.items : [];
+  const lines = [
+    `Session: ${request.action || 'status'} · active=${active?.title ? compactText(active.title, 160) : 'none'} · total=${counts.total ?? items.length ?? 0}`,
+  ];
+  if (active?.goal) lines.push(`Goal: ${compactText(active.goal, 240)}`);
+  if (event?.text) lines.push(`Event: ${event.type || 'note'} · ${compactText(event.text, 360)}`);
+  if (data.checkIn?.output) lines.push(`Check-in: ${compactText(data.checkIn.output, 760)}`);
+  if (data.session?.summary && request.action === 'end') lines.push(`Summary: ${compactText(data.session.summary, 760)}`);
+  if (items.length && request.action === 'list') {
+    lines.push('Recent sessions:');
+    for (const item of items.slice(0, 5)) {
+      lines.push(`- ${item.status || '-'} · ${compactText(item.title || item.goal || item.id || '-', 150)} · events=${Array.isArray(item.events) ? item.events.length : 0}`);
+    }
+  }
+  if (data.error) lines.push(`Note: ${compactText(data.error, 240)}`);
+  lines.push('Safety: local session state only; no microphone, Realtime, Terminal, screen capture, clipboard text, app actions, or user-file mutation.');
+  return lines.filter(Boolean).join('\n');
+}
+
+async function activeSessionForLoop() {
+  const response = await request('/api/sessions?limit=1');
+  return {
+    response,
+    active: response.data?.sessions?.active || null,
+  };
+}
+
 function formatLoopAutopilot(data = {}) {
   const payload = parseToolJsonOutput(data);
   const selected = payload.selectedAction || null;
@@ -1647,6 +1702,133 @@ async function runLoopCommand(transcript) {
         endpoint,
         detailLevel: 'fast',
       });
+    }
+    if (command === 'session' || command === 'sessions' || command === 'note') {
+      const sessionRequest = normalizeLoopSessionRequest(transcript, command);
+      if (sessionRequest.error) {
+        return {
+          ...publicLoopCommandBase(base),
+          ok: false,
+          elapsedMs: Math.round(performance.now() - base.startedAt),
+          output: sessionRequest.error,
+        };
+      }
+
+      if (sessionRequest.action === 'checkin') {
+        const endpoint = '/api/sessions/check-in';
+        const response = await request(endpoint);
+        return loopCommandResult(base, response, formatLoopSession(response.data || {}, sessionRequest), {
+          command,
+          endpoint,
+          detailLevel: 'fast',
+        });
+      }
+      if (sessionRequest.action === 'list') {
+        const endpoint = '/api/sessions?limit=5';
+        const response = await request(endpoint);
+        return loopCommandResult(base, response, formatLoopSession(response.data || {}, sessionRequest), {
+          command,
+          endpoint,
+          detailLevel: 'fast',
+        });
+      }
+      if (sessionRequest.action === 'start') {
+        const endpoint = '/api/sessions/start';
+        const response = await request(endpoint, {
+          method: 'POST',
+          body: {
+            goal: sessionRequest.goal,
+            source: 'local_voice_loop_session_start',
+          },
+        });
+        return loopCommandResult(base, response, formatLoopSession(response.data || {}, sessionRequest), {
+          command,
+          endpoint,
+          detailLevel: 'write',
+          previewOnly: false,
+          safety: {
+            ...loopSafety(),
+            readOnly: false,
+            mutatesLocalSession: true,
+          },
+        });
+      }
+      if (sessionRequest.action === 'resume') {
+        const endpoint = '/api/sessions/resume';
+        const response = await request(endpoint, {
+          method: 'POST',
+          body: {
+            source: 'local_voice_loop_session_resume',
+          },
+        });
+        return loopCommandResult(base, response, formatLoopSession(response.data || {}, sessionRequest), {
+          command,
+          endpoint,
+          detailLevel: 'write',
+          previewOnly: false,
+          safety: {
+            ...loopSafety(),
+            readOnly: false,
+            mutatesLocalSession: true,
+          },
+        });
+      }
+
+      const { response: sessionList, active } = await activeSessionForLoop();
+      if (!sessionList.ok || !active?.id) {
+        return {
+          ...publicLoopCommandBase(base),
+          ok: false,
+          responseStatus: sessionList.status,
+          elapsedMs: Math.round(performance.now() - base.startedAt),
+          apiElapsedMs: sessionList.elapsedMs,
+          output: 'No active work session. Use /session start <goal> first.',
+          endpoint: '/api/sessions?limit=1',
+        };
+      }
+      if (sessionRequest.action === 'note') {
+        const endpoint = `/api/sessions/${encodeURIComponent(active.id)}/events`;
+        const response = await request(endpoint, {
+          method: 'POST',
+          body: {
+            type: 'note',
+            text: sessionRequest.text,
+            source: 'local_voice_loop_session_note',
+          },
+        });
+        return loopCommandResult(base, response, formatLoopSession(response.data || {}, sessionRequest), {
+          command,
+          endpoint,
+          detailLevel: 'write',
+          previewOnly: false,
+          safety: {
+            ...loopSafety(),
+            readOnly: false,
+            mutatesLocalSession: true,
+          },
+        });
+      }
+      if (sessionRequest.action === 'end') {
+        const endpoint = `/api/sessions/${encodeURIComponent(active.id)}/end`;
+        const response = await request(endpoint, {
+          method: 'POST',
+          body: {
+            note: sessionRequest.note || '',
+            source: 'local_voice_loop_session_end',
+          },
+        });
+        return loopCommandResult(base, response, formatLoopSession(response.data || {}, sessionRequest), {
+          command,
+          endpoint,
+          detailLevel: 'write',
+          previewOnly: false,
+          safety: {
+            ...loopSafety(),
+            readOnly: false,
+            mutatesLocalSession: true,
+          },
+        });
+      }
     }
     if (command === 'see' || command === 'perception' || command === 'watch' || command === 'screen-status') {
       const endpoint = '/api/perception/consent?limit=5';
