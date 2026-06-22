@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import fs from 'node:fs';
 import { promisify } from 'node:util';
 import { ok, warn, fail } from '../_client.mjs';
 
@@ -35,6 +36,45 @@ export default {
         Array.isArray(r?.nextActions)
         ? ok('browser.readiness', 'Browser readiness packet', `${r.status || 'unknown'} · default=${r.defaultTarget.mode} · no window picker`)
         : fail('browser.readiness', 'Browser readiness packet', `GET /api/browser/readiness ${readiness.status}`, readiness.data),
+    );
+
+    const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    const hasBrowserWorkNextRecovery =
+      mainSource.includes('function browserUnavailableRecoveryAction') &&
+      mainSource.includes('browser_window_unavailable') &&
+      mainSource.includes("source: 'browser_recovery'") &&
+      mainSource.includes("id: 'browser_recovery:open_supported_browser'") &&
+      mainSource.includes("action.source === 'browser_recovery'") &&
+      mainSource.includes("await executeLocalAction(macAction") &&
+      mainSource.includes('browserRecovery: action.browserRecovery');
+    out.push(
+      hasBrowserWorkNextRecovery
+        ? ok('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'browser_window_unavailable routes can surface an open-supported-browser recovery candidate')
+        : fail('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'expected work-next to expose and execute browser_window_unavailable recovery through local action policy'),
+    );
+
+    const progress = await ctx.api('/api/work/progress?jobLimit=8&workflowLimit=8');
+    const progressText = JSON.stringify(progress.data || {});
+    const hasBrowserUnavailableBlocker = progressText.includes('browser_window_unavailable');
+    const workNext = await ctx.api('/api/work/next?workflowLimit=8&jobLimit=8');
+    const workNextActions = Array.isArray(workNext.data?.next?.briefing?.nextActions)
+      ? workNext.data.next.briefing.nextActions
+      : [];
+    const browserRecoveryAction = workNextActions.find((action) => action?.id === 'browser_recovery:open_supported_browser');
+    out.push(
+      hasBrowserUnavailableBlocker
+        ? workNext.ok &&
+          browserRecoveryAction?.source === 'browser_recovery' &&
+          browserRecoveryAction?.executable === true &&
+          browserRecoveryAction?.autoEligible === false &&
+          browserRecoveryAction?.macAction?.action === 'open_app' &&
+          browserRecoveryAction?.browserRecovery?.type === 'browser_window_unavailable'
+          ? ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'current browser_window_unavailable blocker exposes open-supported-browser recovery')
+          : fail('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'expected current browser_window_unavailable blocker to produce a browser_recovery work-next action', {
+              actions: workNextActions.slice(0, 6),
+              progress: progress.data?.progress?.output || '',
+            })
+        : ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'no current browser_window_unavailable blocker to recover'),
     );
 
     const javascript = await ctx.api('/api/browser/javascript');

@@ -178,7 +178,6 @@ const INBOX_FILE = path.join(DATA_DIR, 'inbox.json');
 const SESSIONS_FILE = path.join(DATA_DIR, 'sessions.json');
 const DEMONSTRATIONS_FILE = path.join(DATA_DIR, 'demonstrations.json');
 const SHORTCUTS_FILE = path.join(DATA_DIR, 'shortcuts.json');
-const LOCAL_VOICE_LOOP_STATE_FILE = path.join(DATA_DIR, 'local-voice-loop.json');
 const REALTIME_DOGFOOD_SESSIONS_FILE = path.join(DATA_DIR, 'realtime-dogfood-sessions.json');
 const REALTIME_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'realtime-dogfood-archives');
 const PRODUCTIVITY_DOGFOOD_ARCHIVES_DIR = path.join(DATA_DIR, 'productivity-dogfood-archives');
@@ -1983,145 +1982,6 @@ function openTerminalCommand(command, options = {}) {
   };
 }
 
-const LOCAL_VOICE_LOOP_DEBOUNCE_MS = 60000;
-const LOCAL_VOICE_TERMINAL_LOOP_ENV = 'JAVIS_ALLOW_TERMINAL_VOICE_LOOP';
-const LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV = 'JAVIS_DEV_ALLOW_TERMINAL_VOICE_LOOP';
-let lastLocalVoiceLoopOpenAt = 0;
-
-function localVoiceLoopRunningSnapshot() {
-  try {
-    const output = execFileSync('/usr/bin/pgrep', ['-af', '(local-voice-command-dogfood\\.mjs.*--chat|npm run voice:chat)'], {
-      encoding: 'utf8',
-      timeout: 1000,
-    });
-    const lines = output
-      .split('\n')
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((line) => !line.includes('/usr/bin/pgrep'));
-    return {
-      running: lines.length > 0,
-      count: lines.length,
-      sample: compactRecordText(lines[0] || '', 180),
-    };
-  } catch {
-    return {
-      running: false,
-      count: 0,
-      sample: '',
-    };
-  }
-}
-
-function localVoiceLoopStateSnapshot() {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(LOCAL_VOICE_LOOP_STATE_FILE, 'utf8'));
-    return {
-      lastOpenedAt: Math.max(0, Number(parsed.lastOpenedAt || 0)),
-      source: compactRecordText(parsed.source || '', 80),
-      command: compactRecordText(parsed.command || '', 120),
-      pid: Number(parsed.pid || 0) || null,
-    };
-  } catch {
-    return {
-      lastOpenedAt: 0,
-      source: '',
-      command: '',
-      pid: null,
-    };
-  }
-}
-
-function rememberLocalVoiceLoopOpen(sourceText) {
-  const state = {
-    lastOpenedAt: Date.now(),
-    source: compactRecordText(sourceText || 'api', 80),
-    command: 'npm run voice:chat',
-    pid: process.pid,
-  };
-  lastLocalVoiceLoopOpenAt = state.lastOpenedAt;
-  try {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-    writeJsonAtomic(LOCAL_VOICE_LOOP_STATE_FILE, state);
-  } catch (error) {
-    appendAudit('local_voice_loop.state_write_failed', {
-      source: state.source,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-  return state;
-}
-
-function localVoiceLoopTerminalWindowSnapshot() {
-  const script = [
-    'tell application "System Events"',
-    '  set terminalRunning to exists process "Terminal"',
-    'end tell',
-    'if terminalRunning is false then return "0"',
-    'tell application "Terminal"',
-    '  set matches to {}',
-    '  repeat with w in windows',
-    '    set shouldMatch to false',
-    '    try',
-    '      if (name of w contains "npm run voice:chat") or (name of w contains "local-voice-command-dogfood") then set shouldMatch to true',
-    '    end try',
-    '    try',
-    '      if (contents of selected tab of w contains "JAVIS Local Voice Command Loop") or (contents of selected tab of w contains "npm run voice:chat") then set shouldMatch to true',
-    '    end try',
-    '    if shouldMatch then set end of matches to (name of w as text)',
-    '  end repeat',
-    '  set AppleScript\'s text item delimiters to linefeed',
-    '  return ((count of matches) as text) & linefeed & (matches as text)',
-    'end tell',
-  ].join('\n');
-  try {
-    const output = execFileSync('/usr/bin/osascript', ['-e', script], {
-      encoding: 'utf8',
-      timeout: 2000,
-    });
-    const lines = output.split('\n').map((line) => line.trim()).filter(Boolean);
-    const count = Math.max(0, Number(lines[0] || 0) || 0);
-    return {
-      count,
-      sample: compactRecordText(lines.slice(1).join(' | '), 180),
-    };
-  } catch (error) {
-    return {
-      count: 0,
-      sample: '',
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-}
-
-function focusLocalVoiceLoopTerminal() {
-  const script = [
-    'tell application "System Events"',
-    '  set terminalRunning to exists process "Terminal"',
-    'end tell',
-    'if terminalRunning is false then return false',
-    'tell application "Terminal"',
-    '  repeat with w in windows',
-    '    if (name of w contains "npm run voice:chat") or (name of w contains "local-voice-command-dogfood") then',
-    '      set index of w to 1',
-    '      activate',
-    '      return true',
-    '    end if',
-    '  end repeat',
-    '  return false',
-    'end tell',
-  ].join('\n');
-  try {
-    const output = execFileSync('/usr/bin/osascript', ['-e', script], {
-      encoding: 'utf8',
-      timeout: 1500,
-    });
-    return output.trim() === 'true';
-  } catch {
-    return false;
-  }
-}
-
 function openLocalVoiceInput(source = 'api', options = {}) {
   const sourceText = String(source || 'api').slice(0, 80);
   if (options.execute === false) {
@@ -2168,7 +2028,6 @@ function openConfigCui(source = 'api') {
 
 function openLocalVoiceLoop(source = 'api', options = {}) {
   const sourceText = String(source || 'api').slice(0, 80);
-  const terminalLoopEnabled = process.env[LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV] === 'true';
   if (options.execute === false) {
     appendAudit('local_voice_loop.previewed', {
       source: sourceText,
@@ -2188,102 +2047,42 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
       terminalLoop: {
         available: true,
         command: 'npm run voice:chat',
-        disabledByDefault: !terminalLoopEnabled,
-        enableEnv: LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV,
-        legacyEnableEnvIgnored: LOCAL_VOICE_TERMINAL_LOOP_ENV,
+        disabledByResident: true,
+        manualOnly: true,
+        opensTerminal: false,
         requiresExplicitConfirmation: true,
       },
     };
   }
   const requestedTerminal = options.allowTerminal === true || options.confirmTerminal === true;
-  const allowTerminal = terminalLoopEnabled && options.allowTerminal === true && options.confirmTerminal === true;
-  if (!allowTerminal) {
-    const action = openLocalVoiceInput(sourceText, { execute: true });
-    const reason = terminalLoopEnabled
-      ? 'terminal_loop_requires_explicit_confirmation'
-      : 'terminal_loop_disabled_product_default';
-    appendAudit('local_voice_loop.redirected_to_compose', {
-      source: sourceText,
-      reason,
-      requestedTerminal,
-    });
-    return {
-      ok: action.ok !== false,
-      executed: Boolean(action.executed),
-      redirectedToCompose: true,
-      output: 'Opened JAVIS local input inside the desktop pet instead of launching a Terminal loop.',
-      command: 'npm run voice:chat',
-      window: action.window || null,
-      safety: {
-        startsMicrophone: false,
-        usesRealtime: false,
-        storesRawAudio: false,
-        opensTerminal: false,
-      },
-      terminalLoop: {
-        available: true,
-        command: 'npm run voice:chat',
-        disabledByDefault: !terminalLoopEnabled,
-        enableEnv: LOCAL_VOICE_TERMINAL_LOOP_DEV_ENV,
-        legacyEnableEnvIgnored: LOCAL_VOICE_TERMINAL_LOOP_ENV,
-        requestedTerminal,
-        requiresExplicitConfirmation: true,
-      },
-    };
-  }
-  const now = Date.now();
-  const running = localVoiceLoopRunningSnapshot();
-  const terminalWindows = localVoiceLoopTerminalWindowSnapshot();
-  const persisted = localVoiceLoopStateSnapshot();
-  const memoryRecentlyOpened = now - lastLocalVoiceLoopOpenAt < LOCAL_VOICE_LOOP_DEBOUNCE_MS;
-  const stateRecentlyOpened = now - persisted.lastOpenedAt < LOCAL_VOICE_LOOP_DEBOUNCE_MS;
-  const recentlyOpened = memoryRecentlyOpened || stateRecentlyOpened;
-  if (running.running || terminalWindows.count > 0 || recentlyOpened) {
-    const focused = running.running || terminalWindows.count > 0 ? focusLocalVoiceLoopTerminal() : false;
-    appendAudit('local_voice_loop.reused', {
-      source: sourceText,
-      runningCount: running.count,
-      terminalWindowCount: terminalWindows.count,
-      recentlyOpened,
-      memoryRecentlyOpened,
-      stateRecentlyOpened,
-      focused,
-      sample: running.sample,
-      terminalSample: terminalWindows.sample,
-    });
-    return {
-      ok: true,
-      executed: false,
-      reusedExisting: true,
-      output: focused
-        ? 'JAVIS local voice/text loop is already open; focused the existing Terminal window.'
-        : 'JAVIS local voice/text loop is already opening or running; skipped opening another Terminal window.',
-      command: 'npm run voice:chat',
-      existingCount: running.count,
-      existingWindowCount: terminalWindows.count,
-      safety: {
-        startsMicrophone: false,
-        usesRealtime: false,
-        storesRawAudio: false,
-        opensTerminal: false,
-      },
-    };
-  }
-  rememberLocalVoiceLoopOpen(sourceText);
+  const action = openLocalVoiceInput(sourceText, { execute: true });
+  appendAudit('local_voice_loop.redirected_to_compose', {
+    source: sourceText,
+    reason: 'terminal_loop_disabled_product_default',
+    requestedTerminal,
+    terminalLoopManualOnly: true,
+  });
   return {
-    ...openTerminalCommand(`cd ${shQuote(process.cwd())} && npm run voice:chat`, {
-      source: sourceText,
-      auditType: 'local_voice_loop.opened',
-      auditCommand: 'npm run voice:chat',
-      output: 'Opened JAVIS local voice/text loop in Terminal.',
-      displayCommand: 'npm run voice:chat',
-    }),
-    executed: true,
+    ok: action.ok !== false,
+    executed: Boolean(action.executed),
+    redirectedToCompose: true,
+    output: 'Opened JAVIS local input inside the desktop pet instead of launching a Terminal loop.',
+    command: 'npm run voice:chat',
+    window: action.window || null,
     safety: {
       startsMicrophone: false,
       usesRealtime: false,
       storesRawAudio: false,
-      opensTerminal: true,
+      opensTerminal: false,
+    },
+    terminalLoop: {
+      available: true,
+      command: 'npm run voice:chat',
+      disabledByResident: true,
+      manualOnly: true,
+      opensTerminal: false,
+      requestedTerminal,
+      requiresExplicitConfirmation: true,
     },
   };
 }
@@ -27389,20 +27188,20 @@ function localVoiceStatusSnapshot(options = {}) {
       fallbackReady
         ? 'Realtime voice is not ready; local typed voice-command intake can still route work.'
         : 'Local typed voice-command intake is ready for no-mic preview or fallback use.',
-      180,
+      120,
     ),
     next: compactRecordText(
       fallbackReady
         ? fallback.next || 'Use npm run voice with a quoted request while Realtime is unavailable.'
         : 'Use npm run voice when you want no-mic intake, or start Realtime when provider health is ready.',
-      220,
+      140,
     ),
     blocker: {
       active: Boolean(blocker.active),
-      kind: compactRecordText(blocker.kind || '', 80),
-      status: compactRecordText(blocker.status || '', 80),
-      summary: compactRecordText(blocker.summary || '', 220),
-      next: compactRecordText(blocker.next || '', 260),
+      kind: compactRecordText(blocker.kind || '', 60),
+      status: compactRecordText(blocker.status || '', 60),
+      summary: compactRecordText(blocker.summary || '', 120),
+      next: compactRecordText(blocker.next || '', 120),
     },
     input: {
       endpoint: '/api/voice/command',
@@ -27439,8 +27238,8 @@ function localVoiceStatusSnapshot(options = {}) {
             lane: latest.lane,
             queued: latest.queued,
             executed: latest.executed,
-            transcriptPreview: compactRecordText(latest.transcriptPreview, 140),
-            contextSummary: compactRecordText(latest.contextSummary, 140),
+            transcriptPreview: compactRecordText(latest.transcriptPreview, 90),
+            contextSummary: compactRecordText(latest.contextSummary, 80),
             elapsedMs: latest.elapsedMs,
           }
         : null,
@@ -33678,8 +33477,8 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
       ready: Boolean(handoff.ready),
       mode: compactRecordText(handoff.mode || '', 80),
       label: compactRecordText(handoff.label || '', 120),
-      summary: compactRecordText(handoff.summary || '', 180),
-      next: compactRecordText(handoff.next || '', 180),
+      summary: compactRecordText(handoff.summary || '', 120),
+      next: compactRecordText(handoff.next || '', 120),
       input: {
         endpoint: compactRecordText(handoff.input?.endpoint || '', 120),
         cliCommand: compactRecordText(handoff.input?.cliCommand || '', 140),
@@ -33702,10 +33501,10 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
       blocker: handoff.blocker
         ? {
             active: Boolean(handoff.blocker.active),
-            kind: compactRecordText(handoff.blocker.kind || '', 80),
-            status: compactRecordText(handoff.blocker.status || '', 80),
-            summary: compactRecordText(handoff.blocker.summary || '', 160),
-            next: compactRecordText(handoff.blocker.next || '', 180),
+            kind: compactRecordText(handoff.blocker.kind || '', 60),
+            status: compactRecordText(handoff.blocker.status || '', 60),
+            summary: compactRecordText(handoff.blocker.summary || '', 100),
+            next: compactRecordText(handoff.blocker.next || '', 100),
           }
         : null,
       safety: {
@@ -33776,7 +33575,7 @@ function petPresenceStatusSnapshot(presence = {}) {
     generatedAt: presence.generatedAt || new Date().toISOString(),
     mode: presence.mode || 'standby',
     label: presence.label || 'Standby',
-    summary: compactRecordText(presence.summary || '', 280),
+    summary: compactRecordText(presence.summary || '', 220),
     intervention: {
       passiveByDefault: presence.intervention?.passiveByDefault !== false,
       requiresUserIntent: presence.intervention?.requiresUserIntent !== false,
@@ -33784,7 +33583,7 @@ function petPresenceStatusSnapshot(presence = {}) {
       trustedLocalMode: Boolean(presence.intervention?.trustedLocalMode),
       maxAutoRiskLevel: Number(presence.intervention?.maxAutoRiskLevel || 0),
       requireApprovalAtRiskLevel: Number(presence.intervention?.requireApprovalAtRiskLevel || 0),
-      next: compactRecordText(presence.intervention?.next || '', 220),
+      next: compactRecordText(presence.intervention?.next || '', 150),
       attentionLevel: compactRecordText(presence.intervention?.attentionLevel || '', 40),
       shouldNotify: Boolean(presence.intervention?.shouldNotify),
     },
@@ -33908,15 +33707,15 @@ function petReadinessSummary(readiness = petReadinessSnapshot()) {
   return {
     overall: readiness.overall,
     label: readiness.label,
-    summary: compactRecordText(readiness.summary || '', 220),
+    summary: compactRecordText(readiness.summary || '', 160),
     counts: readiness.counts,
     primaryIssue: readiness.primaryIssue
       ? {
           id: readiness.primaryIssue.id,
           label: readiness.primaryIssue.label,
           status: readiness.primaryIssue.status,
-          summary: compactRecordText(readiness.primaryIssue.summary || '', 180),
-          next: compactRecordText(readiness.primaryIssue.next || '', 180),
+          summary: compactRecordText(readiness.primaryIssue.summary || '', 120),
+          next: compactRecordText(readiness.primaryIssue.next || '', 120),
         }
       : null,
   };
@@ -34008,8 +33807,8 @@ function petStatusSnapshot() {
       ],
       mode: presence.mode,
       label: presence.label,
-      summary: compactRecordText(presence.summary || '', 240),
-      next: compactRecordText(presence.intervention?.next || '', 220),
+      summary: compactRecordText(presence.summary || '', 180),
+      next: compactRecordText(presence.intervention?.next || '', 150),
       color: trafficLight.color,
       trafficLight,
     },
@@ -34038,26 +33837,26 @@ function petStatusSnapshot() {
         ok: Boolean(health.ok),
         status: health.status || '',
         kind: health.kind || '',
-        summary: compactRecordText(health.summary || health.message || '', 180),
-        next: compactRecordText(health.next || '', 220),
+        summary: compactRecordText(health.summary || health.message || '', 120),
+        next: compactRecordText(health.next || '', 120),
         hasOpenAiKey: Boolean(health.hasOpenAiKey),
         lastStatusCode: boundedCount(health.lastNegotiation?.statusCode, 999),
-        lastError: compactRecordText(health.error || health.lastError || '', 180),
+        lastError: compactRecordText(health.error || health.lastError || '', 100),
         fallback: {
           available: Boolean(fallback.available),
           activeWhenRealtimeBlocked: Boolean(fallback.activeWhenRealtimeBlocked),
-          lane: compactRecordText(fallback.lane || '', 80),
-          endpoint: compactRecordText(fallback.endpoint || '', 120),
-          dogfoodCommand: compactRecordText(fallback.dogfoodCommand || '', 160),
-          summary: compactRecordText(fallback.summary || '', 180),
-          next: compactRecordText(fallback.next || '', 180),
+          lane: compactRecordText(fallback.lane || '', 60),
+          endpoint: compactRecordText(fallback.endpoint || '', 80),
+          dogfoodCommand: compactRecordText(fallback.dogfoodCommand || '', 80),
+          summary: compactRecordText(fallback.summary || '', 120),
+          next: compactRecordText(fallback.next || '', 120),
           blocker: fallback.blocker
             ? {
                 active: Boolean(fallback.blocker.active),
-                kind: compactRecordText(fallback.blocker.kind || '', 80),
-                status: compactRecordText(fallback.blocker.status || '', 80),
-                summary: compactRecordText(fallback.blocker.summary || '', 160),
-                next: compactRecordText(fallback.blocker.next || '', 180),
+                kind: compactRecordText(fallback.blocker.kind || '', 60),
+                status: compactRecordText(fallback.blocker.status || '', 60),
+                summary: compactRecordText(fallback.blocker.summary || '', 100),
+                next: compactRecordText(fallback.blocker.next || '', 100),
               }
             : null,
           safety: {
@@ -46008,6 +45807,65 @@ function routingWorkNextActionForRecord(record, options = {}) {
   };
 }
 
+function browserUnavailableRouteBlocker(record, entry = routingLedgerEntry(record)) {
+  if (!record || !entry) return false;
+  const text = [
+    entry.blocker,
+    entry.nextAction,
+    entry.resultSummary,
+    record.failureKind,
+    record.resultSummary,
+    record.recoveryPlan?.failureKind,
+    record.recoveryPlan?.summary,
+  ].filter(Boolean).join('\n').toLowerCase();
+  return /browser_window_unavailable|browser_context_unavailable|browser target unavailable|browser context unavailable|no supported browser/.test(text);
+}
+
+function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = []) {
+  const routeEntriesById = new Map(routingLedger.map((entry) => [entry.id, entry]));
+  const blockedRoutes = activeRoutes
+    .map((record) => ({
+      record,
+      entry: routeEntriesById.get(record.id) || routingLedgerEntry(record),
+    }))
+    .filter(({ record, entry }) => browserUnavailableRouteBlocker(record, entry));
+  if (!blockedRoutes.length) return null;
+  const appName = 'Google Chrome';
+  const first = blockedRoutes[0];
+  return {
+    id: 'browser_recovery:open_supported_browser',
+    priority: 1.8,
+    label: 'Open supported browser',
+    summary: `${blockedRoutes.length} browser task(s) are blocked because no readable supported browser window is available. Open or focus ${appName}, then rerun the browser work.`,
+    source: 'browser_recovery',
+    browserRecovery: {
+      version: 1,
+      type: 'browser_window_unavailable',
+      app: appName,
+      routeCount: blockedRoutes.length,
+      firstRouteId: first.record.id,
+      firstTaskTitle: compactRecordText(first.record.taskTitle || '', 180),
+      blocker: compactRecordText(first.entry?.blocker || 'browser_window_unavailable', 160),
+      next: `Open or focus ${appName}; JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
+    },
+    executable: true,
+    autoEligible: false,
+    autopilotEligible: false,
+    manualOnly: false,
+    requiresUserPresence: false,
+    startsMicrophone: false,
+    requiresMicConfirmation: false,
+    startsRecording: false,
+    startsWorkers: false,
+    executesTask: false,
+    riskLevel: 2,
+    macAction: {
+      action: 'open_app',
+      value: appName,
+    },
+  };
+}
+
 function finalizeRouteResult(result, context = {}) {
   const job = result.job || result.data?.job || null;
   const workflow = result.workflow || result.data?.workflow || result.data?.result?.workflow || null;
@@ -46792,6 +46650,8 @@ function workflowBriefing(options = {}) {
       source: 'briefing',
     });
     if (action) nextActions.push(action);
+    const browserRecovery = browserUnavailableRecoveryAction(activeRoutes, routingLedger);
+    if (browserRecovery) nextActions.push(browserRecovery);
   }
 
   if (collaboration.counts.conflicts) {
@@ -48018,6 +47878,73 @@ async function workNextAction(options = {}) {
     });
     executed = Boolean(result.executed);
     output = result.output;
+  } else if (action.source === 'browser_recovery') {
+    const macAction = action.macAction || { action: 'open_app', value: action.browserRecovery?.app || 'Google Chrome' };
+    if (execute) {
+      try {
+        const actionOutput = await executeLocalAction(macAction, {
+          approvalContext: {
+            source: options.source || 'work_next_browser_recovery',
+            reason: action.summary,
+          },
+        });
+        executed = true;
+        result = {
+          ok: true,
+          executed: true,
+          macAction,
+          browserRecovery: action.browserRecovery,
+          output: actionOutput,
+        };
+        output = [
+          actionOutput,
+          'Browser recovery executed through the local Mac action policy; rerun the browser task or /next after the supported browser is visible.',
+        ].join('\n');
+      } catch (error) {
+        executed = false;
+        if (error instanceof ActionApprovalRequired) {
+          result = {
+            ok: false,
+            executed: false,
+            approval: error.approval,
+            macAction,
+            browserRecovery: action.browserRecovery,
+          };
+          output = `Approval required before browser recovery can open ${macAction.value || 'the browser'}.`;
+        } else {
+          result = {
+            ok: false,
+            executed: false,
+            error: error instanceof Error ? error.message : String(error),
+            macAction,
+            browserRecovery: action.browserRecovery,
+          };
+          output = `Browser recovery failed: ${result.error}`;
+        }
+      }
+    } else {
+      const plan = buildLocalActionPlan(macAction);
+      const evaluation = evaluateMacActionPlan(plan, {
+        preview: true,
+        approvalContext: {
+          source: options.source || 'work_next_browser_recovery_preview',
+          reason: action.summary,
+        },
+      });
+      result = {
+        ok: true,
+        executed: false,
+        plan,
+        evaluation,
+        macAction,
+        browserRecovery: action.browserRecovery,
+      };
+      output = [
+        `Preview browser recovery: ${plan.summary}.`,
+        evaluation.blocked ? `Blocked by control mode: ${evaluation.reason || 'blocked'}.` : evaluation.needsApproval ? `Approval required: ${evaluation.reason || 'approval_required'}.` : 'Allowed by current local action policy.',
+        'No browser action was executed in preview mode.',
+      ].join('\n');
+    }
   } else if (action.source === 'workflows' && action.workflowAction === 'retry_app_workflow') {
     const workflow = action.workflowId ? workflows.get(action.workflowId) || null : null;
     const retryPlan = retryableBlockedWorkflowPlan(workflow);
@@ -48347,6 +48274,17 @@ function compactWorkNextActionPayload(action = null) {
         endpoint: compactRecordText(action.localFallback.endpoint || '', 120),
         summary: compactRecordText(action.localFallback.summary || '', 220),
         next: compactRecordText(action.localFallback.next || '', 220),
+    }
+    : null;
+  const browserRecovery = action.browserRecovery && typeof action.browserRecovery === 'object'
+    ? {
+        version: boundedCount(action.browserRecovery.version, 10),
+        type: compactRecordText(action.browserRecovery.type || '', 80),
+        app: compactRecordText(action.browserRecovery.app || '', 120),
+        routeCount: boundedCount(action.browserRecovery.routeCount, 1000),
+        firstRouteId: compactRecordText(action.browserRecovery.firstRouteId || '', 120),
+        firstTaskTitle: compactRecordText(action.browserRecovery.firstTaskTitle || '', 180),
+        next: compactRecordText(action.browserRecovery.next || '', 240),
       }
     : null;
   return {
@@ -48363,6 +48301,7 @@ function compactWorkNextActionPayload(action = null) {
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
     riskLevel: boundedCount(action.riskLevel, 10),
     localFallback,
+    browserRecovery,
   };
 }
 

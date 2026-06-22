@@ -693,9 +693,23 @@ function printNextAction(next) {
       console.log(`Fallback safety: starts microphone=${fallback.safety.startsMicrophone ? 'yes' : 'no'}; realtime=${fallback.safety.usesRealtime ? 'yes' : 'no'}; raw audio=${fallback.safety.storesRawAudio ? 'yes' : 'no'}`);
     }
   }
+  if (printBrowserRecoveryGuide(action)) return true;
   if (printRouteRecoveryGuide(action)) return true;
   const guide = action.dogfoodGuide || action.guide || {};
   return printDogfoodGuide(guide);
+}
+
+function printBrowserRecoveryGuide(action = {}) {
+  if (action.source !== 'browser_recovery' || !action.browserRecovery) return false;
+  const recovery = action.browserRecovery || {};
+  const appName = recovery.app || action.macAction?.value || 'supported browser';
+  console.log(`Guide: Open or focus ${appName} before retrying browser work.`);
+  if (recovery.type) console.log(`Browser recovery: ${recovery.type}`);
+  if (recovery.firstTaskTitle) console.log(`Blocked task: ${compact(recovery.firstTaskTitle, 180)}`);
+  if (action.macAction?.action) console.log(`Local action: ${action.macAction.action} ${compact(action.macAction.value || appName, 140)}`);
+  console.log(`Preview: GET /api/work/next?actionId=${encodeURIComponent(action.id || 'browser_recovery:open_supported_browser')}`);
+  console.log(`Run: POST /api/work/next {"actionId":"${action.id || 'browser_recovery:open_supported_browser'}","execute":true}`);
+  return true;
 }
 
 function printRouteRecoveryGuide(action = {}) {

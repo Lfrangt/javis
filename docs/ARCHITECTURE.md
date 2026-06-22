@@ -102,6 +102,7 @@ Renderer
 - Browser page lane: read-only extraction of selected text, headings, and visible page text from supported active tabs.
 - Browser DOM lane: read-only visible control extraction plus guarded one-step click/fill/select actions inside supported active tabs, using browser Apple Events first and Chrome DevTools on `JAVIS_CHROME_DEBUG_PORT` as a fallback.
 - Browser workflow lane: page-aware summarize, action extraction, drafting, Q&A, search/research, and guarded form-fill draft planning routed through quick or background lanes.
+- Browser recovery lane: route/work-next notices `browser_window_unavailable` blockers and surfaces `browser_recovery:open_supported_browser`, which previews or executes a normal local `open_app` action to focus Google Chrome before retrying browser work.
 - Browser benchmark lane: preview-only fixture checks for summarize, action extraction, form-fill draft redaction, compare/search preview, review-result preview, and research continuation contracts. It uses `/api/browser/benchmarks` and the CUI without opening live pages, executing browser actions, or calling models.
 - Accessibility tree lane: read-only frontmost or requested-app UI structure for operating non-browser Mac apps through the accessibility model.
 - UI planning lane: dry-run target selection and next-action plans from the current or requested app accessibility tree.

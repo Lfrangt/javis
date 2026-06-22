@@ -421,6 +421,12 @@ export default {
         output.includes('Recovery: route_preview_execute') &&
         output.includes('Run: POST /api/work/next {"actionId":"route:') &&
         output.includes('预览模式');
+      const hasBrowserRecoveryGuide =
+        output.includes('Guide: Open or focus Google Chrome before retrying browser work.') &&
+        output.includes('Browser recovery: browser_window_unavailable') &&
+        output.includes('Preview: GET /api/work/next?actionId=browser_recovery%3Aopen_supported_browser') &&
+        output.includes('Run: POST /api/work/next {"actionId":"browser_recovery:open_supported_browser","execute":true}') &&
+        output.includes('Preview browser recovery');
       const hasRealtimeWorkbenchGuide =
         output.includes('Monitor: npm run config -> V. Watch Realtime voice evidence') &&
         output.includes('现在做到哪了') &&
@@ -429,13 +435,15 @@ export default {
       out.push(
         output.includes('Next action:') &&
           output.includes('Guide:') &&
-          (hasRouteRecoveryGuide || hasProviderFallbackGuide || hasRealtimeWorkbenchGuide)
+          (hasRouteRecoveryGuide || hasBrowserRecoveryGuide || hasProviderFallbackGuide || hasRealtimeWorkbenchGuide)
           ? ok('briefing.cui_worknext', 'CUI work-next guide', hasRouteRecoveryGuide
             ? 'config CUI prints routed preview continuation guide'
-            : hasProviderFallbackGuide
-              ? 'config CUI prints provider warning plus local voice-command fallback'
-              : 'config CUI prints the guided Realtime work-next prepare path')
-          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print routed preview continuation, Realtime prepare, or provider-warning local fallback guide', { output: output.slice(0, 2200) }),
+            : hasBrowserRecoveryGuide
+              ? 'config CUI prints browser recovery guide'
+              : hasProviderFallbackGuide
+                ? 'config CUI prints provider warning plus local voice-command fallback'
+                : 'config CUI prints the guided Realtime work-next prepare path')
+          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print browser recovery, routed preview continuation, Realtime prepare, or provider-warning local fallback guide', { output: output.slice(0, 2200) }),
       );
     } catch (error) {
       out.push(fail('briefing.cui_worknext', 'CUI work-next guide', error instanceof Error ? error.message : String(error)));

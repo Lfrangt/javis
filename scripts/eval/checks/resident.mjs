@@ -845,11 +845,14 @@ export default {
         localLoopDefaultExecute.safety?.usesRealtime === false &&
         localLoopDefaultExecute.safety?.storesRawAudio === false &&
         localLoopDefaultExecute.safety?.opensTerminal === false &&
+        localLoopDefaultExecute.terminalLoop?.disabledByResident === true &&
+        localLoopDefaultExecute.terminalLoop?.manualOnly === true &&
+        localLoopDefaultExecute.terminalLoop?.opensTerminal === false &&
         localLoopDefaultExecute.terminalLoop?.requiresExplicitConfirmation === true &&
         localLoopDefaultRestore.ok &&
         localLoopDefaultRestore.data?.window?.mode === 'pet'
-        ? ok('resident.local_voice_loop_no_terminal_default', 'Local voice loop no-Terminal default', 'execute opens compose unless Terminal is explicitly confirmed')
-        : fail('resident.local_voice_loop_no_terminal_default', 'Local voice loop no-Terminal default', 'expected execute=true to open compose and avoid Terminal without allowTerminal+confirmTerminal', {
+        ? ok('resident.local_voice_loop_no_terminal_default', 'Local voice loop no-Terminal default', 'execute opens compose and marks Terminal loop as manual-only')
+        : fail('resident.local_voice_loop_no_terminal_default', 'Local voice loop no-Terminal default', 'expected execute=true to open compose and avoid Terminal from resident/API entrypoints', {
           status: localLoopDefaultExecuteResponse.status,
           body: localLoopDefaultExecute,
           restoreStatus: localLoopDefaultRestore.status,
@@ -883,13 +886,14 @@ export default {
         localLoopExplicitTerminal.executed === true &&
         localLoopExplicitTerminal.redirectedToCompose === true &&
         localLoopExplicitTerminal.safety?.opensTerminal === false &&
-        localLoopExplicitTerminal.terminalLoop?.disabledByDefault === true &&
-        localLoopExplicitTerminal.terminalLoop?.enableEnv === 'JAVIS_DEV_ALLOW_TERMINAL_VOICE_LOOP' &&
-        localLoopExplicitTerminal.terminalLoop?.legacyEnableEnvIgnored === 'JAVIS_ALLOW_TERMINAL_VOICE_LOOP' &&
+        localLoopExplicitTerminal.terminalLoop?.disabledByResident === true &&
+        localLoopExplicitTerminal.terminalLoop?.manualOnly === true &&
+        localLoopExplicitTerminal.terminalLoop?.opensTerminal === false &&
+        localLoopExplicitTerminal.terminalLoop?.requestedTerminal === true &&
         localLoopExplicitRestore.ok &&
         localLoopExplicitRestore.data?.window?.mode === 'pet'
-        ? ok('resident.local_voice_loop_terminal_env_gate', 'Local voice loop Terminal env gate', 'even explicit Terminal requests redirect to compose unless the dev-only Terminal loop env is set')
-        : fail('resident.local_voice_loop_terminal_env_gate', 'Local voice loop Terminal env gate', 'expected explicit Terminal request to stay in pet compose by default', {
+        ? ok('resident.local_voice_loop_terminal_api_disabled', 'Local voice loop Terminal API disabled', 'even explicit Terminal requests redirect to compose from resident/API')
+        : fail('resident.local_voice_loop_terminal_api_disabled', 'Local voice loop Terminal API disabled', 'expected explicit Terminal request to stay in pet compose and mark the CLI loop as manual-only', {
           status: localLoopExplicitTerminalResponse.status,
           body: localLoopExplicitTerminal,
           restoreStatus: localLoopExplicitRestore.status,
@@ -901,23 +905,21 @@ export default {
     const loopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
     const installSource = fs.readFileSync('scripts/install-launch-agent.cjs', 'utf8');
     const stopSource = fs.readFileSync('scripts/stop-resident-processes.cjs', 'utf8');
-    const hasLocalLoopDedupe =
-      mainSource.includes('localVoiceLoopRunningSnapshot') &&
-      mainSource.includes('localVoiceLoopTerminalWindowSnapshot') &&
-      mainSource.includes('LOCAL_VOICE_LOOP_STATE_FILE') &&
-      mainSource.includes('LOCAL_VOICE_LOOP_DEBOUNCE_MS') &&
-      mainSource.includes('JAVIS_ALLOW_TERMINAL_VOICE_LOOP') &&
-      mainSource.includes('JAVIS_DEV_ALLOW_TERMINAL_VOICE_LOOP') &&
-      mainSource.includes('legacyEnableEnvIgnored') &&
+    const hasLocalLoopApiTerminalBlock =
+      mainSource.includes('function openLocalVoiceLoop') &&
       mainSource.includes('allowTerminal') &&
       mainSource.includes('confirmTerminal') &&
-      mainSource.includes('terminal_loop_disabled_product_default') &&
+      mainSource.includes("reason: 'terminal_loop_disabled_product_default'") &&
+      mainSource.includes('terminalLoopManualOnly: true') &&
+      mainSource.includes('disabledByResident: true') &&
+      mainSource.includes('manualOnly: true') &&
+      mainSource.includes('openLocalVoiceInput(sourceText, { execute: true })') &&
       mainSource.includes("appendAudit('local_voice_loop.redirected_to_compose'") &&
-      mainSource.includes("appendAudit('local_voice_loop.reused'") &&
-      mainSource.includes('reusedExisting: true') &&
-      mainSource.includes('terminalWindowCount') &&
-      mainSource.includes('stateRecentlyOpened') &&
       mainSource.includes('opensTerminal: false') &&
+      !mainSource.includes("auditType: 'local_voice_loop.opened'") &&
+      !mainSource.includes('localVoiceLoopTerminalWindowSnapshot') &&
+      !mainSource.includes('LOCAL_VOICE_LOOP_STATE_FILE') &&
+      !mainSource.includes('JAVIS_DEV_ALLOW_TERMINAL_VOICE_LOOP') &&
       loopSource.includes('LOCAL_VOICE_CHAT_LOCK_FILE') &&
       loopSource.includes('acquireLocalVoiceChatLock') &&
       loopSource.includes('localVoiceChatLockOwnerActive') &&
@@ -925,9 +927,9 @@ export default {
       stopSource.includes('local-voice-chat.lock.json') &&
       stopSource.includes('cleanupLocalVoiceLoopArtifacts');
     out.push(
-      hasLocalLoopDedupe
-        ? ok('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'existing, visible, or just-opened voice loop is reused instead of opening another Terminal window')
-        : fail('resident.local_voice_loop_dedupe', 'Local voice loop dedupe guard', 'expected /api/voice/open-local-loop to reuse existing voice loop windows and persisted recent opens'),
+      hasLocalLoopApiTerminalBlock
+        ? ok('resident.local_voice_loop_api_terminal_disabled', 'Local voice loop API Terminal disabled', 'resident/API loop requests always redirect to compose; manual CLI loop keeps its own lock')
+        : fail('resident.local_voice_loop_api_terminal_disabled', 'Local voice loop API Terminal disabled', 'expected /api/voice/open-local-loop to have no Terminal-opening path and keep manual CLI lock cleanup'),
     );
 
     const hasResidentLaunchNoTerminalLoop =
