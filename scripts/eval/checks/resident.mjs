@@ -109,6 +109,7 @@ export default {
     const voiceStandbyResponse = await ctx.api('/api/voice/standby');
     const voiceStandby = voiceStandbyResponse.data?.standby || {};
     const voiceStandbyPromptPack = voiceStandby.promptPack || {};
+    const voiceStandbyInputMode = voiceStandby.inputMode || {};
     const voiceStandbyCui = spawnSync('npm', ['run', 'voice:standby'], {
       cwd: process.cwd(),
       encoding: 'utf8',
@@ -123,9 +124,13 @@ export default {
         voiceStandby.version === 1 &&
         ['realtime_ready', 'local_fallback_ready'].includes(voiceStandby.mode) &&
         voiceStandby.primaryAction?.id &&
+        voiceStandbyInputMode.mode === 'push_to_talk' &&
+        voiceStandbyInputMode.micDefault === 'push' &&
+        voiceStandbyInputMode.startsMuted === true &&
         voiceStandby.local?.available === true &&
         voiceStandby.local?.input?.endpoint === '/api/voice/command' &&
         voiceStandby.local?.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
+        voiceStandby.local?.inputMode?.mode === 'push_to_talk' &&
         typeof voiceStandbyPromptPack.nextUtterance === 'string' &&
         voiceStandbyPromptPack.nextUtterance.length > 0 &&
         Array.isArray(voiceStandbyPromptPack.examples) &&
@@ -142,6 +147,7 @@ export default {
         voiceStandby.safety?.storesRawAudio === false &&
         voiceStandbyCui.status === 0 &&
         voiceStandbyCui.stdout.includes('JAVIS Voice Standby') &&
+        voiceStandbyCui.stdout.includes('Input mode: Push-to-talk') &&
         voiceStandbyCui.stdout.includes('Try saying') &&
         voiceStandbyCui.stdout.includes('local loop: npm run voice:chat')
         ? ok('resident.voice_standby', 'Voice standby/fallback status', `${voiceStandby.mode} · primary=${voiceStandby.primaryAction.id}`)
@@ -619,6 +625,7 @@ export default {
     const voiceFallback = p.voiceHealth?.fallback || {};
     const localVoice = p.localVoice || {};
     const localVoiceInteraction = localVoice.interaction || {};
+    const localVoiceInputMode = localVoice.inputMode || {};
     const localVoicePromptPack = localVoice.promptPack || {};
     const petWakeHandoff = p.wake?.handoff || {};
     const petWakePromptPack = petWakeHandoff.promptPack || {};
@@ -690,6 +697,10 @@ export default {
         String(localVoice.input?.cliCommand || '').includes('npm run voice') &&
         String(localVoice.input?.openLoopCommand || '').includes('npm run voice:chat') &&
         String(localVoice.input?.historyCommand || '').includes('--print-voice-history') &&
+        localVoiceInputMode.mode === 'push_to_talk' &&
+        localVoiceInputMode.micDefault === 'push' &&
+        localVoiceInputMode.startsMuted === true &&
+        localVoiceInputMode.openMicToggle === true &&
         typeof localVoicePromptPack.nextUtterance === 'string' &&
         localVoicePromptPack.nextUtterance.length > 0 &&
         localVoicePromptPack.placeholder === localVoicePromptPack.nextUtterance &&
@@ -732,6 +743,8 @@ export default {
         petWakeHandoff.ready === true &&
         ['local_voice_fallback', 'realtime_or_local'].includes(petWakeHandoff.mode) &&
         petWakeHandoff.input?.endpoint === '/api/voice/command' &&
+        petWakeHandoff.inputMode?.mode === 'push_to_talk' &&
+        petWakeHandoff.inputMode?.micDefault === 'push' &&
         petWakePromptPack.nextUtterance === localVoicePromptPack.nextUtterance &&
         String(petWakeHandoff.input?.cliCommand || '').includes('npm run voice') &&
         (petWakeHandoff.mode === 'local_voice_fallback' ? wakeBlocker.active === true : typeof wakeBlocker.active === 'boolean') &&
@@ -1121,6 +1134,9 @@ export default {
       status.ok &&
         statusLocalVoice.available === true &&
         statusLocalVoice.input?.endpoint === '/api/voice/command' &&
+        statusLocalVoice.inputMode?.mode === 'push_to_talk' &&
+        statusLocalVoice.inputMode?.micDefault === 'push' &&
+        statusLocalVoice.inputMode?.startsMuted === true &&
         statusLocalVoice.safety?.startsMicrophone === false &&
         statusLocalVoice.safety?.usesRealtime === false &&
         statusLocalVoice.safety?.storesRawAudio === false &&

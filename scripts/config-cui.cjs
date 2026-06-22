@@ -997,6 +997,9 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('Use this when Realtime voice is unavailable or when you want a quiet terminal intake loop.');
   console.log(`Realtime: ${voiceHealth.status || 'unknown'} · ${compact(voiceHealth.summary || '-', 220)}`);
   console.log(`Local fallback: ${localVoice.mode || 'standby'} · ${localVoice.input?.endpoint || '/api/voice/command'}`);
+  if (localVoice.inputMode?.mode) {
+    console.log(`Input mode: ${localVoice.inputMode.label || localVoice.inputMode.mode} · default=${localVoice.inputMode.micDefault || '-'} · ${compact(localVoice.inputMode.prompt || '', 160)}`);
+  }
   console.log('\nCommands:');
   console.log('  npm run voice:chat');
   console.log('  npm run voice:chat -- --session');
@@ -1024,6 +1027,7 @@ function printVoiceStandby(result) {
   const local = standby.local || {};
   const primary = standby.primaryAction || {};
   const safety = standby.safety || {};
+  const inputMode = standby.inputMode || local.inputMode || {};
   const recoveryActions = Array.isArray(standby.recoveryActions) ? standby.recoveryActions : [];
   const history = local.history || {};
   const promptPack = standby.promptPack || local.promptPack || {};
@@ -1035,6 +1039,9 @@ function printVoiceStandby(result) {
   if (standby.next) console.log(`Next: ${compact(standby.next, 320)}`);
   console.log(`Primary: ${primary.label || primary.id || '-'}${primary.command ? ` · ${primary.command}` : ''}${primary.endpoint ? ` · ${primary.endpoint}` : ''}`);
   console.log(`Primary safety: starts mic=${primary.startsMicrophone ? 'yes' : 'no'} uses Realtime=${primary.usesRealtime ? 'yes' : 'no'} opens Terminal=${primary.opensTerminal ? 'yes' : 'no'}`);
+  if (inputMode.mode) {
+    console.log(`Input mode: ${inputMode.label || inputMode.mode} · default=${inputMode.micDefault || '-'} · ${compact(inputMode.prompt || '', 160)}`);
+  }
   console.log('\nProvider');
   console.log(`- ${provider.status || '-'} · ${provider.kind || '-'} · key=${provider.hasOpenAiKey ? 'present' : 'missing'} · ok=${provider.ok ? 'yes' : 'no'}`);
   if (provider.summary) console.log(`- ${compact(provider.summary, 300)}`);

@@ -957,6 +957,7 @@ function formatLoopAppAmbient(data = {}) {
 
 function formatLoopPromptSuggestions(data = {}) {
   const standby = data.standby || {};
+  const inputMode = data.inputMode || standby.inputMode || standby.local?.inputMode || {};
   const promptPack = standby.promptPack || standby.local?.promptPack || {};
   const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
   const lines = [
@@ -969,6 +970,7 @@ function formatLoopPromptSuggestions(data = {}) {
     }
   }
   lines.push(`Local: ${standby.local?.mode || '-'} · ${standby.local?.input?.endpoint || '/api/voice/command'}`);
+  if (inputMode.mode) lines.push(`Input: ${inputMode.label || inputMode.mode} · default=${inputMode.micDefault || '-'} · ${compactText(inputMode.prompt || '', 120)}`);
   lines.push('Safety: read-only; does not start microphone, Realtime, Terminal, screen capture, or model calls.');
   return lines.filter(Boolean).join('\n');
 }
@@ -1188,6 +1190,7 @@ function formatLoopVoiceStatus(data = {}) {
   const standby = data.standby || {};
   const provider = standby.provider || {};
   const local = standby.local || {};
+  const inputMode = standby.inputMode || local.inputMode || {};
   const primary = standby.primaryAction || {};
   const blocker = local.blocker || {};
   const promptPack = standby.promptPack || local.promptPack || {};
@@ -1198,6 +1201,7 @@ function formatLoopVoiceStatus(data = {}) {
     `Primary: ${primary.label || primary.id || '-'} · mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`,
     `Local fallback: ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · terminal=${local.interaction?.opensTerminal ? 'yes' : 'no'}`,
   ];
+  if (inputMode.mode) lines.push(`Input: ${inputMode.label || inputMode.mode} · default=${inputMode.micDefault || '-'} · ${compactText(inputMode.prompt || '', 120)}`);
   if (provider.summary) lines.push(`Realtime: ${compactText(provider.summary, 260)}`);
   if (provider.subscriptionBoundary) lines.push(`Billing/API: ${compactText(provider.subscriptionBoundary, 260)}`);
   if (blocker.active) lines.push(`Blocker: ${blocker.kind || provider.kind || '-'} · ${compactText(blocker.summary || provider.summary || '', 240)}`);

@@ -25688,6 +25688,7 @@ function formatVoiceStatusForLocalCommand(status = {}) {
   const provider = standby.provider || {};
   const local = standby.local || {};
   const localInteraction = local.interaction || {};
+  const inputMode = standby.inputMode || local.inputMode || {};
   const primary = standby.primaryAction || {};
   const blocker = local.blocker || {};
   const promptPack = standby.promptPack || local.promptPack || {};
@@ -25709,6 +25710,7 @@ function formatVoiceStatusForLocalCommand(status = {}) {
     blocker.active ? `Blocker: ${blocker.kind || provider.kind || '-'} · ${compactRecordText(blocker.summary || provider.summary || '', 240)}` : '',
     `Primary: ${primary.label || primary.id || '-'} · mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`,
     `Local fallback: ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · terminal=${localInteraction.opensTerminal ? 'yes' : 'no'}`,
+    inputMode.mode ? `Input: ${inputMode.label || inputMode.mode} · default=${inputMode.micDefault || '-'} · ${compactRecordText(inputMode.prompt || '', 120)}` : '',
     promptPack.nextUtterance ? `Try: ${compactRecordText(promptPack.nextUtterance, 160)}` : '',
     promptLine ? `Examples:\n${promptLine}` : '',
     standby.next || provider.next || local.next ? `Next: ${compactRecordText(standby.next || provider.next || local.next, 320)}` : '',
@@ -25720,6 +25722,7 @@ function formatVoiceStatusForLocalCommand(status = {}) {
 function formatPromptSuggestionsForLocalCommand(status = {}) {
   const standby = status.standby || {};
   const local = standby.local || {};
+  const inputMode = status.inputMode || standby.inputMode || local.inputMode || {};
   const promptPack = status.promptPack || standby.promptPack || local.promptPack || {};
   const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
   const suggestionLines = examples
@@ -25730,6 +25733,7 @@ function formatPromptSuggestionsForLocalCommand(status = {}) {
     suggestionLines.length ? `建议:\n${suggestionLines.join('\n')}` : '',
     standby.label || standby.mode ? `状态: ${standby.label || standby.mode} · ${local.mode || '-'}` : '',
     `入口: ${local.input?.endpoint || '/api/voice/command'} · ${standby.primaryAction?.label || 'Open local input'}`,
+    inputMode.mode ? `说话方式: ${inputMode.label || inputMode.mode} · ${compactRecordText(inputMode.prompt || '', 120)}` : '',
     '边界: 这里只读待机提示；不启动麦克风，不创建 Realtime session，不开 Terminal，不读取屏幕，不调用云模型。',
   ].filter(Boolean).join('\n');
 }
@@ -27336,6 +27340,18 @@ function localVoicePromptPack(options = {}) {
   };
 }
 
+function localVoiceInputModeSnapshot() {
+  return {
+    mode: 'push_to_talk',
+    micDefault: 'push',
+    label: 'Push-to-talk',
+    prompt: 'Hold capsule or Space; release to send.',
+    control: 'hold_or_space',
+    startsMuted: true,
+    openMicToggle: true,
+  };
+}
+
 function localVoiceStatusSnapshot(options = {}) {
   const conversation = options.conversation || conversationStateSnapshot();
   const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation });
@@ -27383,6 +27399,7 @@ function localVoiceStatusSnapshot(options = {}) {
       openLoopCommand: 'npm run voice:chat',
       historyCommand: 'npm run config -- --print-voice-history',
     },
+    inputMode: localVoiceInputModeSnapshot(),
     promptPack,
     interaction: {
       capsuleClick: fallbackReady ? 'open_local_input' : 'start_realtime_voice',
@@ -27453,6 +27470,7 @@ function wakeHandoffSnapshot(options = {}) {
       220,
     ),
     input: localVoice.input,
+    inputMode: localVoice.inputMode || localVoiceInputModeSnapshot(),
     promptPack: localVoice.promptPack || null,
     localVoiceMode: localVoice.mode,
     blocker: localVoice.blocker || null,
@@ -27532,6 +27550,7 @@ function voiceStandbySnapshot(options = {}) {
       320,
     ),
     promptPack: localVoice.promptPack || null,
+    inputMode: localVoice.inputMode || localVoiceInputModeSnapshot(),
     primaryAction,
     recoveryActions,
     provider: {
@@ -27553,6 +27572,7 @@ function voiceStandbySnapshot(options = {}) {
       summary: compactRecordText(localVoice.summary || '', 220),
       next: compactRecordText(localVoice.next || '', 260),
       input: localVoice.input,
+      inputMode: localVoice.inputMode || localVoiceInputModeSnapshot(),
       promptPack: localVoice.promptPack || null,
       interaction: localVoice.interaction,
       blocker: localVoice.blocker || null,
@@ -33637,6 +33657,13 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
         endpoint: compactRecordText(handoff.input?.endpoint || '', 120),
         cliCommand: compactRecordText(handoff.input?.cliCommand || '', 140),
       },
+      inputMode: handoff.inputMode
+        ? {
+            mode: compactRecordText(handoff.inputMode.mode || '', 40),
+            micDefault: compactRecordText(handoff.inputMode.micDefault || '', 20),
+            control: compactRecordText(handoff.inputMode.control || '', 80),
+          }
+        : null,
       promptPack: handoff.promptPack
         ? {
             version: Number(handoff.promptPack.version || 1),
