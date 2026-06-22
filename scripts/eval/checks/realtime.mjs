@@ -2493,6 +2493,7 @@ export default {
         : fail('realtime.latency_evidence', 'Realtime voice latency evidence', `POST /api/realtime/latency ${latencyRecord.status}`, latencyRecord.data),
     );
 
+    const mainProcessSource = fs.readFileSync('electron/main.cjs', 'utf8');
     const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
     const rendererNegotiationEvidenceOk =
       rendererSource.includes('/api/realtime/session-negotiation') &&
@@ -2663,6 +2664,33 @@ export default {
         : fail('realtime.renderer_voice_stop_control', 'Renderer voice stop control API', 'expected preview-first renderer Realtime stop control', {
             status: rendererControlStatus.data,
             preview: rendererControlPreview.data,
+          }),
+    );
+
+    const rendererWatchdog = rendererControlStatus.data?.rendererControl?.watchdog || {};
+    const rendererWatchdogWired =
+      mainProcessSource.includes('REALTIME_RENDERER_WATCHDOG_ENABLED') &&
+      mainProcessSource.includes('function realtimeRendererWatchdogTick') &&
+      mainProcessSource.includes('startRealtimeRendererWatchdog()') &&
+      mainProcessSource.includes('stopRealtimeRendererWatchdog()') &&
+      mainProcessSource.includes("source: `watchdog:${source}`") &&
+      mainProcessSource.includes('REALTIME_RENDERER_WATCHDOG_HEARTBEAT_MAX_MS') &&
+      mainProcessSource.includes("source: 'renderer_control_event'");
+    out.push(
+      rendererWatchdogWired &&
+        rendererWatchdog.version === 1 &&
+        rendererWatchdog.enabled === true &&
+        rendererWatchdog.safety?.startsMicrophone === false &&
+        rendererWatchdog.safety?.startsRealtimeSession === false &&
+        rendererWatchdog.safety?.storesRawAudio === false &&
+        rendererWatchdog.safety?.opensTerminal === false &&
+        rendererWatchdog.thresholds?.connectingMaxMs > 0 &&
+        rendererWatchdog.thresholds?.heartbeatMaxMs > 0 &&
+        rendererWatchdog.thresholds?.liveMaxMs > 0
+        ? ok('realtime.renderer_voice_watchdog', 'Renderer voice watchdog', `${rendererWatchdog.trigger?.reason || 'ready'} · stopCount=${rendererWatchdog.state?.stopCount || 0}`)
+        : fail('realtime.renderer_voice_watchdog', 'Renderer voice watchdog', 'expected resident watchdog to stop stale renderer Realtime sessions without starting mic/session/Terminal', {
+            wired: rendererWatchdogWired,
+            watchdog: rendererWatchdog,
           }),
     );
 

@@ -3474,11 +3474,15 @@ function printRealtimeRendererControl(result) {
   const control = payload.control || payload.rendererControl?.control || {};
   const conversation = payload.conversation || result?.conversation || {};
   const safety = payload.safety || result?.safety || {};
+  const watchdog = payload.watchdog || result?.watchdog || {};
+  const watchdogState = watchdog.state || {};
+  const watchdogTrigger = watchdog.trigger || {};
   const rendererReady = payload.rendererAvailable ?? result?.rendererAvailable;
   console.log('JAVIS Realtime Renderer Control');
   console.log('===============================');
   console.log(`Renderer: ${rendererReady ? 'ready' : 'missing'} · action=${control.action || result?.action || 'stop'} · status=${control.status || 'idle'}`);
   console.log(`Voice: ${conversation.status || '-'} · active=${conversation.active ? 'yes' : 'no'} · mic=${conversation.micMode || '-'} · session=${conversation.sessionId || '-'}`);
+  console.log(`Watchdog: ${watchdog.enabled === false ? 'off' : 'on'} · reason=${watchdogTrigger.reason || watchdogState.lastReason || '-'} · stops=${watchdogState.stopCount || 0} · last=${watchdogState.lastActionAt ? new Date(watchdogState.lastActionAt).toISOString() : '-'}`);
   console.log(`Safety: starts mic=${safety.startsMicrophone ? 'yes' : 'no'} · starts session=${safety.startsRealtimeSession ? 'yes' : 'no'} · stores raw audio=${safety.storesRawAudio ? 'yes' : 'no'} · opens Terminal=${safety.opensTerminal ? 'yes' : 'no'}`);
   if (result?.output || payload.nextAction) console.log(`\n${compact(result?.output || payload.nextAction, 1000)}`);
   const events = Array.isArray(control.events) ? control.events : [];

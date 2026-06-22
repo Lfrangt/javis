@@ -231,6 +231,12 @@ const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true'
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
+const REALTIME_RENDERER_WATCHDOG_ENABLED = process.env.JAVIS_REALTIME_RENDERER_WATCHDOG !== 'false';
+const REALTIME_RENDERER_WATCHDOG_INTERVAL_MS = boundedRuntimeInteger(process.env.JAVIS_REALTIME_RENDERER_WATCHDOG_INTERVAL_MS, 15000, 5000, 120000);
+const REALTIME_RENDERER_WATCHDOG_CONNECTING_MAX_MS = boundedRuntimeInteger(process.env.JAVIS_REALTIME_RENDERER_WATCHDOG_CONNECTING_MAX_MS, 60000, 10000, 300000);
+const REALTIME_RENDERER_WATCHDOG_HEARTBEAT_MAX_MS = boundedRuntimeInteger(process.env.JAVIS_REALTIME_RENDERER_WATCHDOG_HEARTBEAT_MAX_MS, 45000, 20000, 600000);
+const REALTIME_RENDERER_WATCHDOG_LIVE_MAX_MS = boundedRuntimeInteger(process.env.JAVIS_REALTIME_RENDERER_WATCHDOG_LIVE_MAX_MS, 600000, 60000, 7200000);
+const REALTIME_RENDERER_WATCHDOG_STOP_SCREEN = process.env.JAVIS_REALTIME_RENDERER_WATCHDOG_STOP_SCREEN === 'true';
 const REALTIME_PREFLIGHT_CONTEXT_ENABLED = process.env.JAVIS_REALTIME_PREFLIGHT_CONTEXT !== 'false';
 const REALTIME_PREFLIGHT_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PREFLIGHT_FRESH_MS || 900000)));
 const REALTIME_PROVIDER_PROBE_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PROVIDER_PROBE_FRESH_MS || 1800000)));
@@ -930,6 +936,8 @@ let learningTimer = null;
 let learningBusy = false;
 let autopilotTimer = null;
 let autopilotBusy = false;
+let realtimeRendererWatchdogTimer = null;
+let realtimeRendererWatchdogBusy = false;
 let autopilotState = {
   enabled: AUTOPILOT_ENABLED,
   intervalMs: AUTOPILOT_INTERVAL_MS,
@@ -942,6 +950,20 @@ let autopilotState = {
   lastAction: null,
   lastDecision: null,
   lastResult: '',
+  lastError: '',
+};
+let realtimeRendererWatchdogState = {
+  enabled: REALTIME_RENDERER_WATCHDOG_ENABLED,
+  intervalMs: REALTIME_RENDERER_WATCHDOG_INTERVAL_MS,
+  running: false,
+  tickCount: 0,
+  stopCount: 0,
+  skippedCount: 0,
+  lastCheckedAt: 0,
+  lastActionAt: 0,
+  lastReason: '',
+  lastSessionId: '',
+  lastResult: null,
   lastError: '',
 };
 let browserRecoveryAutopilotState = {
@@ -43566,6 +43588,7 @@ function realtimeRendererControlSnapshot() {
       capturesScreen: false,
       executesUserTask: false,
     },
+    watchdog: realtimeRendererWatchdogSnapshot(),
     nextAction: conversation.active
       ? 'POST /api/realtime/renderer/control with action=stop and execute=true to ask the renderer to stop the current WebRTC voice session.'
       : 'Realtime voice is already idle.',
@@ -43609,6 +43632,17 @@ function recordRealtimeRendererControlEvent(options = {}) {
     sessionId: event.sessionId,
     detail: event.detail,
   });
+  if (event.action === 'stop' && ['stopped', 'already_idle'].includes(event.status)) {
+    const currentSessionId = conversationState.sessionId || '';
+    if (!event.sessionId || !currentSessionId || event.sessionId === currentSessionId) {
+      updateConversationState({
+        status: 'idle',
+        sessionId: event.sessionId || currentSessionId,
+        screenLive: false,
+        source: 'renderer_control_event',
+      });
+    }
+  }
   return realtimeRendererControlSnapshot();
 }
 
@@ -43759,6 +43793,282 @@ async function requestRealtimeRendererControl(options = {}) {
     rendererControl: realtimeRendererControlSnapshot(),
     output: 'Renderer Realtime voice stop requested. Watch /api/realtime/renderer/control for the renderer acknowledgement.',
   };
+}
+
+function realtimeRendererWatchdogConversationSnapshot() {
+  const now = Date.now();
+  const active = conversationState.status === 'connecting' || conversationState.status === 'live';
+  const heartbeatAt = Number(conversationState.lastHeartbeatAt || conversationState.updatedAt || conversationState.liveAt || conversationState.startedAt || 0);
+  return {
+    status: conversationState.status,
+    active,
+    stale: Boolean(active && conversationState.updatedAt && now - conversationState.updatedAt > CONVERSATION_STALE_MS),
+    sessionId: conversationState.sessionId || '',
+    micMode: conversationState.micMode || '',
+    screenLive: Boolean(conversationState.screenLive),
+    startedAt: Number(conversationState.startedAt || 0),
+    liveAt: Number(conversationState.liveAt || 0),
+    updatedAt: Number(conversationState.updatedAt || 0),
+    lastHeartbeatAt: Number(conversationState.lastHeartbeatAt || 0),
+    heartbeatAt,
+    ageMs: conversationState.updatedAt ? now - conversationState.updatedAt : null,
+    heartbeatAgeMs: heartbeatAt ? now - heartbeatAt : null,
+    activeForMs: active && conversationState.startedAt ? now - conversationState.startedAt : null,
+    liveForMs: active && conversationState.liveAt ? now - conversationState.liveAt : null,
+  };
+}
+
+function realtimeRendererWatchdogTrigger(conversation = realtimeRendererWatchdogConversationSnapshot()) {
+  if (!REALTIME_RENDERER_WATCHDOG_ENABLED) {
+    return { due: false, reason: 'disabled', summary: 'Realtime renderer watchdog is disabled.' };
+  }
+  if (!conversation.active) {
+    return { due: false, reason: 'idle', summary: 'Realtime renderer voice is idle.' };
+  }
+  if (realtimeRendererControlState.active) {
+    return { due: false, reason: 'control_pending', summary: 'A renderer Realtime voice stop request is already pending.' };
+  }
+
+  const activeForMs = Number(conversation.activeForMs || 0);
+  const heartbeatAgeMs = Number(conversation.heartbeatAgeMs || 0);
+  const liveForMs = Number(conversation.liveForMs || 0);
+  if (conversation.status === 'connecting' && activeForMs > REALTIME_RENDERER_WATCHDOG_CONNECTING_MAX_MS) {
+    return {
+      due: true,
+      reason: 'connecting_timeout',
+      summary: `Renderer Realtime voice has been connecting for ${Math.round(activeForMs / 1000)}s.`,
+      ageMs: activeForMs,
+      thresholdMs: REALTIME_RENDERER_WATCHDOG_CONNECTING_MAX_MS,
+    };
+  }
+  if (conversation.status === 'live' && heartbeatAgeMs > REALTIME_RENDERER_WATCHDOG_HEARTBEAT_MAX_MS) {
+    return {
+      due: true,
+      reason: 'heartbeat_stale',
+      summary: `Renderer Realtime voice heartbeat is stale by ${Math.round(heartbeatAgeMs / 1000)}s.`,
+      ageMs: heartbeatAgeMs,
+      thresholdMs: REALTIME_RENDERER_WATCHDOG_HEARTBEAT_MAX_MS,
+    };
+  }
+  if (conversation.status === 'live' && liveForMs > REALTIME_RENDERER_WATCHDOG_LIVE_MAX_MS) {
+    return {
+      due: true,
+      reason: 'live_duration_limit',
+      summary: `Renderer Realtime voice has been live for ${Math.round(liveForMs / 1000)}s.`,
+      ageMs: liveForMs,
+      thresholdMs: REALTIME_RENDERER_WATCHDOG_LIVE_MAX_MS,
+    };
+  }
+  return {
+    due: false,
+    reason: 'within_limits',
+    summary: 'Renderer Realtime voice is within watchdog limits.',
+  };
+}
+
+function realtimeRendererWatchdogSnapshot(options = {}) {
+  const conversation = options.conversation || realtimeRendererWatchdogConversationSnapshot();
+  const trigger = options.trigger || realtimeRendererWatchdogTrigger(conversation);
+  return {
+    ok: true,
+    version: 1,
+    enabled: REALTIME_RENDERER_WATCHDOG_ENABLED,
+    running: Boolean(realtimeRendererWatchdogBusy),
+    intervalMs: REALTIME_RENDERER_WATCHDOG_INTERVAL_MS,
+    thresholds: {
+      connectingMaxMs: REALTIME_RENDERER_WATCHDOG_CONNECTING_MAX_MS,
+      heartbeatMaxMs: REALTIME_RENDERER_WATCHDOG_HEARTBEAT_MAX_MS,
+      liveMaxMs: REALTIME_RENDERER_WATCHDOG_LIVE_MAX_MS,
+      stopScreen: REALTIME_RENDERER_WATCHDOG_STOP_SCREEN,
+    },
+    state: {
+      ...realtimeRendererWatchdogState,
+      running: Boolean(realtimeRendererWatchdogBusy),
+    },
+    conversation: {
+      status: conversation.status,
+      active: Boolean(conversation.active),
+      stale: Boolean(conversation.stale),
+      sessionId: conversation.sessionId || '',
+      micMode: conversation.micMode || '',
+      screenLive: Boolean(conversation.screenLive),
+      ageMs: conversation.ageMs ?? null,
+      heartbeatAgeMs: conversation.heartbeatAgeMs ?? null,
+      activeForMs: conversation.activeForMs ?? null,
+      liveForMs: conversation.liveForMs ?? null,
+    },
+    trigger,
+    safety: {
+      startsMicrophone: false,
+      startsRealtimeSession: false,
+      storesRawAudio: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      executesUserTask: false,
+      stopOnly: true,
+    },
+  };
+}
+
+async function realtimeRendererWatchdogTick(options = {}) {
+  if (!REALTIME_RENDERER_WATCHDOG_ENABLED) {
+    return {
+      ok: true,
+      executed: false,
+      reason: 'disabled',
+      watchdog: realtimeRendererWatchdogSnapshot(),
+    };
+  }
+  if (realtimeRendererWatchdogBusy) {
+    return {
+      ok: true,
+      executed: false,
+      reason: 'busy',
+      watchdog: realtimeRendererWatchdogSnapshot(),
+    };
+  }
+
+  realtimeRendererWatchdogBusy = true;
+  const source = compactRecordText(options.source || 'watchdog', 80);
+  const conversation = realtimeRendererWatchdogConversationSnapshot();
+  const trigger = realtimeRendererWatchdogTrigger(conversation);
+  realtimeRendererWatchdogState = {
+    ...realtimeRendererWatchdogState,
+    enabled: REALTIME_RENDERER_WATCHDOG_ENABLED,
+    intervalMs: REALTIME_RENDERER_WATCHDOG_INTERVAL_MS,
+    running: true,
+    tickCount: Number(realtimeRendererWatchdogState.tickCount || 0) + 1,
+    lastCheckedAt: Date.now(),
+    lastReason: trigger.reason || '',
+    lastSessionId: conversation.sessionId || realtimeRendererWatchdogState.lastSessionId,
+    lastError: '',
+  };
+
+  try {
+    if (!trigger.due) {
+      realtimeRendererWatchdogState = {
+        ...realtimeRendererWatchdogState,
+        skippedCount: Number(realtimeRendererWatchdogState.skippedCount || 0) + 1,
+        lastResult: {
+          executed: false,
+          reason: trigger.reason,
+          status: conversation.status,
+          active: Boolean(conversation.active),
+        },
+      };
+      appendAudit('realtime.renderer_watchdog_checked', {
+        source,
+        reason: trigger.reason,
+        status: conversation.status,
+        active: Boolean(conversation.active),
+        sessionId: conversation.sessionId || '',
+      });
+      return {
+        ok: true,
+        executed: false,
+        reason: trigger.reason,
+        trigger,
+        watchdog: realtimeRendererWatchdogSnapshot({ conversation, trigger }),
+      };
+    }
+
+    realtimeRendererWatchdogState = {
+      ...realtimeRendererWatchdogState,
+      stopCount: Number(realtimeRendererWatchdogState.stopCount || 0) + 1,
+      lastActionAt: Date.now(),
+      lastReason: trigger.reason,
+      lastSessionId: conversation.sessionId || '',
+    };
+    appendAudit('realtime.renderer_watchdog_stop_requested', {
+      source,
+      reason: trigger.reason,
+      summary: trigger.summary,
+      sessionId: conversation.sessionId || '',
+      status: conversation.status,
+      ageMs: trigger.ageMs ?? null,
+      thresholdMs: trigger.thresholdMs ?? null,
+      stopScreen: REALTIME_RENDERER_WATCHDOG_STOP_SCREEN,
+    });
+    const result = await requestRealtimeRendererControl({
+      action: 'stop',
+      execute: true,
+      source: `watchdog:${source}`,
+      reason: `Realtime watchdog ${trigger.reason}: ${trigger.summary}`,
+      stopScreen: REALTIME_RENDERER_WATCHDOG_STOP_SCREEN,
+    });
+    realtimeRendererWatchdogState = {
+      ...realtimeRendererWatchdogState,
+      lastResult: {
+        ok: result.ok !== false,
+        executed: Boolean(result.executed),
+        alreadyIdle: Boolean(result.alreadyIdle),
+        status: result.status || 200,
+        output: compactRecordText(result.output || '', 300),
+      },
+      lastError: result.ok === false ? compactRecordText(result.output || result.error || 'watchdog stop failed', 300) : '',
+    };
+    return {
+      ok: result.ok !== false,
+      executed: Boolean(result.executed),
+      reason: trigger.reason,
+      trigger,
+      result,
+      watchdog: realtimeRendererWatchdogSnapshot({ conversation, trigger }),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    realtimeRendererWatchdogState = {
+      ...realtimeRendererWatchdogState,
+      lastError: compactRecordText(message, 500),
+      lastResult: {
+        ok: false,
+        executed: false,
+        output: compactRecordText(message, 300),
+      },
+    };
+    appendAudit('realtime.renderer_watchdog_failed', {
+      source,
+      reason: trigger.reason || '',
+      sessionId: conversation.sessionId || '',
+      error: realtimeRendererWatchdogState.lastError,
+    });
+    return {
+      ok: false,
+      executed: false,
+      reason: trigger.reason || 'error',
+      error: realtimeRendererWatchdogState.lastError,
+      watchdog: realtimeRendererWatchdogSnapshot({ conversation, trigger }),
+    };
+  } finally {
+    realtimeRendererWatchdogBusy = false;
+    realtimeRendererWatchdogState = {
+      ...realtimeRendererWatchdogState,
+      running: false,
+      lastCheckedAt: realtimeRendererWatchdogState.lastCheckedAt || Date.now(),
+    };
+  }
+}
+
+function startRealtimeRendererWatchdog() {
+  if (!REALTIME_RENDERER_WATCHDOG_ENABLED || realtimeRendererWatchdogTimer) return;
+  realtimeRendererWatchdogTimer = setInterval(() => {
+    void realtimeRendererWatchdogTick({ source: 'interval' });
+  }, REALTIME_RENDERER_WATCHDOG_INTERVAL_MS);
+  appendAudit('realtime.renderer_watchdog_started', {
+    intervalMs: REALTIME_RENDERER_WATCHDOG_INTERVAL_MS,
+    connectingMaxMs: REALTIME_RENDERER_WATCHDOG_CONNECTING_MAX_MS,
+    heartbeatMaxMs: REALTIME_RENDERER_WATCHDOG_HEARTBEAT_MAX_MS,
+    liveMaxMs: REALTIME_RENDERER_WATCHDOG_LIVE_MAX_MS,
+    stopScreen: REALTIME_RENDERER_WATCHDOG_STOP_SCREEN,
+  });
+  void realtimeRendererWatchdogTick({ source: 'startup' });
+}
+
+function stopRealtimeRendererWatchdog() {
+  if (!realtimeRendererWatchdogTimer) return;
+  clearInterval(realtimeRendererWatchdogTimer);
+  realtimeRendererWatchdogTimer = null;
+  appendAudit('realtime.renderer_watchdog_stopped');
 }
 
 async function startRealtimeRendererDogfood(options = {}) {
@@ -59009,6 +59319,7 @@ function startApiServer() {
       conversation,
       voiceHealth,
       realtimeRendererControl: realtimeRendererControlSnapshot(),
+      realtimeRendererWatchdog: realtimeRendererWatchdogSnapshot(),
       localVoice,
       voiceStandby,
       progressVersion: workProgressSnapshot(),
@@ -61641,6 +61952,7 @@ function startJavisApp() {
       startAmbientMonitor();
       startLearningMonitor();
       startAutopilotMonitor();
+      startRealtimeRendererWatchdog();
       startWakeEngine();
       scheduleStartupAttentionCheck();
     } catch (error) {
@@ -61662,6 +61974,7 @@ function startJavisApp() {
     stopAmbientMonitor();
     stopLearningMonitor();
     stopAutopilotMonitor();
+    stopRealtimeRendererWatchdog();
     stopWakeEngine();
     stopSpeechProcess('quit');
     if (rendererRecoveryTimer) {
