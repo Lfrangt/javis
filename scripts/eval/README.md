@@ -21,6 +21,7 @@ way as `scripts/doctor.mjs` (`JAVIS_API_TOKEN[_FILE]`, `Runtime/api-token`,
 | `JAVIS_EVAL_LIVE_WORKERS=true npm run eval -- --only=workers-live` | Opt-in live worker batch: Codex + Claude + local CLI read-only jobs | queues real local workers |
 | `npm run eval:json` | Machine-readable scorecard | — |
 | `npm run eval:routing` | Lane-classifier accuracy over a labeled corpus | preview routes; appends local routing records |
+| `npm run eval:coverage` | Static cross-reference of main.cjs API routes vs. eval-lane references; splits gaps into actionable read-only GET vs lower-priority mutation (`--get-only`, `--uncovered`, `--json`) | read-only static analysis; no server needed |
 | `npm run verify:ax` | Accessibility targeting smoke (web-content editables) | read-only |
 | `npm run verify:ax -- --require-chromium --execute` | Gemini-composer acceptance: types + verifies | **types into the focused field** |
 
