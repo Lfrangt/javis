@@ -2628,6 +2628,18 @@ function openAiSpendGuardSnapshot() {
   };
 }
 
+function openAiZeroSpendModeActive() {
+  const guard = openAiSpendGuardSnapshot();
+  return Boolean(
+    guard.hardSpendLock ||
+    guard.mode === 'off' ||
+    guard.dailyRequestLimit <= 0 ||
+    guard.remaining?.total <= 0 ||
+    guard.safety?.zeroBudgetDefault ||
+    guard.safety?.off
+  );
+}
+
 function evaluateOpenAiSpendGuard(options = {}) {
   const kind = compactRecordText(options.kind || 'openai', 80);
   const source = compactRecordText(options.source || 'unspecified', 80);
@@ -30136,6 +30148,50 @@ function voiceStandbySnapshot(options = {}) {
   };
 }
 
+function voiceStandbyWorkNextAction(options = {}) {
+  const standby = options.standby || voiceStandbySnapshot();
+  const primaryAction = standby.primaryAction || {};
+  if (!primaryAction.id) return null;
+  const zeroSpendFallback = options.zeroSpendFallback === true;
+  return {
+    id: 'voice:standby_primary',
+    priority: Number(options.priority || 1.6),
+    label: primaryAction.label || 'Voice standby primary action',
+    summary: compactRecordText(
+      zeroSpendFallback
+        ? `OpenAI spend is locked to zero; use local no-mic intake now. ${primaryAction.summary || standby.next || ''}`
+        : primaryAction.summary || standby.next || 'Preview or run the current voice entry action.',
+      420,
+    ),
+    source: 'voice_standby',
+    voiceStandbyPrimary: true,
+    zeroSpendFallback,
+    executable: true,
+    autoEligible: false,
+    autopilotEligible: false,
+    manualOnly: Boolean(primaryAction.startsMicrophone),
+    manualOnlyReason: primaryAction.startsMicrophone
+      ? 'Starting microphone/live voice requires explicit user action.'
+      : '',
+    requiresUserPresence: Boolean(primaryAction.startsMicrophone),
+    startsMicrophone: false,
+    requiresMicConfirmation: Boolean(primaryAction.startsMicrophone),
+    startsRecording: false,
+    startsWorkers: false,
+    executesTask: false,
+    riskLevel: primaryAction.id === 'open_local_voice_loop' ? 1 : 2,
+    primaryAction,
+    standby: {
+      mode: standby.mode,
+      label: standby.label,
+      next: standby.next,
+      provider: standby.provider,
+      local: standby.local,
+      safety: standby.safety,
+    },
+  };
+}
+
 function runVoiceStandbyPrimaryAction(options = {}) {
   const conversation = conversationStateSnapshot();
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
@@ -51072,6 +51128,15 @@ function workflowBriefing(options = {}) {
       readinessAction.riskLevel = 1;
       readinessAction.providerProbeFreshness = compactRealtimePreflightFreshness(providerProbeFreshness);
       readinessAction.cooldown = providerProbeFreshness.waitLabel || autopilotWaitDurationLabel(REALTIME_PROVIDER_PROBE_FRESH_MS);
+      if (openAiZeroSpendModeActive()) {
+        const localVoiceAction = voiceStandbyWorkNextAction({
+          priority: 1.5,
+          zeroSpendFallback: true,
+        });
+        if (localVoiceAction && localVoiceAction.primaryAction?.startsMicrophone === false) {
+          nextActions.push(localVoiceAction);
+        }
+      }
     }
     nextActions.push(readinessAction);
   }
@@ -52169,33 +52234,7 @@ async function workNextAction(options = {}) {
     };
   }
   if (requestedActionId && !action && requestedActionId === 'voice:standby_primary') {
-    const standby = voiceStandbySnapshot();
-    const primaryAction = standby.primaryAction || {};
-    action = {
-      id: 'voice:standby_primary',
-      priority: 1.6,
-      label: primaryAction.label || 'Voice standby primary action',
-      summary: primaryAction.summary || standby.next || 'Preview or run the current voice entry action.',
-      source: 'voice_standby',
-      voiceStandbyPrimary: true,
-      executable: true,
-      autoEligible: false,
-      autopilotEligible: false,
-      manualOnly: Boolean(primaryAction.startsMicrophone),
-      requiresUserPresence: Boolean(primaryAction.startsMicrophone),
-      startsMicrophone: false,
-      requiresMicConfirmation: Boolean(primaryAction.startsMicrophone),
-      startsRecording: false,
-      startsWorkers: false,
-      executesTask: false,
-      riskLevel: primaryAction.id === 'open_local_voice_loop' ? 1 : 2,
-      primaryAction,
-      standby: {
-        mode: standby.mode,
-        label: standby.label,
-        next: standby.next,
-      },
-    };
+    action = voiceStandbyWorkNextAction();
   }
   if (requestedActionId && !action && requestedActionId.startsWith('route:')) {
     const routeId = requestedActionId.replace(/^route:/, '');

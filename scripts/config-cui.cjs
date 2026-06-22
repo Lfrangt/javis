@@ -754,10 +754,24 @@ function printNextAction(next) {
       console.log(`Fallback safety: starts microphone=${fallback.safety.startsMicrophone ? 'yes' : 'no'}; realtime=${fallback.safety.usesRealtime ? 'yes' : 'no'}; raw audio=${fallback.safety.storesRawAudio ? 'yes' : 'no'}`);
     }
   }
+  if (printVoiceStandbyGuide(action)) return true;
   if (printBrowserRecoveryGuide(action)) return true;
   if (printRouteRecoveryGuide(action)) return true;
   const guide = action.dogfoodGuide || action.guide || {};
   return printDogfoodGuide(guide);
+}
+
+function printVoiceStandbyGuide(action = {}) {
+  if (action.source !== 'voice_standby' || !action.voiceStandbyPrimary) return false;
+  const primary = action.primaryAction || {};
+  const standby = action.standby || {};
+  console.log(`Guide: Use local no-mic pet input while Realtime is unavailable or spend-locked.`);
+  if (action.zeroSpendFallback) console.log(`Zero-spend fallback: OpenAI spend is locked; no provider request will be sent.`);
+  if (primary.id) console.log(`Primary: ${primary.id}`);
+  if (primary.endpoint) console.log(`Endpoint: ${primary.endpoint}`);
+  if (standby.mode) console.log(`Standby: ${standby.mode}`);
+  console.log(`Safety: starts microphone=${primary.startsMicrophone ? 'yes' : 'no'}; realtime=${primary.usesRealtime ? 'yes' : 'no'}; opens Terminal=${primary.opensTerminal ? 'yes' : 'no'}`);
+  return true;
 }
 
 function printBrowserRecoveryGuide(action = {}) {

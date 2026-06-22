@@ -47,6 +47,8 @@ export default {
     );
     const realtimeVoice = b.realtimeVoice || {};
     const realtimeAction = next.find((action) => action.source === 'realtime_voice') || null;
+    const providerReadinessAction = next.find((action) => action.id === 'readiness:realtime_voice_provider') || null;
+    const zeroSpendVoiceAction = next.find((action) => action.id === 'voice:standby_primary') || null;
     const realtimePending = realtimeVoice.status && realtimeVoice.status !== 'ready';
     const realtimeGuide = realtimeAction?.dogfoodGuide || {};
     const realtimeActionPlan = realtimeAction?.dogfoodActionPlan || {};
@@ -110,6 +112,41 @@ export default {
         ? ok('briefing.realtime_voice', 'Realtime voice next action', realtimePending ? `${realtimeVoice.status}/${realtimeVoice.phase}` : 'ready or not surfaced')
         : fail('briefing.realtime_voice', 'Realtime voice next action', 'briefing did not expose a coherent realtime voice work-next blocker', {
           realtimeVoice,
+          nextActions: next,
+        }),
+    );
+
+    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
+    const spendGuard = spendGuardResponse.data?.spendGuard || {};
+    const zeroSpendActive = Boolean(
+      spendGuard.hardSpendLock ||
+      spendGuard.mode === 'off' ||
+      Number(spendGuard.dailyRequestLimit || 0) <= 0 ||
+      Number(spendGuard.remaining?.total || 0) <= 0 ||
+      spendGuard.safety?.zeroBudgetDefault === true
+    );
+    const zeroSpendVoiceIndex = next.findIndex((action) => action.id === 'voice:standby_primary');
+    const providerReadinessIndex = next.findIndex((action) => action.id === 'readiness:realtime_voice_provider');
+    out.push(
+      !zeroSpendActive ||
+        !providerReadinessAction?.providerProbe ||
+        (
+          zeroSpendVoiceAction?.source === 'voice_standby' &&
+          zeroSpendVoiceAction.zeroSpendFallback === true &&
+          zeroSpendVoiceAction.primaryAction?.id === 'open_local_input' &&
+          zeroSpendVoiceAction.primaryAction?.startsMicrophone === false &&
+          zeroSpendVoiceAction.primaryAction?.usesRealtime === false &&
+          zeroSpendVoiceAction.manualOnly === false &&
+          zeroSpendVoiceAction.autopilotEligible === false &&
+          zeroSpendVoiceIndex >= 0 &&
+          providerReadinessIndex >= 0 &&
+          zeroSpendVoiceIndex < providerReadinessIndex
+        )
+        ? ok('briefing.zero_spend_local_voice_first', 'Zero-spend local voice first', zeroSpendActive
+          ? 'voice:standby_primary is ahead of provider probe while OpenAI spend is hard-locked'
+          : 'OpenAI spend is not zero-locked')
+        : fail('briefing.zero_spend_local_voice_first', 'Zero-spend local voice first', 'expected local no-mic voice entry to outrank provider probe under zero-spend lock', {
+          spendGuard,
           nextActions: next,
         }),
     );
@@ -420,6 +457,12 @@ export default {
         output.includes('Local fallback: /api/voice/command') &&
         output.includes('Fallback command: npm run dogfood:voice-command') &&
         output.includes('Fallback safety: starts microphone=no; realtime=no; raw audio=no');
+      const hasZeroSpendLocalVoiceGuide =
+        output.includes('Next action: Open local input (voice_standby, manual)') &&
+        output.includes('Guide: Use local no-mic pet input while Realtime is unavailable or spend-locked.') &&
+        output.includes('Zero-spend fallback: OpenAI spend is locked; no provider request will be sent.') &&
+        output.includes('Primary: open_local_input') &&
+        output.includes('Safety: starts microphone=no; realtime=no; opens Terminal=no');
       const hasRouteRecoveryGuide =
         output.includes('Guide: Continue routed work via') &&
         output.includes('Recovery: route_preview_execute') &&
@@ -449,15 +492,17 @@ export default {
       out.push(
         output.includes('Next action:') &&
           output.includes('Guide:') &&
-          (hasRouteRecoveryGuide || hasBrowserRecoveryGuide || hasProviderFallbackGuide || hasRealtimeWorkbenchGuide)
+          (hasRouteRecoveryGuide || hasBrowserRecoveryGuide || hasProviderFallbackGuide || hasZeroSpendLocalVoiceGuide || hasRealtimeWorkbenchGuide)
           ? ok('briefing.cui_worknext', 'CUI work-next guide', hasRouteRecoveryGuide
             ? 'config CUI prints routed preview continuation guide'
             : hasBrowserRecoveryGuide
               ? 'config CUI prints browser recovery guide'
-              : hasProviderFallbackGuide
-                ? 'config CUI prints provider warning plus local voice-command fallback'
-                : 'config CUI prints the guided Realtime work-next prepare path')
-          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print browser recovery, routed preview continuation, Realtime prepare, or provider-warning local fallback guide', { output: output.slice(0, 2200) }),
+              : hasZeroSpendLocalVoiceGuide
+                ? 'config CUI prints zero-spend local voice fallback guide'
+                : hasProviderFallbackGuide
+                  ? 'config CUI prints provider warning plus local voice-command fallback'
+                  : 'config CUI prints the guided Realtime work-next prepare path')
+          : fail('briefing.cui_worknext', 'CUI work-next guide', 'expected --print-work-next to print browser recovery, routed preview continuation, Realtime prepare, provider-warning fallback, or zero-spend local voice guide', { output: output.slice(0, 2200) }),
       );
     } catch (error) {
       out.push(fail('briefing.cui_worknext', 'CUI work-next guide', error instanceof Error ? error.message : String(error)));
