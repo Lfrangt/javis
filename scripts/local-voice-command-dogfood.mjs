@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /latency, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -468,6 +468,7 @@ function loopHelpText() {
     'Loop commands:',
     '  /try      Show context-ranked things to say next without microphone, Realtime, Terminal, or model calls.',
     '  /voice    Read Realtime/live voice blocker, local fallback, and next recovery step.',
+    '  /latency  Read local voice-command latency metrics and likely bottleneck.',
     '  /see      Read screen/privacy/ambient perception status without capturing a new frame.',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /session  Read, start, resume, note, or end a local work session.',
@@ -1228,6 +1229,34 @@ function formatLoopVoiceStatus(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopLatency(data = {}) {
+  const report = data.latency || data || {};
+  const latency = report.latency || {};
+  const bottleneck = report.bottleneck || {};
+  const stages = Object.entries(report.stages || {})
+    .filter(([, value]) => Number(value?.count || 0) > 0)
+    .sort((a, b) => Number(b[1]?.avgMs || 0) - Number(a[1]?.avgMs || 0))
+    .slice(0, 3);
+  const slowItems = Array.isArray(report.slowItems) ? report.slowItems : [];
+  const lines = [
+    `Latency: ${report.label || report.status || 'unknown'} · samples=${latency.count || 0} · avg=${latency.avgMs || 0}ms · p90=${latency.p90Ms || 0}ms · p95=${latency.p95Ms || 0}ms`,
+  ];
+  if (bottleneck.stage) lines.push(`Bottleneck: ${bottleneck.label || bottleneck.stage} · avg ${bottleneck.avgMs || 0}ms · max ${bottleneck.maxMs || 0}ms`);
+  if (stages.length) {
+    lines.push('Stages:');
+    for (const [stage, value] of stages) lines.push(`- ${stage}: avg ${value.avgMs || 0}ms · max ${value.maxMs || 0}ms`);
+  }
+  if (slowItems.length) {
+    lines.push('Slow turns:');
+    for (const item of slowItems.slice(0, 3)) lines.push(`- ${item.elapsedMs || 0}ms · ${item.lane || '-'} · ${compactText(item.transcriptPreview || '-', 150)}`);
+  } else {
+    lines.push('Slow turns: none in this local sample.');
+  }
+  if (report.nextAction) lines.push(`Next: ${compactText(report.nextAction, 320)}`);
+  lines.push('Safety: read-only local audit metadata; no microphone, Realtime, screen capture, clipboard text, Terminal, or action execution.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopPerceptionStatus(data = {}) {
   const perception = data.perception || {};
   const counts = perception.counts || {};
@@ -1699,6 +1728,15 @@ async function runLoopCommand(transcript) {
       const endpoint = '/api/voice/standby';
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopVoiceStatus(response.data || {}), {
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'latency' || command === 'speed' || command === 'perf' || command === 'performance' || command === 'slow') {
+      const endpoint = '/api/voice/latency?limit=20&auditLimit=500';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopLatency(response.data || {}), {
+        command: 'latency',
         endpoint,
         detailLevel: 'fast',
       });

@@ -249,6 +249,73 @@ export default {
         : fail('voice_command.incident_report_api', 'Incident report API', 'GET /api/incident/report did not return the read-only local-audit contract', directIncidentReport.data),
     );
 
+    const naturalVoiceLatency = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '语音延迟怎么样？为什么有点慢，查一下本地性能。',
+        execute: false,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_latency',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalVoiceLatencyData = naturalVoiceLatency.data || {};
+    const voiceLatencyRoute = naturalVoiceLatencyData.route || {};
+    const voiceLatency = voiceLatencyRoute.data?.latency || {};
+    out.push(
+      naturalVoiceLatency.ok &&
+        naturalVoiceLatencyData.ok === true &&
+        naturalVoiceLatencyData.executed === false &&
+        voiceLatencyRoute.decision?.localCommand === 'voice_latency' &&
+        voiceLatencyRoute.localCommand?.intent === 'voice_latency' &&
+        typeof voiceLatencyRoute.output === 'string' &&
+        voiceLatencyRoute.output.includes('Voice latency:') &&
+        voiceLatency.version === 1 &&
+        ['fast', 'watch', 'slow', 'no_data'].includes(voiceLatency.status) &&
+        typeof voiceLatency.latency?.avgMs === 'number' &&
+        typeof voiceLatency.latency?.p90Ms === 'number' &&
+        typeof voiceLatency.latency?.p95Ms === 'number' &&
+        voiceLatency.safety?.readOnly === true &&
+        voiceLatency.safety?.localAuditOnly === true &&
+        voiceLatency.safety?.startsMicrophone === false &&
+        voiceLatency.safety?.usesRealtime === false &&
+        voiceLatency.safety?.capturesScreen === false &&
+        voiceLatency.safety?.readsClipboardText === false &&
+        voiceLatency.safety?.opensTerminal === false &&
+        voiceLatency.safety?.executesActions === false &&
+        voiceLatencyRoute.contextPlan?.needs?.screen === false &&
+        voiceLatencyRoute.contextPlan?.needs?.accessibility === false &&
+        naturalVoiceLatencyData.safety?.startsMicrophone === false &&
+        naturalVoiceLatencyData.safety?.usesRealtime === false &&
+        naturalVoiceLatencyData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_latency_status', 'Natural voice latency command', `${voiceLatency.status} · avg ${voiceLatency.latency?.avgMs || 0}ms · p90 ${voiceLatency.latency?.p90Ms || 0}ms`)
+        : fail('voice_command.natural_latency_status', 'Natural voice latency command', 'expected natural latency question to use read-only local audit metrics without mic, Realtime, screen, or Terminal', naturalVoiceLatency.data),
+    );
+
+    const directVoiceLatency = await ctx.api('/api/voice/latency?limit=20&auditLimit=500', {
+      timeoutMs: 30000,
+    });
+    const directVoiceLatencyData = directVoiceLatency.data?.latency || {};
+    out.push(
+      directVoiceLatency.ok &&
+        directVoiceLatencyData.version === 1 &&
+        typeof directVoiceLatencyData.latency?.avgMs === 'number' &&
+        typeof directVoiceLatencyData.latency?.p95Ms === 'number' &&
+        directVoiceLatencyData.safety?.readOnly === true &&
+        directVoiceLatencyData.safety?.localAuditOnly === true &&
+        directVoiceLatencyData.safety?.startsMicrophone === false &&
+        directVoiceLatencyData.safety?.usesRealtime === false &&
+        directVoiceLatencyData.safety?.capturesScreen === false &&
+        directVoiceLatencyData.safety?.readsClipboardText === false &&
+        directVoiceLatencyData.safety?.opensTerminal === false &&
+        directVoiceLatencyData.safety?.executesActions === false
+        ? ok('voice_command.latency_api', 'Voice latency API', `${directVoiceLatencyData.status || '-'} · ${directVoiceLatencyData.latency?.count || 0} sample(s)`)
+        : fail('voice_command.latency_api', 'Voice latency API', 'GET /api/voice/latency did not return the read-only local latency contract', directVoiceLatency.data),
+    );
+
     const naturalRealtimeProviderProbe = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -1548,7 +1615,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/try\\n/status\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/learn\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/try\\n/status\\n/latency\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/learn\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -1565,6 +1632,7 @@ export default {
       const voiceTurns = turns.filter((turn) => turn.kind !== 'loop_command');
       const tryTurn = commandTurns.find((turn) => turn.command === 'try') || {};
       const statusTurn = commandTurns.find((turn) => turn.command === 'status') || {};
+      const latencyTurn = commandTurns.find((turn) => turn.command === 'latency') || {};
       const appTurn = commandTurns.find((turn) => turn.command === 'app') || {};
       const uiTurn = commandTurns.find((turn) => turn.command === 'ui') || {};
       const fileTurn = commandTurns.find((turn) => turn.command === 'file' && turn.fileAction === 'list_directory') || {};
@@ -1597,13 +1665,13 @@ export default {
           loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 18 &&
+          loop.turnCount === 19 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 16 &&
-          ['try', 'status', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'learn', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 17 &&
+          ['try', 'status', 'latency', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'learn', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           tryTurn.detailLevel === 'fast' &&
           tryTurn.endpoint === '/api/voice/standby' &&
           tryTurn.output.includes('Try:') &&
@@ -1612,6 +1680,10 @@ export default {
           statusTurn.detailLevel === 'fast' &&
           statusTurn.endpoint === '/api/pet/status' &&
           statusTurn.output.includes('Pet:') &&
+          latencyTurn.detailLevel === 'fast' &&
+          latencyTurn.endpoint === '/api/voice/latency?limit=20&auditLimit=500' &&
+          latencyTurn.output.includes('Latency:') &&
+          latencyTurn.output.includes('Safety: read-only') &&
           appTurn.detailLevel === 'fast' &&
           appTurn.endpoint === '/api/ambient?limit=1' &&
           appTurn.output.includes('App:') &&
@@ -2287,6 +2359,29 @@ export default {
       );
     } catch (error) {
       out.push(fail('voice_command.history_cui', 'Local voice history CUI', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-voice-latency', '--limit', '20'], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('Local Voice Latency') &&
+          stdout.includes('Metrics: latest') &&
+          stdout.includes('Safety: read-only local audit metadata') &&
+          (stdout.includes('Likely bottleneck:') || stdout.includes('samples 0/'))
+          ? ok('voice_command.latency_cui', 'Local voice latency CUI', 'CUI prints read-only local latency metrics and safety boundary')
+          : fail('voice_command.latency_cui', 'Local voice latency CUI', 'CUI did not print the expected local voice latency report', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.latency_cui', 'Local voice latency CUI', error instanceof Error ? error.message : String(error)));
     }
 
     try {

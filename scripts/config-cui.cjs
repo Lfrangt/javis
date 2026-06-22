@@ -430,6 +430,7 @@ async function printStatus() {
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('VH. Show local voice command history');
+  console.log('VL. Show local voice latency');
   console.log('IR. Show incident report');
   console.log('VS. Show voice standby/fallback status');
   console.log('VC. Start local voice command loop (no mic)');
@@ -1013,6 +1014,40 @@ async function showVoiceHistory() {
       console.log(`   Continue: npm run work:run -- --action-id route:${item.routeId}`);
     }
   }
+}
+
+async function showVoiceLatency() {
+  const limitIndex = process.argv.findIndex((item) => item === '--limit');
+  const limit = limitIndex >= 0 && process.argv[limitIndex + 1] ? process.argv[limitIndex + 1] : '30';
+  const result = await request(`/api/voice/latency?limit=${encodeURIComponent(limit)}&auditLimit=500`);
+  const report = result.latency || {};
+  const latency = report.latency || {};
+  const bottleneck = report.bottleneck || {};
+  const stages = Object.entries(report.stages || {})
+    .filter(([, value]) => Number(value?.count || 0) > 0)
+    .sort((a, b) => Number(b[1]?.avgMs || 0) - Number(a[1]?.avgMs || 0));
+  const slowItems = Array.isArray(report.slowItems) ? report.slowItems : [];
+  console.log('\nLocal Voice Latency');
+  console.log('===================');
+  console.log(`Status: ${report.label || report.status || '-'} · samples ${latency.count || 0}/${report.history?.limit || limit}`);
+  console.log(`Metrics: latest ${latency.latestMs || 0}ms · avg ${latency.avgMs || 0}ms · p50 ${latency.p50Ms || 0}ms · p90 ${latency.p90Ms || 0}ms · p95 ${latency.p95Ms || 0}ms · max ${latency.maxMs || 0}ms · slow ${latency.slowCount || 0}/${latency.count || 0}`);
+  if (bottleneck.stage) console.log(`Likely bottleneck: ${bottleneck.label || bottleneck.stage} · avg ${bottleneck.avgMs || 0}ms · max ${bottleneck.maxMs || 0}ms`);
+  if (stages.length) {
+    console.log('Stages:');
+    for (const [stage, value] of stages.slice(0, 5)) {
+      console.log(`- ${stage}: avg ${value.avgMs || 0}ms · max ${value.maxMs || 0}ms · samples ${value.count || 0}`);
+    }
+  }
+  if (slowItems.length) {
+    console.log('Slow turns:');
+    for (const item of slowItems.slice(0, 5)) {
+      console.log(`- ${item.elapsedMs || 0}ms · ${item.lane || '-'} · ${compact(item.transcriptPreview || '-', 160)}`);
+    }
+  } else {
+    console.log('Slow turns: none in this local sample.');
+  }
+  if (report.nextAction) console.log(`Next: ${compact(report.nextAction, 360)}`);
+  console.log('Safety: read-only local audit metadata; no microphone, Realtime, screen capture, clipboard text, Terminal, or action execution.');
 }
 
 async function showIncidentReport() {
@@ -4522,6 +4557,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-voice-latency') || process.argv.includes('--voice-latency') || process.argv.includes('--latency')) {
+    await showVoiceLatency();
+    return;
+  }
+
   if (process.argv.includes('--print-voice-standby') || process.argv.includes('--voice-standby') || process.argv.includes('--standby')) {
     await showVoiceStandby();
     return;
@@ -4756,6 +4796,8 @@ async function main() {
         await showWorkHandoff();
       } else if (answer === 'vh' || answer === 'voice history' || answer === 'local voice history') {
         await showVoiceHistory();
+      } else if (answer === 'vl' || answer === 'voice latency' || answer === 'latency' || answer === 'speed') {
+        await showVoiceLatency();
       } else if (answer === 'ir' || answer === 'incident' || answer === 'incident report' || answer === 'audit') {
         await showIncidentReport();
       } else if (answer === 'vs' || answer === 'voice standby' || answer === 'standby' || answer === 'fallback') {

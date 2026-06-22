@@ -24686,6 +24686,31 @@ function naturalVoiceStatusLocalCommand(text) {
   };
 }
 
+function naturalVoiceLatencyLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const english = /\b(local voice latency|voice latency|response time|latency report|speed report)\b/i.test(raw)
+    || /\b(voice|local voice|javis|response|responding|latency|speed|slow|slowness|lag|laggy|delay|delayed|timing|performance)\b.*\b(latency|speed|slow|slowness|lag|laggy|delay|delayed|timing|performance|response time|how fast)\b/i.test(raw)
+    || /\b(why|where|what).*\b(slow|laggy|delayed|taking so long|latency)\b/i.test(raw);
+  const chinese = /(?:语音|本地语音|JAVIS|javis|贾维斯|你|回答|响应|反应).*(?:延迟|耗时|速度|慢|卡顿|反应慢|响应慢|性能|多久)/i.test(compactPlain)
+    || /(?:延迟|耗时|速度|慢|卡顿|反应慢|响应慢|性能).*(?:语音|本地语音|JAVIS|javis|贾维斯|回答|响应|反应|哪里|为什么|怎么样|报告)/i.test(compactPlain)
+    || /(?:为什么这么慢|为什么有点慢|哪里慢|延迟怎么样|速度怎么样|反应速度|响应速度|语音延迟|本地语音延迟)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'voice_latency',
+    label: 'Voice latency',
+    args: {
+      query: raw,
+      limit: 30,
+      auditLimit: 500,
+    },
+  };
+}
+
 function naturalPromptSuggestionsLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -25259,6 +25284,9 @@ function localCommandDecision(task) {
   const realtimeDogfoodStatusCommand = naturalRealtimeDogfoodStatusLocalCommand(text);
   if (realtimeDogfoodStatusCommand) return realtimeDogfoodStatusCommand;
 
+  const voiceLatencyCommand = naturalVoiceLatencyLocalCommand(text);
+  if (voiceLatencyCommand) return voiceLatencyCommand;
+
   const voiceStatusCommand = naturalVoiceStatusLocalCommand(text);
   if (voiceStatusCommand) return voiceStatusCommand;
 
@@ -25816,7 +25844,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -25838,7 +25866,7 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
-    } else if (['voice_status', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
+    } else if (['voice_status', 'voice_latency', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -26780,6 +26808,29 @@ function formatIncidentReportForLocalCommand(report = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatVoiceLatencyForLocalCommand(report = {}) {
+  const latency = report.latency || {};
+  const bottleneck = report.bottleneck || {};
+  const slowItems = Array.isArray(report.slowItems) ? report.slowItems : [];
+  const stageLines = Object.entries(report.stages || {})
+    .filter(([, value]) => Number(value?.count || 0) > 0)
+    .sort((a, b) => Number(b[1]?.avgMs || 0) - Number(a[1]?.avgMs || 0))
+    .slice(0, 3)
+    .map(([stage, value]) => `- ${stage}: avg ${value.avgMs || 0}ms · max ${value.maxMs || 0}ms`);
+  const slowLines = slowItems.slice(0, 3).map((item) =>
+    `- ${item.elapsedMs || 0}ms · ${item.lane || '-'} · ${compactRecordText(item.transcriptPreview || '', 160)}`);
+  return [
+    `Voice latency: ${report.label || report.status || 'unknown'} · samples=${latency.count || 0}`,
+    report.summary ? compactRecordText(report.summary, 420) : '',
+    `Metrics: latest ${latency.latestMs || 0}ms · avg ${latency.avgMs || 0}ms · p50 ${latency.p50Ms || 0}ms · p90 ${latency.p90Ms || 0}ms · p95 ${latency.p95Ms || 0}ms · max ${latency.maxMs || 0}ms`,
+    bottleneck.stage ? `Likely bottleneck: ${bottleneck.label || bottleneck.stage} · avg ${bottleneck.avgMs || 0}ms · max ${bottleneck.maxMs || 0}ms` : '',
+    stageLines.length ? `Stages:\n${stageLines.join('\n')}` : '',
+    slowLines.length ? `Slow turns:\n${slowLines.join('\n')}` : 'Slow turns: none in this local sample.',
+    report.nextAction ? `Next: ${compactRecordText(report.nextAction, 360)}` : '',
+    '边界: 这里只读本地 voice-command 审计元数据；不启动麦克风，不创建 Realtime session，不截屏，不读剪贴板文本，不读网页正文，不返回完整 AX 树，不执行动作，不开 Terminal。',
+  ].filter(Boolean).join('\n');
+}
+
 function sessionLocalCommandSafety(mutatesLocalSession = false) {
   return {
     readOnly: !mutatesLocalSession,
@@ -27192,6 +27243,16 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatIncidentReportForLocalCommand(incident),
         data: { incident },
+      };
+    }
+
+    if (command.intent === 'voice_latency') {
+      const latency = voiceCommandLatencyReportSnapshot(command.args || {});
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatVoiceLatencyForLocalCommand(latency),
+        data: { latency },
       };
     }
 
@@ -28334,6 +28395,9 @@ function voiceCommandAck(route = {}, options = {}) {
   if (route.localCommand?.intent === 'prompt_suggestions' && output) {
     return output;
   }
+  if (route.localCommand?.intent === 'voice_latency' && output) {
+    return output;
+  }
   if (route.localCommand?.intent === 'incident_report' && output) {
     return output;
   }
@@ -28579,9 +28643,127 @@ function voiceCommandLatencySnapshot(items = []) {
     avgMs: count ? Math.round(sum / count) : 0,
     p50Ms: count ? samples[Math.floor((count - 1) * 0.5)] : 0,
     p90Ms: count ? samples[Math.floor((count - 1) * 0.9)] : 0,
+    p95Ms: count ? samples[Math.floor((count - 1) * 0.95)] : 0,
     maxMs: count ? samples[count - 1] : 0,
     slowThresholdMs,
     slowCount: samples.filter((value) => value >= slowThresholdMs).length,
+  };
+}
+
+function voiceCommandLatencyStageSummary(items = []) {
+  const stages = ['contextMs', 'previewRouteMs', 'executeRouteMs', 'speechMs', 'sessionMs'];
+  const summary = {};
+  for (const stage of stages) {
+    const values = items
+      .map((item) => boundedCount(item.timing?.[stage], 120000))
+      .filter((value) => value > 0);
+    const total = values.reduce((sum, value) => sum + value, 0);
+    summary[stage] = {
+      count: values.length,
+      avgMs: values.length ? Math.round(total / values.length) : 0,
+      maxMs: values.length ? Math.max(...values) : 0,
+    };
+  }
+  return summary;
+}
+
+function voiceCommandLatencyLikelyBottleneck(stages = {}) {
+  const entries = Object.entries(stages)
+    .filter(([, value]) => Number(value?.avgMs || 0) > 0)
+    .sort((a, b) => Number(b[1]?.avgMs || 0) - Number(a[1]?.avgMs || 0));
+  const [stage, value] = entries[0] || [];
+  if (!stage) return { stage: '', label: 'no samples', avgMs: 0 };
+  const labels = {
+    contextMs: 'context assembly',
+    previewRouteMs: 'route preview',
+    executeRouteMs: 'route execution',
+    speechMs: 'local speech ack',
+    sessionMs: 'session logging',
+  };
+  return {
+    stage,
+    label: labels[stage] || stage,
+    avgMs: Number(value?.avgMs || 0),
+    maxMs: Number(value?.maxMs || 0),
+  };
+}
+
+function voiceCommandLatencyStatusFromMetrics(latency = {}) {
+  if (!latency.count) return 'no_data';
+  if (latency.p90Ms <= 1600 && latency.avgMs <= 1200) return 'fast';
+  if (latency.p90Ms <= 3500 && latency.slowCount === 0) return 'watch';
+  return 'slow';
+}
+
+function voiceCommandLatencyNextAction(status = '', bottleneck = {}) {
+  if (status === 'no_data') return 'Run a few local voice commands, then check latency again.';
+  if (status === 'fast') return 'Keep the local no-mic fast path; no latency action needed.';
+  if (bottleneck.stage === 'contextMs') return 'Keep routine voice turns metadata-only; use full screen/UI context only when the task needs it.';
+  if (bottleneck.stage === 'previewRouteMs') return 'Prefer deterministic local commands for status, blocker, browser, app, and session checks before model routing.';
+  if (bottleneck.stage === 'executeRouteMs') return 'Move slow work to background/Codex/Claude lanes and let voice return a short acknowledgement first.';
+  if (bottleneck.stage === 'speechMs') return 'Keep spoken acknowledgements short or use no-speech mode for local dogfood.';
+  if (bottleneck.stage === 'sessionMs') return 'Session logging is measurable; keep notes short and avoid attaching full context to session events.';
+  return 'Inspect the slow recent turns and keep voice turns short, metadata-only, and tool-first.';
+}
+
+function voiceCommandLatencyReportSnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(50, Number(options.limit || 30)));
+  const auditLimit = Math.max(80, Math.min(1000, Number(options.auditLimit || limit * 16)));
+  const history = voiceCommandHistorySnapshot({ limit, auditLimit });
+  const items = Array.isArray(history.items) ? history.items : [];
+  const latency = history.latency || voiceCommandLatencySnapshot(items);
+  const stages = voiceCommandLatencyStageSummary(items);
+  const bottleneck = voiceCommandLatencyLikelyBottleneck(stages);
+  const status = voiceCommandLatencyStatusFromMetrics(latency);
+  const slowItems = items
+    .filter((item) => Number(item.elapsedMs || 0) >= Number(latency.slowThresholdMs || 5000))
+    .slice(0, 5)
+    .map((item) => ({
+      id: item.id,
+      timestamp: item.timestamp,
+      source: item.source,
+      lane: item.lane,
+      elapsedMs: item.elapsedMs,
+      transcriptPreview: item.transcriptPreview,
+      contextSummary: item.contextSummary,
+      timing: item.timing,
+    }));
+  return {
+    ok: true,
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    status,
+    label: status === 'fast' ? 'Fast' : status === 'watch' ? 'Watch' : status === 'slow' ? 'Slow' : 'No data',
+    summary: latency.count
+      ? `Local voice latency ${status}: avg ${latency.avgMs}ms, p90 ${latency.p90Ms}ms, p95 ${latency.p95Ms || latency.p90Ms}ms, slow ${latency.slowCount}/${latency.count}.`
+      : 'No local voice-command latency samples are available yet.',
+    nextAction: voiceCommandLatencyNextAction(status, bottleneck),
+    history: {
+      limit: history.limit,
+      count: history.count,
+      auditLimit,
+    },
+    latency,
+    stages,
+    bottleneck,
+    slowItems,
+    latest: items[0] || null,
+    privacy: history.privacy,
+    safety: {
+      readOnly: true,
+      localAuditOnly: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      capturesScreen: false,
+      readsClipboardText: false,
+      returnsScreenImage: false,
+      returnsBrowserPageText: false,
+      returnsFullAccessibilityTree: false,
+      opensTerminal: false,
+      executesActions: false,
+      mutatesUserFiles: false,
+    },
   };
 }
 
@@ -29495,7 +29677,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'voice_latency', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -61746,6 +61928,10 @@ function startApiServer() {
 
   api.get('/api/voice/history', (req, res) => {
     res.json({ history: voiceCommandHistorySnapshot({ limit: req.query.limit, auditLimit: req.query.auditLimit }) });
+  });
+
+  api.get('/api/voice/latency', (req, res) => {
+    res.json({ latency: voiceCommandLatencyReportSnapshot({ limit: req.query.limit, auditLimit: req.query.auditLimit }) });
   });
 
   api.get('/api/incident/report', (req, res) => {
