@@ -138,6 +138,28 @@ export default {
         : fail('presence.browser_activity_api', 'Browser activity API', `GET /api/browser/activity ${activity.status}`, activity.data),
     );
 
+    const recentActivityResponse = await ctx.api('/api/activity/recent?limit=5');
+    const recentActivity = recentActivityResponse.data?.activity;
+    out.push(
+      recentActivityResponse.ok &&
+        recentActivity?.ok === true &&
+        recentActivity?.kind === 'recent_activity' &&
+        recentActivity.privacy?.localOnly === true &&
+        recentActivity.privacy?.metadataOnly === true &&
+        recentActivity.privacy?.noRawScreenshots === true &&
+        recentActivity.privacy?.noClipboardText === true &&
+        recentActivity.privacy?.noPageBodies === true &&
+        recentActivity.privacy?.urlsReturned === false &&
+        recentActivity.safety?.capturesScreenNow === false &&
+        recentActivity.safety?.startsMicrophone === false &&
+        recentActivity.safety?.usesRealtime === false &&
+        recentActivity.safety?.returnsBrowserPageText === false &&
+        Array.isArray(recentActivity.recent) &&
+        Array.isArray(recentActivity.topApps)
+        ? ok('presence.recent_activity_api', 'Recent activity API', `${recentActivity.count || 0} metadata sample(s), ${recentActivity.recent.length} segment(s)`)
+        : fail('presence.recent_activity_api', 'Recent activity API', `GET /api/activity/recent ${recentActivityResponse.status}`, recentActivityResponse.data),
+    );
+
     const perception = await ctx.api('/api/perception/consent?limit=5');
     const consent = perception.data?.perception;
     const surfaces = Array.isArray(consent?.surfaces) ? consent.surfaces : [];

@@ -67,6 +67,23 @@ export default {
         : fail('context.browser_activity', 'Browser activity context plan', `expected metadata-only browser activity plan, got ${browserActivity.status}`, browserActivity.data),
     );
 
+    const recentActivity = await ctx.api('/api/context/plan', {
+      method: 'POST',
+      body: { message: '我刚才在电脑上干嘛？', useMemory: false },
+    });
+    const recentActivityPlan = recentActivity.data?.contextPlan;
+    const recentActivityNeeds = needs(recentActivityPlan);
+    out.push(
+      recentActivity.ok &&
+        recentActivityNeeds.recentActivity === true &&
+        recentActivityNeeds.residentState === true &&
+        recentActivityNeeds.screen !== true &&
+        recentActivityNeeds.browserPage !== true &&
+        recentActivityPlan?.recommendedTools?.includes('get_recent_activity')
+        ? ok('context.recent_activity', 'Recent activity context plan', `${recentActivityPlan.mode}: ${recentActivityPlan.recommendedTools?.join(', ')}`, recentActivityPlan)
+        : fail('context.recent_activity', 'Recent activity context plan', `expected metadata-only recent activity plan, got ${recentActivity.status}`, recentActivity.data),
+    );
+
     const perception = await ctx.api('/api/context/plan', {
       method: 'POST',
       body: { message: '你现在能看到什么、能操作什么、哪些权限开着？', useMemory: false },

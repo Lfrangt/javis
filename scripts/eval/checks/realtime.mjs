@@ -12,6 +12,7 @@ const REQUIRED_TOOLS = [
   'get_mac_context',
   'get_browser_context',
   'get_browser_activity',
+  'get_recent_activity',
   'get_config_check',
   'get_perception_consent',
   'get_screen_privacy',
@@ -199,6 +200,29 @@ export default {
         Array.isArray(browserActivityOutput.topHosts)
         ? ok('realtime.browser_activity_tool', 'Realtime browser activity tool', `${browserActivityOutput.recent.length} recent page context(s)`)
         : fail('realtime.browser_activity_tool', 'Realtime browser activity tool', `tool execute ${browserActivityTool.status}`, browserActivityTool.data),
+    );
+
+    const recentActivityTool = await ctx.api('/api/tools/execute', {
+      method: 'POST',
+      body: { source: 'eval', name: 'get_recent_activity', arguments: { limit: 5 } },
+    });
+    const recentActivityOutput = parseToolOutput(recentActivityTool);
+    out.push(
+      recentActivityTool.ok &&
+        recentActivityTool.data?.ok === true &&
+        recentActivityOutput?.kind === 'recent_activity' &&
+        recentActivityOutput?.privacy?.localOnly === true &&
+        recentActivityOutput?.privacy?.metadataOnly === true &&
+        recentActivityOutput?.privacy?.noRawScreenshots === true &&
+        recentActivityOutput?.privacy?.noClipboardText === true &&
+        recentActivityOutput?.privacy?.noPageBodies === true &&
+        recentActivityOutput?.safety?.capturesScreenNow === false &&
+        recentActivityOutput?.safety?.startsMicrophone === false &&
+        recentActivityOutput?.safety?.usesRealtime === false &&
+        Array.isArray(recentActivityOutput.recent) &&
+        Array.isArray(recentActivityOutput.topApps)
+        ? ok('realtime.recent_activity_tool', 'Realtime recent activity tool', `${recentActivityOutput.recent.length} recent activity segment(s)`)
+        : fail('realtime.recent_activity_tool', 'Realtime recent activity tool', `tool execute ${recentActivityTool.status}`, recentActivityTool.data),
     );
 
     const browserWorkflowTool = await ctx.api('/api/tools/execute', {

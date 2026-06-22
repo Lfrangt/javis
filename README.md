@@ -57,11 +57,12 @@ Local Mac-first realtime desktop buddy.
 - Private screen mode that downscales/blurs frames before they leave the renderer.
 - Screen privacy presets for password managers, account/login pages, banking/payment hosts, sensitive system windows, and a notification-strip region mask, with preview/apply APIs and CUI visibility.
 - Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
-- Passive ambient observe mode: local-only current app/window, metadata-only browser activity summary, optional private screen-frame refresh, and short in-memory current-app UI cache prewarming without intervention.
+- Passive ambient observe mode: local-only current app/window, metadata-only recent Mac activity timeline, metadata-only browser activity summary, optional private screen-frame refresh, and short in-memory current-app UI cache prewarming without intervention.
 - Local inferred learning profile distilled from passive ambient metadata without calling a model, with metadata-only evolution snapshots, pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
 - Local user-distillation status pack from `/api/learning/distillation`, CUI, and Realtime `get_learning_distillation`, combining inferred habits, recent evolution, explicit UI demonstrations, skill shortcuts, local skills, privacy boundaries, prompt-injection risk, and confirmation-gated next actions without storing raw screenshots, clipboard text, or page bodies; the voice tool returns a compact payload while API/CUI keep the fuller operator packet.
 - Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, expose Realtime evidence for demonstration list/start/capture/finish/replay/draft/save gates, attach recalled local skills as structured `skillRecallPlan` evidence during later task routing, promote confirmed repeats into local skill shortcuts, manage those shortcuts from CUI/API/Realtime voice tools, and pass recalled plans into queued background/Codex/Claude workers.
 - Resident presence state: standby/watching/wake/work/attention status with the latest passive context, quiet attention policy, attention-notification throttling, and intervention guardrails.
+- Recent activity: local app/window/browser metadata timeline from ambient observations through `/api/activity/recent`, local voice-command fast path, and Realtime `get_recent_activity`, without screenshots, page text, clipboard text, or Accessibility trees.
 - Browser context: supported frontmost browser tab title and URL.
 - Browser activity: local recent browser host/title timeline from ambient metadata, exposed through API/CUI/presence/Realtime tools without storing page text.
 - Unified perception consent/status registry through `/api/perception/consent`, Realtime `get_perception_consent`, and `npm run config -- --print-perception`, covering screen, voice, ambient observation, browser, clipboard, Accessibility/app control, learning, and worker tools without adding desktop pet diagnostics; the Realtime tool returns a compact voice payload while CUI/API keep the full operator registry.
@@ -198,6 +199,7 @@ Local Express service on 127.0.0.1:3417
   /api/setup/guide      -> setup blocker guide and next local action
   /api/setup/next       -> open the current most important setup target
   /api/sessions         -> local work session list/start/resume/event/check-in/end
+  /api/activity/recent  -> metadata-only recent Mac app/window/browser activity timeline
   /api/setup/actions    -> low-risk local setup helpers
   /api/resident/status  -> LaunchAgent install/load status
   /api/keep-awake/status -> launchd/caffeinate sleep-prevention status for unattended resident work

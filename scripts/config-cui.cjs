@@ -320,6 +320,13 @@ async function printStatus() {
     if (status.ambient) {
       console.log(`Ambient: ${status.ambient.enabled ? 'on' : 'off'} · screen ${status.ambient.captureScreen ? 'on' : 'off'} · ${status.ambient.count || 0} sample(s)`);
     }
+    if (status.recentActivity) {
+      const current = status.recentActivity.current || {};
+      const target = [current.app || current.browserApp, current.browserHost || current.browserTitle || current.windowTitle]
+        .filter(Boolean)
+        .join(' · ');
+      console.log(`Recent activity: ${status.recentActivity.count || 0} sample(s) · ${target ? compact(target, 120) : 'none'}`);
+    }
     if (perceptionResult.perception) {
       const perception = perceptionResult.perception;
       const counts = perception.counts || {};

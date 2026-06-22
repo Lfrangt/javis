@@ -4170,6 +4170,7 @@ function normalizeContextPlan(value) {
     vision: Boolean(rawNeeds.vision),
     accessibility: Boolean(rawNeeds.accessibility),
     browserContext: Boolean(rawNeeds.browserContext),
+    recentActivity: Boolean(rawNeeds.recentActivity),
     browserActivity: Boolean(rawNeeds.browserActivity),
     browserPage: Boolean(rawNeeds.browserPage),
     browserDom: Boolean(rawNeeds.browserDom),
@@ -5220,7 +5221,7 @@ function routingSpeedPolicyVoicePayload(snapshot = {}, options = {}) {
 function capabilityToolHintsForContract(contract = {}) {
   const base = Array.isArray(contract.handoff?.tools) ? contract.handoff.tools : [];
   const extras = {
-    realtime: ['get_routing_speed_policy', 'get_local_capabilities', 'get_learning_distillation', 'get_learning_profile', 'get_learning_evolution', 'get_record_replay_teaching_packet', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
+    realtime: ['get_routing_speed_policy', 'get_local_capabilities', 'get_recent_activity', 'get_learning_distillation', 'get_learning_profile', 'get_learning_evolution', 'get_record_replay_teaching_packet', 'get_work_handoff', 'get_pending_approvals', 'resolve_approval', 'get_realtime_evidence', 'get_attention_explanation'],
     background: ['route_task', 'delegate_task', 'get_work_progress', 'get_worker_recovery'],
     codex: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
     claude: ['delegate_task', 'route_parallel_tasks', 'run_cli_tool', 'get_collaboration_state'],
@@ -7386,6 +7387,138 @@ function browserActivitySnapshot(options = {}) {
     nextAction: current
       ? 'Use read_browser_page only when the user asks for page contents or a task needs visible page text.'
       : 'Keep ambient observation on or open a supported browser tab to build local browser activity context.',
+  };
+}
+
+function recentActivityEventSummary(event = {}) {
+  const app = String(event?.frontmost?.app || event?.browser?.app || '').trim();
+  const windowTitle = sanitizeLearningTitle(event?.frontmost?.windowTitle || '', app);
+  const browserApp = String(event?.browser?.app || '').trim();
+  const browserTitle = sanitizeLearningTitle(event?.browser?.title || '', browserApp || app);
+  const browserHost = browserHostFromAmbientEvent(event);
+  const createdAt = Number(event?.createdAt || 0);
+  return {
+    id: String(event?.id || ''),
+    app: compactRecordText(app, 120),
+    windowTitle: compactRecordText(windowTitle, 180),
+    browserApp: compactRecordText(browserApp, 120),
+    browserTitle: compactRecordText(browserTitle, 180),
+    browserHost,
+    source: compactRecordText(event?.source || '', 80),
+    createdAt,
+    ageMs: presenceAgeMs(createdAt),
+  };
+}
+
+function recentActivityKey(item = {}) {
+  return [
+    item.app || item.browserApp || '',
+    item.browserHost || '',
+    item.browserTitle || item.windowTitle || '',
+  ].join('\n');
+}
+
+function recentActivitySnapshot(options = {}) {
+  const limit = Math.max(1, Math.min(30, Number(options.limit || 8)));
+  const eventLimit = Math.max(limit, Math.min(240, Number(options.eventLimit || 120)));
+  const events = ambientSnapshot(eventLimit)
+    .filter((event) => event?.frontmost?.available || event?.browser?.available)
+    .filter((event) => !learningExclusionForAmbientEvent(event))
+    .sort((a, b) => b.createdAt - a.createdAt);
+  const appCounts = new Map();
+  const hostCounts = new Map();
+  const timeline = [];
+
+  for (const event of events) {
+    const item = recentActivityEventSummary(event);
+    if (!item.app && !item.windowTitle && !item.browserHost && !item.browserTitle) continue;
+    incrementLearningCounter(appCounts, item.app || item.browserApp, {
+      name: item.app || item.browserApp,
+      lastSeenAt: item.createdAt,
+    });
+    incrementLearningCounter(hostCounts, item.browserHost, {
+      host: item.browserHost,
+      title: item.browserTitle,
+      lastSeenAt: item.createdAt,
+    });
+
+    const key = recentActivityKey(item);
+    const previous = timeline[timeline.length - 1];
+    if (previous?.key === key) {
+      previous.sampleCount += 1;
+      previous.oldestAt = Math.min(previous.oldestAt || item.createdAt, item.createdAt || previous.oldestAt || 0);
+      previous.durationMs = Math.max(0, Number(previous.newestAt || 0) - Number(previous.oldestAt || 0));
+      continue;
+    }
+    timeline.push({
+      key,
+      app: item.app,
+      windowTitle: item.windowTitle,
+      browserApp: item.browserApp,
+      browserTitle: item.browserTitle,
+      browserHost: item.browserHost,
+      source: item.source,
+      newestAt: item.createdAt,
+      oldestAt: item.createdAt,
+      ageMs: item.ageMs,
+      sampleCount: 1,
+      durationMs: 0,
+    });
+  }
+
+  const topApps = learningCounterList(appCounts, events.length, (item) => ({
+    name: item.name || item.key,
+  }), Math.min(8, limit));
+  const topBrowserHosts = learningCounterList(hostCounts, events.length, (item) => ({
+    host: item.host || item.key,
+    title: item.title || '',
+  }), Math.min(8, limit));
+  const recent = timeline.slice(0, limit).map(({ key, ...item }) => item);
+  const current = recent[0] || null;
+  const summary = current
+    ? `Recent Mac activity: ${[current.app, current.browserHost || current.browserTitle || current.windowTitle].filter(Boolean).join(' · ')}; ${recent.length} local metadata segment(s) from ${events.length} retained sample(s).`
+    : 'No recent Mac activity is available from local ambient metadata.';
+  return {
+    ok: true,
+    kind: 'recent_activity',
+    generatedAt: new Date().toISOString(),
+    enabled: AMBIENT_OBSERVE_ENABLED,
+    count: events.length,
+    current,
+    recent,
+    topApps,
+    topBrowserHosts,
+    summary,
+    spokenSummary: current
+      ? `我最近看到的本地活动是 ${[current.app, current.browserHost || current.browserTitle || current.windowTitle].filter(Boolean).join(' · ')}；这里只是本地元数据，不含截图、网页正文或剪贴板内容。`
+      : '我这里还没有足够的本地活动元数据，暂时不能判断你刚才在电脑上做了什么。',
+    privacy: {
+      localOnly: true,
+      metadataOnly: true,
+      noRawScreenshots: true,
+      noScreenImages: true,
+      noClipboardText: true,
+      noPageBodies: true,
+      noFullAccessibilityTree: true,
+      urlsReturned: false,
+      exclusionControls: 'learning excluded apps/sites/folders are applied before recent activity is summarized',
+    },
+    safety: {
+      readOnly: true,
+      capturesScreenNow: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      opensTerminal: false,
+      readsClipboardText: false,
+      returnsScreenImage: false,
+      returnsBrowserPageText: false,
+      returnsFullAccessibilityTree: false,
+      executesActions: false,
+      grantsPermission: false,
+    },
+    nextAction: current
+      ? 'Use observe_now only if the user asks for the live screen or current UI details.'
+      : 'Keep ambient observation enabled long enough to build a local metadata timeline.',
   };
 }
 
@@ -24337,6 +24470,28 @@ function naturalPerceptionStatusLocalCommand(text) {
   };
 }
 
+function naturalRecentActivityLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+  const english = /\b(what (was|were|am|are).*(i|we).*(doing|working on)|what did i (do|open|look at|use)|what have i been doing|recent (mac|computer|desktop|app|window) activity|activity timeline|what happened on (my )?(mac|computer|desktop)|what was i just doing)\b/i.test(raw)
+    || /\b(recent|earlier|just now|lately).*(app|window|desktop|mac|computer|activity|doing|working|opened|looked at)\b/i.test(raw);
+  const chinese = /(?:我刚才|刚才我|我刚刚|刚刚我|最近我|之前我|上一会我).*(?:在干嘛|干嘛|干了什么|做了什么|做什么|看了什么|打开了什么|用了什么|在做什么)/i.test(compactPlain)
+    || /(?:刚才|刚刚|最近|之前|上一会|过去).*(?:电脑|Mac|mac|桌面|窗口|应用|软件|浏览器).*(?:发生了什么|在干嘛|干了什么|做了什么|打开了什么|用了什么|看了什么|活动|时间线)/i.test(compactPlain)
+    || /(?:最近活动|活动时间线|使用时间线|电脑活动|桌面活动|应用时间线|窗口时间线|我刚才在干嘛|我刚刚在干嘛)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'recent_activity',
+    label: 'Recent local activity',
+    args: {
+      query: raw,
+      limit: 8,
+      eventLimit: 120,
+    },
+  };
+}
+
 function naturalApprovalStatusLocalCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24882,6 +25037,9 @@ function localCommandDecision(task) {
   const perceptionStatusCommand = naturalPerceptionStatusLocalCommand(text);
   if (perceptionStatusCommand) return perceptionStatusCommand;
 
+  const recentActivityCommand = naturalRecentActivityLocalCommand(text);
+  if (recentActivityCommand) return recentActivityCommand;
+
   const approvalStatusCommand = naturalApprovalStatusLocalCommand(text);
   if (approvalStatusCommand) return approvalStatusCommand;
 
@@ -25201,6 +25359,7 @@ function contextPlanRecommendedTools(needs) {
   if (needs.vision) tools.push('describe_screen');
   if (needs.accessibility) tools.push('read_accessibility_tree', 'plan_ui_action');
   if (needs.browserContext) tools.push('get_browser_context');
+  if (needs.recentActivity) tools.push('get_recent_activity');
   if (needs.browserActivity) tools.push('get_browser_activity');
   if (needs.browserPage) tools.push('read_browser_page', 'run_browser_workflow');
   if (needs.browserDom) tools.push('read_browser_dom');
@@ -25225,6 +25384,7 @@ function contextPlanMode(needs) {
   if (heavyCount >= 3) return 'full';
   if (needs.accessibility || needs.localExecution) return 'app';
   if (needs.screen || needs.vision) return 'screen';
+  if (needs.recentActivity) return 'resident';
   if (needs.browserActivity || needs.browserPage || needs.browserDom || needs.browserContext) return 'browser';
   if (needs.knowledge) return 'knowledge';
   if (needs.files) return 'file';
@@ -25247,6 +25407,7 @@ function buildContextPlan(message, options = {}) {
     vision: false,
     accessibility: false,
     browserContext: false,
+    recentActivity: false,
     browserActivity: false,
     browserPage: false,
     browserDom: false,
@@ -25284,6 +25445,7 @@ function buildContextPlan(message, options = {}) {
   const visionSignal = /describe|what.*see|read.*screen|ocr|vision|看图|描述|识别|屏幕上有什么|读一下/.test(text);
   const browserSignal = /browser|webpage|web page|current page|tab|url|link|website|site|google|search result|网页|页面|浏览器|标签页|链接|网站|搜索结果/.test(text);
   const browserActivitySignal = /((recent|lately|earlier|history|activity|just now).*(browser|browsing|web|page|tab|site))|((browser|browsing).*(activity|history|recent|lately|just now))|((最近|之前|刚才|刚刚).*(浏览|访问|打开|网页|页面|网站|看了什么|看过什么))|((浏览器|网页|页面|网站).*(记录|活动|最近|历史|刚才|刚刚|看了什么|看过什么))|看过什么/.test(text);
+  const recentActivitySignal = /((recent|lately|earlier|just now|what.*was i|what.*did i|what.*have i).*(mac|computer|desktop|app|window|activity|doing|working on|opened|used))|((mac|computer|desktop|app|window).*(recent|activity|history|just now|earlier))|((刚才|刚刚|最近|之前|上一会).*(电脑|mac|桌面|窗口|应用|软件|干嘛|干了什么|做了什么|用了什么|打开了什么))|(我刚才在干嘛|最近活动|活动时间线|电脑活动|桌面活动|窗口时间线|应用时间线)/.test(text);
   const browserPageSignal = /summari[sz]e|extract|read|compare|research|review|answer.*page|当前网页|总结.*网页|阅读.*网页|提取|比较|调研|研究|看.*页面/.test(text);
   const browserDomSignal = /click|fill|select|button|form|input|submit|点击|填写|填入|选择|按钮|表单|输入框/.test(text);
   const fileSignal = /file|folder|directory|path|repo|codebase|readme|\.md\b|\.json\b|\.ts\b|\.tsx\b|\.js\b|\.py\b|文件|目录|文件夹|仓库|代码库|路径/.test(text);
@@ -25316,6 +25478,11 @@ function buildContextPlan(message, options = {}) {
   if (browserActivitySignal) {
     needs.browserActivity = true;
     contextPlanPushReason(reasons, 'task asks for recent browser activity metadata');
+  }
+  if (recentActivitySignal && !browserActivitySignal) {
+    needs.recentActivity = true;
+    needs.residentState = true;
+    contextPlanPushReason(reasons, 'task asks for recent local app/window activity metadata');
   }
   if (browserSignal && !browserActivitySignal) {
     needs.browserContext = true;
@@ -25886,6 +26053,30 @@ function formatLearningDistillationForLocalCommand(distillation = {}) {
     nextActions.length ? `下一步:\n${nextActions.map((action) => `- ${action.label || action.id || '-'}${action.requiresConfirmation ? ' · confirm' : ''}`).join('\n')}` : '',
     `隐私: local-only=${privacy.localOnly ? 'yes' : 'no'} · metadata-only=${privacy.metadataOnly ? 'yes' : 'no'} · raw screenshots=${privacy.noRawScreenshots ? 'no' : 'unknown'} · clipboard=${privacy.noClipboardText ? 'no' : 'unknown'} · page bodies=${privacy.noPageBodies ? 'no' : 'unknown'}`,
     '边界: 这里只读本地推断；不保存记忆，不生成技能，不提升权限，不执行电脑动作，不启动麦克风或 Realtime。',
+  ].filter(Boolean).join('\n');
+}
+
+function formatRecentActivityForLocalCommand(activity = {}) {
+  const current = activity.current || null;
+  const recent = Array.isArray(activity.recent) ? activity.recent.slice(0, 5) : [];
+  const topApps = Array.isArray(activity.topApps)
+    ? activity.topApps.slice(0, 3).map((item) => `${item.name || '-'} ${Math.round(Number(item.share || 0) * 100)}%`)
+    : [];
+  const lines = recent.map((item) => {
+    const target = [item.app || item.browserApp, item.browserHost || item.browserTitle || item.windowTitle]
+      .filter(Boolean)
+      .join(' · ');
+    const samples = Number(item.sampleCount || 0) > 1 ? ` · samples ${item.sampleCount}` : '';
+    return `- ${compactRecordText(target || '-', 220)} · age=${item.ageMs ?? '-'}ms${samples}`;
+  });
+  return [
+    `Recent activity: ${activity.enabled ? 'on' : 'off'} · samples=${activity.count ?? 0} · segments=${recent.length}`,
+    activity.spokenSummary || activity.summary ? `摘要: ${compactRecordText(activity.spokenSummary || activity.summary, 520)}` : '',
+    current ? `Latest: ${compactRecordText([current.app || current.browserApp, current.browserHost || current.browserTitle || current.windowTitle].filter(Boolean).join(' · '), 260)}` : '',
+    topApps.length ? `常见 App: ${topApps.join(', ')}` : '',
+    lines.length ? `时间线:\n${lines.join('\n')}` : '时间线: none',
+    activity.nextAction ? `下一步: ${compactRecordText(activity.nextAction, 260)}` : '',
+    '边界: 这里只读本地 ambient 元数据；不主动截屏，不返回图片，不读取网页正文，不读剪贴板文本，不启动麦克风或 Realtime，不执行电脑动作。',
   ].filter(Boolean).join('\n');
 }
 
@@ -26571,6 +26762,19 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatLearningDistillationForLocalCommand(distillation),
         data: { distillation },
+      };
+    }
+
+    if (command.intent === 'recent_activity') {
+      const activity = recentActivitySnapshot({
+        ...(command.args || {}),
+        source: 'local_command',
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatRecentActivityForLocalCommand(activity),
+        data: { activity },
       };
     }
 
@@ -28922,7 +29126,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -54317,6 +54521,10 @@ async function executeTool(name, args) {
     return { ok: true, output: JSON.stringify(browserActivitySnapshot({ limit: args?.limit, eventLimit: args?.eventLimit })) };
   }
 
+  if (name === 'get_recent_activity') {
+    return { ok: true, output: JSON.stringify(recentActivitySnapshot({ limit: args?.limit, eventLimit: args?.eventLimit })) };
+  }
+
   if (name === 'control_browser') {
     try {
       const result = await executeBrowserControl(args || {});
@@ -55320,6 +55528,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use get_mac_context before acting on the current app, active window, clipboard, or local runtime state.',
       'Use get_browser_context before summarizing, comparing, or acting on a webpage open in the browser.',
       'Use get_browser_activity when the user asks what they recently browsed, saw, opened, or looked at in the browser; it returns only metadata such as app, host, title, and time, not page text.',
+      'Use get_recent_activity when the user asks what they were just doing on the Mac, what apps/windows were recently active, or what happened recently on the desktop. It returns local ambient metadata only, not screenshots, page text, clipboard text, or Accessibility trees.',
       'Use control_browser when the user explicitly asks for browser navigation such as back, forward, reload, new tab, close tab, focus address bar, open a URL, or search.',
       'Use read_browser_dom before choosing a clickable or fillable element inside the current webpage.',
       'Use control_browser_dom only when the user explicitly asks to click, fill, or select an element inside the current webpage. Do not use it for submits, purchases, sends, logins, deletes, or account changes without confirmation.',
@@ -55494,6 +55703,19 @@ function createRealtimeSessionConfig(options = {}) {
         type: 'function',
         name: 'get_browser_activity',
         description: 'Get metadata-only recent browser app, host, title, and time activity from local ambient observations. Does not return page text.',
+        parameters: {
+          type: 'object',
+          properties: {
+            limit: { type: 'number' },
+            eventLimit: { type: 'number' },
+          },
+          additionalProperties: false,
+        },
+      },
+      {
+        type: 'function',
+        name: 'get_recent_activity',
+        description: 'Get metadata-only recent Mac app/window/browser activity timeline from local ambient observations. Does not capture screen, return screenshots, page text, clipboard text, or Accessibility trees.',
         parameters: {
           type: 'object',
           properties: {
@@ -57579,6 +57801,7 @@ const REALTIME_REQUIRED_TOOLS = [
   'get_mac_context',
   'get_browser_context',
   'get_browser_activity',
+  'get_recent_activity',
   'get_config_check',
   'get_perception_consent',
   'get_screen_privacy',
@@ -57669,6 +57892,7 @@ function realtimeInstructionChecks(instructions = '') {
     autopilotStatus: /get_autopilot_status|autopilot did|unattended work|can continue by itself|autopilot is waiting/i.test(text),
     workNext: /get_work_next|run_work_next|single step should happen next|next work step/i.test(text),
     browserActivity: /get_browser_activity|recently browsed|browser activity|metadata such as app, host, title/i.test(text),
+    recentActivity: /get_recent_activity|what they were just doing on the Mac|apps\/windows were recently active|local ambient metadata only/i.test(text),
     knowledgeWorkflows: /get_knowledge_vaults|search_knowledge_notes|run_knowledge_workflow|Obsidian\/Markdown vaults|knowledge workflow/i.test(text),
     mcpDiscovery: /get_mcp_servers|MCP servers|Claude\/Cursor tool servers|external tool bridges/i.test(text),
     mcpWorkflow: /plan_mcp_workflow|which MCP server|MCP-backed workflow|never starts MCP servers or calls MCP tools/i.test(text),
@@ -58558,6 +58782,7 @@ function startApiServer() {
       voiceStandby,
       progressVersion: workProgressSnapshot(),
       ambient: ambientStateSnapshot(5),
+      recentActivity: recentActivitySnapshot({ limit: 5 }),
       browserActivity: browserActivitySnapshot({ limit: 5 }),
       learning: learningStateSnapshot(),
       wake: wakeStatusSnapshot(),
@@ -59065,6 +59290,15 @@ function startApiServer() {
 
   api.get('/api/ambient', (req, res) => {
     res.json({ ambient: ambientStateSnapshot(req.query.limit || 20), ambientFile: AMBIENT_FILE });
+  });
+
+  api.get('/api/activity/recent', (req, res) => {
+    res.json({
+      activity: recentActivitySnapshot({
+        limit: req.query.limit || 8,
+        eventLimit: req.query.eventLimit || 120,
+      }),
+    });
   });
 
   api.get('/api/browser/activity', (req, res) => {

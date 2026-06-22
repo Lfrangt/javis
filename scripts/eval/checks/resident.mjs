@@ -326,6 +326,50 @@ export default {
         }),
     );
 
+    const recentActivityCommandResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '我刚才在电脑上干嘛？',
+        execute: true,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_recent_activity_local_command',
+      },
+      timeoutMs: 10000,
+    });
+    const recentActivityCommand = recentActivityCommandResponse.data || {};
+    const recentActivityRoute = recentActivityCommand.route || {};
+    const recentActivity = recentActivityRoute.data?.activity || {};
+    out.push(
+      recentActivityCommandResponse.ok &&
+        recentActivityCommand.ok === true &&
+        recentActivityRoute.localCommand?.intent === 'recent_activity' &&
+        recentActivityRoute.decision?.localCommand === 'recent_activity' &&
+        String(recentActivityRoute.output || '').includes('Recent activity:') &&
+        recentActivity.ok === true &&
+        recentActivity.kind === 'recent_activity' &&
+        recentActivity.privacy?.localOnly === true &&
+        recentActivity.privacy?.metadataOnly === true &&
+        recentActivity.privacy?.noRawScreenshots === true &&
+        recentActivity.privacy?.noClipboardText === true &&
+        recentActivity.privacy?.noPageBodies === true &&
+        recentActivity.safety?.readOnly === true &&
+        recentActivity.safety?.capturesScreenNow === false &&
+        recentActivity.safety?.startsMicrophone === false &&
+        recentActivity.safety?.usesRealtime === false &&
+        recentActivity.safety?.returnsBrowserPageText === false &&
+        recentActivityRoute.contextPlan?.needs?.recentActivity === true &&
+        recentActivityRoute.contextPlan?.needs?.screen === false &&
+        recentActivityRoute.contextPlan?.needs?.browserPage === false
+        ? ok('resident.recent_activity_local_command', 'Recent activity local command', `${recentActivity.count || 0} metadata sample(s) · ${recentActivity.recent?.length || 0} segment(s)`)
+        : fail('resident.recent_activity_local_command', 'Recent activity local command', 'expected natural recent-activity question to route to a read-only metadata-only recent_activity fast path', {
+          status: recentActivityCommandResponse.status,
+          body: recentActivityCommand,
+        }),
+    );
+
     const approvalStatusCommandResponse = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
