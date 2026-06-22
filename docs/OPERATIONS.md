@@ -904,7 +904,10 @@ curl -X POST http://127.0.0.1:3417/api/inbox/capture-clipboard \
 curl http://127.0.0.1:3417/api/inbox/triage
 curl -X POST http://127.0.0.1:3417/api/inbox/process-next \
   -H 'Content-Type: application/json' \
-  -d '{"execute":true}'
+  -d '{}'
+curl -X POST http://127.0.0.1:3417/api/inbox/process-next \
+  -H 'Content-Type: application/json' \
+  -d '{"execute":true,"confirm":true}'
 curl -X POST http://127.0.0.1:3417/api/inbox \
   -H 'Content-Type: application/json' \
   -d '{"title":"Follow up with the supplier","body":"Check the latest quote and delivery window.","priority":2}'
@@ -913,10 +916,10 @@ curl -X POST http://127.0.0.1:3417/api/inbox/<item-id>/complete \
   -d '{}'
 curl -X POST http://127.0.0.1:3417/api/inbox/<item-id>/route \
   -H 'Content-Type: application/json' \
-  -d '{"execute":true,"mode":"background"}'
+  -d '{"execute":true,"confirm":true,"mode":"background"}'
 ```
 
-The menu bar item, capture hotkey, and `/api/inbox/capture-clipboard` endpoint can capture the current clipboard text into Inbox. Open Inbox items appear in status, the buddy activity list, and local work briefings. `/api/inbox/triage` is read-only: it sorts open items by priority and age, groups them by lane/source/priority, suggests quick/background/Codex/Claude lanes, and returns `spokenSummary` plus per-item `confirmationPolicy.spokenPrompt` for voice. Use `npm run config -- --print-inbox-triage` for the same grouped view in CUI. Triage does not execute or mark anything done. `/api/inbox/process-next` is explicit execution: it picks the same top triage item, returns the confirmation policy, sends it through the normal router, and marks only that item done if routing succeeds. Routing an Inbox item sends it through the same quick/background/Codex/Claude task router used by voice and chat; successful execution marks the Inbox item done and stores a small route summary on the item.
+The menu bar item, capture hotkey, and `/api/inbox/capture-clipboard` endpoint can capture the current clipboard text into Inbox. Open Inbox items appear in status, the buddy activity list, and local work briefings. `/api/inbox/triage` is read-only: it sorts open items by priority and age, groups them by lane/source/priority, suggests quick/background/Codex/Claude lanes, and returns `spokenSummary` plus per-item `confirmationPolicy.spokenPrompt` for voice. Use `npm run config -- --print-inbox-triage` for the same grouped view in CUI. Triage does not execute or mark anything done. `/api/inbox/process-next` and `/api/inbox/<item-id>/route` are preview-first: no body or `execute:false` returns the selected item, lane plan, and confirmation policy without routing or marking done; `execute:true` returns `confirmation_required` until `confirm:true` is supplied. Confirmed execution sends exactly one Inbox item through the same quick/background/Codex/Claude task router used by voice and chat; successful execution marks that item done and stores a small route summary on the item.
 
 For local task routing:
 

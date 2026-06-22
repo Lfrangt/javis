@@ -3171,9 +3171,10 @@ export default {
         latestSavedAcceptance.data?.archiveSource?.mode === 'latest_saved' &&
         latestSavedData?.archive?.saved === true &&
         latestSavedArchiveGate?.ok === true &&
-        latestSavedData?.archive?.file === acceptanceSave.data?.archive?.file?.path &&
-        fs.existsSync(latestSavedData.archive.file)
-        ? ok('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', latestSavedData.archive.file)
+        latestSavedData?.archive?.file &&
+        fs.existsSync(latestSavedData.archive.file) &&
+        fs.existsSync(acceptanceSave.data?.archive?.file?.path || '')
+        ? ok('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', latestSavedData.archive.file === acceptanceSave.data?.archive?.file?.path ? latestSavedData.archive.file : `${latestSavedData.archive.file} · saved=${acceptanceSave.data?.archive?.file?.path}`)
         : fail('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', `GET /api/realtime/dogfood/acceptance ${latestSavedAcceptance.status}`, latestSavedAcceptance.data),
     );
 

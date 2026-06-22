@@ -236,8 +236,8 @@ Local Express service on 127.0.0.1:3417
   /api/inbox            -> local persistent capture inbox
   /api/inbox/capture-clipboard -> capture current clipboard text into Inbox
   /api/inbox/triage     -> read-only Inbox priority and lane suggestions
-  /api/inbox/process-next -> explicitly process the highest-priority open Inbox item
-  /api/inbox/:id/route  -> route an Inbox item into quick/deep/Codex/Claude work
+  /api/inbox/process-next -> preview-first processing for the highest-priority open Inbox item; execute requires confirm:true
+  /api/inbox/:id/route  -> preview-first routing for one Inbox item into quick/deep/Codex/Claude work
   /api/jobs/:id/cancel  -> stop queued/running background work
   /api/audit/recent     -> recent structured audit events
   /api/perception/consent -> local perception/tool surface status, consent gates, storage notes, controls, and audit trails

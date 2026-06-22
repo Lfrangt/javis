@@ -11539,6 +11539,10 @@ function inboxConfirmationPolicy(item, decision = {}, options = {}) {
   };
 }
 
+function inboxTruthyFlag(value) {
+  return value === true || String(value || '').trim().toLowerCase() === 'true';
+}
+
 function inboxGroupList(triaged = [], keyFn, labelFn, type) {
   const groups = new Map();
   for (const item of triaged) {
@@ -11700,7 +11704,10 @@ async function routeInboxItem(options = {}) {
     };
   }
 
-  const execute = options.execute !== false;
+  const executeRequested = inboxTruthyFlag(options.execute);
+  const confirm = inboxTruthyFlag(options.confirm) || inboxTruthyFlag(options.confirmed);
+  const shouldExecute = executeRequested && confirm;
+  const requiresConfirmation = executeRequested && !confirm;
   const task = inboxTaskPrompt(item, String(options.instruction || '').trim());
   const previewDecision = routeTaskDecision(task, { execute: false, mode: options.mode || options.lane });
   const previewDecisionSummary = {
@@ -11713,7 +11720,7 @@ async function routeInboxItem(options = {}) {
   const confirmationPolicy = inboxConfirmationPolicy(item, previewDecisionSummary, options);
   const route = await routeTask({
     message: task,
-    execute,
+    execute: shouldExecute,
     includeScreen: Boolean(options.includeScreen),
     useMemory: options.useMemory !== false,
     memoryLimit: options.memoryLimit,
@@ -11732,7 +11739,7 @@ async function routeInboxItem(options = {}) {
   };
 
   let nextItem = item;
-  if (execute && route.ok) {
+  if (shouldExecute && route.ok) {
     nextItem = setInboxItem(item.id, {
       status: 'done',
       completedAt: Date.now(),
@@ -11742,15 +11749,18 @@ async function routeInboxItem(options = {}) {
 
   appendAudit('inbox.routed', {
     id: item.id,
-    execute,
+    executeRequested,
+    confirm,
+    requiresConfirmation,
+    executed: shouldExecute,
     ok: route.ok,
     lane: route.decision?.lane || '',
     queued: Boolean(route.queued),
     jobId: route.job?.id || '',
   });
   recordActiveSessionEvent(
-    execute ? 'inbox_routed' : 'inbox_route_preview',
-    `Inbox ${execute ? 'routed' : 'checked'} via ${route.decision?.label || route.decision?.lane || 'router'}: ${compactRecordText(item.title, 120)}`,
+    shouldExecute ? 'inbox_routed' : 'inbox_route_preview',
+    `Inbox ${shouldExecute ? 'routed' : 'checked'} via ${route.decision?.label || route.decision?.lane || 'router'}: ${compactRecordText(item.title, 120)}`,
     'inbox',
     {
       kind: 'inbox',
@@ -11761,6 +11771,17 @@ async function routeInboxItem(options = {}) {
 
   return {
     ok: Boolean(route.ok),
+    status: requiresConfirmation
+      ? 'confirmation_required'
+      : shouldExecute
+        ? (route.queued ? 'queued' : 'executed')
+        : 'preview',
+    executeRequested,
+    confirm,
+    requiresConfirmation,
+    previewOnly: !shouldExecute,
+    executed: shouldExecute && Boolean(route.executed),
+    queued: shouldExecute && Boolean(route.queued),
     item: nextItem,
     task,
     confirmationPolicy,
@@ -11786,10 +11807,13 @@ async function processNextInbox(options = {}) {
     };
   }
 
+  const executeRequested = inboxTruthyFlag(options.execute);
+  const confirm = inboxTruthyFlag(options.confirm) || inboxTruthyFlag(options.confirmed);
   const result = await routeInboxItem({
     id: selected.id,
     instruction: options.instruction,
-    execute: options.execute !== false,
+    execute: executeRequested,
+    confirm,
     includeScreen: Boolean(options.includeScreen),
     mode: options.mode || options.lane,
     useMemory: options.useMemory,
@@ -11797,8 +11821,13 @@ async function processNextInbox(options = {}) {
   });
   const decision = result.route?.decision;
   const output = [
-    `处理下一项 Inbox: ${selected.title}`,
+    result.requiresConfirmation
+      ? `需要确认后处理下一项 Inbox: ${selected.title}`
+      : result.executed
+        ? `已处理下一项 Inbox: ${selected.title}`
+        : `预览下一项 Inbox: ${selected.title}`,
     selected.confirmationPolicy?.spokenPrompt ? `确认策略: ${selected.confirmationPolicy.spokenPrompt}` : '',
+    result.requiresConfirmation ? '执行被确认门拦住：再次调用时传 execute:true 和 confirm:true 才会路由并标记完成。' : '',
     decision ? `分工: ${decision.label} · ${compactRecordText(decision.reason, 140)}` : '',
     result.route?.queued && result.route?.job ? `已进入后台队列: ${result.route.job.id}` : '',
     result.output ? compactRecordText(result.output, 1200) : '',
@@ -11809,7 +11838,10 @@ async function processNextInbox(options = {}) {
   appendAudit('inbox.process_next', {
     id: selected.id,
     ok: Boolean(result.ok),
-    execute: options.execute !== false,
+    executeRequested,
+    confirm,
+    requiresConfirmation: Boolean(result.requiresConfirmation),
+    executed: Boolean(result.executed),
     lane: decision?.lane || '',
     queued: Boolean(result.route?.queued),
     jobId: result.route?.job?.id || '',
@@ -11818,9 +11850,15 @@ async function processNextInbox(options = {}) {
 
   return {
     ok: Boolean(result.ok),
-    status: result.status || (result.ok ? 200 : 500),
+    status: result.status || (result.ok ? 'preview' : 'failed'),
     output,
     selected,
+    executeRequested,
+    confirm,
+    requiresConfirmation: Boolean(result.requiresConfirmation),
+    previewOnly: Boolean(result.previewOnly),
+    executed: Boolean(result.executed),
+    queued: Boolean(result.queued),
     confirmationPolicy: selected.confirmationPolicy || result.confirmationPolicy || null,
     item: result.item,
     triage,
@@ -27279,7 +27317,11 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'process_next_inbox') {
-      const result = await processNextInbox({ source: 'local_command' });
+      const result = await processNextInbox({
+        source: 'local_command',
+        execute: options.execute === true,
+        confirm: command.args?.confirm || command.args?.confirmed,
+      });
       return {
         ok: result.ok,
         localCommand: command,
@@ -28880,7 +28922,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -55029,7 +55071,8 @@ async function executeTool(name, args) {
     const result = await routeInboxItem({
       id: args?.id || args?.inboxId,
       instruction: args?.instruction,
-      execute: args?.execute !== false,
+      execute: args?.execute,
+      confirm: args?.confirm || args?.confirmed,
       includeScreen: Boolean(args?.includeScreen),
       mode: args?.mode || args?.lane,
       useMemory: args?.useMemory,
@@ -55349,8 +55392,8 @@ function createRealtimeSessionConfig(options = {}) {
       'UI demonstrations are explicit local learning records; they store user notes plus sanitized app/browser/screen/accessibility summaries, never screenshots or raw clipboard text. Replay must re-observe the live UI before acting.',
       'Use get_inbox when the user asks what is waiting, what they captured, or which Inbox items are open.',
       'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory.',
-      'Use process_next_inbox only when the user explicitly asks to process, do, run, or start the next Inbox item.',
-      'Use route_inbox_item when the user explicitly asks to do, process, run, or send an Inbox item into the task lanes.',
+      'Use process_next_inbox when the user asks to process, do, run, or start the next Inbox item. It previews by default; pass execute:true only after the user asks to run it, and pass confirm:true only after they confirm that exact next item.',
+      'Use route_inbox_item when the user asks to do, process, run, or send an Inbox item into the task lanes. It previews by default; pass execute:true plus confirm:true only after explicit confirmation.',
       'Use continue_workflow when the user says to continue, resume, or do the next step from a previous workflow.',
       'Use copy_workflow_result when the user asks to copy a prior workflow result, draft, summary, or next step to the clipboard.',
       'Use read_browser_page when the user asks to summarize or use the content, headings, or links of the current webpage.',
@@ -56942,12 +56985,14 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'process_next_inbox',
-        description: 'Process the highest-priority open Inbox item by sending it through the quick/background/Codex/Claude router. Use only after the user explicitly asks to do the next Inbox item; repeat the returned confirmationPolicy.spokenPrompt before sensitive or delegated work.',
+        description: 'Preview or process the highest-priority open Inbox item through the quick/background/Codex/Claude router. Preview by default; execution requires execute:true plus confirm:true, then marks only that item done after routing succeeds.',
         parameters: {
           type: 'object',
           properties: {
             instruction: { type: 'string' },
             execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
             includeScreen: { type: 'boolean' },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
@@ -56980,7 +57025,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'route_inbox_item',
-        description: 'Send an Inbox item into the quick/background/Codex/Claude task lanes. Use only after the user explicitly asks to process it; use the returned confirmationPolicy to explain any spoken confirmation requirement.',
+        description: 'Preview or send one Inbox item into the quick/background/Codex/Claude task lanes. Preview by default; execution requires execute:true plus confirm:true, then marks only that item done after routing succeeds.',
         parameters: {
           type: 'object',
           properties: {
@@ -56988,6 +57033,8 @@ function createRealtimeSessionConfig(options = {}) {
             inboxId: { type: 'string' },
             instruction: { type: 'string' },
             execute: { type: 'boolean' },
+            confirm: { type: 'boolean' },
+            confirmed: { type: 'boolean' },
             includeScreen: { type: 'boolean' },
             mode: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
             lane: { type: 'string', enum: ['quick', 'background', 'codex', 'claude'] },
@@ -58418,7 +58465,8 @@ function startApiServer() {
       const result = await routeInboxItem({
         ...(req.body || {}),
         id: req.params.id,
-        execute: req.body?.execute !== false,
+        execute: req.body?.execute,
+        confirm: req.body?.confirm || req.body?.confirmed,
       });
       if (!result.ok && result.status && result.status >= 400) {
         res.status(result.status).json(result);

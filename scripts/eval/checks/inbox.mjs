@@ -71,6 +71,79 @@ export default {
           : fail('inbox.triage_groups', 'Inbox triage groups', 'triage did not expose grouped items and voice confirmation policy', t),
       );
 
+      const processPreview = await ctx.api('/api/inbox/process-next', {
+        method: 'POST',
+        body: { source: 'eval_inbox_process_preview' },
+        retries: 0,
+      });
+      const processGate = await ctx.api('/api/inbox/process-next', {
+        method: 'POST',
+        body: { execute: true, source: 'eval_inbox_process_gate' },
+        retries: 0,
+      });
+      out.push(
+        processPreview.ok &&
+          processPreview.data?.ok === true &&
+          processPreview.data?.status === 'preview' &&
+          processPreview.data?.previewOnly === true &&
+          processPreview.data?.executeRequested === false &&
+          processPreview.data?.requiresConfirmation === false &&
+          processPreview.data?.executed === false &&
+          processPreview.data?.queued === false &&
+          processGate.ok &&
+          processGate.data?.ok === true &&
+          processGate.data?.status === 'confirmation_required' &&
+          processGate.data?.previewOnly === true &&
+          processGate.data?.executeRequested === true &&
+          processGate.data?.confirm === false &&
+          processGate.data?.requiresConfirmation === true &&
+          processGate.data?.executed === false &&
+          processGate.data?.queued === false
+          ? ok('inbox.process_next_gate', 'Inbox process-next preview and confirmation gate', 'process-next previews first and requires confirm:true before routing or marking done')
+          : fail('inbox.process_next_gate', 'Inbox process-next preview and confirmation gate', 'expected process-next to preview by default and stop at confirmation_required before execution', {
+              preview: processPreview.data,
+              gate: processGate.data,
+            }),
+      );
+
+      const routeTargetId = createdIds[0] || '';
+      const routePreview = routeTargetId
+        ? await ctx.api(`/api/inbox/${encodeURIComponent(routeTargetId)}/route`, {
+            method: 'POST',
+            body: { source: 'eval_inbox_route_preview' },
+            retries: 0,
+          })
+        : null;
+      const routeGate = routeTargetId
+        ? await ctx.api(`/api/inbox/${encodeURIComponent(routeTargetId)}/route`, {
+            method: 'POST',
+            body: { execute: true, source: 'eval_inbox_route_gate' },
+            retries: 0,
+          })
+        : null;
+      out.push(
+        routePreview?.ok &&
+          routePreview.data?.ok === true &&
+          routePreview.data?.status === 'preview' &&
+          routePreview.data?.previewOnly === true &&
+          routePreview.data?.item?.status === 'open' &&
+          routePreview.data?.executed === false &&
+          routePreview.data?.queued === false &&
+          routeGate?.ok &&
+          routeGate.data?.ok === true &&
+          routeGate.data?.status === 'confirmation_required' &&
+          routeGate.data?.previewOnly === true &&
+          routeGate.data?.requiresConfirmation === true &&
+          routeGate.data?.item?.status === 'open' &&
+          routeGate.data?.executed === false &&
+          routeGate.data?.queued === false
+          ? ok('inbox.route_gate', 'Inbox item route preview and confirmation gate', `${routeTargetId} stayed open until confirm:true`)
+          : fail('inbox.route_gate', 'Inbox item route preview and confirmation gate', 'expected item route to preview and require confirmation before marking done', {
+              preview: routePreview?.data,
+              gate: routeGate?.data,
+            }),
+      );
+
       try {
         const { stdout } = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-inbox-triage'], {
           cwd: process.cwd(),
