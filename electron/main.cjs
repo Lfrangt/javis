@@ -27834,8 +27834,11 @@ function browserRecoveryControlPayload(result = {}, execute = false) {
   const recovery = inner.browserRecovery || action?.browserRecovery || null;
   const readinessAfter = inner.readinessAfter || null;
   const followUp = inner.followUpAction || null;
+  const status = compactRecordText(inner.status || (action ? (execute ? 'executed' : 'preview') : 'no_browser_recovery_needed'), 80);
   return {
     ok: result.ok !== false,
+    status,
+    noActionNeeded: status === 'no_browser_recovery_needed',
     requestedExecute: Boolean(execute),
     executed: Boolean(result.executed),
     action: compactWorkNextActionPayload(action),
@@ -27874,12 +27877,14 @@ function formatBrowserRecoveryForLocalCommand(control = {}) {
   const followUp = control.followUpAction || {};
   return [
     `Browser recovery: ${control.executed ? 'executed' : 'preview only'} · ok=${control.ok ? 'yes' : 'no'}`,
+    control.status ? `Status: ${control.status}` : '',
     action.id ? `Action: ${action.label || action.id} · source=${action.source || '-'} · risk=${action.riskLevel ?? '-'}` : 'Action: none',
     recovery.app ? `Target: ${recovery.app} · blocked routes=${recovery.routeCount ?? 0}` : '',
     control.output ? `Output: ${compactRecordText(control.output, 700)}` : '',
     readinessAfter.status ? `Readiness after: ${readinessAfter.status} · ${compactRecordText(readinessAfter.summary || readinessAfter.label || '', 220)}` : '',
     followUp.id ? `Retry path: ${followUp.id}` : '',
-    !control.executed ? 'Next: say "执行这个浏览器恢复" or "执行下一步" when you want JAVIS to open/focus the supported browser through policy gates.' : '',
+    !control.executed && action.id ? 'Next: say "执行这个浏览器恢复" or "执行下一步" when you want JAVIS to open/focus the supported browser through policy gates.' : '',
+    !control.executed && !action.id ? 'Next: no browser recovery action is pending; ask JAVIS to read the current page or run a browser task when needed.' : '',
     '边界: preview 不打开浏览器；执行只打开/聚焦支持的浏览器并重查 readiness，不点击网页、不填写表单、不启动麦克风或 Realtime、不打开 Terminal。',
   ].filter(Boolean).join('\n');
 }
@@ -28591,10 +28596,39 @@ async function runLocalCommand(command, options = {}) {
     if (command.intent === 'browser_recovery') {
       const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
       const requestedActionId = String(command.args?.actionId || '').trim();
-      const currentBrowserRecoveryActionId = requestedActionId || (
+      const currentBrowserRecoveryAction = (
         workflowBriefing({ workflowLimit: 6, jobLimit: 6, source: 'local_command_browser_recovery_select' })
           .nextActions || []
-      ).find((item) => item?.source === 'browser_recovery')?.id || 'browser_recovery:open_supported_browser';
+      ).find((item) => item?.source === 'browser_recovery') || null;
+      if (!requestedActionId && !currentBrowserRecoveryAction) {
+        const readinessAfter = compactBrowserRecoveryReadiness(await browserReadinessSnapshot({
+          source: 'local_command_browser_recovery_no_action',
+        }).catch((error) => ({
+          ok: false,
+          status: 'error',
+          summary: error instanceof Error ? error.message : String(error),
+        })));
+        const result = {
+          ok: true,
+          executed: false,
+          action: null,
+          output: `No browser recovery is currently needed. ${compactRecordText(readinessAfter.summary || readinessAfter.label || 'Browser target has no pending recovery action.', 260)}`,
+          result: {
+            status: 'no_browser_recovery_needed',
+            readinessAfter,
+            followUpAction: readinessAfter.nextAction || null,
+          },
+        };
+        const control = browserRecoveryControlPayload(result, execute);
+        return {
+          ok: true,
+          executed: false,
+          localCommand: command,
+          output: formatBrowserRecoveryForLocalCommand(control),
+          data: { browserRecovery: control, result },
+        };
+      }
+      const currentBrowserRecoveryActionId = requestedActionId || currentBrowserRecoveryAction.id;
       const result = await workNextAction({
         execute,
         actionId: currentBrowserRecoveryActionId,
