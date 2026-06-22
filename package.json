@@ -52,6 +52,7 @@
     "voice": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
     "voice:local": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
     "voice:chat": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat",
+    "voice:cleanup": "node scripts/stop-resident-processes.cjs --voice-terminals",
     "wake": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --wake",
     "browser:ready": "node scripts/config-cui.cjs --print-browser-readiness",
     "autonomy": "node scripts/config-cui.cjs --print-autonomy",

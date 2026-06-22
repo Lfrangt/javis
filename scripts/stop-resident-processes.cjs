@@ -8,6 +8,8 @@ const apiPort = Number(process.env.JAVIS_API_PORT || readEnvValue('JAVIS_API_POR
 const selfPid = process.pid;
 const dataDir = process.env.JAVIS_DATA_DIR || path.join(process.env.HOME || '', 'Library', 'Application Support', 'JAVIS', 'Runtime');
 const localVoiceChatLockFile = path.join(dataDir, 'local-voice-chat.lock.json');
+const cliArgs = new Set(process.argv.slice(2));
+const voiceTerminalsOnly = cliArgs.has('--voice-terminals') || cliArgs.has('--voice-terminals-only');
 
 function readEnvValue(key) {
   try {
@@ -98,8 +100,10 @@ function stopPid(pid, signal = 'SIGTERM') {
 }
 
 function cleanupLocalVoiceLoopArtifacts() {
+  let removedLockFile = false;
   try {
     fs.unlinkSync(localVoiceChatLockFile);
+    removedLockFile = true;
   } catch {}
 
   const closeWindowsScript = [
@@ -130,10 +134,21 @@ function cleanupLocalVoiceLoopArtifacts() {
     '  return closedCount as text',
     'end tell',
   ].join('\n');
-  run('/usr/bin/osascript', ['-e', closeWindowsScript]);
+  const closedOutput = run('/usr/bin/osascript', ['-e', closeWindowsScript]).trim();
+  const closedTerminalWindows = Number.parseInt(closedOutput, 10);
+  return {
+    removedLockFile,
+    closedTerminalWindows: Number.isFinite(closedTerminalWindows) ? closedTerminalWindows : 0,
+  };
 }
 
 function main() {
+  if (voiceTerminalsOnly) {
+    const cleanup = cleanupLocalVoiceLoopArtifacts();
+    console.log(`Closed stale JAVIS voice Terminal window(s): ${cleanup.closedTerminalWindows}.`);
+    return;
+  }
+
   const processes = listProcesses();
   const byPid = new Map(processes.map((item) => [item.pid, item]));
   const targets = new Set();
@@ -157,8 +172,8 @@ function main() {
     .filter((pid) => pid && pid !== selfPid)
     .sort((a, b) => b - a);
   if (!ordered.length) {
-    cleanupLocalVoiceLoopArtifacts();
-    console.log('No stale JAVIS resident processes found.');
+    const cleanup = cleanupLocalVoiceLoopArtifacts();
+    console.log(`No stale JAVIS resident processes found. Closed stale JAVIS voice Terminal window(s): ${cleanup.closedTerminalWindows}.`);
     return;
   }
 
@@ -169,8 +184,8 @@ function main() {
     const processInfo = remaining.get(pid);
     if (isProjectResidentProcess(processInfo)) stopPid(pid, 'SIGKILL');
   }
-  cleanupLocalVoiceLoopArtifacts();
-  console.log(`Stopped stale JAVIS resident process(es): ${ordered.join(', ')}`);
+  const cleanup = cleanupLocalVoiceLoopArtifacts();
+  console.log(`Stopped stale JAVIS resident process(es): ${ordered.join(', ')}. Closed stale JAVIS voice Terminal window(s): ${cleanup.closedTerminalWindows}.`);
 }
 
 main();

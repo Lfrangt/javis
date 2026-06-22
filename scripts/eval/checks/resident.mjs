@@ -775,6 +775,16 @@ export default {
         ? ok('resident.voice_terminal_cleanup_all_tabs', 'Voice Terminal cleanup scans all tabs', 'resident stop/restart closes stale voice:chat Terminal windows even when the loop is not the selected tab')
         : fail('resident.voice_terminal_cleanup_all_tabs', 'Voice Terminal cleanup scans all tabs', 'expected stop-resident cleanup to inspect every Terminal tab for stale voice:chat loops'),
     );
+    const packageSource = fs.readFileSync('package.json', 'utf8');
+    out.push(
+      stopResidentSource.includes('const voiceTerminalsOnly') &&
+        stopResidentSource.includes("cliArgs.has('--voice-terminals')") &&
+        stopResidentSource.includes('if (voiceTerminalsOnly)') &&
+        stopResidentSource.includes('Closed stale JAVIS voice Terminal window(s)') &&
+        packageSource.includes('"voice:cleanup": "node scripts/stop-resident-processes.cjs --voice-terminals"')
+        ? ok('resident.voice_terminal_cleanup_only_flag', 'Voice Terminal cleanup-only flag', 'voice:cleanup closes stale voice terminals without stopping the resident app')
+        : fail('resident.voice_terminal_cleanup_only_flag', 'Voice Terminal cleanup-only flag', 'expected --voice-terminals to clean voice Terminal windows without entering resident stop flow'),
+    );
 
     const pet = await ctx.api('/api/pet/status');
     const p = pet.data || {};

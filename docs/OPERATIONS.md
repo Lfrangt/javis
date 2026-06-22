@@ -22,12 +22,14 @@ npm run resident:install
 npm run resident:stop
 npm run resident:uninstall
 npm run resident:restart
+npm run voice:cleanup
 ```
 
 Resident stop, install, uninstall, and restart stop stale JAVIS Electron/npm processes from this
 project and close old `npm run voice:chat` Terminal loops before loading the LaunchAgent. This
 prevents an older process from keeping `JAVIS_API_PORT` open while a newer LaunchAgent instance
-appears to be running, and gives a direct cleanup command if a manual voice loop was left behind.
+appears to be running. `npm run voice:cleanup` only closes stale local voice Terminal loops and
+their lock file; it does not stop the resident app.
 The Electron app also holds a single-instance lock: if JAVIS is launched again, the existing
 resident process records the event and summons the pet instead of starting a second API/window.
 
@@ -167,6 +169,7 @@ npm run voice -- "帮我看一下当前窗口，判断下一步应该怎么做"
 npm run voice:standby
 npm run config -- --print-voice-latency
 npm run voice:chat
+npm run voice:cleanup
 npm run config -- --print-local-voice-loop
 npm run wake -- "贾维斯，帮我看一下当前窗口，判断下一步应该怎么做"
 npm run voice -- --run --include-screen --include-ui "把这个任务交给后台处理"
