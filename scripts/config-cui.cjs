@@ -707,6 +707,8 @@ function printBrowserRecoveryGuide(action = {}) {
   if (recovery.type) console.log(`Browser recovery: ${recovery.type}`);
   if (recovery.firstTaskTitle) console.log(`Blocked task: ${compact(recovery.firstTaskTitle, 180)}`);
   if (action.macAction?.action) console.log(`Local action: ${action.macAction.action} ${compact(action.macAction.value || appName, 140)}`);
+  if (recovery.retryActionId) console.log(`Retry action: ${recovery.retryActionId}`);
+  if (recovery.readinessEndpoint) console.log(`Recheck: ${recovery.readinessEndpoint}`);
   console.log(`Preview: GET /api/work/next?actionId=${encodeURIComponent(action.id || 'browser_recovery:open_supported_browser')}`);
   console.log(`Run: POST /api/work/next {"actionId":"${action.id || 'browser_recovery:open_supported_browser'}","execute":true}`);
   return true;

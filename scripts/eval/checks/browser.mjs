@@ -46,7 +46,10 @@ export default {
       mainSource.includes("id: 'browser_recovery:open_supported_browser'") &&
       mainSource.includes("action.source === 'browser_recovery'") &&
       mainSource.includes("await executeLocalAction(macAction") &&
-      mainSource.includes('browserRecovery: action.browserRecovery');
+      mainSource.includes('browserRecovery: action.browserRecovery') &&
+      mainSource.includes('browserRecoveryFollowUpAction') &&
+      mainSource.includes('readinessAfter: compactBrowserRecoveryReadiness') &&
+      mainSource.includes('After execution, JAVIS will recheck browser readiness');
     out.push(
       hasBrowserWorkNextRecovery
         ? ok('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'browser_window_unavailable routes can surface an open-supported-browser recovery candidate')
@@ -68,7 +71,9 @@ export default {
           browserRecoveryAction?.executable === true &&
           browserRecoveryAction?.autoEligible === false &&
           browserRecoveryAction?.macAction?.action === 'open_app' &&
-          browserRecoveryAction?.browserRecovery?.type === 'browser_window_unavailable'
+          browserRecoveryAction?.browserRecovery?.type === 'browser_window_unavailable' &&
+          String(browserRecoveryAction?.browserRecovery?.retryActionId || '').startsWith('route:') &&
+          browserRecoveryAction?.browserRecovery?.readinessEndpoint === '/api/browser/readiness'
           ? ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'current browser_window_unavailable blocker exposes open-supported-browser recovery')
           : fail('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'expected current browser_window_unavailable blocker to produce a browser_recovery work-next action', {
               actions: workNextActions.slice(0, 6),

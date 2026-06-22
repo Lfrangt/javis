@@ -45845,6 +45845,9 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
       routeCount: blockedRoutes.length,
       firstRouteId: first.record.id,
       firstTaskTitle: compactRecordText(first.record.taskTitle || '', 180),
+      retryActionId: first.record.id ? `route:${first.record.id}` : '',
+      readinessEndpoint: '/api/browser/readiness',
+      workNextEndpoint: '/api/work/next',
       blocker: compactRecordText(first.entry?.blocker || 'browser_window_unavailable', 160),
       next: `Open or focus ${appName}; JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
     },
@@ -45863,6 +45866,41 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
       action: 'open_app',
       value: appName,
     },
+  };
+}
+
+function browserRecoveryFollowUpAction(browserRecovery = null, options = {}) {
+  const routeId = String(browserRecovery?.firstRouteId || '').trim();
+  if (!routeId) return null;
+  const record = routingRecords.get(routeId) || null;
+  if (!record) return null;
+  return routingWorkNextActionForRecord(record, {
+    source: options.source || 'browser_recovery_follow_up',
+    activeCount: Math.max(1, Number(browserRecovery?.routeCount || 1)),
+    priority: 2.05,
+  });
+}
+
+function compactBrowserRecoveryReadiness(readiness = null) {
+  if (!readiness || typeof readiness !== 'object') return null;
+  return {
+    ok: readiness.ok !== false,
+    status: compactRecordText(readiness.status || readiness.overall || '', 60),
+    label: compactRecordText(readiness.label || browserReadinessLabel(readiness.status), 120),
+    summary: compactRecordText(readiness.summary || '', 220),
+    defaultTarget: readiness.defaultTarget
+      ? {
+          mode: compactRecordText(readiness.defaultTarget.mode || '', 80),
+          app: compactRecordText(readiness.defaultTarget.app || '', 120),
+          asksWhichWindow: readiness.defaultTarget.asksWhichWindow === true,
+        }
+      : null,
+    nextAction: readiness.nextAction
+      ? {
+          id: compactRecordText(readiness.nextAction.id || '', 100),
+          command: compactRecordText(readiness.nextAction.command || '', 160),
+        }
+      : null,
   };
 }
 
@@ -47880,6 +47918,9 @@ async function workNextAction(options = {}) {
     output = result.output;
   } else if (action.source === 'browser_recovery') {
     const macAction = action.macAction || { action: 'open_app', value: action.browserRecovery?.app || 'Google Chrome' };
+    const followUpAction = browserRecoveryFollowUpAction(action.browserRecovery, {
+      source: options.source || 'work_next_browser_recovery',
+    });
     if (execute) {
       try {
         const actionOutput = await executeLocalAction(macAction, {
@@ -47888,17 +47929,34 @@ async function workNextAction(options = {}) {
             reason: action.summary,
           },
         });
+        await new Promise((resolve) => { setTimeout(resolve, 650); });
+        let readinessAfter = null;
+        try {
+          readinessAfter = await browserReadinessSnapshot({
+            source: options.source || 'work_next_browser_recovery_after_open',
+          });
+        } catch (error) {
+          readinessAfter = {
+            ok: false,
+            status: 'error',
+            label: 'Browser readiness check failed',
+            summary: error instanceof Error ? error.message : String(error),
+          };
+        }
         executed = true;
         result = {
           ok: true,
           executed: true,
           macAction,
           browserRecovery: action.browserRecovery,
+          readinessAfter: compactBrowserRecoveryReadiness(readinessAfter),
+          followUpAction: compactWorkNextActionPayload(followUpAction),
           output: actionOutput,
         };
         output = [
           actionOutput,
-          'Browser recovery executed through the local Mac action policy; rerun the browser task or /next after the supported browser is visible.',
+          readinessAfter?.status ? `Browser readiness after recovery: ${readinessAfter.status}.` : '',
+          followUpAction?.id ? `Next: preview or run ${followUpAction.id} to retry the blocked browser route.` : 'Next: run /api/work/next again after the browser is visible.',
         ].join('\n');
       } catch (error) {
         executed = false;
@@ -47909,6 +47967,7 @@ async function workNextAction(options = {}) {
             approval: error.approval,
             macAction,
             browserRecovery: action.browserRecovery,
+            followUpAction: compactWorkNextActionPayload(followUpAction),
           };
           output = `Approval required before browser recovery can open ${macAction.value || 'the browser'}.`;
         } else {
@@ -47918,6 +47977,7 @@ async function workNextAction(options = {}) {
             error: error instanceof Error ? error.message : String(error),
             macAction,
             browserRecovery: action.browserRecovery,
+            followUpAction: compactWorkNextActionPayload(followUpAction),
           };
           output = `Browser recovery failed: ${result.error}`;
         }
@@ -47938,10 +47998,12 @@ async function workNextAction(options = {}) {
         evaluation,
         macAction,
         browserRecovery: action.browserRecovery,
+        followUpAction: compactWorkNextActionPayload(followUpAction),
       };
       output = [
         `Preview browser recovery: ${plan.summary}.`,
         evaluation.blocked ? `Blocked by control mode: ${evaluation.reason || 'blocked'}.` : evaluation.needsApproval ? `Approval required: ${evaluation.reason || 'approval_required'}.` : 'Allowed by current local action policy.',
+        followUpAction?.id ? `After execution, JAVIS will recheck browser readiness and expose ${followUpAction.id} as the retry path.` : 'After execution, JAVIS will recheck browser readiness.',
         'No browser action was executed in preview mode.',
       ].join('\n');
     }
@@ -48284,6 +48346,9 @@ function compactWorkNextActionPayload(action = null) {
         routeCount: boundedCount(action.browserRecovery.routeCount, 1000),
         firstRouteId: compactRecordText(action.browserRecovery.firstRouteId || '', 120),
         firstTaskTitle: compactRecordText(action.browserRecovery.firstTaskTitle || '', 180),
+        retryActionId: compactRecordText(action.browserRecovery.retryActionId || '', 140),
+        readinessEndpoint: compactRecordText(action.browserRecovery.readinessEndpoint || '', 140),
+        workNextEndpoint: compactRecordText(action.browserRecovery.workNextEndpoint || '', 140),
         next: compactRecordText(action.browserRecovery.next || '', 240),
       }
     : null;

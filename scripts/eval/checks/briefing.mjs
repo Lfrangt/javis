@@ -424,6 +424,8 @@ export default {
       const hasBrowserRecoveryGuide =
         output.includes('Guide: Open or focus Google Chrome before retrying browser work.') &&
         output.includes('Browser recovery: browser_window_unavailable') &&
+        output.includes('Retry action: route:') &&
+        output.includes('Recheck: /api/browser/readiness') &&
         output.includes('Preview: GET /api/work/next?actionId=browser_recovery%3Aopen_supported_browser') &&
         output.includes('Run: POST /api/work/next {"actionId":"browser_recovery:open_supported_browser","execute":true}') &&
         output.includes('Preview browser recovery');
