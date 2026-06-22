@@ -24146,6 +24146,36 @@ function naturalRealtimeDogfoodPromptCopyLocalCommand(text) {
   };
 }
 
+function naturalRealtimeDogfoodScriptCopyLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsRealtimeDogfood = /\b(realtime|real[- ]?time|webrtc|live voice|voice)\b.*\b(dogfood|acceptance|evidence|drill|runbook|script|prompt script|all prompts)\b/i.test(raw)
+    || /\b(dogfood|acceptance|evidence|drill|runbook|script|prompt script|all prompts)\b.*\b(realtime|real[- ]?time|webrtc|live voice|voice)\b/i.test(raw)
+    || /(?:实时语音|实时对话|Realtime|realtime|WebRTC|webrtc|livevoice|语音).*(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|脚本|全套提示词|全部提示词|整套提示词|promptscript)/i.test(compactPlain)
+    || /(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|脚本|全套提示词|全部提示词|整套提示词|promptscript).*(?:实时语音|Realtime|realtime|WebRTC|webrtc|语音)/i.test(compactPlain);
+  if (!mentionsRealtimeDogfood) return null;
+
+  const scriptScopeSignal = /\b(script|prompt script|all prompts|full script)\b/i.test(raw)
+    || /(?:脚本|全套|全部|整套|所有提示词|完整提示词|提示词列表)/i.test(compactPlain);
+  if (!scriptScopeSignal) return null;
+
+  const scriptSignal = /\b(copy|copy to clipboard|clipboard|pasteboard|script|prompt script|all prompts|full script)\b/i.test(raw)
+    || /(?:复制|拷贝|剪贴板|脚本|全套|全部|整套|所有提示词|完整提示词|提示词列表)/i.test(compactPlain);
+  if (!scriptSignal) return null;
+
+  return {
+    intent: 'realtime_dogfood_script_copy',
+    label: 'Copy Realtime dogfood prompt script',
+    requiresLocalExecution: true,
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalRealtimeDogfoodPackLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -24704,6 +24734,9 @@ function localCommandDecision(task) {
   const realtimeProviderProbeCommand = naturalRealtimeProviderProbeLocalCommand(text);
   if (realtimeProviderProbeCommand) return realtimeProviderProbeCommand;
 
+  const realtimeDogfoodScriptCopyCommand = naturalRealtimeDogfoodScriptCopyLocalCommand(text);
+  if (realtimeDogfoodScriptCopyCommand) return realtimeDogfoodScriptCopyCommand;
+
   const realtimeDogfoodPromptCopyCommand = naturalRealtimeDogfoodPromptCopyLocalCommand(text);
   if (realtimeDogfoodPromptCopyCommand) return realtimeDogfoodPromptCopyCommand;
 
@@ -25053,7 +25086,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25895,6 +25928,18 @@ function formatRealtimeDogfoodPromptCopyForLocalCommand(copy = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatRealtimeDogfoodScriptCopyForLocalCommand(copy = {}) {
+  const script = Array.isArray(copy.script) ? copy.script : [];
+  const preview = script.slice(0, 5).map((line, index) => `${index + 1}. ${compactRecordText(line, 220)}`);
+  return [
+    `Realtime dogfood script copy: ${copy.copied ? 'copied' : 'preview only'} · prompts=${script.length}`,
+    preview.length ? `脚本预览:\n${preview.join('\n')}` : '脚本预览: 暂无可复制提示词',
+    copy.nextPrompt ? `下一句: ${compactRecordText(copy.nextPrompt, 260)}` : '',
+    copy.monitor ? `监控: ${copy.monitor}` : '',
+    `边界: ${copy.copied ? '已写入剪贴板。' : '预览未写剪贴板；执行时才复制。'}不启动麦克风，不创建 Realtime session，不保存 archive，不开 Terminal，不调用云模型。`,
+  ].filter(Boolean).join('\n');
+}
+
 function realtimeProviderProbeControlPayload(result = {}, execute = false) {
   const providerProbe = result.providerProbe || result.probe || realtimeProviderProbeSnapshot();
   return {
@@ -26501,6 +26546,54 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatRealtimeProviderProbeForLocalCommand(control),
         data: { providerProbeControl: control, result },
+      };
+    }
+
+    if (command.intent === 'realtime_dogfood_script_copy') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const pack = realtimeDogfoodLiveDrillPackSnapshot({
+        promptLimit: 32,
+        sessionLimit: 4,
+        auditLimit: 20,
+      });
+      const script = Array.isArray(pack.prompts?.script)
+        ? pack.prompts.script.map((line) => compactRecordText(line, 400)).filter(Boolean)
+        : [];
+      const text = script.map((line, index) => `${index + 1}. ${line}`).join('\n');
+      if (execute && text) {
+        clipboard.writeText(text);
+        appendAudit('realtime.dogfood_prompt_script_copied', {
+          source: 'local_command',
+          prompts: script.length,
+          bytes: Buffer.byteLength(text, 'utf8'),
+        });
+      }
+      const copy = {
+        ok: Boolean(text),
+        copied: Boolean(execute && text),
+        wouldCopy: Boolean(!execute && text),
+        executed: Boolean(execute && text),
+        text,
+        script,
+        nextPrompt: pack.prompts?.next?.copyText || pack.prompts?.next?.prompt || script[0] || '',
+        monitor: pack.commands?.monitor || '',
+        packStatus: pack.status || '',
+        accepted: Boolean(pack.accepted),
+        safety: {
+          startsMicrophone: false,
+          usesRealtime: false,
+          storesRawAudio: false,
+          savesArchive: false,
+          opensTerminal: false,
+          callsOpenAI: false,
+        },
+      };
+      return {
+        ok: copy.ok,
+        executed: copy.executed,
+        localCommand: command,
+        output: formatRealtimeDogfoodScriptCopyForLocalCommand(copy),
+        data: { promptScriptCopy: copy, realtimeDogfoodPack: pack },
       };
     }
 
@@ -28666,7 +28759,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
