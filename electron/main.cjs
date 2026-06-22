@@ -44756,6 +44756,92 @@ function isInternalRoutingRecord(record) {
     || source.includes('creative_benchmarks');
 }
 
+function workflowHasActionableRecovery(workflow) {
+  if (!workflow) return false;
+  const source = String(workflow.source || '').toLowerCase();
+  const transientBrowserMiss = isTransientBrowserPreviewFailureText([
+    workflow.result,
+    workflow.request,
+    workflow.title,
+    workflow.target?.error,
+  ].filter(Boolean).join('\n'));
+  if (
+    transientBrowserMiss &&
+    (
+      String(workflow.kind || '').toLowerCase() === 'browser' ||
+      source.includes('browser_workflow') ||
+      source.includes('preview') ||
+      source.includes('local_voice_loop')
+    )
+  ) return false;
+  return Boolean(
+    retryableBlockedWorkflowPlan(workflow)
+    || browserFillDraftRecoveryPlanForWorkflow(workflow)
+    || workflowBrowserResearchContinuation(workflow)
+    || routeCandidateFromWorkflowContinuation(workflow)
+    || routeCandidateFromWorkflowCopy(workflow)
+    || routeCandidateFromWorkflowRetry(workflow)
+  );
+}
+
+function isTransientBrowserPreviewFailureText(value) {
+  return /frontmost_app_is_not_supported_browser|frontmost app is not a supported browser|no supported browser|browser context unavailable|browser target unavailable/i
+    .test(String(value || ''));
+}
+
+function isNonActionableBlockedWorkflow(workflow) {
+  if (!workflow || !['blocked', 'failed'].includes(String(workflow.status || ''))) return false;
+  if (workflowHasActionableRecovery(workflow)) return false;
+  const source = String(workflow.source || '').toLowerCase();
+  const text = [
+    workflow.result,
+    workflow.request,
+    workflow.title,
+    workflow.target?.error,
+  ].filter(Boolean).join('\n');
+  return (
+    (
+      source.includes('preview') ||
+      source.includes('local_voice_loop') ||
+      source.includes('browser_workflow') ||
+      String(workflow.kind || '').toLowerCase() === 'browser'
+    )
+    && isTransientBrowserPreviewFailureText(text)
+  );
+}
+
+function routingRecordHasActionableRecovery(record) {
+  if (!record) return false;
+  if (record.status === 'approval_required' || record.status === 'queued' || record.status === 'running') return true;
+  if (record.status === 'preview' && routeCandidateFromPreviewRoute(record)?.executable === true) return true;
+  const job = linkedJobForRoute(record);
+  if (
+    job?.status === 'failed'
+    && job.recoveryPlan?.nextActions?.length
+    && !completedRecoveryChildJob(job.id)
+  ) {
+    return true;
+  }
+  const workflow = linkedWorkflowForRoute(record);
+  return workflowHasActionableRecovery(workflow);
+}
+
+function isUserVisibleRoutingAttentionRecord(record) {
+  if (!record || isInternalRoutingRecord(record)) return false;
+  if (record.status === 'approval_required' || record.status === 'queued' || record.status === 'running') return true;
+  if (routingRecordHasActionableRecovery(record)) return true;
+  const source = String(record.source || '').toLowerCase();
+  const workflow = linkedWorkflowForRoute(record);
+  const transientWorkflowFailure = isNonActionableBlockedWorkflow(workflow);
+  const transientRecordFailure = isTransientBrowserPreviewFailureText([
+    record.resultSummary,
+    record.taskTitle,
+    record.reason,
+  ].filter(Boolean).join('\n'));
+  if ((source.includes('preview') || source.includes('local_voice_loop')) && (transientWorkflowFailure || transientRecordFailure)) return false;
+  return !['failed', 'blocked', 'needs_attention'].includes(String(record.status || ''));
+}
+
 function isInternalJob(job) {
   if (!job) return false;
   const source = String(job.source || '').toLowerCase();
@@ -44772,7 +44858,7 @@ function isInternalJob(job) {
 
 function activeRoutingSnapshot(limit = 20) {
   return Array.from(routingRecords.values())
-    .filter((record) => isRoutingAttentionStatus(record.status) && !isInternalRoutingRecord(record))
+    .filter((record) => isRoutingAttentionStatus(record.status) && isUserVisibleRoutingAttentionRecord(record))
     .sort((a, b) => b.updatedAt - a.updatedAt)
     .slice(0, Math.max(1, Math.min(200, Number(limit || 20))));
 }
@@ -46186,6 +46272,7 @@ function workflowBriefing(options = {}) {
   const recentBlockedWorkflows = recentWorkflows.filter((workflow) => (
     (workflow.status === 'blocked' || workflow.status === 'failed')
     && !isInternalWorkflow(workflow)
+    && !isNonActionableBlockedWorkflow(workflow)
   ));
   const resolvedBlockedWorkflows = recentBlockedWorkflows.filter((workflow) => (
     isWorkflowResolvedByLaterDone(workflow, workflowContext)
@@ -46769,7 +46856,10 @@ function workProgressCheckIn(options = {}) {
     (workflow) => `${workflow.status}:${workflow.title}:${workflow.jobId}`,
   );
   const blockedWorkflows = uniqueProgressRecords(
-    recentWorkflows.filter((workflow) => workflow.status === 'blocked' || workflow.status === 'failed'),
+    recentWorkflows.filter((workflow) => (
+      (workflow.status === 'blocked' || workflow.status === 'failed')
+      && !isNonActionableBlockedWorkflow(workflow)
+    )),
     (workflow) => `${workflow.status}:${workflow.title}:${compactRecordText(workflow.result || workflow.request, 90)}`,
   );
   const activeRoutes = uniqueProgressRecords(

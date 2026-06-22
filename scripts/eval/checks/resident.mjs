@@ -310,6 +310,18 @@ export default {
         }),
     );
 
+    const blockerStatusText = JSON.stringify(blockerStatus);
+    out.push(
+      !blockerStatusText.includes('frontmost_app_is_not_supported_browser') &&
+        !blockerStatusText.includes('browser context unavailable') &&
+        !blockerStatusText.includes('browser target unavailable')
+        ? ok('resident.blocker_status_filters_transient_browser_preview', 'Blocker status filters transient browser previews', 'unsupported-browser preview failures stay in history instead of active blockers')
+        : fail('resident.blocker_status_filters_transient_browser_preview', 'Blocker status filters transient browser previews', 'expected transient browser preview failures to stay out of active blocker summaries', {
+          blockers: blockerStatus.blockers,
+          counts: blockerStatus.counts,
+        }),
+    );
+
     const unblockPreviewApiResponse = await ctx.api('/api/unblock/preview?jobLimit=5&workflowLimit=5&approvalLimit=5', {
       timeoutMs: 10000,
     });
@@ -915,6 +927,19 @@ export default {
       hasBlockerStatusLoop
         ? ok('resident.local_voice_loop_blocker_status', 'Local voice loop blocker-status command', '/blockers reads voice, approvals, work, routes, and autopilot blockers without side effects')
         : fail('resident.local_voice_loop_blocker_status', 'Local voice loop blocker-status command', 'expected /blockers slash command to read /api/blockers with read-only safety copy'),
+    );
+
+    const hasRoutingNoiseFilter =
+      mainSource.includes('function isUserVisibleRoutingAttentionRecord') &&
+      mainSource.includes('function isNonActionableBlockedWorkflow') &&
+      mainSource.includes('function workflowHasActionableRecovery') &&
+      mainSource.includes('frontmost_app_is_not_supported_browser') &&
+      mainSource.includes('isUserVisibleRoutingAttentionRecord(record)') &&
+      mainSource.includes('!isNonActionableBlockedWorkflow(workflow)');
+    out.push(
+      hasRoutingNoiseFilter
+        ? ok('resident.routing_noise_filter', 'Routing noise filter', 'non-actionable browser preview failures do not become active routed-work blockers')
+        : fail('resident.routing_noise_filter', 'Routing noise filter', 'expected active routing/workflow blockers to filter transient unsupported-browser preview failures'),
     );
 
     const hasUnblockPreviewLoop =
