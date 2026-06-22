@@ -1007,6 +1007,20 @@ export default {
         : fail('resident.local_learning_distillation_fast_path', 'Local learning distillation fast path', 'expected natural learning_distillation and /learn loop command to read local distillation with strict no-action safety copy'),
     );
 
+    const hasContextAwarePromptPack =
+      mainSource.includes('function localVoicePromptContextSnapshot') &&
+      mainSource.includes('browserActivitySnapshot({ limit: 3 })') &&
+      mainSource.includes('appUiCacheStateSnapshot()') &&
+      mainSource.includes('activeRoutingSnapshot(8)') &&
+      mainSource.includes("localVoicePromptExample('continue', '继续刚才那个')") &&
+      mainSource.includes("localVoicePromptExample('browser_dom', '当前网页有哪些按钮？')") &&
+      mainSource.includes("localVoicePromptExample('app_ui', '这个界面能点什么？')");
+    out.push(
+      hasContextAwarePromptPack
+        ? ok('resident.context_aware_voice_prompt_pack', 'Context-aware voice prompt pack', 'standby prompt examples are ranked from local work, browser, app UI, and continuation context without new capture')
+        : fail('resident.context_aware_voice_prompt_pack', 'Context-aware voice prompt pack', 'expected promptPack to use existing work/browser/app/UI context before static examples'),
+    );
+
     const petStandbyNoTerminal =
       mainSource.includes("id: 'open_local_input'") &&
       mainSource.includes('openLocalVoiceInput') &&

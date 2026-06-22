@@ -27185,46 +27185,70 @@ function latestExecutableVoiceRoute(options = {}) {
   return null;
 }
 
+function localVoicePromptContextSnapshot() {
+  const activeJobs = jobSnapshot(12).filter((job) => job.status === 'queued' || job.status === 'running');
+  const activeRoutes = activeRoutingSnapshot(8);
+  const browser = browserActivitySnapshot({ limit: 3 });
+  const appUi = appUiCacheStateSnapshot();
+  const latestAmbient = ambientSnapshot(1)[0] || null;
+  const frontmost = {
+    app: compactRecordText(latestAmbient?.frontmost?.app || appUi.app || '', 80),
+    windowTitle: compactRecordText(latestAmbient?.frontmost?.windowTitle || appUi.windowTitle || '', 120),
+  };
+  const learning = learningStateSnapshot();
+  return {
+    activeJobCount: activeJobs.length,
+    activeRouteCount: activeRoutes.length,
+    browserAvailable: Boolean(browser.current),
+    browserHost: compactRecordText(browser.current?.host || browser.current?.title || '', 80),
+    appUiAvailable: Boolean(appUi.available && appUi.nodeCount),
+    appUiNodeCount: Number(appUi.nodeCount || 0),
+    frontmostApp: frontmost.app,
+    frontmostWindowTitle: frontmost.windowTitle,
+    learnedEventCount: Number(learning.profile?.sourceEventCount || 0),
+  };
+}
+
+function localVoicePromptExample(id, utterance) {
+  return {
+    id: compactRecordText(id, 40),
+    utterance: compactRecordText(utterance, 120),
+  };
+}
+
 function localVoicePromptPack(options = {}) {
   const fallbackReady = options.fallbackReady === true;
   const latest = options.latest || null;
   const latestCanContinue = latest && latest.executed === false && latest.queued === false && latest.routeId;
-  const examples = (fallbackReady
+  const context = options.context || localVoicePromptContextSnapshot();
+  const candidates = fallbackReady
     ? [
-        {
-          id: 'progress',
-          utterance: '后台现在怎么样？',
-        },
-        {
-          id: 'capability',
-          utterance: '你现在能看到什么，能操作什么？',
-        },
-        {
-          id: 'distill',
-          utterance: '你从我身上学到了什么？',
-        },
-        {
-          id: 'browser',
-          utterance: '当前网页有哪些按钮？',
-        },
+        latestCanContinue ? localVoicePromptExample('continue', '继续刚才那个') : null,
+        (context.activeJobCount || context.activeRouteCount) ? localVoicePromptExample('progress', '后台现在怎么样？') : null,
+        context.browserAvailable ? localVoicePromptExample('browser_page', '读一下当前网页。') : null,
+        context.browserAvailable ? localVoicePromptExample('browser_dom', '当前网页有哪些按钮？') : null,
+        context.appUiAvailable || context.frontmostApp ? localVoicePromptExample('app_ui', '这个界面能点什么？') : null,
+        localVoicePromptExample('capability', '你现在能看到什么，能操作什么？'),
+        context.learnedEventCount ? localVoicePromptExample('distill', '你从我身上学到了什么？') : null,
+        localVoicePromptExample('voice', '实时语音连上了吗？'),
       ]
     : [
-        {
-          id: 'start',
-          utterance: 'JAVIS，开始语音。',
-        },
-        {
-          id: 'preview',
-          utterance: '先不要开麦，帮我预览下一步。',
-        },
-        {
-          id: 'status',
-          utterance: '实时语音连上了吗？',
-        },
-      ]).slice(0, 3);
-  const nextUtterance = latestCanContinue
-    ? '继续刚才那个'
-    : examples[0]?.utterance || '后台现在怎么样？';
+        localVoicePromptExample('start', 'JAVIS，开始语音。'),
+        context.browserAvailable ? localVoicePromptExample('browser_page', '读一下当前网页。') : null,
+        context.appUiAvailable || context.frontmostApp ? localVoicePromptExample('app_ui', '这个界面能点什么？') : null,
+        localVoicePromptExample('preview', '先不要开麦，帮我预览下一步。'),
+        localVoicePromptExample('status', '实时语音连上了吗？'),
+      ];
+  const seenUtterances = new Set();
+  const examples = candidates
+    .filter(Boolean)
+    .filter((example) => {
+      if (!example.utterance || seenUtterances.has(example.utterance)) return false;
+      seenUtterances.add(example.utterance);
+      return true;
+    })
+    .slice(0, 3);
+  const nextUtterance = examples[0]?.utterance || (fallbackReady ? '后台现在怎么样？' : 'JAVIS，开始语音。');
   return {
     version: 1,
     nextUtterance,
