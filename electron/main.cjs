@@ -25918,6 +25918,29 @@ function naturalVoiceStatusLocalCommand(text) {
   };
 }
 
+function naturalOpenAiSpendStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsSpend = /\b(openai|api|api key|quota|billing|bill|spend|spent|usage|cost|charge|charged|credit|credits|budget|egress|hard lock|spend guard|cloud spend|cloud call)\b/i.test(raw)
+    || /(OpenAI|openai|API|api|额度|账单|计费|收费|扣费|花钱|费用|花费|消耗|余额|预算|云模型|云端|调用模型|硬锁|消费锁|费用闸门|花费闸门|防火墙|守卫|拦截|密钥|令牌|充值)/i.test(compactTextNoSpace);
+  if (!mentionsSpend) return null;
+
+  const statusSignal = /\b(status|report|usage|spend|spent|cost|quota|billing|budget|guard|lock|blocked|blocking|why|today|yesterday|now|will|would|can|call|consume|check|audit)\b/i.test(raw)
+    || /(状态|报告|用了多少|有没有|会不会|是不是|为什么|昨天|今天|现在|还会|能不能|是否|调用|消耗|花钱|扣费|额度|账单|计费|预算|费用|花费|拦截|锁|开着|关着|检查|查一下|审计|记录|多少)/i.test(compactPlain);
+  if (!statusSignal) return null;
+
+  return {
+    intent: 'openai_spend_status',
+    label: 'OpenAI spend status',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalVoiceLatencyLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -26557,6 +26580,9 @@ function localCommandDecision(task) {
   const browserActCommand = naturalBrowserActLocalCommand(text);
   if (browserActCommand) return browserActCommand;
 
+  const openAiSpendStatusCommand = naturalOpenAiSpendStatusLocalCommand(text);
+  if (openAiSpendStatusCommand) return openAiSpendStatusCommand;
+
   const browserRecoveryCommand = naturalBrowserRecoveryLocalCommand(text);
   if (browserRecoveryCommand) return browserRecoveryCommand;
 
@@ -27108,7 +27134,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -27130,7 +27156,7 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
-    } else if (['voice_status', 'voice_latency', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
+    } else if (['voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -27709,6 +27735,33 @@ function formatVoiceStatusForLocalCommand(status = {}) {
     standby.next || provider.next || local.next ? `Next: ${compactRecordText(standby.next || provider.next || local.next, 320)}` : '',
     recoveryLine ? `Recovery:\n${recoveryLine}` : '',
     '边界: 这里只读语音/Realtime 状态；不启动麦克风，不创建 Realtime session，不开 Terminal，不读取屏幕。',
+  ].filter(Boolean).join('\n');
+}
+
+function formatOpenAiSpendStatusForLocalCommand(status = {}) {
+  const guard = status.spendGuard || {};
+  const egress = status.egressGuard || {};
+  const counts = guard.counts || {};
+  const remaining = guard.remaining || {};
+  const lease = guard.spendLease || {};
+  const recent = Array.isArray(guard.recent) ? guard.recent.slice(0, 4) : [];
+  const modeLabel = guard.hardSpendLock ? 'hard-locked' : guard.mode || 'unknown';
+  const day = guard.day || openAiSpendDayKey();
+  const recentLines = recent.map((event) => {
+    const state = event.allowed ? 'allowed' : 'blocked';
+    const reasons = Array.isArray(event.reasons) && event.reasons.length
+      ? ` · ${event.reasons.slice(0, 3).join(', ')}`
+      : '';
+    return `- ${event.at || '-'} · ${state} · ${event.kind || '-'} · ${event.source || '-'}${reasons}`;
+  });
+  return [
+    `OpenAI spend: ${modeLabel} · cloud=${guard.mode || '-'} · egress=${egress.mode || guard.egressGuardMode || '-'}`,
+    `Today ${day}: allowed ${counts.total ?? 0}/${guard.dailyRequestLimit ?? 0} · manual ${counts.manual ?? 0} · unattended ${counts.unattended ?? 0}/${guard.unattendedDailyRequestLimit ?? 0} · remaining ${remaining.total ?? 0}`,
+    `Blocked locally: ${counts.blocked ?? 0} · these are guard stops, not confirmed billable JAVIS requests.`,
+    `Lease: ${lease.required ? 'required' : 'off'} · active ${lease.activeCount ?? 0} · ttl ${Math.round(Number(guard.spendLeaseTtlMs || lease.ttlMs || 0) / 1000)}s · one-request=${lease.oneRequestOnly ? 'yes' : 'no'}`,
+    `Safety: hard lock=${guard.hardSpendLock ? 'on' : 'off'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · autopilot cloud=${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · startup probe=${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · unscoped egress=${egress.safety?.blocksUnscopedOpenAiFetch ? 'blocked' : 'unknown'}`,
+    recentLines.length ? `Recent guard events:\n${recentLines.join('\n')}` : 'Recent guard events: none for the current local guard day.',
+    '边界: 这里只读本地 OpenAI spend guard / egress guard 审计；不创建 spend lease，不调用 OpenAI，不启动麦克风或 Realtime。',
   ].filter(Boolean).join('\n');
 }
 
@@ -28519,6 +28572,35 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatVoiceStatusForLocalCommand(voiceStatus),
         data: { voiceStatus },
+      };
+    }
+
+    if (command.intent === 'openai_spend_status') {
+      const spendStatus = {
+        spendGuard: openAiSpendGuardSnapshot(),
+        egressGuard: openAiEgressGuardSnapshot(),
+        safety: {
+          readOnly: true,
+          callsOpenAI: false,
+          createsSpendLease: false,
+          startsMicrophone: false,
+          usesRealtime: false,
+          opensTerminal: false,
+          storesRawAudio: false,
+          storesScreenImage: false,
+          storesClipboardText: false,
+          storesAccessibilityNodes: false,
+        },
+      };
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatOpenAiSpendStatusForLocalCommand(spendStatus),
+        data: {
+          spendStatus,
+          spendGuard: spendStatus.spendGuard,
+          egressGuard: spendStatus.egressGuard,
+        },
       };
     }
 
@@ -31247,7 +31329,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'voice_latency', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

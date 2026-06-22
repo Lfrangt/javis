@@ -220,6 +220,55 @@ export default {
         : fail('voice_command.quick_hold', 'Quick lane cloud hold', `expected held quick lane, got ${quickHeld.status}`, quickHeld.data),
     );
 
+    const spendGuardBeforeVoice = await ctx.api('/api/openai/spend-guard');
+    const spendGuardBefore = spendGuardBeforeVoice.data?.spendGuard || {};
+    const naturalSpendStatus = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '我昨天都没测怎么就消耗了我的 API 额度？现在会不会继续花钱？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_openai_spend_status',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalSpendStatusData = naturalSpendStatus.data || {};
+    const naturalSpendStatusRoute = naturalSpendStatusData.route || {};
+    const spendStatus = naturalSpendStatusRoute.data?.spendStatus || {};
+    const spendGuardAfterVoice = await ctx.api('/api/openai/spend-guard');
+    const spendGuardAfter = spendGuardAfterVoice.data?.spendGuard || {};
+    out.push(
+      spendGuardBeforeVoice.ok &&
+        naturalSpendStatus.ok &&
+        naturalSpendStatusData.ok === true &&
+        naturalSpendStatusData.executed === false &&
+        naturalSpendStatusRoute.decision?.localCommand === 'openai_spend_status' &&
+        naturalSpendStatusRoute.localCommand?.intent === 'openai_spend_status' &&
+        spendStatus.safety?.callsOpenAI === false &&
+        spendStatus.safety?.createsSpendLease === false &&
+        spendStatus.spendGuard?.mode === 'off' &&
+        spendStatus.spendGuard?.hardSpendLock === true &&
+        spendStatus.spendGuard?.dailyRequestLimit === 0 &&
+        spendStatus.egressGuard?.mode === 'scoped_allow_only' &&
+        typeof naturalSpendStatusRoute.output === 'string' &&
+        naturalSpendStatusRoute.output.includes('OpenAI spend:') &&
+        naturalSpendStatusRoute.output.includes('Blocked locally:') &&
+        naturalSpendStatusData.safety?.startsMicrophone === false &&
+        naturalSpendStatusData.safety?.usesRealtime === false &&
+        naturalSpendStatusData.safety?.callsOpenAIImmediately === false &&
+        spendGuardAfterVoice.ok &&
+        Number(spendGuardAfter.counts?.total || 0) === Number(spendGuardBefore.counts?.total || 0) &&
+        Number(spendGuardAfter.counts?.blocked || 0) === Number(spendGuardBefore.counts?.blocked || 0)
+        ? ok('voice_command.openai_spend_status', 'Natural OpenAI spend-status voice command', 'API quota/cost questions read local spend guard without cloud, lease creation, mic, or Realtime')
+        : fail('voice_command.openai_spend_status', 'Natural OpenAI spend-status voice command', 'natural API spend question did not use the local spend guard safely', {
+          before: spendGuardBeforeVoice.data,
+          command: naturalSpendStatus.data,
+          after: spendGuardAfterVoice.data,
+        }),
+    );
+
     const naturalIncidentReport = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -1731,7 +1780,7 @@ export default {
     try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
-        "printf '/try\\n/status\\n/latency\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/learn\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
+        "printf '/try\\n/status\\n/latency\\n/spend\\n/app\\n/ui 打开 Calculator 然后关闭窗口\\n/file list .\\n/file organize .\\n/browser\\n/browse extract_actions 提取当前网页行动项，先预览。\\n/open https://example.com\\n/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/jobs\\n/progress\\n/next\\n/learn\\n/history\\n/agent 检查 JAVIS 状态，先不要执行。\\n状态\\n继续刚才那个\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",
       ], {
         cwd: process.cwd(),
         env: {
@@ -1749,6 +1798,7 @@ export default {
       const tryTurn = commandTurns.find((turn) => turn.command === 'try') || {};
       const statusTurn = commandTurns.find((turn) => turn.command === 'status') || {};
       const latencyTurn = commandTurns.find((turn) => turn.command === 'latency') || {};
+      const spendTurn = commandTurns.find((turn) => turn.command === 'spend') || {};
       const appTurn = commandTurns.find((turn) => turn.command === 'app') || {};
       const uiTurn = commandTurns.find((turn) => turn.command === 'ui') || {};
       const fileTurn = commandTurns.find((turn) => turn.command === 'file' && turn.fileAction === 'list_directory') || {};
@@ -1781,13 +1831,13 @@ export default {
           loop.ok === true &&
           loop.cliMode === 'local' &&
           loop.loop === true &&
-          loop.turnCount === 19 &&
+          loop.turnCount === 20 &&
           loop.previewOnly === true &&
           loop.safety?.startsMicrophone === false &&
           loop.safety?.usesRealtime === false &&
           loop.safety?.storesRawAudio === false &&
-          commandTurns.length === 17 &&
-          ['try', 'status', 'latency', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'learn', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
+          commandTurns.length === 18 &&
+          ['try', 'status', 'latency', 'spend', 'app', 'ui', 'file', 'browser', 'browse', 'open', 'delegate', 'jobs', 'progress', 'next', 'learn', 'history', 'agent'].every((command) => commandTurns.some((turn) => turn.command === command)) &&
           tryTurn.detailLevel === 'fast' &&
           tryTurn.endpoint === '/api/voice/standby' &&
           tryTurn.output.includes('Try:') &&
@@ -1800,6 +1850,11 @@ export default {
           latencyTurn.endpoint === '/api/voice/latency?limit=20&auditLimit=500' &&
           latencyTurn.output.includes('Latency:') &&
           latencyTurn.output.includes('Safety: read-only') &&
+          spendTurn.detailLevel === 'fast' &&
+          spendTurn.endpoint === '/api/openai/spend-guard' &&
+          spendTurn.output.includes('OpenAI spend:') &&
+          spendTurn.output.includes('Blocked locally:') &&
+          spendTurn.output.includes('Safety: read-only') &&
           appTurn.detailLevel === 'fast' &&
           appTurn.endpoint === '/api/ambient?limit=1' &&
           appTurn.output.includes('App:') &&

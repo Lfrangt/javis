@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /latency, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -469,6 +469,7 @@ function loopHelpText() {
     '  /try      Show context-ranked things to say next without microphone, Realtime, Terminal, or model calls.',
     '  /voice    Read Realtime/live voice blocker, local fallback, and next recovery step.',
     '  /latency  Read local voice-command latency metrics and likely bottleneck.',
+    '  /spend    Read OpenAI spend guard, local block count, lease, and egress firewall state.',
     '  /see      Read screen/privacy/ambient perception status without capturing a new frame.',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
     '  /session  Read, start, resume, note, or end a local work session.',
@@ -1229,6 +1230,35 @@ function formatLoopVoiceStatus(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopOpenAiSpend(data = {}) {
+  const guard = data.spendGuard || {};
+  const egress = data.egressGuard || {};
+  const counts = guard.counts || {};
+  const remaining = guard.remaining || {};
+  const lease = guard.spendLease || {};
+  const recent = Array.isArray(guard.recent) ? guard.recent : [];
+  const lines = [
+    `OpenAI spend: ${guard.hardSpendLock ? 'hard-locked' : guard.mode || '-'} · cloud=${guard.mode || '-'} · egress=${egress.mode || guard.egressGuardMode || '-'}`,
+    `Today ${guard.day || '-'}: allowed ${counts.total ?? 0}/${guard.dailyRequestLimit ?? 0} · manual ${counts.manual ?? 0} · unattended ${counts.unattended ?? 0}/${guard.unattendedDailyRequestLimit ?? 0} · remaining ${remaining.total ?? 0}`,
+    `Blocked locally: ${counts.blocked ?? 0} · blocked events are local guard stops, not confirmed billable JAVIS requests.`,
+    `Lease: ${lease.required ? 'required' : 'off'} · active ${lease.activeCount ?? 0} · ttl ${Math.round(Number(guard.spendLeaseTtlMs || lease.ttlMs || 0) / 1000)}s · one-request=${lease.oneRequestOnly ? 'yes' : 'no'}`,
+    `Safety: hard lock=${guard.hardSpendLock ? 'on' : 'off'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · autopilot cloud=${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · startup probe=${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · unscoped egress=${egress.safety?.blocksUnscopedOpenAiFetch ? 'blocked' : 'unknown'}`,
+  ];
+  if (recent.length) {
+    lines.push('Recent guard events:');
+    for (const event of recent.slice(0, 4)) {
+      const reasons = Array.isArray(event.reasons) && event.reasons.length
+        ? ` · ${event.reasons.slice(0, 3).join(', ')}`
+        : '';
+      lines.push(`- ${event.at || '-'} · ${event.allowed ? 'allowed' : 'blocked'} · ${event.kind || '-'} · ${event.source || '-'}${reasons}`);
+    }
+  } else {
+    lines.push('Recent guard events: none for the current local guard day.');
+  }
+  lines.push('Safety: read-only; does not create a spend lease, call OpenAI, start microphone, or use Realtime.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopLatency(data = {}) {
   const report = data.latency || data || {};
   const latency = report.latency || {};
@@ -1737,6 +1767,15 @@ async function runLoopCommand(transcript) {
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopLatency(response.data || {}), {
         command: 'latency',
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'spend' || command === 'cost' || command === 'quota' || command === 'billing' || command === 'openai-spend') {
+      const endpoint = '/api/openai/spend-guard';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopOpenAiSpend(response.data || {}), {
+        command: 'spend',
         endpoint,
         detailLevel: 'fast',
       });
