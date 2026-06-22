@@ -691,6 +691,44 @@ export default {
         : fail('voice_command.natural_browser_readiness', 'Natural browser readiness voice command', 'natural browser readiness phrase did not use the local browser_readiness fast path', naturalBrowserReady.data),
     );
 
+    const naturalBrowserRecovery = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '打开一个可以操作的浏览器，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_recovery',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserRecoveryData = naturalBrowserRecovery.data || {};
+    const naturalBrowserRecoveryRoute = naturalBrowserRecoveryData.route || {};
+    const naturalBrowserRecoveryPayload = naturalBrowserRecoveryRoute.data?.browserRecovery || {};
+    out.push(
+      naturalBrowserRecovery.ok &&
+        naturalBrowserRecoveryData.ok === true &&
+        naturalBrowserRecoveryData.executed === false &&
+        naturalBrowserRecoveryRoute.decision?.localCommand === 'browser_recovery' &&
+        naturalBrowserRecoveryRoute.localCommand?.intent === 'browser_recovery' &&
+        naturalBrowserRecoveryRoute.executed === false &&
+        naturalBrowserRecoveryPayload.requestedExecute === false &&
+        naturalBrowserRecoveryPayload.executed === false &&
+        naturalBrowserRecoveryPayload.safety?.previewOnly === true &&
+        naturalBrowserRecoveryPayload.safety?.opensSupportedBrowser === false &&
+        naturalBrowserRecoveryPayload.safety?.startsMicrophone === false &&
+        naturalBrowserRecoveryPayload.safety?.usesRealtime === false &&
+        naturalBrowserRecoveryPayload.safety?.opensTerminal === false &&
+        naturalBrowserRecoveryData.safety?.startsMicrophone === false &&
+        naturalBrowserRecoveryData.safety?.usesRealtime === false &&
+        naturalBrowserRecoveryData.safety?.callsOpenAIImmediately === false &&
+        typeof naturalBrowserRecoveryRoute.output === 'string' &&
+        naturalBrowserRecoveryRoute.output.includes('Browser recovery: preview only')
+        ? ok('voice_command.natural_browser_recovery_preview', 'Natural browser recovery voice command', '打开可操作浏览器 routes to browser_recovery preview without opening browser, mic, Realtime, or Terminal')
+        : fail('voice_command.natural_browser_recovery_preview', 'Natural browser recovery voice command', 'natural browser recovery phrase did not safely preview browser recovery', naturalBrowserRecovery.data),
+    );
+
     const naturalBrowserPage = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

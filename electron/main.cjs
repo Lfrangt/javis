@@ -24344,6 +24344,33 @@ function naturalBrowserLocalCommand(text) {
   return null;
 }
 
+function naturalBrowserRecoveryLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsBrowser = /\b(browser|chrome|safari|arc|brave|edge|webpage|web page|tab)\b/i.test(raw)
+    || /(浏览器|Chrome|chrome|Safari|safari|Arc|arc|Brave|brave|Edge|edge|网页|页面|标签页)/i.test(compactPlain);
+  if (!mentionsBrowser) return null;
+
+  const recoverySignal = /\b(open|launch|focus|bring up|recover|recovery|fix|repair|make.*ready|supported browser|readable browser|operable browser|controllable browser|browser target)\b/i.test(raw)
+    || /(?:打开|启动|拉起|聚焦|切到|恢复|修复|准备|准备好|可操作|能操作|能控制|能读取|可读取|支持的|可用的|默认目标|浏览器目标)/i.test(compactPlain);
+  const asksWhichWindow = /\bwhich window|choose window|select window\b/i.test(raw)
+    || /(哪个窗口|选择窗口|选窗口)/i.test(compactPlain);
+  if (!recoverySignal || asksWhichWindow) return null;
+
+  return {
+    intent: 'browser_recovery',
+    label: 'Browser recovery',
+    requiresLocalExecution: true,
+    args: {
+      actionId: 'browser_recovery:open_supported_browser',
+      query: raw,
+    },
+  };
+}
+
 function naturalAppUiStatusLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -24555,6 +24582,9 @@ function localCommandDecision(task) {
 
   const promptSuggestionsCommand = naturalPromptSuggestionsLocalCommand(text);
   if (promptSuggestionsCommand) return promptSuggestionsCommand;
+
+  const browserRecoveryCommand = naturalBrowserRecoveryLocalCommand(text);
+  if (browserRecoveryCommand) return browserRecoveryCommand;
 
   const browserCommand = naturalBrowserLocalCommand(text);
   if (browserCommand) return browserCommand;
@@ -24884,7 +24914,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25083,7 +25113,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -25150,6 +25180,14 @@ function buildContextPlan(message, options = {}) {
       needs.vision = localCommand === 'describe_screen';
     } else if (['browser_readiness'].includes(localCommand)) {
       needs.browserContext = true;
+    } else if (['browser_recovery'].includes(localCommand)) {
+      needs.residentState = true;
+      needs.browserContext = true;
+      needs.localExecution = true;
+      needs.screen = false;
+      needs.accessibility = false;
+      needs.browserPage = false;
+      needs.browserDom = false;
     } else if (['browser_page'].includes(localCommand)) {
       needs.browserContext = true;
       needs.browserPage = true;
@@ -25887,6 +25925,62 @@ function formatWorkNextForLocalCommand(next = {}, requestedExecute = false) {
   ].filter(Boolean).join('\n');
 }
 
+function browserRecoveryControlPayload(result = {}, execute = false) {
+  const action = result.action || null;
+  const inner = result.result || {};
+  const recovery = inner.browserRecovery || action?.browserRecovery || null;
+  const readinessAfter = inner.readinessAfter || null;
+  const followUp = inner.followUpAction || null;
+  return {
+    ok: result.ok !== false,
+    requestedExecute: Boolean(execute),
+    executed: Boolean(result.executed),
+    action: compactWorkNextActionPayload(action),
+    browserRecovery: recovery
+      ? {
+          type: compactRecordText(recovery.type || '', 80),
+          app: compactRecordText(recovery.app || 'Google Chrome', 120),
+          routeCount: boundedCount(recovery.routeCount, 1000),
+          firstRouteId: compactRecordText(recovery.firstRouteId || '', 120),
+          retryActionId: compactRecordText(recovery.retryActionId || '', 140),
+          readinessEndpoint: compactRecordText(recovery.readinessEndpoint || '', 140),
+          next: compactRecordText(recovery.next || '', 260),
+        }
+      : null,
+    readinessAfter,
+    followUpAction: followUp,
+    output: compactRecordText(result.output || '', 900),
+    safety: {
+      previewOnly: !execute,
+      executesWorkNext: Boolean(execute),
+      opensSupportedBrowser: Boolean(execute && result.executed && action?.source === 'browser_recovery'),
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      opensTerminal: false,
+      sendsMessages: false,
+      mutatesUserFiles: false,
+    },
+  };
+}
+
+function formatBrowserRecoveryForLocalCommand(control = {}) {
+  const action = control.action || {};
+  const recovery = control.browserRecovery || {};
+  const readinessAfter = control.readinessAfter || {};
+  const followUp = control.followUpAction || {};
+  return [
+    `Browser recovery: ${control.executed ? 'executed' : 'preview only'} · ok=${control.ok ? 'yes' : 'no'}`,
+    action.id ? `Action: ${action.label || action.id} · source=${action.source || '-'} · risk=${action.riskLevel ?? '-'}` : 'Action: none',
+    recovery.app ? `Target: ${recovery.app} · blocked routes=${recovery.routeCount ?? 0}` : '',
+    control.output ? `Output: ${compactRecordText(control.output, 700)}` : '',
+    readinessAfter.status ? `Readiness after: ${readinessAfter.status} · ${compactRecordText(readinessAfter.summary || readinessAfter.label || '', 220)}` : '',
+    followUp.id ? `Retry path: ${followUp.id}` : '',
+    !control.executed ? 'Next: say "执行这个浏览器恢复" or "执行下一步" when you want JAVIS to open/focus the supported browser through policy gates.' : '',
+    '边界: preview 不打开浏览器；执行只打开/聚焦支持的浏览器并重查 readiness，不点击网页、不填写表单、不启动麦克风或 Realtime、不打开 Terminal。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatAutopilotStatusForLocalCommand(status = {}) {
   const selected = status.selectedAction || null;
   const first = status.firstAction || null;
@@ -26319,6 +26413,35 @@ async function runLocalCommand(command, options = {}) {
             },
           },
         },
+      };
+    }
+
+    if (command.intent === 'browser_recovery') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const result = await workNextAction({
+        execute,
+        actionId: command.args?.actionId || 'browser_recovery:open_supported_browser',
+        source: execute ? 'local_command_browser_recovery_execute' : 'local_command_browser_recovery_preview',
+      });
+      if (!result.action) {
+        result.result = {
+          ...(result.result || {}),
+          readinessAfter: compactBrowserRecoveryReadiness(await browserReadinessSnapshot({
+            source: 'local_command_browser_recovery_no_action',
+          }).catch((error) => ({
+            ok: false,
+            status: 'error',
+            summary: error instanceof Error ? error.message : String(error),
+          }))),
+        };
+      }
+      const control = browserRecoveryControlPayload(result, execute);
+      return {
+        ok: result.ok !== false,
+        executed: Boolean(result.executed),
+        localCommand: command,
+        output: formatBrowserRecoveryForLocalCommand(control),
+        data: { browserRecovery: control, result },
       };
     }
 
@@ -28195,7 +28318,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'browser_readiness', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
