@@ -313,6 +313,7 @@ function summarize(data = {}) {
   return {
     ok: Boolean(data.ok),
     channel: data.channel,
+    wakeOnly: Boolean(data.wakeOnly),
     requestedExecute: Boolean(data.requestedExecute),
     executed: Boolean(data.executed),
     heldReason: data.heldReason || '',

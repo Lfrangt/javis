@@ -31505,15 +31505,189 @@ function stripWakeWordFromTranscript(value, options = {}) {
   };
 }
 
+function wakeTranscriptPayload(wakeTranscript = {}, routedTranscript = '') {
+  return {
+    ...wakeTranscript,
+    routed: routedTranscript,
+    originalLength: String(wakeTranscript.original || '').length,
+    routedLength: String(routedTranscript || '').length,
+  };
+}
+
+function wakeOnlyVoiceContextSnapshot() {
+  return {
+    ok: true,
+    metadataOnly: true,
+    includeScreenRequested: false,
+    includeAccessibilityRequested: false,
+    includesScreenImage: false,
+    includesClipboardText: false,
+    includesAccessibilityNodes: false,
+    summary: 'wake-only standby prompt; no task routed',
+    frontmost: {
+      available: false,
+      app: '',
+      windowTitle: '',
+    },
+    browser: {
+      available: false,
+      supported: false,
+      app: '',
+      title: '',
+      host: '',
+      source: '',
+    },
+    screen: {
+      available: false,
+      skipped: true,
+    },
+    accessibility: {
+      requested: false,
+      skipped: true,
+      available: false,
+      nodeCount: 0,
+      truncated: false,
+      outline: '',
+      error: '',
+    },
+  };
+}
+
 async function runWakeCommand(options = {}) {
+  const startedAt = Date.now();
   const source = String(options.source || 'wake_command').slice(0, 80);
   const phrase = String(options.phrase || options.wakePhrase || '贾维斯').slice(0, 120);
   const wakeTranscript = stripWakeWordFromTranscript(options.transcript || options.message || options.text || '', { phrase });
-  const routedTranscript = wakeTranscript.routed || wakeTranscript.original;
+  const wakeOnly = Boolean(wakeTranscript.strippedWakeWord && !wakeTranscript.routed);
+  const routedTranscript = wakeOnly ? '' : wakeTranscript.routed || wakeTranscript.original;
   const wake = triggerWake({
     source,
     phrase,
   });
+
+  if (wakeOnly) {
+    const speakRequested = options.speak === undefined ? true : booleanOption(options.speak);
+    const confirmSpeak = booleanOption(options.confirmSpeak || options.confirmAudio || options.confirmSpeech);
+    const conversation = conversationStateSnapshot();
+    const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+    const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+    const handoff = wake.handoff || wakeHandoffSnapshot({ conversation, voiceHealth, localVoice });
+    const standby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice, wake: handoff });
+    const route = await routeTask({
+      message: '我现在可以说什么，下一句怎么叫你？',
+      execute: false,
+      includeScreen: false,
+      useMemory: false,
+      source: `${source}_standby`,
+      owner: 'wake',
+      scope: 'wake standby prompt',
+    });
+    const output = route.output || formatPromptSuggestionsForLocalCommand({
+      standby,
+      promptPack: standby.promptPack || localVoice.promptPack || handoff.promptPack || null,
+      inputMode: standby.inputMode || localVoice.inputMode,
+    });
+    const spokenAck = output || '我在。你可以直接说下一步。';
+    let speech = null;
+    let speechMs = 0;
+    if (speakRequested) {
+      const speechStartedAt = Date.now();
+      try {
+        speech = speechSay({
+          text: spokenAck,
+          dryRun: !confirmSpeak,
+          source,
+        });
+      } catch (error) {
+        speech = {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          dryRun: !confirmSpeak,
+        };
+      }
+      speechMs = Date.now() - speechStartedAt;
+    }
+    const result = {
+      ok: route.ok !== false,
+      speechOk: !speakRequested || speech?.ok !== false,
+      channel: 'wake_voice_command',
+      wakeOnly: true,
+      transcript: '',
+      requestedExecute: false,
+      executed: false,
+      heldReason: 'wake_only_no_task',
+      route,
+      routePreview: route,
+      output,
+      data: {
+        ...(route.data || {}),
+        standby,
+        promptPack: standby.promptPack || localVoice.promptPack || handoff.promptPack || null,
+      },
+      context: wakeOnlyVoiceContextSnapshot(),
+      spokenAck,
+      speech,
+      wake,
+      wakeTranscript: wakeTranscriptPayload(wakeTranscript, ''),
+      handoff,
+      voice: null,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        usesMemory: false,
+        usesContextMetadata: false,
+        skippedPreRouteContext: true,
+        usesAccessibilityMetadata: false,
+        callsOpenAIImmediately: false,
+        usesLocalQuickAnswer: false,
+        mayQueueCloudModel: false,
+        mayQueueLocalWorker: false,
+        executesLocalCommand: false,
+        speaksAudio: Boolean(speakRequested && confirmSpeak && speech?.speaking),
+        speechDryRun: Boolean(speakRequested && speech?.dryRun === true),
+        wakeStatusReadOnly: false,
+        usesWakeTrigger: true,
+        wakeOnly: true,
+      },
+      timing: {
+        totalMs: Date.now() - startedAt,
+        contextMs: 0,
+        previewRouteMs: 0,
+        executeRouteMs: 0,
+        speechMs,
+        sessionMs: 0,
+      },
+    };
+    const sessionStartedAt = Date.now();
+    result.session = recordVoiceCommandSessionEvent({
+      ...result,
+      transcript: wakeTranscript.original,
+    }, {
+      ...options,
+      source,
+    });
+    result.timing.sessionMs = Date.now() - sessionStartedAt;
+    result.timing.totalMs = Date.now() - startedAt;
+    result.elapsedMs = result.timing.totalMs;
+    appendAudit('wake.command.completed', {
+      source,
+      phrase,
+      ok: result.ok,
+      wakeOnly: true,
+      transcriptLength: 0,
+      originalTranscriptLength: wakeTranscript.original.length,
+      strippedWakeWord: Boolean(wakeTranscript.strippedWakeWord),
+      removedWakeWord: wakeTranscript.removedWakeWord,
+      lane: route.decision?.lane || '',
+      queued: false,
+      executed: false,
+      wakePending: Boolean(wake.pending),
+      handoffMode: result.handoff?.mode || '',
+    });
+    return result;
+  }
+
   const voice = await runVoiceCommand({
     ...options,
     transcript: routedTranscript,
@@ -31524,12 +31698,7 @@ async function runWakeCommand(options = {}) {
     ok: voice.ok !== false,
     channel: 'wake_voice_command',
     wake,
-    wakeTranscript: {
-      ...wakeTranscript,
-      routed: routedTranscript,
-      originalLength: wakeTranscript.original.length,
-      routedLength: routedTranscript.length,
-    },
+    wakeTranscript: wakeTranscriptPayload(wakeTranscript, routedTranscript),
     handoff: wake.handoff || wakeHandoffSnapshot(),
     voice,
     safety: {

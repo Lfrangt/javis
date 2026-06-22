@@ -2101,8 +2101,53 @@ export default {
         : fail('voice_command.wake_command_api', 'Wake + local voice command API', `expected safe wake command envelope, got ${wakeCommand.status}`, wakeCommand.data),
     );
 
-    const routeContinuationPreview = await ctx.api('/api/voice/command', {
+    const wakeOnlyCommand = await ctx.api('/api/wake/command', {
       method: 'POST',
+      body: {
+        transcript: '贾维斯',
+        phrase: '贾维斯',
+        execute: false,
+        includeScreen: true,
+        includeAccessibility: true,
+        speak: false,
+        useMemory: false,
+        source: 'eval_wake_only_command',
+      },
+      timeoutMs: 30000,
+    });
+    const wakeOnlyData = wakeOnlyCommand.data || {};
+    out.push(
+      wakeOnlyCommand.ok &&
+        wakeOnlyData.ok === true &&
+        wakeOnlyData.channel === 'wake_voice_command' &&
+        wakeOnlyData.wakeOnly === true &&
+        wakeOnlyData.transcript === '' &&
+        wakeOnlyData.heldReason === 'wake_only_no_task' &&
+        wakeOnlyData.wake?.pending === true &&
+        wakeOnlyData.wakeTranscript?.strippedWakeWord === true &&
+        wakeOnlyData.wakeTranscript?.removedWakeWord === '贾维斯' &&
+        wakeOnlyData.wakeTranscript?.original === '贾维斯' &&
+        wakeOnlyData.wakeTranscript?.routed === '' &&
+        wakeOnlyData.wakeTranscript?.routedLength === 0 &&
+        wakeOnlyData.voice === null &&
+        wakeOnlyData.route?.localCommand?.intent === 'prompt_suggestions' &&
+        wakeOnlyData.route?.data?.promptPack?.nextUtterance &&
+        wakeOnlyData.context?.metadataOnly === true &&
+        wakeOnlyData.context?.summary === 'wake-only standby prompt; no task routed' &&
+        wakeOnlyData.context?.includesScreenImage === false &&
+        wakeOnlyData.context?.includesClipboardText === false &&
+        wakeOnlyData.context?.includesAccessibilityNodes === false &&
+        wakeOnlyData.safety?.wakeOnly === true &&
+        wakeOnlyData.safety?.startsMicrophone === false &&
+        wakeOnlyData.safety?.usesRealtime === false &&
+        wakeOnlyData.safety?.storesRawAudio === false &&
+        wakeOnlyData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.wake_only_prompt_pack', 'Wake-only prompt pack', 'bare wake word returns standby prompt suggestions without routing the wake word as a task')
+        : fail('voice_command.wake_only_prompt_pack', 'Wake-only prompt pack', 'bare wake word should return the no-task standby prompt pack safely', wakeOnlyCommand.data),
+    );
+
+	    const routeContinuationPreview = await ctx.api('/api/voice/command', {
+	      method: 'POST',
       body: {
         transcript: '请后台整理这个本地语音预览任务，生成一个三步执行计划，先不要执行。',
         mode: 'background',
@@ -2239,7 +2284,51 @@ export default {
       out.push(fail('voice_command.wake_command_cli', 'Wake + local voice command CLI', error instanceof Error ? error.message : String(error)));
     }
 
-    const sessionTranscript = '状态';
+    try {
+      const { stdout } = await execFileAsync('npm', [
+        'run',
+        'wake',
+        '--',
+        '--json',
+        '--no-speech',
+        '--request-timeout-ms',
+        '30000',
+        '贾维斯',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      const wakeOnlyCli = parseJson(stdout);
+      out.push(
+        wakeOnlyCli.ok === true &&
+          wakeOnlyCli.cliMode === 'local' &&
+          wakeOnlyCli.payload?.wake === true &&
+          wakeOnlyCli.previewOnly === true &&
+          wakeOnlyCli.wakeOnly === true &&
+          wakeOnlyCli.transcriptLength === 0 &&
+          wakeOnlyCli.heldReason === 'wake_only_no_task' &&
+          wakeOnlyCli.wake?.pending === true &&
+          wakeOnlyCli.wakeTranscript?.strippedWakeWord === true &&
+          wakeOnlyCli.wakeTranscript?.removedWakeWord === '贾维斯' &&
+          wakeOnlyCli.wakeTranscript?.routedLength === 0 &&
+          wakeOnlyCli.safety?.wakeOnly === true &&
+          wakeOnlyCli.safety?.startsMicrophone === false &&
+          wakeOnlyCli.safety?.usesRealtime === false &&
+          wakeOnlyCli.safety?.storesRawAudio === false
+          ? ok('voice_command.wake_only_cli', 'Wake-only CLI prompt pack', 'bare npm run wake returns standby prompt pack without mic/realtime/cloud')
+          : fail('voice_command.wake_only_cli', 'Wake-only CLI prompt pack', 'bare npm run wake did not produce the wake-only standby envelope', wakeOnlyCli),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.wake_only_cli', 'Wake-only CLI prompt pack', error instanceof Error ? error.message : String(error)));
+    }
+
+	    const sessionTranscript = '状态';
     let cleanupSessionId = '';
     try {
       const sessionsBefore = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
