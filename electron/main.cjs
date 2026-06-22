@@ -24157,6 +24157,30 @@ function naturalUnblockPreviewLocalCommand(text) {
   };
 }
 
+function naturalWorkNextLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compact = raw.replace(/\s+/g, '');
+  const plain = compact.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+  if (/(刚才|上一个|上一条|最近的语音|上次语音|lastvoice|previousvoice)/i.test(plain)) return null;
+
+  const english = /\b(work[- ]?next|next action|next work|next safe action|continue next|continue work|proceed|do next|run next|execute next|take next step|keep going|move forward)\b/i.test(raw)
+    || /\b(javis|you)\b.*\b(continue|proceed|do|run|execute)\b.*\b(next|work|actions?|steps?)\b/i.test(raw)
+    || /\b(continue|proceed|do|run|execute)\b.*\b(next|work|actions?|steps?)\b.*\b(javis|you)?\b/i.test(raw);
+  const chinese = /(?:继续下一步|执行下一步|运行下一步|跑下一步|做下一步|开始下一步|推进下一步|下一步执行|下一步继续|继续工作|继续推进|继续跑|继续干活|继续做|往下做|往下推进|接着做|接着跑|接着推进|执行当前下一步|运行当前下一步|把下一步跑起来|把下一步执行了|按下一步执行)/i.test(plain)
+    || /(?:你|JAVIS|javis|贾维斯).*(?:继续|接着|往下|推进|执行|运行|跑|做).*(?:下一步|工作|任务|动作)/i.test(plain)
+    || /(?:下一步|当前下一步|推荐动作).*(?:是什么|预览|准备|执行|运行|继续|跑起来|可以做)/i.test(plain);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'work_next',
+    label: 'Work next',
+    requiresLocalExecution: true,
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalCapabilityStatusCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24514,6 +24538,9 @@ function localCommandDecision(task) {
   const autopilotStatusCommand = naturalAutopilotStatusLocalCommand(text);
   if (autopilotStatusCommand) return autopilotStatusCommand;
 
+  const workNextCommand = naturalWorkNextLocalCommand(text);
+  if (workNextCommand) return workNextCommand;
+
   const windowCommand = naturalWindowControlLocalCommand(text);
   if (windowCommand) return windowCommand;
 
@@ -24534,11 +24561,6 @@ function localCommandDecision(task) {
     || /(怎么样|在干嘛|做到哪|跑到哪|进展|状态|完成|运行|排队|卡住|失败).*(后台|任务|工作|进度|agent|agents|subagent|subagents|worker|workers|codex|claude|Claude|Codex)/.test(compact)
     || /^(进度怎么样|现在做到哪了|做到哪了|干到哪了|跑到哪了|现在跑到哪了|现在干到哪了)$/.test(compact)) {
     return { intent: 'work_progress', label: 'Work progress', args: {} };
-  }
-
-  if (/^(work next|next work|do next|run next action|execute next action)$/i.test(text)
-    || /^(执行下一步|做下一步|开始下一步|下一步工作|工作下一步)$/.test(text)) {
-    return { intent: 'work_next', label: 'Work next', args: {} };
   }
 
   if (/^(continue last voice(?: route| task)?|run last voice(?: route| task)?|execute last voice(?: route| task)?|continue previous voice(?: route| task)?)$/i.test(text)
@@ -24781,7 +24803,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25717,6 +25739,21 @@ function formatUnblockPreviewForLocalCommand(preview = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatWorkNextForLocalCommand(next = {}, requestedExecute = false) {
+  const action = next.action || null;
+  const actionText = action
+    ? `${action.label || action.id || '-'} · source=${action.source || '-'} · executable=${action.executable ? 'yes' : 'no'} · risk=${action.riskLevel ?? '-'}`
+    : 'none';
+  return [
+    `Work next: ${requestedExecute ? 'execute requested' : 'preview only'} · executed=${next.executed ? 'yes' : 'no'} · ok=${next.ok !== false ? 'yes' : 'no'}`,
+    `Action: ${actionText}`,
+    action?.summary ? `Summary: ${compactRecordText(action.summary, 420)}` : '',
+    next.output ? `Output: ${compactRecordText(next.output, 700)}` : '',
+    !requestedExecute ? 'Next: say "执行下一步" or call /api/work/next with execute:true when you want JAVIS to run this candidate through policy gates.' : '',
+    '边界: preview 不执行 work-next；执行时仍走 control mode、本地 action policy、审批门、麦克风/Realtime/Terminal 安全标记。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatAutopilotStatusForLocalCommand(status = {}) {
   const selected = status.selectedAction || null;
   const first = status.firstAction || null;
@@ -26086,12 +26123,35 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'work_next') {
-      const result = await workNextAction({ execute: true, source: 'local_command' });
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const result = await workNextAction({
+        execute,
+        source: execute ? 'local_command_work_next_execute' : 'local_command_work_next_preview',
+      });
       return {
         ok: result.ok,
+        executed: Boolean(result.executed),
         localCommand: command,
-        output: result.output,
-        data: { result },
+        output: formatWorkNextForLocalCommand(result, execute),
+        data: {
+          result,
+          workNext: {
+            version: 1,
+            requestedExecute: execute,
+            executed: Boolean(result.executed),
+            ok: result.ok !== false,
+            action: compactWorkNextActionPayload(result.action),
+            output: compactRecordText(result.output || '', 900),
+            safety: {
+              executesWorkNext: execute,
+              executesActions: Boolean(execute && result.executed),
+              startsMicrophone: Boolean(execute && result.action?.startsMicrophone),
+              usesRealtime: Boolean(execute && result.action?.source === 'realtime_voice'),
+              opensTerminal: false,
+              startsWorkers: Boolean(execute && result.action?.startsWorkers),
+            },
+          },
+        },
       };
     }
 
@@ -27917,7 +27977,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'browser_readiness', 'browser_page', 'browser_dom', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

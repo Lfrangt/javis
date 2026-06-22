@@ -172,6 +172,51 @@ export default {
         : fail('voice_command.natural_progress', 'Natural progress voice command', 'natural progress phrase did not use the local work_progress fast path', naturalProgress.data),
     );
 
+    const naturalWorkNext = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '继续下一步，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_work_next_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalWorkNextData = naturalWorkNext.data || {};
+    const naturalWorkNextRoute = naturalWorkNextData.route || {};
+    const naturalWorkNextPayload = naturalWorkNextRoute.data?.workNext || {};
+    const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    const workNextRespectsExecuteFlag =
+      mainSource.includes("if (command.intent === 'work_next')") &&
+      mainSource.includes('const execute = options.execute === true') &&
+      mainSource.includes('workNextAction({') &&
+      mainSource.includes('execute,') &&
+      !mainSource.includes("const result = await workNextAction({ execute: true, source: 'local_command' });");
+    out.push(
+      naturalWorkNext.ok &&
+        naturalWorkNextData.ok === true &&
+        naturalWorkNextData.executed === false &&
+        naturalWorkNextRoute.decision?.localCommand === 'work_next' &&
+        naturalWorkNextRoute.localCommand?.intent === 'work_next' &&
+        naturalWorkNextRoute.executed === false &&
+        naturalWorkNextRoute.output?.includes('Work next: preview only') &&
+        naturalWorkNextPayload.requestedExecute === false &&
+        naturalWorkNextPayload.executed === false &&
+        naturalWorkNextPayload.safety?.executesWorkNext === false &&
+        naturalWorkNextPayload.safety?.executesActions === false &&
+        naturalWorkNextData.safety?.startsMicrophone === false &&
+        naturalWorkNextData.safety?.usesRealtime === false &&
+        naturalWorkNextData.safety?.callsOpenAIImmediately === false &&
+        workNextRespectsExecuteFlag
+        ? ok('voice_command.natural_work_next_preview', 'Natural work-next voice command', '继续下一步 routes to work_next preview without executing the candidate')
+        : fail('voice_command.natural_work_next_preview', 'Natural work-next voice command', 'natural work-next phrase did not safely preview current work-next', {
+          body: naturalWorkNext.data,
+          workNextRespectsExecuteFlag,
+        }),
+    );
+
     const naturalCapabilities = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
