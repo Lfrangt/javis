@@ -499,7 +499,7 @@ export default {
     const naturalBrowserReady = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
-        transcript: '浏览器准备好了吗，默认会看哪个窗口？',
+        transcript: '浏览器准备好了吗，默认不要问我哪个窗口',
         execute: false,
         includeScreen: false,
         useMemory: false,

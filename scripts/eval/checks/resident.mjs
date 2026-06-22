@@ -942,6 +942,20 @@ export default {
         : fail('resident.routing_noise_filter', 'Routing noise filter', 'expected active routing/workflow blockers to filter transient unsupported-browser preview failures'),
     );
 
+    const hasBrowserUnavailableFallbackTarget =
+      mainSource.includes('let lastSupportedResult = null') &&
+      mainSource.includes('function compactBrowserContextError') &&
+      mainSource.includes("return 'browser_window_unavailable'") &&
+      mainSource.includes('error: compactBrowserContextError(error)') &&
+      mainSource.includes("appendAudit('browser_context.auto_target_unavailable'") &&
+      mainSource.includes('return lastSupportedResult') &&
+      mainSource.includes('fallbackAttempted: appName !== frontmost.app');
+    out.push(
+      hasBrowserUnavailableFallbackTarget
+        ? ok('resident.browser_unavailable_fallback_target', 'Browser unavailable fallback target', 'running supported browser stays the default target even when its current tab is not readable')
+        : fail('resident.browser_unavailable_fallback_target', 'Browser unavailable fallback target', 'expected browser context fallback to keep a supported running browser as the default target instead of falling back to the unsupported frontmost app'),
+    );
+
     const hasUnblockPreviewLoop =
       loopSource.includes("command === 'unblock'") &&
       loopSource.includes('/api/unblock/preview?jobLimit=5&workflowLimit=5&approvalLimit=5') &&

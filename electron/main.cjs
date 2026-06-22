@@ -12915,6 +12915,16 @@ function browserAppCandidates(runningNames = [], preferredApp = '') {
   return candidates;
 }
 
+function compactBrowserContextError(error) {
+  const raw = String(error?.stderr || (error instanceof Error ? error.message : error) || '');
+  if (/No front window/i.test(raw)) return 'browser_window_unavailable';
+  if (/No front document/i.test(raw)) return 'browser_document_unavailable';
+  if (/not authorized|not permitted|not allowed|Apple Events|Apple 事件|辅助功能|自动化/i.test(raw)) {
+    return 'browser_automation_permission_required';
+  }
+  return raw.split('\n')[0].slice(0, 500) || 'browser_context_unavailable';
+}
+
 async function readBrowserContextForApp(appName, source = 'requested') {
   const isSafari = SAFARI_BROWSER_APPS.has(appName);
   const isChromium = CHROMIUM_BROWSER_APPS.has(appName);
@@ -12971,7 +12981,7 @@ async function readBrowserContextForApp(appName, source = 'requested') {
       title: '',
       url: '',
       source,
-      error: error instanceof Error ? error.message : String(error),
+      error: compactBrowserContextError(error),
     };
   }
 }
@@ -12982,15 +12992,24 @@ async function browserContextSnapshot(options = {}) {
   if (requestedApp) return readBrowserContextForApp(requestedApp, 'requested');
 
   let frontmostResult = null;
+  let lastSupportedResult = null;
   if (frontmost.app && isSupportedBrowserApp(frontmost.app)) {
     frontmostResult = await readBrowserContextForApp(frontmost.app, 'frontmost');
     if (frontmostResult.available) return frontmostResult;
+    lastSupportedResult = frontmostResult;
   }
 
   const runningNames = await runningApplicationNames();
   for (const appName of browserAppCandidates(runningNames, frontmost.app)) {
     if (appName === frontmost.app && frontmostResult) continue;
     const result = await readBrowserContextForApp(appName, 'auto');
+    if (result.supported) {
+      lastSupportedResult = {
+        ...result,
+        fallbackFrom: frontmost.app || '',
+        fallbackAttempted: appName !== frontmost.app,
+      };
+    }
     if (result.available) {
       appendAudit('browser_context.auto_selected', {
         app: result.app,
@@ -13000,6 +13019,15 @@ async function browserContextSnapshot(options = {}) {
       });
       return result;
     }
+  }
+
+  if (lastSupportedResult) {
+    appendAudit('browser_context.auto_target_unavailable', {
+      app: lastSupportedResult.app || '',
+      error: lastSupportedResult.error || '',
+      frontmost: frontmost.app || '',
+    });
+    return lastSupportedResult;
   }
 
   return frontmostResult || {
@@ -24568,6 +24596,48 @@ function localCommandDecision(task) {
   const voiceStatusCommand = naturalVoiceStatusLocalCommand(text);
   if (voiceStatusCommand) return voiceStatusCommand;
 
+  const browserCommand = naturalBrowserLocalCommand(text);
+  if (browserCommand) return browserCommand;
+
+  const capabilityCommand = naturalCapabilityStatusCommand(text);
+  if (capabilityCommand) return capabilityCommand;
+
+  const appUiStatusCommand = naturalAppUiStatusLocalCommand(text);
+  if (appUiStatusCommand) return appUiStatusCommand;
+
+  const appUiCommand = naturalAppUiLocalCommand(text);
+  if (appUiCommand) return appUiCommand;
+
+  const localAppWorkflow = safeLocalAppWorkflowPlan(text);
+  if (localAppWorkflow) {
+    return {
+      intent: 'app_workflow',
+      label: 'App workflow',
+      requiresLocalExecution: true,
+      args: {
+        instruction: text,
+        useModel: false,
+        maxNodes: 160,
+        maxDepth: 8,
+        plan: {
+          source: localAppWorkflow.source,
+          title: localAppWorkflow.title,
+          confidence: localAppWorkflow.confidence,
+          stepCount: localAppWorkflow.steps.length,
+          steps: localAppWorkflow.steps.map((step) => ({
+            type: step.type,
+            label: step.label,
+            app: step.app,
+            instruction: step.instruction,
+            text: step.text,
+            keys: step.keys,
+            ms: step.ms,
+          })),
+        },
+      },
+    };
+  }
+
   const perceptionStatusCommand = naturalPerceptionStatusLocalCommand(text);
   if (perceptionStatusCommand) return perceptionStatusCommand;
 
@@ -24580,20 +24650,8 @@ function localCommandDecision(task) {
   const blockerStatusCommand = naturalBlockerStatusLocalCommand(text);
   if (blockerStatusCommand) return blockerStatusCommand;
 
-  const capabilityCommand = naturalCapabilityStatusCommand(text);
-  if (capabilityCommand) return capabilityCommand;
-
-  const browserCommand = naturalBrowserLocalCommand(text);
-  if (browserCommand) return browserCommand;
-
-  const appUiStatusCommand = naturalAppUiStatusLocalCommand(text);
-  if (appUiStatusCommand) return appUiStatusCommand;
-
   const autopilotStatusCommand = naturalAutopilotStatusLocalCommand(text);
   if (autopilotStatusCommand) return autopilotStatusCommand;
-
-  const appUiCommand = naturalAppUiLocalCommand(text);
-  if (appUiCommand) return appUiCommand;
 
   const windowCommand = naturalWindowControlLocalCommand(text);
   if (windowCommand) return windowCommand;
@@ -24796,36 +24854,6 @@ function localCommandDecision(task) {
         intent: creativeIntent,
         stage: creativeStage,
         app: selectedApp?.name || '',
-      },
-    };
-  }
-
-  const localAppWorkflow = safeLocalAppWorkflowPlan(text);
-  if (localAppWorkflow) {
-    return {
-      intent: 'app_workflow',
-      label: 'App workflow',
-      requiresLocalExecution: true,
-      args: {
-        instruction: text,
-        useModel: false,
-        maxNodes: 160,
-        maxDepth: 8,
-        plan: {
-          source: localAppWorkflow.source,
-          title: localAppWorkflow.title,
-          confidence: localAppWorkflow.confidence,
-          stepCount: localAppWorkflow.steps.length,
-          steps: localAppWorkflow.steps.map((step) => ({
-            type: step.type,
-            label: step.label,
-            app: step.app,
-            instruction: step.instruction,
-            text: step.text,
-            keys: step.keys,
-            ms: step.ms,
-          })),
-        },
       },
     };
   }
