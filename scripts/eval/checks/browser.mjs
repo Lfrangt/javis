@@ -77,6 +77,9 @@ export default {
       mainSource.includes('function browserUnavailableRecoveryAction') &&
       mainSource.includes('async function browserPrepareAction') &&
       mainSource.includes('function browserPreparedTargetSnapshot') &&
+      mainSource.includes('function rememberBrowserReadiness') &&
+      mainSource.includes('BROWSER_READINESS_READY_FRESH_MS') &&
+      mainSource.includes('_browser_readiness_refresh') &&
       mainSource.includes('browser_recovery:retry_browser_work') &&
       mainSource.includes('browser_ready_retry') &&
       mainSource.includes('browser_window_unavailable') &&

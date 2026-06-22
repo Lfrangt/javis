@@ -293,6 +293,7 @@ const RECORD_REPLAY_TEACHING_FRESH_MS = Math.max(60000, Math.min(604800000, Numb
 const PRODUCTIVITY_DOGFOOD_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_PRODUCTIVITY_DOGFOOD_FRESH_MS || 43200000)));
 const BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS = Math.max(60000, Math.min(3600000, Number(process.env.JAVIS_BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS || 600000)));
 const BROWSER_PREPARE_READY_FRESH_MS = boundedRuntimeInteger(process.env.JAVIS_BROWSER_PREPARE_READY_FRESH_MS, 600000, 30000, 3600000);
+const BROWSER_READINESS_READY_FRESH_MS = boundedRuntimeInteger(process.env.JAVIS_BROWSER_READINESS_READY_FRESH_MS, 180000, 10000, 3600000);
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
 const RENDERER_DOGFOOD_EVENT_NAME = 'javis:realtime-dogfood';
@@ -1034,6 +1035,19 @@ let browserPrepareState = {
   ensureOk: false,
   createdWindow: false,
   createdTab: false,
+};
+let browserReadinessState = {
+  lastCheckedAt: 0,
+  source: '',
+  app: '',
+  title: '',
+  url: '',
+  readinessStatus: '',
+  readinessSummary: '',
+  contextAvailable: false,
+  contextSupported: false,
+  cdpEnabled: false,
+  pageReady: false,
 };
 let maintenanceState = {
   lastSnapshotAt: 0,
@@ -13482,6 +13496,12 @@ async function overnightStatusSnapshot(options = {}) {
   const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
   const voiceStandby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
   const spendGuard = openAiSpendGuardSnapshot();
+  await browserReadinessSnapshot({ source: `${source}_browser_readiness_refresh` }).catch((error) => {
+    appendAudit('browser_readiness.refresh_failed', {
+      source,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   const progress = workProgressCheckIn({
     jobLimit: options.jobLimit || 5,
     workflowLimit: options.workflowLimit || 5,
@@ -20655,6 +20675,26 @@ function browserReadinessNextActions({ context = {}, cdp = {}, supportedRunning 
   return actions;
 }
 
+function rememberBrowserReadiness(snapshot = {}, options = {}) {
+  const context = snapshot.context || {};
+  const cdp = snapshot.bridges?.cdp || {};
+  const page = snapshot.capabilities?.page || {};
+  browserReadinessState = {
+    lastCheckedAt: Date.now(),
+    source: String(options.source || snapshot.source || 'browser_readiness').slice(0, 80),
+    app: String(context.app || snapshot.defaultTarget?.app || '').slice(0, 120),
+    title: compactRecordText(context.title || '', 180),
+    url: compactRecordText(context.url || '', 500),
+    readinessStatus: String(snapshot.status || ''),
+    readinessSummary: compactRecordText(snapshot.summary || '', 260),
+    contextAvailable: Boolean(context.available),
+    contextSupported: Boolean(context.supported),
+    cdpEnabled: Boolean(cdp.enabled),
+    pageReady: page.status === 'ready',
+  };
+  return browserReadinessState;
+}
+
 async function browserReadinessSnapshot(options = {}) {
   const frontmost = await frontmostAppSnapshot();
   const runningNames = await runningApplicationNames();
@@ -20681,7 +20721,7 @@ async function browserReadinessSnapshot(options = {}) {
   const pageReady = Boolean(pagePolicy.enabled && context.available && context.supported);
   const controlReady = Boolean(controlPolicy.enabled && context.supported && (context.available || context.app));
   const bridgeReady = Boolean(cdp.enabled);
-  return {
+  const snapshot = {
     version: 1,
     status,
     label: browserReadinessLabel(status),
@@ -20772,6 +20812,8 @@ async function browserReadinessSnapshot(options = {}) {
       asksWhichWindow: false,
     },
   };
+  rememberBrowserReadiness(snapshot, options);
+  return snapshot;
 }
 
 function browserDomSnapshotScript(limit) {
@@ -49800,12 +49842,66 @@ function browserPreparedTargetSnapshot() {
   const ready = fresh &&
     browserPrepareState.ensureOk === true &&
     ['ready', 'limited'].includes(String(browserPrepareState.readinessStatus || ''));
+  if (ready) {
+    return {
+      version: 1,
+      fresh,
+      ready,
+      ageMs,
+      maxAgeMs: BROWSER_PREPARE_READY_FRESH_MS,
+      sourceKind: 'prepare',
+      ...browserPrepareState,
+    };
+  }
+
+  const readinessAgeMs = browserReadinessState.lastCheckedAt ? Date.now() - Number(browserReadinessState.lastCheckedAt || 0) : 0;
+  const readinessFresh = Boolean(
+    browserReadinessState.lastCheckedAt &&
+      readinessAgeMs >= 0 &&
+      readinessAgeMs <= BROWSER_READINESS_READY_FRESH_MS,
+  );
+  const readinessReady = readinessFresh &&
+    browserReadinessState.contextAvailable === true &&
+    browserReadinessState.contextSupported === true &&
+    ['ready', 'limited'].includes(String(browserReadinessState.readinessStatus || ''));
+  if (readinessReady) {
+    return {
+      version: 1,
+      fresh: true,
+      ready: true,
+      ageMs: readinessAgeMs,
+      maxAgeMs: BROWSER_READINESS_READY_FRESH_MS,
+      sourceKind: 'readiness',
+      lastPreparedAt: 0,
+      lastCheckedAt: browserReadinessState.lastCheckedAt,
+      source: browserReadinessState.source,
+      app: browserReadinessState.app,
+      safeBlankUrl: browserReadinessState.url || 'about:blank',
+      readinessStatus: browserReadinessState.readinessStatus,
+      readinessSummary: browserReadinessState.readinessSummary,
+      title: browserReadinessState.title,
+      url: browserReadinessState.url,
+      ensureOk: true,
+      createdWindow: false,
+      createdTab: false,
+      cdpEnabled: browserReadinessState.cdpEnabled,
+      pageReady: browserReadinessState.pageReady,
+    };
+  }
+
   return {
     version: 1,
     fresh,
-    ready,
-    ageMs,
+    ready: false,
+    ageMs: fresh ? ageMs : readinessAgeMs,
     maxAgeMs: BROWSER_PREPARE_READY_FRESH_MS,
+    sourceKind: fresh ? 'prepare' : readinessFresh ? 'readiness' : '',
+    latestReadiness: {
+      fresh: readinessFresh,
+      ageMs: readinessAgeMs,
+      maxAgeMs: BROWSER_READINESS_READY_FRESH_MS,
+      ...browserReadinessState,
+    },
     ...browserPrepareState,
   };
 }
@@ -51944,6 +52040,13 @@ async function workNextAction(options = {}) {
       String(options.includeProductivityDogfoodArchive || '').toLowerCase() !== 'false'
     ) ||
     String(options.includeProductivityDogfoodArchive || '').toLowerCase() === 'true';
+  await browserReadinessSnapshot({ source: `${options.source || 'work_next'}_browser_readiness_refresh` }).catch((error) => {
+    appendAudit('browser_readiness.refresh_failed', {
+      source: options.source || 'work_next',
+      actionId: requestedActionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
   const briefing = workflowBriefing({
     workflowLimit: options.workflowLimit || 6,
     jobLimit: options.jobLimit || 6,
