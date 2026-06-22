@@ -730,7 +730,7 @@ function printNextAction(next) {
     console.log('Next action: none');
     return false;
   }
-  const auto = action.manualOnly || action.autopilotEligible === false
+  const auto = action.manualOnly
     ? 'manual-only'
     : action.autoEligible || action.workflowAction === 'retry_app_workflow' ? 'auto-eligible' : 'manual';
   console.log(`Next action: ${action.label || action.id || 'unnamed'} (${action.source || 'unknown'}, ${auto})`);

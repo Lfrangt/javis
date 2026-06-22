@@ -37285,7 +37285,7 @@ function autopilotEligibilityDecision(action) {
     return {
       executable: false,
       reason: 'autopilot_disabled_for_action',
-      detail: 'This action is intentionally excluded from unattended autopilot.',
+      detail: action.autopilotDisabledReason || 'This action is intentionally excluded from unattended autopilot.',
     };
   }
   if (action.source === 'maintenance') {
@@ -49964,6 +49964,21 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
   const first = blockedRoutes[0];
   const prepared = browserPreparedTargetSnapshot();
   if (prepared.ready) {
+    const followUpAction = first.record.id
+      ? routingWorkNextActionForRecord(first.record, {
+        source: 'browser_recovery_ready_retry',
+        activeCount: blockedRoutes.length,
+      })
+      : null;
+    const followUpAutopilot = followUpAction
+      ? autopilotEligibilityDecision(followUpAction)
+      : {
+        executable: false,
+        reason: 'missing_route_retry',
+        detail: 'No routed browser task was available to retry.',
+      };
+    const retryAutoEligible = Boolean(followUpAction?.executable && followUpAutopilot.executable);
+    const retryRiskLevel = Math.max(0, Math.min(4, Number(followUpAction?.riskLevel || 2)));
     return {
       id: 'browser_recovery:retry_browser_work',
       priority: 1.75,
@@ -49985,10 +50000,21 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
         blocker: compactRecordText(first.entry?.blocker || 'browser_window_unavailable', 160),
         next: `Browser target is ready enough for retry. Run ${first.record.id ? `route:${first.record.id}` : 'work-next'} to continue the blocked browser task; JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
         autopilotCooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
+        retryAutopilot: {
+          executable: retryAutoEligible,
+          reason: compactRecordText(followUpAutopilot.reason || '', 120),
+          detail: compactRecordText(followUpAutopilot.detail || '', 240),
+          followUpActionId: compactRecordText(followUpAction?.id || '', 140),
+          followUpSource: compactRecordText(followUpAction?.source || '', 80),
+          followUpRiskLevel: retryRiskLevel,
+        },
       },
       executable: Boolean(first.record.id),
-      autoEligible: Boolean(first.record.id),
-      autopilotEligible: Boolean(first.record.id),
+      autoEligible: retryAutoEligible,
+      autopilotEligible: retryAutoEligible,
+      autopilotDisabledReason: retryAutoEligible
+        ? ''
+        : `Browser target is ready, but the routed retry is not safe for unattended autopilot: ${followUpAutopilot.detail || followUpAutopilot.reason || 'manual retry required'}`,
       autopilotCooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
       manualOnly: false,
       requiresUserPresence: false,
@@ -50004,7 +50030,7 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
       sendsMessages: false,
       mutatesUserFiles: false,
       mutatesUserRecords: false,
-      riskLevel: 2,
+      riskLevel: retryRiskLevel,
     };
   }
   return {

@@ -121,13 +121,15 @@ export default {
     ));
     const browserRecoveryIsOpen = browserRecoveryAction?.id === 'browser_recovery:open_supported_browser';
     const browserRecoveryIsRetry = browserRecoveryAction?.id === 'browser_recovery:retry_browser_work';
+    const retryAutopilot = browserRecoveryAction?.browserRecovery?.retryAutopilot || {};
+    const retryAutoEligible = Boolean(retryAutopilot.executable);
     out.push(
       hasBrowserUnavailableBlocker
         ? workNext.ok &&
           browserRecoveryAction?.source === 'browser_recovery' &&
           browserRecoveryAction?.executable === true &&
-          browserRecoveryAction?.autoEligible === true &&
-          browserRecoveryAction?.autopilotEligible === true &&
+          (browserRecoveryIsOpen ? browserRecoveryAction?.autoEligible === true : browserRecoveryAction?.autoEligible === retryAutoEligible) &&
+          (browserRecoveryIsOpen ? browserRecoveryAction?.autopilotEligible === true : browserRecoveryAction?.autopilotEligible === retryAutoEligible) &&
           (browserRecoveryIsOpen ? browserRecoveryAction?.startsApps === true : browserRecoveryAction?.startsApps === false) &&
           (browserRecoveryIsRetry ? browserRecoveryAction?.executesTask === true : browserRecoveryAction?.executesTask === false) &&
           browserRecoveryAction?.sendsMessages === false &&
@@ -142,6 +144,8 @@ export default {
           (browserRecoveryIsRetry || browserRecoveryAction?.browserRecovery?.safeBlankUrl === 'about:blank') &&
           (browserRecoveryIsRetry || browserRecoveryAction?.browserRecovery?.ensuresReadableBlankTab === true) &&
           (browserRecoveryIsOpen || browserRecoveryAction?.browserRecovery?.preparedTarget?.ready === true) &&
+          (browserRecoveryIsOpen || String(retryAutopilot.followUpActionId || '').startsWith('route:')) &&
+          (browserRecoveryIsOpen || typeof retryAutopilot.reason === 'string') &&
           Number(browserRecoveryAction?.browserRecovery?.autopilotCooldownMs || 0) >= 60000 &&
           String(browserRecoveryAction?.browserRecovery?.retryActionId || '').startsWith('route:') &&
           browserRecoveryAction?.browserRecovery?.readinessEndpoint === '/api/browser/readiness'
