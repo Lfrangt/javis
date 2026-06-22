@@ -24,8 +24,10 @@ export default {
       );
     }
 
-    // observe_now: one-shot first-look context bundle. Read-only.
-    const observe = await ctx.api('/api/observe', { method: 'POST', body: { source: 'eval' }, timeoutMs: 15000 });
+    // observe_now: one-shot first-look context bundle. Read-only. Bundles
+    // screen capture + vision + AX, which can legitimately take >15s on a busy
+    // desktop, so give it room before warning.
+    const observe = await ctx.api('/api/observe', { method: 'POST', body: { source: 'eval' }, timeoutMs: 25000 });
     const o = observe.data;
     out.push(
       observe.ok && o && o.ok !== false && ('mac' in o || 'accessibility' in o)
