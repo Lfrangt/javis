@@ -126,6 +126,52 @@ export default {
         : fail('surface.region_preset_detail', 'Screen region preset detail', 'region preset detail must be a dry-run region-mask preview', regionPreset.data || { status: regionPreset.status, error: regionPreset.error }),
     );
 
+    const windowBeforeResponse = await ctx.api('/api/window/state');
+    const windowBefore = windowBeforeResponse.data?.window || {};
+    const beforePosition = windowBefore.position || {};
+    if (
+      windowBeforeResponse.ok &&
+      Number.isFinite(Number(beforePosition.x)) &&
+      Number.isFinite(Number(beforePosition.y))
+    ) {
+      const targetX = Math.max(0, Math.round(Number(beforePosition.x) + (Number(beforePosition.x) > 80 ? -24 : 24)));
+      const targetY = Math.max(0, Math.round(Number(beforePosition.y) + 24));
+      const movedResponse = await ctx.api('/api/window/move', {
+        method: 'POST',
+        body: { x: targetX, y: targetY },
+      });
+      const moved = movedResponse.data?.window || {};
+      const movedPosition = moved.position || {};
+      const restoreResponse = await ctx.api('/api/window/park', {
+        method: 'POST',
+        body: {
+          corner: windowBefore.parkCorner || 'notch',
+          display: windowBefore.parkDisplay || 'primary',
+        },
+      });
+      const restored = restoreResponse.data?.window || {};
+      const movedCloseEnough =
+        Math.abs(Number(movedPosition.x) - targetX) <= 2 &&
+        Math.abs(Number(movedPosition.y) - targetY) <= 2;
+      out.push(
+        movedResponse.ok &&
+          movedResponse.data?.ok === true &&
+          moved.mode === windowBefore.mode &&
+          movedCloseEnough &&
+          restoreResponse.ok &&
+          restoreResponse.data?.ok === true &&
+          restored.parkCorner === (windowBefore.parkCorner || 'notch')
+          ? ok('surface.window_move_restore', 'Pet window move and restore', `moved ${targetX},${targetY} · restored=${restored.parkCorner}`)
+          : fail('surface.window_move_restore', 'Pet window move and restore', 'window move should only reposition JAVIS, preserve mode, and restore the parked corner', {
+            before: windowBefore,
+            moved: movedResponse.data || { status: movedResponse.status, error: movedResponse.error },
+            restored: restoreResponse.data || { status: restoreResponse.status, error: restoreResponse.error },
+          }),
+      );
+    } else {
+      out.push(fail('surface.window_move_restore', 'Pet window move and restore', 'GET /api/window/state did not expose a current JAVIS window position', windowBeforeResponse.data || { status: windowBeforeResponse.status, error: windowBeforeResponse.error }));
+    }
+
     const workflows = await ctx.api('/api/workflows');
     const workflowItems = workflows.data?.workflows || [];
     if (workflows.ok && Array.isArray(workflowItems) && workflowItems[0]?.id) {
