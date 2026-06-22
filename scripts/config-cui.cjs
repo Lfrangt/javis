@@ -25,6 +25,8 @@ const OPENAI_ZERO_SPEND_ENV = {
   JAVIS_OPENAI_ALLOW_AUTOPILOT: 'false',
   JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE: 'false',
   JAVIS_OPENAI_EGRESS_GUARD: 'true',
+  JAVIS_OPENAI_REQUIRE_SPEND_LEASE: 'true',
+  JAVIS_OPENAI_SPEND_LEASE_TTL_MS: '60000',
 };
 
 function formatTime(value) {
@@ -322,7 +324,7 @@ async function printStatus() {
     if (status.api?.openAiSpendGuard) {
       const guard = status.api.openAiSpendGuard;
       const counts = guard.counts || {};
-      console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
+      console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · lease ${guard.requireSpendLease ? 'required' : 'off'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
     }
     if (status.voiceHealth?.kind === 'quota_or_rate_limit') {
       console.log(`OpenAI provider: quota/rate-limit · ${compact(status.voiceHealth.next || status.voiceHealth.summary || '', 180)}`);
@@ -3804,14 +3806,23 @@ function printOpenAiSpendGuard(result) {
   const remaining = guard.remaining || {};
   const safety = guard.safety || {};
   const recent = Array.isArray(guard.recent) ? guard.recent : [];
+  const lease = guard.spendLease || {};
+  const activeLeases = Array.isArray(lease.active) ? lease.active : [];
   console.log('JAVIS OpenAI Spend Guard');
   console.log('========================');
   console.log(`Mode: ${guard.mode || 'off'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · daily=${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · remaining=${remaining.total ?? 0}`);
   console.log(`Unattended: ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · manual=${counts.manual || 0} · blocked=${counts.blocked || 0}`);
   console.log(`Autopilot cloud: ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · renderer startup probe: ${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'}`);
+  console.log(`Spend lease: ${guard.requireSpendLease ? 'required' : 'off'} · ttl=${formatInterval(guard.spendLeaseTtlMs || lease.ttlMs || 0)} · active=${lease.activeCount || activeLeases.length || 0} · one-request-only=${lease.oneRequestOnly === false ? 'no' : 'yes'}`);
   console.log(`Egress guard: ${guard.egressGuardEnabled ? 'on' : 'off'} · ${guard.egressGuardMode || '-'}`);
-  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'}`);
-  console.log('\nTo intentionally spend later: set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase for one request.');
+  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · one-request lease=${safety.oneRequestLeaseRequired ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'}`);
+  console.log('\nTo intentionally spend later: set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase to create one short-lived, one-request lease.');
+  if (activeLeases.length) {
+    console.log('\nActive OpenAI spend leases:');
+    for (const item of activeLeases.slice(0, 5)) {
+      console.log(`- ${item.id || '-'} · ${item.kind || '-'} · ${item.source || '-'} · expires in ${formatInterval(item.expiresInMs || 0)}`);
+    }
+  }
   if (recent.length) {
     console.log('\nRecent OpenAI guard events:');
     for (const event of recent.slice(0, 8)) {
@@ -3827,13 +3838,40 @@ async function showOpenAiSpendGuard() {
   return result;
 }
 
+async function createOpenAiSpendLease(options = {}) {
+  let result;
+  try {
+    result = await request('/api/openai/spend-lease', {
+      method: 'POST',
+      body: {
+        kind: options.kind || 'responses_text',
+        source: options.source || 'cui_spend_lease',
+        model: options.model || '',
+        confirmOpenAiSpend: true,
+        confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase || '',
+      },
+    });
+  } catch (error) {
+    console.log('\nNo OpenAI spend lease created.');
+    console.log(error instanceof Error ? error.message : String(error));
+    return null;
+  }
+  if (!result.ok || !result.lease?.id) {
+    console.log('\nNo OpenAI spend lease created.');
+    console.log(compact(result.output || result.decision?.summary || result.error || 'Spend guard blocked the lease.', 320));
+    return null;
+  }
+  console.log(`\nOpenAI spend lease created for one request: ${result.lease.id} · expires in ${formatInterval(result.lease.expiresInMs || 0)}`);
+  return result.lease;
+}
+
 async function lockOpenAiSpendDown(options = {}) {
   const result = applyOpenAiZeroSpendEnv();
   console.log('JAVIS OpenAI Zero-Spend Lockdown');
   console.log('=================================');
   console.log(`Env: ${result.envFile}`);
   console.log(`Changed: ${result.changed.length ? result.changed.join(', ') : 'already locked'}`);
-  console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on');
+  console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on · one-request spend lease required');
   console.log('OPENAI_API_KEY was preserved; API key presence still does not grant spend permission.');
 
   if (options.restart === false) {
@@ -3865,7 +3903,7 @@ async function lockOpenAiSpendDown(options = {}) {
 
 async function lockOpenAiSpendInteractive(rl) {
   console.log('\nThis preserves OPENAI_API_KEY but forces all OpenAI spend controls back to zero-spend defaults.');
-  console.log('It will set hard lock on, cloud mode off, daily budget 0, unattended budget 0, and egress guard on.');
+  console.log('It will set hard lock on, cloud mode off, daily budget 0, unattended budget 0, egress guard on, and one-request spend lease required.');
   const answer = (await rl.question('Type LOCK to enforce zero-spend lockdown and restart JAVIS: ')).trim();
   if (answer !== 'LOCK') {
     console.log('\nNo change made.');
@@ -4136,6 +4174,7 @@ async function showRealtimeProviderProbe(options = {}) {
           source: options.source || 'cui',
           confirmOpenAiSpend: options.confirmOpenAiSpend === true,
           confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase || '',
+          openAiSpendLeaseId: options.openAiSpendLeaseId || '',
         },
       })
     : await request('/api/realtime/provider/probe');
@@ -4175,10 +4214,17 @@ async function runRealtimeProviderProbeFromCui(rl) {
     console.log('\nNo provider probe started.');
     return;
   }
+  const lease = await createOpenAiSpendLease({
+    kind: 'realtime_provider_probe',
+    source: 'cui',
+    confirmOpenAiSpendPhrase: answer,
+  });
+  if (!lease?.id) return;
   await showRealtimeProviderProbe({
     run: true,
     confirmOpenAiSpend: true,
     confirmOpenAiSpendPhrase: answer,
+    openAiSpendLeaseId: lease.id,
     source: 'cui',
   });
 }
@@ -4731,10 +4777,17 @@ async function main() {
       console.log('\nNo OpenAI call was made. --confirm-openai-spend now also requires --confirm-openai-spend-phrase "<phrase>", and the hard spend lock must be off.');
       return;
     }
+    const lease = await createOpenAiSpendLease({
+      kind: 'realtime_provider_probe',
+      source: 'cui_cli',
+      confirmOpenAiSpendPhrase,
+    });
+    if (!lease?.id) return;
     await showRealtimeProviderProbe({
       run: true,
       confirmOpenAiSpend: true,
       confirmOpenAiSpendPhrase,
+      openAiSpendLeaseId: lease.id,
       source: 'cui_cli',
     });
     return;

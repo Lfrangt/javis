@@ -1540,18 +1540,22 @@ export default {
 		    spendGuard.dailyRequestLimit === 0 &&
 	        spendGuard.unattendedDailyRequestLimit === 0 &&
 	        spendGuard.allowAutopilotCloud === false &&
-	        spendGuard.allowRendererStartupProbe === false &&
-	        spendGuard.requireSpendConfirmationPhrase === true &&
-	        spendGuard.autopilotRequiresExplicitEnv === true &&
-	        spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
-	        egressGuard.enabled === true &&
+		        spendGuard.allowRendererStartupProbe === false &&
+		        spendGuard.requireSpendConfirmationPhrase === true &&
+		        spendGuard.requireSpendLease === true &&
+		        spendGuard.spendLease?.oneRequestOnly === true &&
+		        Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
+		        spendGuard.autopilotRequiresExplicitEnv === true &&
+		        spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
+		        spendGuard.safety?.oneRequestLeaseRequired === true &&
+		        egressGuard.enabled === true &&
 	        egressGuard.installed === true &&
 	        egressGuard.mode === 'scoped_allow_only' &&
 	        egressGuard.safety?.blocksUnscopedOpenAiFetch === true &&
 	        spendGuard.safety?.off === true &&
 	        spendGuard.safety?.zeroBudgetDefault === true &&
-	        spendGuard.safety?.hardSpendLockDefault === true &&
-	        spendGuard.safety?.confirmationPhraseRequired === true &&
+		        spendGuard.safety?.hardSpendLockDefault === true &&
+		        spendGuard.safety?.confirmationPhraseRequired === true &&
 	        spendGuard.safety?.unattendedCloudDefaultBlocked === true
 	        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
 	        : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to zero-spend OpenAI usage, hard-lock cloud calls, block unattended/autopilot calls, and disable renderer startup probes', {
@@ -1597,9 +1601,9 @@ export default {
 	    const unconfirmedProviderProbe = unconfirmedProviderProbeResponse.data || {};
 	    const spendGuardAfterUnconfirmedResponse = await ctx.api('/api/openai/spend-guard');
 	    const spendGuardAfterUnconfirmed = spendGuardAfterUnconfirmedResponse.data?.spendGuard || {};
-	    out.push(
-	      unconfirmedProviderProbeResponse.status === 428 &&
-	        unconfirmedProviderProbe.ok === false &&
+		    out.push(
+		      unconfirmedProviderProbeResponse.status === 428 &&
+		        unconfirmedProviderProbe.ok === false &&
 	        unconfirmedProviderProbe.executed === false &&
 	        unconfirmedProviderProbe.openAiSpendConfirmation?.required === true &&
 	        unconfirmedProviderProbe.openAiSpendConfirmation?.confirmed === false &&
@@ -1612,10 +1616,42 @@ export default {
 	          body: unconfirmedProviderProbe,
 	          spendGuardBefore: spendGuard,
 	          spendGuardAfter: spendGuardAfterUnconfirmed,
-	        }),
-	    );
+		        }),
+		    );
 
-	    const spendGuardDryRunResponse = await ctx.api('/api/openai/spend-guard/check', {
+		    const confirmedNoLeaseProviderProbeResponse = await ctx.api('/api/realtime/provider/probe', {
+		      method: 'POST',
+		      body: {
+		        execute: true,
+		        source: 'cui_cli',
+		        confirmOpenAiSpend: true,
+		        confirmOpenAiSpendPhrase: 'SPEND OPENAI',
+		      },
+		      timeoutMs: 10000,
+		    });
+		    const confirmedNoLeaseProviderProbe = confirmedNoLeaseProviderProbeResponse.data || {};
+		    const spendGuardAfterNoLeaseResponse = await ctx.api('/api/openai/spend-guard');
+		    const spendGuardAfterNoLease = spendGuardAfterNoLeaseResponse.data?.spendGuard || {};
+		    out.push(
+		      confirmedNoLeaseProviderProbeResponse.status === 428 &&
+		        confirmedNoLeaseProviderProbe.ok === false &&
+		        confirmedNoLeaseProviderProbe.executed === false &&
+		        confirmedNoLeaseProviderProbe.openAiSpendConfirmation?.confirmed === true &&
+		        confirmedNoLeaseProviderProbe.openAiSpendConfirmation?.lease?.ok === false &&
+		        confirmedNoLeaseProviderProbe.openAiSpendConfirmation?.lease?.reason === 'spend_lease_required' &&
+		        String(confirmedNoLeaseProviderProbe.output || '').includes('one-request spend lease required') &&
+		        spendGuardAfterNoLeaseResponse.ok &&
+		        Number(spendGuardAfterNoLease.counts?.total || 0) === spendGuardTotalBefore
+		        ? ok('resident.openai_spend_lease_gate', 'OpenAI one-request spend lease gate', 'phrase-confirmed provider probe without a one-request lease returns 428 and does not reserve OpenAI spend')
+		        : fail('resident.openai_spend_lease_gate', 'OpenAI one-request spend lease gate', 'expected phrase-confirmed provider-probe execution without a lease to stop before any OpenAI spend reservation', {
+		          status: confirmedNoLeaseProviderProbeResponse.status,
+		          body: confirmedNoLeaseProviderProbe,
+		          spendGuardBefore: spendGuard,
+		          spendGuardAfter: spendGuardAfterNoLease,
+		        }),
+		    );
+
+		    const spendGuardDryRunResponse = await ctx.api('/api/openai/spend-guard/check', {
 	      method: 'POST',
 	      body: {
 	        kind: 'responses_text',
@@ -1659,23 +1695,29 @@ export default {
 	      mainSource.includes('confirmOpenAiSpendPhrase') &&
 	      mainSource.includes('const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === \'true\';') &&
 	      mainSource.includes('OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT') &&
-	      mainSource.includes('OPENAI_ALLOW_RENDERER_STARTUP_PROBE') &&
-	      mainSource.includes('OPENAI_EGRESS_GUARD_ENABLED') &&
-	      mainSource.includes('renderer_startup_probe_disabled') &&
+		      mainSource.includes('OPENAI_ALLOW_RENDERER_STARTUP_PROBE') &&
+		      mainSource.includes('OPENAI_EGRESS_GUARD_ENABLED') &&
+		      mainSource.includes('OPENAI_REQUIRE_SPEND_LEASE') &&
+		      mainSource.includes('OPENAI_SPEND_LEASE_TTL_MS') &&
+		      mainSource.includes('function createOpenAiSpendLease') &&
+		      mainSource.includes('spend_lease_required') &&
+		      mainSource.includes('renderer_startup_probe_disabled') &&
 	      mainSource.includes('function installOpenAiEgressGuard') &&
 	      mainSource.includes('function openAiEgressGuardSnapshot') &&
 	      mainSource.includes('unscoped_openai_egress_blocked') &&
 	      mainSource.includes("api.post('/api/openai/egress-guard/probe'") &&
 	      mainSource.includes('await withOpenAiEgressAllowed(spendDecision') &&
 	      mainSource.includes("kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session'") &&
-	      mainSource.includes("api.get('/api/openai/spend-guard'") &&
-	      mainSource.includes("api.post('/api/openai/spend-guard/check'") &&
-	      mainSource.includes('async function callOpenAIResponses({') &&
+		      mainSource.includes("api.get('/api/openai/spend-guard'") &&
+		      mainSource.includes("api.post('/api/openai/spend-guard/check'") &&
+		      mainSource.includes("api.post('/api/openai/spend-lease'") &&
+		      mainSource.includes('async function callOpenAIResponses({') &&
 	      mainSource.includes("manualOnlyReason = 'OpenAI provider probes can consume API quota and require explicit user action.'") &&
 	      mainSource.includes('source: options.source || \'observe_vision\'') &&
-	      rendererSource.includes("source: detail.source || 'renderer_provider_probe'") &&
-	      rendererSource.includes("params.set('confirmOpenAiSpend', 'true')") &&
-	      rendererSource.includes("params.set('confirmOpenAiSpendPhrase', detail.confirmOpenAiSpendPhrase)") &&
+		      rendererSource.includes("source: detail.source || 'renderer_provider_probe'") &&
+		      rendererSource.includes("params.set('confirmOpenAiSpend', 'true')") &&
+		      rendererSource.includes("params.set('confirmOpenAiSpendPhrase', detail.confirmOpenAiSpendPhrase)") &&
+		      rendererSource.includes("params.set('openAiSpendLeaseId', detail.openAiSpendLeaseId)") &&
       packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
       packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&
@@ -1685,9 +1727,11 @@ export default {
 	      envExampleSource.includes('JAVIS_OPENAI_CLOUD_MODE=off') &&
 	      envExampleSource.includes('JAVIS_OPENAI_DAILY_REQUEST_LIMIT=0') &&
 	      envExampleSource.includes('JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0') &&
-	      envExampleSource.includes('JAVIS_OPENAI_ALLOW_AUTOPILOT=false') &&
-	      envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false') &&
-	      envExampleSource.includes('JAVIS_OPENAI_EGRESS_GUARD=true');
+		      envExampleSource.includes('JAVIS_OPENAI_ALLOW_AUTOPILOT=false') &&
+		      envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false') &&
+		      envExampleSource.includes('JAVIS_OPENAI_EGRESS_GUARD=true') &&
+		      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_LEASE=true') &&
+		      envExampleSource.includes('JAVIS_OPENAI_SPEND_LEASE_TTL_MS=60000');
     out.push(
 	      hasOpenAiSpendGuardStatic
 	        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls are guarded, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')

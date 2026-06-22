@@ -277,6 +277,8 @@ const OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.
 const OPENAI_ALLOW_AUTOPILOT = process.env.JAVIS_OPENAI_ALLOW_AUTOPILOT === 'true';
 const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = process.env.JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE === 'true';
 const OPENAI_EGRESS_GUARD_ENABLED = process.env.JAVIS_OPENAI_EGRESS_GUARD !== 'false';
+const OPENAI_REQUIRE_SPEND_LEASE = process.env.JAVIS_OPENAI_REQUIRE_SPEND_LEASE !== 'false';
+const OPENAI_SPEND_LEASE_TTL_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_LEASE_TTL_MS, 60000, 5000, 300000);
 const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true';
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
@@ -2607,6 +2609,9 @@ function openAiSpendGuardSnapshot() {
     allowRendererStartupProbe: OPENAI_ALLOW_RENDERER_STARTUP_PROBE,
     requireSpendConfirmationPhrase: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
     spendConfirmationPhrase: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE ? 'configured' : 'not_required',
+    requireSpendLease: OPENAI_REQUIRE_SPEND_LEASE,
+    spendLeaseTtlMs: OPENAI_SPEND_LEASE_TTL_MS,
+    spendLease: openAiSpendLeaseStateSnapshot(),
     autopilotRequiresExplicitEnv: true,
     autopilotEnabled: AUTOPILOT_ENABLED,
     day: state.day,
@@ -2622,6 +2627,7 @@ function openAiSpendGuardSnapshot() {
       manualOnlyByDefault: OPENAI_CLOUD_MODE === 'manual',
       hardSpendLockDefault: OPENAI_HARD_SPEND_LOCK,
       confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
+      oneRequestLeaseRequired: OPENAI_REQUIRE_SPEND_LEASE,
       off: OPENAI_CLOUD_MODE === 'off',
       unscopedOpenAiEgressBlocked: OPENAI_EGRESS_GUARD_ENABLED,
     },
@@ -2663,6 +2669,10 @@ function evaluateOpenAiSpendGuard(options = {}) {
   if (!manual && (OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT <= 0 || Number(state.counts.unattended || 0) >= OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT)) {
     reasons.push('unattended_request_limit_reached');
   }
+  const leaseDecision = options.reserve === true || options.requireSpendLease === true
+    ? evaluateOpenAiSpendLease({ ...options, kind, source, model })
+    : { ok: true, required: OPENAI_REQUIRE_SPEND_LEASE, reason: '', lease: null };
+  if (!leaseDecision.ok && leaseDecision.reason) reasons.push(leaseDecision.reason);
   for (const reason of Array.isArray(options.forceBlockedReasons) ? options.forceBlockedReasons : []) {
     const text = compactRecordText(reason, 120);
     if (text && !reasons.includes(text)) reasons.push(text);
@@ -2681,6 +2691,9 @@ function evaluateOpenAiSpendGuard(options = {}) {
     confirmed,
     hardSpendLock: OPENAI_HARD_SPEND_LOCK,
     confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
+    leaseRequired: OPENAI_REQUIRE_SPEND_LEASE,
+    leaseId: leaseDecision.lease?.id || openAiSpendLeaseIdFromOptions(options) || '',
+    leaseStatus: leaseDecision.ok ? (leaseDecision.required ? 'valid' : 'not_required') : leaseDecision.reason,
     mode: OPENAI_CLOUD_MODE,
     reasons,
   };
@@ -2691,6 +2704,7 @@ function evaluateOpenAiSpendGuard(options = {}) {
       next.counts.total += 1;
       if (manual) next.counts.manual += 1;
       else next.counts.unattended += 1;
+      consumeOpenAiSpendLease(leaseDecision.lease, event.id);
     } else {
       next.counts.blocked += 1;
     }
@@ -2751,12 +2765,15 @@ function openAiSpendConfirmationSnapshot(options = {}) {
     hardSpendLock: OPENAI_HARD_SPEND_LOCK,
     phraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
     phraseMatched,
+    leaseRequired: OPENAI_REQUIRE_SPEND_LEASE,
+    leaseTtlMs: OPENAI_SPEND_LEASE_TTL_MS,
+    lease: evaluateOpenAiSpendLease({ ...options, kind, source }),
     manual,
     kind,
     source,
     prompt: OPENAI_HARD_SPEND_LOCK
       ? 'OpenAI spending is hard-locked. To spend, set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set a positive daily limit, restart JAVIS, then confirm the one request with the configured spend phrase.'
-      : 'This OpenAI call can consume API quota. Confirm one request with confirmOpenAiSpend:true plus confirmOpenAiSpendPhrase, or type the exact spend phrase in the CUI.',
+      : 'This OpenAI call can consume API quota. Create a one-request spend lease with the exact phrase, then execute before the lease expires.',
   };
 }
 
@@ -2773,6 +2790,152 @@ const ORIGINAL_HTTPS_REQUEST = https.request.bind(https);
 const ORIGINAL_HTTPS_GET = https.get.bind(https);
 let openAiEgressGuardInstalled = false;
 let openAiEgressAllowDepth = 0;
+const openAiSpendLeases = new Map();
+
+function openAiSpendLeaseIdFromOptions(options = {}) {
+  return String(
+    options.openAiSpendLeaseId ||
+      options.spendLeaseId ||
+      options.leaseId ||
+      options.openAiLeaseId ||
+      '',
+  ).trim();
+}
+
+function pruneOpenAiSpendLeases(now = Date.now()) {
+  for (const [id, lease] of openAiSpendLeases.entries()) {
+    if (!lease || lease.expiresAt <= now || lease.usedAt) {
+      openAiSpendLeases.delete(id);
+    }
+  }
+}
+
+function openAiSpendLeaseSnapshot(lease = null, now = Date.now()) {
+  if (!lease) return null;
+  return {
+    id: lease.id,
+    kind: lease.kind,
+    source: lease.source,
+    model: lease.model,
+    createdAt: lease.createdAt,
+    expiresAt: lease.expiresAt,
+    expiresInMs: Math.max(0, lease.expiresAt - now),
+    usedAt: lease.usedAt || 0,
+    usedByEventId: lease.usedByEventId || '',
+  };
+}
+
+function openAiSpendLeaseStateSnapshot() {
+  const now = Date.now();
+  pruneOpenAiSpendLeases(now);
+  const leases = Array.from(openAiSpendLeases.values())
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 8)
+    .map((lease) => openAiSpendLeaseSnapshot(lease, now));
+  return {
+    required: OPENAI_REQUIRE_SPEND_LEASE,
+    ttlMs: OPENAI_SPEND_LEASE_TTL_MS,
+    activeCount: leases.length,
+    active: leases,
+    oneRequestOnly: true,
+  };
+}
+
+function evaluateOpenAiSpendLease(options = {}) {
+  if (!OPENAI_REQUIRE_SPEND_LEASE) {
+    return { ok: true, required: false, reason: '', lease: null };
+  }
+  const now = Date.now();
+  pruneOpenAiSpendLeases(now);
+  const leaseId = openAiSpendLeaseIdFromOptions(options);
+  if (!leaseId) return { ok: false, required: true, reason: 'spend_lease_required', lease: null };
+  const lease = openAiSpendLeases.get(leaseId);
+  if (!lease) return { ok: false, required: true, reason: 'spend_lease_missing', lease: null };
+  if (lease.usedAt) return { ok: false, required: true, reason: 'spend_lease_already_used', lease };
+  if (lease.expiresAt <= now) {
+    openAiSpendLeases.delete(leaseId);
+    return { ok: false, required: true, reason: 'spend_lease_expired', lease };
+  }
+  const kind = compactRecordText(options.kind || 'openai', 80);
+  if (lease.kind && kind && lease.kind !== kind) {
+    return { ok: false, required: true, reason: 'spend_lease_kind_mismatch', lease };
+  }
+  return { ok: true, required: true, reason: '', lease };
+}
+
+function consumeOpenAiSpendLease(lease, eventId) {
+  if (!lease || lease.usedAt) return null;
+  lease.usedAt = Date.now();
+  lease.usedByEventId = String(eventId || '');
+  openAiSpendLeases.delete(lease.id);
+  appendAudit('openai.spend_lease_consumed', {
+    leaseId: lease.id,
+    kind: lease.kind,
+    source: lease.source,
+    model: lease.model,
+    usedByEventId: lease.usedByEventId,
+  });
+  return lease;
+}
+
+function createOpenAiSpendLease(options = {}) {
+  const kind = compactRecordText(options.kind || 'openai', 80);
+  const source = compactRecordText(options.source || 'manual_spend_lease', 80);
+  const model = compactRecordText(options.model || '', 120);
+  const decision = evaluateOpenAiSpendGuard({
+    ...options,
+    kind,
+    source,
+    model,
+    reserve: false,
+    recordBlocked: false,
+  });
+  if (!decision.allowed) {
+    appendAudit('openai.spend_lease_blocked', {
+      kind,
+      source,
+      model,
+      reasons: decision.reasons,
+    });
+    return {
+      ok: false,
+      status: 403,
+      decision,
+      lease: null,
+      spendGuard: openAiSpendGuardSnapshot(),
+      output: `OpenAI spend lease not created: ${decision.reasons.join(', ') || 'spend_guard'}.`,
+    };
+  }
+  const now = Date.now();
+  const lease = {
+    id: crypto.randomUUID(),
+    kind,
+    source,
+    model,
+    createdAt: now,
+    expiresAt: now + OPENAI_SPEND_LEASE_TTL_MS,
+    usedAt: 0,
+    usedByEventId: '',
+  };
+  pruneOpenAiSpendLeases(now);
+  openAiSpendLeases.set(lease.id, lease);
+  appendAudit('openai.spend_lease_created', {
+    leaseId: lease.id,
+    kind,
+    source,
+    model,
+    ttlMs: OPENAI_SPEND_LEASE_TTL_MS,
+    expiresAt: new Date(lease.expiresAt).toISOString(),
+  });
+  return {
+    ok: true,
+    status: 200,
+    decision,
+    lease: openAiSpendLeaseSnapshot(lease, now),
+    spendGuard: openAiSpendGuardSnapshot(),
+    output: 'OpenAI spend lease created for one request.',
+  };
+}
 
 function openAiEgressHostIsGuarded(hostname = '') {
   const host = String(hostname || '').trim().toLowerCase().replace(/\.$/, '');
@@ -13517,7 +13680,8 @@ function overnightCloudLocked(spendGuard = {}) {
       Number(spendGuard.unattendedDailyRequestLimit || 0) === 0 &&
       spendGuard.allowAutopilotCloud === false &&
       spendGuard.allowRendererStartupProbe === false &&
-      spendGuard.egressGuardEnabled === true,
+      spendGuard.egressGuardEnabled === true &&
+      spendGuard.requireSpendLease === true,
   );
 }
 
@@ -25789,11 +25953,11 @@ function naturalObserveNowLocalCommand(text) {
     label: 'Observe now',
     args: {
       captureScreen: 'auto',
-      includeAccessibility: true,
+      includeAccessibility: false,
       screenMaxAgeMs: 15000,
       accessibilityMaxAgeMs: 8000,
-      maxNodes: 100,
-      maxDepth: 6,
+      maxNodes: 40,
+      maxDepth: 4,
     },
   };
 }
@@ -26353,7 +26517,7 @@ function localCommandDecision(task) {
       label: 'Observe now',
       args: {
         captureScreen: 'auto',
-        includeAccessibility: true,
+        includeAccessibility: false,
         screenMaxAgeMs: 15000,
         accessibilityMaxAgeMs: 8000,
       },
@@ -30352,6 +30516,7 @@ const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
   'incident_report',
   'keep_awake',
   'learning_distillation',
+  'observe_now',
   'perception_status',
   'prompt_suggestions',
   'realtime_dogfood_archive',
@@ -44751,7 +44916,7 @@ function realtimeProviderProbeSnapshot(options = {}) {
       method: 'POST',
       path: '/api/realtime/provider/probe',
       previewBody: { execute: false },
-      executeBody: { execute: true, confirmOpenAiSpend: true, confirmOpenAiSpendPhrase: '<type spend phrase>' },
+      executeBody: { execute: true, confirmOpenAiSpend: true, confirmOpenAiSpendPhrase: '<type spend phrase>', openAiSpendLeaseId: '<one-request lease id>' },
     },
     safety: {
       startsMicrophone: false,
@@ -44780,6 +44945,9 @@ async function startRealtimeProviderProbe(options = {}) {
     confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase,
     openAiSpendPhrase: options.openAiSpendPhrase,
     spendConfirmationPhrase: options.spendConfirmationPhrase,
+    openAiSpendLeaseId: options.openAiSpendLeaseId,
+    spendLeaseId: options.spendLeaseId,
+    leaseId: options.leaseId,
   });
   const spendPreview = evaluateOpenAiSpendGuard({
     kind: 'realtime_provider_probe',
@@ -44791,6 +44959,9 @@ async function startRealtimeProviderProbe(options = {}) {
     confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase,
     openAiSpendPhrase: options.openAiSpendPhrase,
     spendConfirmationPhrase: options.spendConfirmationPhrase,
+    openAiSpendLeaseId: options.openAiSpendLeaseId,
+    spendLeaseId: options.spendLeaseId,
+    leaseId: options.leaseId,
     reserve: false,
     recordBlocked: false,
   });
@@ -44812,7 +44983,7 @@ async function startRealtimeProviderProbe(options = {}) {
       method: 'POST',
       path: '/api/realtime/provider/probe',
       previewBody: { execute: false },
-      executeBody: { execute: true, confirmOpenAiSpend: true, confirmOpenAiSpendPhrase: '<type spend phrase>' },
+      executeBody: { execute: true, confirmOpenAiSpend: true, confirmOpenAiSpendPhrase: '<type spend phrase>', openAiSpendLeaseId: '<one-request lease id>' },
     },
     detail: {
       action: 'probe',
@@ -44827,6 +44998,7 @@ async function startRealtimeProviderProbe(options = {}) {
       `OpenAI key: ${OPENAI_API_KEY ? 'present' : 'missing'}.`,
       `Cloud spend guard: ${spendPreview.allowed ? 'allowed' : `blocked (${spendPreview.reasons.join(', ')})`}.`,
       spendConfirmation.required ? `OpenAI spend confirmation: ${spendConfirmation.confirmed ? 'confirmed for this request' : 'required before execution'}.` : '',
+      OPENAI_REQUIRE_SPEND_LEASE ? `OpenAI spend lease: ${spendConfirmation.lease?.ok ? 'valid for one request' : `required (${spendConfirmation.lease?.reason || 'missing'})`}.` : '',
     ].join('\n'),
   };
   if (!execute) return preview;
@@ -44837,6 +45009,15 @@ async function startRealtimeProviderProbe(options = {}) {
       status: 428,
       executed: false,
       output: 'OpenAI spend confirmation required before running the no-mic Realtime provider probe. Unlock the hard spend lock first, then confirm one request with confirmOpenAiSpend:true plus the configured spend phrase.',
+    };
+  }
+  if (OPENAI_REQUIRE_SPEND_LEASE && !spendConfirmation.lease?.ok) {
+    return {
+      ...preview,
+      ok: false,
+      status: 428,
+      executed: false,
+      output: `OpenAI one-request spend lease required before running the no-mic Realtime provider probe: ${spendConfirmation.lease?.reason || 'spend_lease_required'}. Create a lease with the exact spend phrase and execute before it expires.`,
     };
   }
   if (!OPENAI_API_KEY) {
@@ -44892,6 +45073,7 @@ async function startRealtimeProviderProbe(options = {}) {
     ...preview.detail,
     confirmOpenAiSpend: true,
     confirmOpenAiSpendPhrase: openAiSpendConfirmationPhraseFromOptions(options),
+    openAiSpendLeaseId: openAiSpendLeaseIdFromOptions(options),
   });
   if (!dispatch.ok) {
     recordRealtimeProviderProbeEvent({ runId, type: 'error', status: 'error', detail: dispatch.error || 'Renderer dispatch failed.' });
@@ -48810,6 +48992,9 @@ async function callOpenAIResponses({
   confirmOpenAiSpendPhrase,
   openAiSpendPhrase,
   spendConfirmationPhrase,
+  openAiSpendLeaseId,
+  spendLeaseId,
+  leaseId,
 }) {
   if (!OPENAI_API_KEY) {
     return 'OpenAI API key is not configured. Add OPENAI_API_KEY to .env and restart JAVIS.';
@@ -48824,6 +49009,9 @@ async function callOpenAIResponses({
     confirmOpenAiSpendPhrase,
     openAiSpendPhrase,
     spendConfirmationPhrase,
+    openAiSpendLeaseId,
+    spendLeaseId,
+    leaseId,
   });
   const userContent = [{ type: 'input_text', text: input }];
   if (imageDataUrl) {
@@ -54282,6 +54470,7 @@ function readinessSnapshot(options = {}) {
     openAiSpendGuard.mode === 'auto' ||
     openAiSpendGuard.allowAutopilotCloud ||
     openAiSpendGuard.allowRendererStartupProbe ||
+    !openAiSpendGuard.requireSpendLease ||
     openAiSpendGuard.unattendedDailyRequestLimit > 0;
   const trustedLevel3Mode =
     TRUSTED_LOCAL_MODE &&
@@ -54323,10 +54512,10 @@ function readinessSnapshot(options = {}) {
       'openai_spend_guard',
       'OpenAI spend guard',
       openAiSpendGuardLoose ? 'warning' : 'ready',
-      `Cloud mode ${openAiSpendGuard.mode}; hard lock ${openAiSpendGuard.hardSpendLock ? 'on' : 'off'}; phrase ${openAiSpendGuard.requireSpendConfirmationPhrase ? 'required' : 'off'}; today ${openAiSpendCounts.total || 0}/${openAiSpendGuard.dailyRequestLimit} total, ${openAiSpendCounts.unattended || 0}/${openAiSpendGuard.unattendedDailyRequestLimit} unattended, ${openAiSpendCounts.blocked || 0} blocked; autopilot cloud ${openAiSpendGuard.allowAutopilotCloud ? 'allowed' : 'blocked'}.`,
+      `Cloud mode ${openAiSpendGuard.mode}; hard lock ${openAiSpendGuard.hardSpendLock ? 'on' : 'off'}; phrase ${openAiSpendGuard.requireSpendConfirmationPhrase ? 'required' : 'off'}; lease ${openAiSpendGuard.requireSpendLease ? 'required' : 'off'}; today ${openAiSpendCounts.total || 0}/${openAiSpendGuard.dailyRequestLimit} total, ${openAiSpendCounts.unattended || 0}/${openAiSpendGuard.unattendedDailyRequestLimit} unattended, ${openAiSpendCounts.blocked || 0} blocked; autopilot cloud ${openAiSpendGuard.allowAutopilotCloud ? 'allowed' : 'blocked'}.`,
       openAiSpendGuardLoose
-        ? 'For maximum cost safety use JAVIS_OPENAI_HARD_SPEND_LOCK=true, JAVIS_OPENAI_CLOUD_MODE=off, JAVIS_OPENAI_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_ALLOW_AUTOPILOT=false, and JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false.'
-        : 'Zero-spend mode is active: OpenAI cloud calls are hard-locked, daily cap is 0, and unattended/background calls are blocked by default.',
+        ? 'For maximum cost safety use JAVIS_OPENAI_HARD_SPEND_LOCK=true, JAVIS_OPENAI_CLOUD_MODE=off, JAVIS_OPENAI_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_ALLOW_AUTOPILOT=false, JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false, and JAVIS_OPENAI_REQUIRE_SPEND_LEASE=true.'
+        : 'Zero-spend mode is active: OpenAI cloud calls are hard-locked, daily cap is 0, unattended/background calls are blocked, and one-request leases are required by default.',
       { spendGuard: openAiSpendGuard },
     ),
     readinessItem(
@@ -61550,6 +61739,21 @@ function startApiServer() {
     });
   });
 
+  api.post('/api/openai/spend-lease', (req, res) => {
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    const result = createOpenAiSpendLease({
+      kind: body.kind || 'responses_text',
+      source: body.source || 'spend_lease_api',
+      model: body.model || models.fast,
+      confirmOpenAiSpend: body.confirmOpenAiSpend,
+      confirmCloud: body.confirmCloud,
+      confirmOpenAiSpendPhrase: body.confirmOpenAiSpendPhrase,
+      openAiSpendPhrase: body.openAiSpendPhrase,
+      spendConfirmationPhrase: body.spendConfirmationPhrase,
+    });
+    res.status(result.ok ? 200 : result.status || 403).json(result);
+  });
+
   api.get('/api/openai/egress-guard', (_req, res) => {
     res.json({ egressGuard: openAiEgressGuardSnapshot(), spendGuard: openAiSpendGuardSnapshot() });
   });
@@ -63001,6 +63205,13 @@ function startApiServer() {
         req.query.confirmationPhrase ||
         '',
     ).slice(0, 160);
+    const openAiSpendLeaseId = String(
+      req.query.openAiSpendLeaseId ||
+        req.query.spendLeaseId ||
+        req.query.leaseId ||
+        req.query.openAiLeaseId ||
+        '',
+    ).slice(0, 160);
     const sessionId = isProviderProbe ? runId : conversationState.sessionId;
     const offerBytes = Buffer.byteLength(String(req.body || ''), 'utf8');
     const recordProviderAttempt = (payload = {}) => {
@@ -63041,6 +63252,7 @@ function startApiServer() {
       source,
       confirmOpenAiSpend,
       confirmOpenAiSpendPhrase,
+      openAiSpendLeaseId,
       required: isProviderProbe,
     });
     if (spendConfirmation.required && !spendConfirmation.confirmed) {
@@ -63064,6 +63276,7 @@ function startApiServer() {
         isProviderProbe,
         confirmOpenAiSpend,
         confirmOpenAiSpendPhrase,
+        openAiSpendLeaseId,
         confirmCloud: confirmOpenAiSpend,
       });
     } catch (error) {

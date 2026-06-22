@@ -84,6 +84,7 @@ type RealtimeRendererDogfoodCommand = {
   source?: string
   confirmOpenAiSpend?: boolean
   confirmOpenAiSpendPhrase?: string
+  openAiSpendLeaseId?: string
 }
 
 type RealtimeVoiceHealth = {
@@ -2736,6 +2737,7 @@ function App() {
             })
             if (detail.confirmOpenAiSpend === true) params.set('confirmOpenAiSpend', 'true')
             if (detail.confirmOpenAiSpendPhrase) params.set('confirmOpenAiSpendPhrase', detail.confirmOpenAiSpendPhrase)
+            if (detail.openAiSpendLeaseId) params.set('openAiSpendLeaseId', detail.openAiSpendLeaseId)
             const response = await fetch(`${API_BASE}/api/realtime/session?${params.toString()}`, {
               method: 'POST',
               body: offerSdp,

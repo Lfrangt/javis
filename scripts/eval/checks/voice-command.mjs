@@ -132,7 +132,7 @@ export default {
     const screenContext = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
-        transcript: '看一下我当前窗口，告诉我应该走哪个工作通道，先不要执行。',
+        transcript: '请根据当前上下文帮我判断这个请求适合哪个工作通道，先不要执行。',
         execute: false,
         includeScreen: true,
         includeAccessibility: true,
@@ -1273,8 +1273,8 @@ export default {
       body: {
         transcript: '看一下当前屏幕和窗口，先不要操作',
         execute: false,
-        includeScreen: false,
-        includeAccessibility: false,
+        includeScreen: true,
+        includeAccessibility: true,
         useMemory: false,
         speak: false,
         source: 'eval_voice_command_natural_observe_now',
@@ -1296,6 +1296,13 @@ export default {
         naturalObserveNowData.executed === false &&
         naturalObserveNowRoute.decision?.localCommand === 'observe_now' &&
         naturalObserveNowRoute.localCommand?.intent === 'observe_now' &&
+        naturalObserveNowData.context?.skippedPreRouteContext === true &&
+        naturalObserveNowData.context?.localCommand === 'observe_now' &&
+        naturalObserveNowData.context?.includeScreenRequested === true &&
+        naturalObserveNowData.context?.includeAccessibilityRequested === true &&
+        naturalObserveNowData.context?.includesScreenImage === false &&
+        naturalObserveNowData.context?.includesAccessibilityNodes === false &&
+        (naturalObserveObservation.accessibility === null || naturalObserveObservation.accessibility?.available !== true) &&
         naturalObserveNowRoute.executed === false &&
         naturalObserveObservation.ok === true &&
         typeof naturalObserveNowRoute.output === 'string' &&
@@ -1307,7 +1314,7 @@ export default {
         naturalObserveNowData.safety?.usesRealtime === false &&
         naturalObserveNowData.safety?.storesRawAudio === false &&
         naturalObserveNowData.safety?.callsOpenAIImmediately === false
-        ? ok('voice_command.natural_observe_now', 'Natural observe-now voice command', '看一下当前屏幕 routes to local observe_now without action, clipboard text, cloud, mic, or Realtime')
+        ? ok('voice_command.natural_observe_now', 'Natural observe-now voice command', '看一下当前屏幕 routes to lightweight observe_now, skips duplicate pre-route screen/UI context, and avoids action, clipboard text, cloud, mic, or Realtime')
         : fail('voice_command.natural_observe_now', 'Natural observe-now voice command', 'natural observe phrase did not run the local observe_now preview path', naturalObserveNow.data),
     );
 

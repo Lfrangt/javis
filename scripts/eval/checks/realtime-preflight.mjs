@@ -123,8 +123,9 @@ export default {
 	        probePreview.openAiSpendConfirmation?.required === true &&
 	        probePreview.openAiSpendConfirmation?.confirmed === false &&
 	        probePreview.endpoint?.executeBody?.confirmOpenAiSpend === true &&
-	        probePreview.endpoint?.executeBody?.confirmOpenAiSpendPhrase === '<type spend phrase>' &&
-	        probePreview.detail?.action === 'probe'
+		        probePreview.endpoint?.executeBody?.confirmOpenAiSpendPhrase === '<type spend phrase>' &&
+		        probePreview.endpoint?.executeBody?.openAiSpendLeaseId === '<one-request lease id>' &&
+		        probePreview.detail?.action === 'probe'
         ? ok('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `${probe.status || 'idle'} · renderer=${probe.rendererAvailable ? 'ready' : 'missing'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'} · spend confirmation required`)
         : fail('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `GET/POST /api/realtime/provider/probe ${providerProbe.status}/${providerProbePreview.status}`, { probe, preview: probePreview }),
     );
