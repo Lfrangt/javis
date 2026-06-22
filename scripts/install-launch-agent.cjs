@@ -12,7 +12,7 @@ const outLog = path.join(repoRoot, 'logs', 'resident.out.log');
 const errLog = path.join(repoRoot, 'logs', 'resident.err.log');
 const stopScript = path.join(repoRoot, 'scripts', 'stop-resident-processes.cjs');
 const uid = process.getuid?.();
-const launchAgentWorkingDirectory = repoRoot;
+const launchAgentWorkingDirectory = homeDir;
 
 function xmlEscape(value) {
   return String(value)
@@ -39,7 +39,12 @@ fs.mkdirSync(path.join(repoRoot, 'logs'), { recursive: true });
 console.log('Building JAVIS renderer...');
 run('npm', ['run', 'resident:prepare'], { stdio: 'inherit' });
 
-const command = 'npm run start:desktop';
+const nodeExecutable = process.execPath;
+const electronCli = path.join(repoRoot, 'node_modules', 'electron', 'cli.js');
+const electronAppTarget = repoRoot;
+if (!fs.existsSync(electronCli)) {
+  throw new Error(`Electron CLI not found: ${electronCli}`);
+}
 const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -48,9 +53,9 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>${xmlEscape(label)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/zsh</string>
-    <string>-c</string>
-    <string>${xmlEscape(command)}</string>
+    <string>${xmlEscape(nodeExecutable)}</string>
+    <string>${xmlEscape(electronCli)}</string>
+    <string>${xmlEscape(electronAppTarget)}</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(launchAgentWorkingDirectory)}</string>
@@ -70,6 +75,8 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
     <string>false</string>
     <key>JAVIS_RESIDENT_LAUNCH_AGENT</key>
     <string>true</string>
+    <key>JAVIS_REPO_ROOT</key>
+    <string>${xmlEscape(repoRoot)}</string>
   </dict>
 </dict>
 </plist>

@@ -1152,18 +1152,25 @@ export default {
     );
 
     const hasResidentLaunchNoTerminalLoop =
-      installSource.includes('const launchAgentWorkingDirectory = repoRoot') &&
-      installSource.includes("const command = 'npm run start:desktop'") &&
-      installSource.includes('<string>-c</string>') &&
+      installSource.includes('const launchAgentWorkingDirectory = homeDir') &&
+      installSource.includes('const nodeExecutable = process.execPath') &&
+      installSource.includes("const electronCli = path.join(repoRoot, 'node_modules', 'electron', 'cli.js')") &&
+      installSource.includes('const electronAppTarget = repoRoot') &&
+      installSource.includes('<string>${xmlEscape(nodeExecutable)}</string>') &&
+      installSource.includes('<string>${xmlEscape(electronCli)}</string>') &&
+      installSource.includes('<string>${xmlEscape(electronAppTarget)}</string>') &&
+      !installSource.includes("const command = 'npm run start:desktop'") &&
+      !installSource.includes('<string>-c</string>') &&
       !installSource.includes('<string>-lc</string>') &&
       installSource.includes('<key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>') &&
       installSource.includes('<string>false</string>') &&
+      installSource.includes('<key>JAVIS_REPO_ROOT</key>') &&
       stopSource.includes('isProjectLocalVoiceLoopProcess') &&
       stopSource.includes('npm run voice:chat') &&
       stopSource.includes('local-voice-command-dogfood\\.mjs.*--chat');
     out.push(
       hasResidentLaunchNoTerminalLoop
-        ? ok('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'resident startup uses project cwd, non-login shell, and clears stale local voice loops')
+        ? ok('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'resident startup uses home cwd, direct Electron, JAVIS_REPO_ROOT, and clears stale local voice loops')
         : fail('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'expected launch agent install/stop scripts to prevent runaway voice:chat Terminal loops'),
     );
 
@@ -1339,19 +1346,22 @@ export default {
     const launchAgentPlist = fs.existsSync(launchAgentPath) ? fs.readFileSync(launchAgentPath, 'utf8') : '';
     const launchAgentWorkingDirectory = launchAgentPlist.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || '';
     const launchAgentUsesSafeWorkingDirectory =
-      launchAgentWorkingDirectory === process.cwd() &&
-      launchAgentPlist.includes('<string>-c</string>') &&
-      launchAgentPlist.includes('<string>npm run start:desktop</string>') &&
+      launchAgentWorkingDirectory === os.homedir() &&
+      launchAgentPlist.includes('/node_modules/electron/cli.js') &&
+      launchAgentPlist.includes(process.cwd()) &&
+      launchAgentPlist.includes('<key>JAVIS_REPO_ROOT</key>') &&
       launchAgentPlist.includes('<key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>') &&
-      launchAgentPlist.includes('<string>false</string>');
+      launchAgentPlist.includes('<string>false</string>') &&
+      !launchAgentPlist.includes('<string>-c</string>') &&
+      !launchAgentPlist.includes('<string>-lc</string>');
     out.push(
       launchAgentUsesSafeWorkingDirectory
-        ? ok('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'plist starts directly in the project cwd with Terminal voice loop disabled')
-        : fail('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'expected LaunchAgent WorkingDirectory to be the project directory with Terminal voice loop disabled', {
+        ? ok('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'plist starts from home, passes JAVIS_REPO_ROOT, and launches Electron directly with Terminal voice loop disabled')
+        : fail('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'expected LaunchAgent WorkingDirectory to avoid protected project cwd and pass JAVIS_REPO_ROOT to direct Electron startup', {
             launchAgentPath,
             installed: fs.existsSync(launchAgentPath),
             workingDirectory: launchAgentWorkingDirectory,
-            expectedWorkingDirectory: process.cwd(),
+            expectedWorkingDirectory: os.homedir(),
           }),
     );
 
@@ -1409,6 +1419,49 @@ export default {
           voiceHealth: statusVoiceHealth,
           localVoice: statusLocalVoice,
         }),
+    );
+
+    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
+    const spendGuard = spendGuardResponse.data?.spendGuard || {};
+    out.push(
+      spendGuardResponse.ok &&
+        spendGuard.mode === 'manual' &&
+        spendGuard.unattendedDailyRequestLimit === 0 &&
+        spendGuard.allowAutopilotCloud === false &&
+        spendGuard.allowRendererStartupProbe === false &&
+        spendGuard.autopilotRequiresExplicitEnv === true &&
+        spendGuard.safety?.manualOnlyByDefault === true &&
+        spendGuard.safety?.unattendedCloudDefaultBlocked === true
+        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
+        : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to manual-only OpenAI usage, block unattended/autopilot calls, and disable renderer startup probes', {
+          status: spendGuardResponse.status,
+          body: spendGuardResponse.data,
+        }),
+    );
+
+    const envExampleSource = fs.readFileSync('.env.example', 'utf8');
+    const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
+    const hasOpenAiSpendGuardStatic =
+      mainSource.includes('OPENAI_SPEND_GUARD_FILE') &&
+      mainSource.includes('class OpenAiSpendGuardBlocked') &&
+      mainSource.includes('function assertOpenAiSpendAllowed') &&
+      mainSource.includes('const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === \'true\';') &&
+      mainSource.includes('OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT') &&
+      mainSource.includes('OPENAI_ALLOW_RENDERER_STARTUP_PROBE') &&
+      mainSource.includes('renderer_startup_probe_disabled') &&
+      mainSource.includes("kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session'") &&
+      mainSource.includes("api.get('/api/openai/spend-guard'") &&
+      mainSource.includes("manualOnlyReason = 'OpenAI provider probes can consume API quota and require explicit user action.'") &&
+      mainSource.includes('source: options.source || \'observe_vision\'') &&
+      rendererSource.includes("source: detail.source || 'renderer_provider_probe'") &&
+      envExampleSource.includes('JAVIS_OPENAI_CLOUD_MODE=manual') &&
+      envExampleSource.includes('JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0') &&
+      envExampleSource.includes('JAVIS_OPENAI_ALLOW_AUTOPILOT=false') &&
+      envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false');
+    out.push(
+      hasOpenAiSpendGuardStatic
+        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls are guarded, autopilot requires explicit env, startup probes are opt-in, and .env.example documents manual-only defaults')
+        : fail('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'expected source to guard OpenAI calls and document conservative spend defaults'),
     );
 
     const recoveryResponse = await ctx.api('/api/realtime/provider/recovery');

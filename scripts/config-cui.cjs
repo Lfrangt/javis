@@ -280,6 +280,11 @@ async function printStatus() {
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
     console.log(`OpenAI key: ${status.api?.hasOpenAiKey ? 'present' : 'missing'}`);
+    if (status.api?.openAiSpendGuard) {
+      const guard = status.api.openAiSpendGuard;
+      const counts = guard.counts || {};
+      console.log(`OpenAI spend guard: mode ${guard.mode || 'manual'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? '-'} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
+    }
     if (status.voiceHealth?.kind === 'quota_or_rate_limit') {
       console.log(`OpenAI provider: quota/rate-limit · ${compact(status.voiceHealth.next || status.voiceHealth.summary || '', 180)}`);
     }
@@ -1360,6 +1365,11 @@ async function showPermissionMatrix() {
   console.log('=======================');
   console.log(config.summary || status.readiness?.summary || 'Permission state loaded from the resident API.');
   console.log(`Overall: config=${config.overall || '-'} · readiness=${status.readiness?.overall || '-'} · local=${status.api?.localExecutionEnabled ? 'on' : 'off'} · trusted=${status.api?.trustedLocalMode ? 'yes' : 'no'}`);
+  if (status.api?.openAiSpendGuard) {
+    const guard = status.api.openAiSpendGuard;
+    const counts = guard.counts || {};
+    console.log(`OpenAI spend guard: mode ${guard.mode || 'manual'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? '-'} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
+  }
   console.log('Note: macOS privacy panes still require your manual toggle. JAVIS can open the pane and verify evidence after you grant it.');
 
   printPermissionRows('macOS privacy', [
@@ -3609,6 +3619,10 @@ function printRealtimeProviderProbe(result) {
   console.log(`Run: ${probe.runId || result?.runId || providerResult.runId || '-'}`);
   console.log(`Status: ${probe.status || (result?.executed ? 'dispatched' : 'preview')} · renderer=${probe.rendererAvailable ? 'ready' : 'unknown'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'} · starts microphone=${probe.startsMicrophone ? 'yes' : 'no'}`);
   console.log(`Provider: ${probe.providerReady ? 'ready' : 'not-ready'}${providerResult.statusCode ? ` · HTTP ${providerResult.statusCode}` : ''}${providerResult.durationMs ? ` · ${providerResult.durationMs}ms` : ''}`);
+  if (probe.spendGuard || result?.spendGuard) {
+    const guard = probe.spendGuard || result.spendGuard;
+    console.log(`Spend guard: ${guard.allowed ? 'allowed' : 'blocked'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
+  }
   if (probe.summary) console.log(`Summary: ${compact(probe.summary, 300)}`);
   if (probe.next) console.log(`Next: ${compact(probe.next, 300)}`);
   if (providerResult.error) console.log(`Error: ${compact(providerResult.error, 360)}`);

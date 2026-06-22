@@ -23,7 +23,45 @@ const {
   Tray,
 } = require('electron');
 
-dotenv.config({ path: path.join(process.cwd(), '.env') });
+function safeCurrentWorkingDirectory() {
+  try {
+    return process.cwd();
+  } catch {
+    return os.homedir();
+  }
+}
+
+function resolveAppRoot() {
+  const candidates = [
+    process.env.JAVIS_REPO_ROOT,
+    process.env.JAVIS_APP_ROOT,
+    typeof app?.getAppPath === 'function' ? app.getAppPath() : '',
+    safeCurrentWorkingDirectory(),
+    path.resolve(__dirname, '..'),
+  ]
+    .filter(Boolean)
+    .map((candidate) => path.resolve(candidate));
+  for (const candidate of candidates) {
+    if (
+      fs.existsSync(path.join(candidate, 'package.json')) &&
+      fs.existsSync(path.join(candidate, 'electron', 'main.cjs'))
+    ) {
+      return candidate;
+    }
+  }
+  return candidates[0] || os.homedir();
+}
+
+const APP_ROOT = resolveAppRoot();
+try {
+  if (safeCurrentWorkingDirectory() !== APP_ROOT) {
+    process.chdir(APP_ROOT);
+  }
+} catch (error) {
+  console.error(`JAVIS failed to enter app root ${APP_ROOT}: ${error instanceof Error ? error.message : String(error)}`);
+}
+
+dotenv.config({ path: path.join(APP_ROOT, '.env') });
 
 function parseJsonBodyLimit(limit = '1mb') {
   if (typeof limit === 'number') return Math.max(1, limit);
@@ -165,6 +203,7 @@ const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
 const COLLABORATION_FILE = path.join(DATA_DIR, 'collaboration.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
+const OPENAI_SPEND_GUARD_FILE = path.join(DATA_DIR, 'openai-spend-guard.json');
 const AUDIT_MAX_BYTES = boundedRuntimeNumber(process.env.JAVIS_AUDIT_MAX_BYTES, 64 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024);
 const AUDIT_RETAIN_BYTES = boundedRuntimeNumber(process.env.JAVIS_AUDIT_RETAIN_BYTES, 4 * 1024 * 1024, 256 * 1024, AUDIT_MAX_BYTES);
 const AUDIT_ARCHIVE_LIMIT = boundedRuntimeInteger(process.env.JAVIS_AUDIT_ARCHIVE_LIMIT, 3, 0, 20);
@@ -226,8 +265,12 @@ const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(pro
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
 const LEARNING_AUTO_MEMORY_ENABLED = process.env.JAVIS_LEARNING_AUTO_MEMORY !== 'false';
 const LEARNING_AUTO_MEMORY_MIN_EVENTS = Math.max(5, Math.min(200, Number(process.env.JAVIS_LEARNING_AUTO_MEMORY_MIN_EVENTS || 20)));
-const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true'
-  || (process.env.JAVIS_AUTOPILOT_ENABLED !== 'false' && LOCAL_EXEC_ENABLED && TRUSTED_LOCAL_MODE);
+const OPENAI_CLOUD_MODE = normalizeOpenAiCloudMode(process.env.JAVIS_OPENAI_CLOUD_MODE || process.env.JAVIS_CLOUD_CALL_MODE || 'manual');
+const OPENAI_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_DAILY_REQUEST_LIMIT, 20, 0, 10000);
+const OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT, 0, 0, 10000);
+const OPENAI_ALLOW_AUTOPILOT = process.env.JAVIS_OPENAI_ALLOW_AUTOPILOT === 'true';
+const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = process.env.JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE === 'true';
+const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true';
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
 const CONVERSATION_STALE_MS = Math.max(30000, Math.min(600000, Number(process.env.JAVIS_CONVERSATION_STALE_MS || 120000)));
@@ -2400,6 +2443,168 @@ function writeJsonAtomic(filePath, value) {
   const tempPath = `${filePath}.${process.pid}.tmp`;
   fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, 'utf8');
   fs.renameSync(tempPath, filePath);
+}
+
+class OpenAiSpendGuardBlocked extends Error {
+  constructor(decision) {
+    super(decision?.summary || 'OpenAI cloud call blocked by spend guard.');
+    this.name = 'OpenAiSpendGuardBlocked';
+    this.decision = decision;
+  }
+}
+
+function normalizeOpenAiCloudMode(value) {
+  const text = String(value || '').trim().toLowerCase();
+  if (['off', 'disabled', 'none', '0', 'false'].includes(text)) return 'off';
+  if (['auto', 'autopilot', 'unattended', 'background'].includes(text)) return 'auto';
+  return 'manual';
+}
+
+function openAiSpendDayKey(time = Date.now()) {
+  const date = new Date(time);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeOpenAiSpendState(raw = {}) {
+  const day = openAiSpendDayKey();
+  const stateDay = raw.day === day ? raw.day : day;
+  const reset = raw.day !== day;
+  const counts = reset ? {} : (raw.counts || {});
+  return {
+    version: 1,
+    day: stateDay,
+    counts: {
+      total: Math.max(0, Number(counts.total || 0)),
+      manual: Math.max(0, Number(counts.manual || 0)),
+      unattended: Math.max(0, Number(counts.unattended || 0)),
+      blocked: Math.max(0, Number(counts.blocked || 0)),
+    },
+    events: reset ? [] : (Array.isArray(raw.events) ? raw.events.slice(-80) : []),
+    updatedAt: Number(raw.updatedAt || 0),
+  };
+}
+
+function readOpenAiSpendState() {
+  try {
+    if (!fs.existsSync(OPENAI_SPEND_GUARD_FILE)) return normalizeOpenAiSpendState();
+    return normalizeOpenAiSpendState(JSON.parse(fs.readFileSync(OPENAI_SPEND_GUARD_FILE, 'utf8')));
+  } catch {
+    return normalizeOpenAiSpendState();
+  }
+}
+
+function persistOpenAiSpendState(state) {
+  try {
+    fs.mkdirSync(path.dirname(OPENAI_SPEND_GUARD_FILE), { recursive: true });
+    writeJsonAtomic(OPENAI_SPEND_GUARD_FILE, normalizeOpenAiSpendState(state));
+  } catch (error) {
+    appendAudit('openai.spend_guard_persist_failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function isManualOpenAiSource(source = '', options = {}) {
+  if (options.userInitiated === true || options.confirmCloud === true) return true;
+  const text = String(source || '').toLowerCase();
+  if (/^(manual|user|cui|cui_cli|local_command|voice|api_voice|renderer_dogfood|dogfood_cli)\b/.test(text)) return true;
+  if (options.kind === 'realtime_session' && text === 'renderer') return true;
+  return false;
+}
+
+function openAiSpendGuardSnapshot() {
+  const state = readOpenAiSpendState();
+  return {
+    version: 1,
+    mode: OPENAI_CLOUD_MODE,
+    file: OPENAI_SPEND_GUARD_FILE,
+    dailyRequestLimit: OPENAI_DAILY_REQUEST_LIMIT,
+    unattendedDailyRequestLimit: OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT,
+    allowAutopilotCloud: OPENAI_ALLOW_AUTOPILOT,
+    allowRendererStartupProbe: OPENAI_ALLOW_RENDERER_STARTUP_PROBE,
+    autopilotRequiresExplicitEnv: true,
+    autopilotEnabled: AUTOPILOT_ENABLED,
+    day: state.day,
+    counts: state.counts,
+    remaining: {
+      total: Math.max(0, OPENAI_DAILY_REQUEST_LIMIT - Number(state.counts.total || 0)),
+      unattended: Math.max(0, OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT - Number(state.counts.unattended || 0)),
+    },
+    recent: state.events.slice(-10).reverse(),
+    safety: {
+      unattendedCloudDefaultBlocked: OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT === 0 && !OPENAI_ALLOW_AUTOPILOT,
+      manualOnlyByDefault: OPENAI_CLOUD_MODE === 'manual',
+      off: OPENAI_CLOUD_MODE === 'off',
+    },
+  };
+}
+
+function evaluateOpenAiSpendGuard(options = {}) {
+  const kind = compactRecordText(options.kind || 'openai', 80);
+  const source = compactRecordText(options.source || 'unspecified', 80);
+  const model = compactRecordText(options.model || '', 120);
+  const manual = isManualOpenAiSource(source, { ...options, kind });
+  const state = readOpenAiSpendState();
+  const reasons = [];
+
+  if (OPENAI_CLOUD_MODE === 'off') reasons.push('cloud_mode_off');
+  if (!manual && OPENAI_CLOUD_MODE !== 'auto') reasons.push('manual_mode_blocks_unattended');
+  if (!manual && !OPENAI_ALLOW_AUTOPILOT) reasons.push('autopilot_cloud_disabled');
+  if (kind === 'realtime_provider_probe' && /^renderer(_|$)|renderer_startup/.test(source.toLowerCase()) && !OPENAI_ALLOW_RENDERER_STARTUP_PROBE) {
+    reasons.push('renderer_startup_probe_disabled');
+  }
+  if (OPENAI_DAILY_REQUEST_LIMIT <= 0 || Number(state.counts.total || 0) >= OPENAI_DAILY_REQUEST_LIMIT) {
+    reasons.push('daily_request_limit_reached');
+  }
+  if (!manual && (OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT <= 0 || Number(state.counts.unattended || 0) >= OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT)) {
+    reasons.push('unattended_request_limit_reached');
+  }
+
+  const allowed = reasons.length === 0;
+  const now = Date.now();
+  const event = {
+    id: crypto.randomUUID(),
+    at: new Date(now).toISOString(),
+    allowed,
+    kind,
+    source,
+    model,
+    manual,
+    mode: OPENAI_CLOUD_MODE,
+    reasons,
+  };
+
+  if (options.reserve === true || (!allowed && options.recordBlocked !== false)) {
+    const next = normalizeOpenAiSpendState(state);
+    if (allowed) {
+      next.counts.total += 1;
+      if (manual) next.counts.manual += 1;
+      else next.counts.unattended += 1;
+    } else {
+      next.counts.blocked += 1;
+    }
+    next.events = [...next.events, event].slice(-80);
+    next.updatedAt = now;
+    persistOpenAiSpendState(next);
+    appendAudit(allowed ? 'openai.spend_guard_allowed' : 'openai.spend_guard_blocked', event);
+  }
+
+  return {
+    ...event,
+    summary: allowed
+      ? `OpenAI cloud call allowed (${manual ? 'manual' : 'unattended'}): ${kind}.`
+      : `OpenAI cloud call blocked: ${reasons.join(', ') || 'spend_guard'}.`,
+    state: openAiSpendGuardSnapshot(),
+  };
+}
+
+function assertOpenAiSpendAllowed(options = {}) {
+  const decision = evaluateOpenAiSpendGuard({ ...options, reserve: true });
+  if (!decision.allowed) throw new OpenAiSpendGuardBlocked(decision);
+  return decision;
 }
 
 function xmlEscape(value) {
@@ -10443,17 +10648,29 @@ function blockerStatusSnapshot(options = {}) {
   const browserRecovery = browserBlockedRoutes.length
     ? browserUnavailableRecoveryAction(browserBlockedRoutes, browserBlockedRoutes)
     : null;
-  if (browserRecovery) {
+  const browserRecoveryNextAction = browserRecovery || (Array.isArray(progress.nextActions)
+    ? progress.nextActions.find((action) => (
+      action &&
+      (action.id === 'browser_recovery:open_supported_browser' || action.source === 'browser_recovery')
+    ))
+    : null);
+  if (browserRecoveryNextAction) {
+    const recoveryDetail = browserRecoveryNextAction.browserRecovery || {};
+    const recoveryNext = (browserRecovery && browserRecovery.browserRecovery?.next) ||
+      recoveryDetail.next ||
+      browserRecoveryNextAction.summary ||
+      browserRecoveryNextAction.label ||
+      '';
     blockers.push(blockerItem(
       'browser_recovery',
       'medium',
       'Browser recovery',
-      browserRecovery.summary || `${browserBlockedRoutes.length} browser task(s) need a supported browser window.`,
+      browserRecoveryNextAction.summary || `${browserBlockedRoutes.length || 1} browser task(s) need a supported browser window.`,
       {
         source: 'browser_recovery',
-        count: browserRecovery.browserRecovery?.routeCount || browserBlockedRoutes.length,
-        next: browserRecovery.browserRecovery?.next || browserRecovery.label || '',
-        routeId: browserRecovery.browserRecovery?.firstRouteId || browserBlockedRoutes[0]?.id || '',
+        count: recoveryDetail.routeCount || browserBlockedRoutes.length || 1,
+        next: recoveryNext,
+        routeId: recoveryDetail.firstRouteId || browserBlockedRoutes[0]?.id || '',
       },
     ));
   }
@@ -12692,8 +12909,27 @@ function residentLaunchAgentWorkingDirectory() {
   return os.homedir();
 }
 
+function residentNodeExecutable() {
+  const candidates = [
+    process.env.JAVIS_NODE_PATH,
+    '/opt/homebrew/bin/node',
+    '/usr/local/bin/node',
+    '/usr/bin/node',
+    ...String(process.env.PATH || '')
+      .split(path.delimiter)
+      .filter(Boolean)
+      .map((dir) => path.join(dir, 'node')),
+  ].filter(Boolean);
+  return candidates.find((candidate) => fs.existsSync(candidate)) || process.execPath;
+}
+
+function residentElectronCli() {
+  return path.join(process.cwd(), 'node_modules', 'electron', 'cli.js');
+}
+
 function residentPlistContent() {
-  const command = `cd ${shQuote(process.cwd())} && npm run start:desktop`;
+  const nodeExecutable = residentNodeExecutable();
+  const electronCli = residentElectronCli();
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -12702,9 +12938,9 @@ function residentPlistContent() {
   <string>${xmlEscape(LAUNCH_AGENT_LABEL)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>${xmlEscape(command)}</string>
+    <string>${xmlEscape(nodeExecutable)}</string>
+    <string>${xmlEscape(electronCli)}</string>
+    <string>${xmlEscape(process.cwd())}</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(residentLaunchAgentWorkingDirectory())}</string>
@@ -12720,6 +12956,12 @@ function residentPlistContent() {
   <dict>
     <key>PATH</key>
     <string>${xmlEscape(process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')}</string>
+    <key>JAVIS_REPO_ROOT</key>
+    <string>${xmlEscape(process.cwd())}</string>
+    <key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>
+    <string>false</string>
+    <key>JAVIS_RESIDENT_LAUNCH_AGENT</key>
+    <string>true</string>
   </dict>
 </dict>
 </plist>
@@ -12743,7 +12985,7 @@ async function residentStatusSnapshot() {
   const launchctl = await residentLaunchctlState();
   const installed = fs.existsSync(LAUNCH_AGENT_FILE);
   const plist = installed ? fs.readFileSync(LAUNCH_AGENT_FILE, 'utf8') : '';
-  const expectedCommand = `cd ${shQuote(process.cwd())} && npm run start:desktop`;
+  const expectedProgram = residentElectronCli();
   return {
     label: LAUNCH_AGENT_LABEL,
     installed,
@@ -12754,7 +12996,7 @@ async function residentStatusSnapshot() {
     errLog: RESIDENT_ERR_LOG,
     target: residentServiceTarget(),
     matchesProject: installed ? plist.includes(xmlEscape(process.cwd())) || plist.includes(process.cwd()) : false,
-    expectedCommand,
+    expectedProgram,
     launchctlError: launchctl.loaded ? '' : launchctl.error,
   };
 }
@@ -18285,6 +18527,7 @@ async function modelAppWorkflowPlan(options = {}, context = {}) {
       tree: context.tree || {},
     }),
     maxOutputTokens: 700,
+    source: options.source || 'app_workflow_planner',
   });
   const parsed = extractJsonObject(output);
   return sanitizePlannedAppWorkflow({
@@ -19497,6 +19740,24 @@ function normalizeBrowserUrlForMatch(value) {
   }
 }
 
+function isSafeBlankBrowserUrl(value = '') {
+  const url = String(value || '').trim().toLowerCase();
+  return url === 'about:blank' ||
+    url === 'chrome://newtab/' ||
+    url === 'chrome://new-tab-page/' ||
+    url === 'edge://newtab/' ||
+    url === 'brave://newtab/' ||
+    url === 'vivaldi://newtab/' ||
+    url === 'opera://startpage/' ||
+    url === 'browser://newtab/';
+}
+
+function isSafeBlankCdpTarget(target = {}) {
+  return target.type === 'page' &&
+    Boolean(target.webSocketDebuggerUrl) &&
+    isSafeBlankBrowserUrl(target.url || '');
+}
+
 function chooseCdpTarget(targets = [], browser = {}) {
   const pages = targets.filter((target) => target.type === 'page' && target.webSocketDebuggerUrl);
   const browserUrl = normalizeBrowserUrlForMatch(browser.url || '');
@@ -19508,6 +19769,10 @@ function chooseCdpTarget(targets = [], browser = {}) {
   if (title) {
     const titleHit = pages.find((target) => String(target.title || '').trim() === title);
     if (titleHit) return titleHit;
+  }
+  if (isSafeBlankBrowserUrl(browserUrl) || isSafeBlankBrowserUrl(browser.url || '')) {
+    const safeBlank = pages.find((target) => isSafeBlankCdpTarget(target));
+    if (safeBlank) return safeBlank;
   }
   if (browserUrl || title) return null;
   return pages.find((target) => /^https?:|^file:/i.test(String(target.url || ''))) || pages[0] || null;
@@ -21693,6 +21958,7 @@ async function planBrowserTaskSteps(page, dom, instruction, maxSteps) {
       instructions: 'You are the browser task planner inside JAVIS. Return JSON only. Plan safe browser steps using the current page DOM. Never plan irreversible or account-changing actions.',
       input: browserTaskPrompt(page, dom, instruction, maxSteps),
       maxOutputTokens: 900,
+      source: 'browser_task_planner',
     });
     return {
       ...normalizeBrowserTaskPlan(parseJsonFromModelText(planText), maxSteps),
@@ -28944,7 +29210,8 @@ function localVoiceStatusSnapshot(options = {}) {
   const conversation = options.conversation || conversationStateSnapshot();
   const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const fallback = voiceHealth.fallback || realtimeLocalVoiceFallbackSnapshot();
-  const history = voiceCommandHistorySnapshot({ limit: 8 });
+  const slim = options.slim === true;
+  const history = voiceCommandHistorySnapshot({ limit: options.historyLimit || 8 });
   const latest = history.items[0] || null;
   const fallbackReady = voiceHealth.status !== 'ready';
   const blocker = fallback.blocker || {
@@ -28982,7 +29249,7 @@ function localVoiceStatusSnapshot(options = {}) {
       kind: compactRecordText(blocker.kind || '', 60),
       status: compactRecordText(blocker.status || '', 60),
       summary: compactRecordText(blocker.summary || '', 120),
-      next: compactRecordText(blocker.next || '', 120),
+      next: compactRecordText(blocker.next || '', 90),
     },
     input: {
       endpoint: '/api/voice/command',
@@ -29010,22 +29277,35 @@ function localVoiceStatusSnapshot(options = {}) {
     },
     history: {
       count: history.count,
-      latency: history.latency,
+      ...(slim ? {} : { latency: history.latency }),
       latest: latest
-        ? {
-            id: latest.id,
-            timestamp: latest.timestamp,
-            source: latest.source,
-            lane: latest.lane,
-            queued: latest.queued,
-            executed: latest.executed,
-            transcriptPreview: compactRecordText(latest.transcriptPreview, 90),
-            contextSummary: compactRecordText(latest.contextSummary, 80),
-            elapsedMs: latest.elapsedMs,
-          }
+        ? (slim
+            ? {
+                transcriptPreview: compactRecordText(latest.transcriptPreview, 80),
+              }
+            : {
+                id: latest.id,
+                timestamp: latest.timestamp,
+                source: latest.source,
+                lane: latest.lane,
+                queued: latest.queued,
+                executed: latest.executed,
+                transcriptPreview: compactRecordText(latest.transcriptPreview, 90),
+                contextSummary: compactRecordText(latest.contextSummary, 80),
+                elapsedMs: latest.elapsedMs,
+              })
         : null,
     },
-    privacy: history.privacy,
+    privacy: slim
+      ? {
+          localOnly: true,
+          transcriptPreviewOnly: true,
+          noRawAudio: true,
+          noScreenImages: true,
+          noClipboardText: true,
+          noAccessibilityNodes: true,
+        }
+      : history.privacy,
     safety: {
       startsMicrophone: false,
       usesRealtime: false,
@@ -29033,9 +29313,13 @@ function localVoiceStatusSnapshot(options = {}) {
       storesScreenImage: false,
       storesClipboardText: false,
       storesAccessibilityNodes: false,
-      speaksWithMacTts: Boolean(fallback.safety?.speaksWithMacTts),
-      screenContextMetadataOnly: true,
-      accessibilityOutlineOnly: true,
+      ...(slim
+        ? {}
+        : {
+            speaksWithMacTts: Boolean(fallback.safety?.speaksWithMacTts),
+            screenContextMetadataOnly: true,
+            accessibilityOutlineOnly: true,
+          }),
     },
   };
 }
@@ -34935,9 +35219,9 @@ function presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, 
   if (conversation?.status === 'live') return 'listening';
   if (conversation?.status === 'error' && Number(conversation.ageMs || 0) < 60000) return 'voice_error';
   if (pendingApprovals.length) return 'needs_attention';
-  if (wake?.pending) return 'waking';
   if (activeJobs.length) return 'working';
   if (readiness?.overall === 'fallback_ready') return 'fallback_ready';
+  if (wake?.pending) return 'waking';
   if (readiness?.overall === 'degraded') return 'needs_attention';
   if (AMBIENT_OBSERVE_ENABLED) return 'watching';
   return 'standby';
@@ -35365,8 +35649,8 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
       ready: Boolean(handoff.ready),
       mode: compactRecordText(handoff.mode || '', 80),
       label: compactRecordText(handoff.label || '', 120),
-      summary: compactRecordText(handoff.summary || '', 120),
-      next: compactRecordText(handoff.next || '', 120),
+      summary: compactRecordText(handoff.summary || '', 90),
+      next: compactRecordText(handoff.next || '', 90),
       input: {
         endpoint: compactRecordText(handoff.input?.endpoint || '', 120),
         cliCommand: compactRecordText(handoff.input?.cliCommand || '', 140),
@@ -35391,8 +35675,8 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
             active: Boolean(handoff.blocker.active),
             kind: compactRecordText(handoff.blocker.kind || '', 60),
             status: compactRecordText(handoff.blocker.status || '', 60),
-            summary: compactRecordText(handoff.blocker.summary || '', 100),
-            next: compactRecordText(handoff.blocker.next || '', 100),
+            summary: compactRecordText(handoff.blocker.summary || '', 80),
+            next: compactRecordText(handoff.blocker.next || '', 80),
           }
         : null,
       safety: {
@@ -35502,20 +35786,20 @@ const PET_TRAFFIC_LIGHT_LEGEND = [
   {
     color: 'green',
     label: 'Available',
-    meaning: 'JAVIS is passive, watching or standing by, and does not need attention.',
-    nextAction: 'Speak, press Alt+Space, or click the pet when you want help.',
+    meaning: 'Passive and ready.',
+    nextAction: 'Speak/click.',
   },
   {
     color: 'yellow',
     label: 'Active',
-    meaning: 'JAVIS is listening, waking, connecting, working, or using a local fallback.',
-    nextAction: 'Let it continue, or click the pet to talk, stop, or open local input depending on the current state.',
+    meaning: 'Listening, working, fallback.',
+    nextAction: 'Wait/click.',
   },
   {
     color: 'red',
     label: 'Attention',
-    meaning: 'JAVIS needs setup, approval, recovery, or another user decision.',
-    nextAction: 'Open the pet or CUI to resolve the exact blocker.',
+    meaning: 'Needs setup/recovery.',
+    nextAction: 'Open CUI.',
   },
 ];
 
@@ -35525,7 +35809,7 @@ function petTrafficLightSnapshot(options = {}) {
   const intervention = presence.intervention || {};
   const reason = compactRecordText(
     intervention.next || presence.summary || presence.label || 'Standing by until you ask for help.',
-    160,
+    100,
   );
   const base = {
     version: 1,
@@ -35537,7 +35821,7 @@ function petTrafficLightSnapshot(options = {}) {
     pulse: 'off',
     label: presence.label || 'Standby',
     reason,
-    meaning: 'JAVIS is passive and ready for you to summon it.',
+    meaning: 'Passive and ready.',
     nextAction: reason,
     legend: PET_TRAFFIC_LIGHT_LEGEND,
     accessibleLabel: '',
@@ -35553,7 +35837,7 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'interrupt',
       pulse: 'attention',
       label: presence.label || 'Setup blocked',
-      meaning: 'Red means JAVIS needs setup or recovery before the normal voice path is reliable.',
+      meaning: 'Needs setup or recovery.',
       nextAction: reason,
     });
   } else if (mode === 'fallback_ready') {
@@ -35565,8 +35849,8 @@ function petTrafficLightSnapshot(options = {}) {
       pulse: 'off',
       label: presence.label || 'Local fallback ready',
       reason: 'Realtime voice is recovering; local no-mic input is ready.',
-      meaning: 'Yellow means the premium Realtime lane is not the primary path, but local no-mic input is available.',
-      nextAction: 'Click the pet to open local input, or run a no-mic Realtime provider probe from CUI.',
+      meaning: 'Realtime is recovering; local input works.',
+      nextAction: 'Click for local input, or probe from CUI.',
     });
   } else if (mode === 'needs_attention' || intervention.shouldNotify) {
     Object.assign(base, {
@@ -35576,7 +35860,7 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'interrupt',
       pulse: 'attention',
       label: presence.label || 'Needs attention',
-      meaning: 'Red means JAVIS is waiting on approval, setup, or a blocker that needs user intent.',
+      meaning: 'Waiting on approval, setup, or a blocker.',
       nextAction: reason,
     });
   } else if (mode === 'listening') {
@@ -35587,8 +35871,8 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'active',
       pulse: 'live',
       label: presence.label || 'Listening',
-      meaning: 'Yellow means the live voice lane is active.',
-      nextAction: 'Speak now, use push-to-talk if enabled, or click the pet to stop voice.',
+      meaning: 'Live voice is active.',
+      nextAction: 'Speak or click to stop.',
     });
   } else if (mode === 'connecting' || mode === 'waking') {
     Object.assign(base, {
@@ -35598,7 +35882,7 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'active',
       pulse: 'slow',
       label: presence.label || (mode === 'waking' ? 'Wake pending' : 'Connecting'),
-      meaning: 'Yellow means JAVIS is transitioning into an active voice state.',
+      meaning: 'Voice is starting.',
       nextAction: reason,
     });
   } else if (mode === 'working') {
@@ -35609,7 +35893,7 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'ambient',
       pulse: 'slow',
       label: presence.label || 'Working',
-      meaning: 'Yellow means a background task is queued or running.',
+      meaning: 'Background work is active.',
       nextAction: reason,
     });
   } else if (mode === 'watching') {
@@ -35620,14 +35904,14 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'quiet',
       pulse: 'off',
       label: presence.label || 'Watching',
-      meaning: 'Green means JAVIS is passively observing local context and will not intervene until invited.',
-      nextAction: 'Speak, press Alt+Space, or click the pet when you want help.',
+      meaning: 'Passively watching; no intervention.',
+      nextAction: 'Speak, press Alt+Space, or click.',
     });
   }
 
-  base.meaning = compactRecordText(base.meaning || '', 220);
-  base.nextAction = compactRecordText(base.nextAction || base.reason || '', 180);
-  base.accessibleLabel = compactRecordText(`JAVIS ${base.label}: ${base.meaning} Next: ${base.nextAction}`, 260);
+  base.meaning = compactRecordText(base.meaning || '', 120);
+  base.nextAction = compactRecordText(base.nextAction || base.reason || '', 120);
+  base.accessibleLabel = compactRecordText(`JAVIS ${base.label}: ${base.meaning} Next: ${base.nextAction}`, 180);
   return base;
 }
 
@@ -35735,8 +36019,8 @@ function petStatusSnapshot() {
       ],
       mode: presence.mode,
       label: presence.label,
-      summary: compactRecordText(presence.summary || '', 180),
-      next: compactRecordText(presence.intervention?.next || '', 150),
+      summary: compactRecordText(presence.summary || '', 90),
+      next: compactRecordText(presence.intervention?.next || '', 80),
       color: trafficLight.color,
       trafficLight,
     },
@@ -35765,8 +36049,8 @@ function petStatusSnapshot() {
         ok: Boolean(health.ok),
         status: health.status || '',
         kind: health.kind || '',
-        summary: compactRecordText(health.summary || health.message || '', 120),
-        next: compactRecordText(health.next || '', 120),
+        summary: compactRecordText(health.summary || health.message || '', 90),
+        next: compactRecordText(health.next || '', 90),
         hasOpenAiKey: Boolean(health.hasOpenAiKey),
         lastStatusCode: boundedCount(health.lastNegotiation?.statusCode, 999),
         lastError: compactRecordText(health.error || health.lastError || '', 100),
@@ -35776,15 +36060,15 @@ function petStatusSnapshot() {
           lane: compactRecordText(fallback.lane || '', 60),
           endpoint: compactRecordText(fallback.endpoint || '', 80),
           dogfoodCommand: compactRecordText(fallback.dogfoodCommand || '', 80),
-          summary: compactRecordText(fallback.summary || '', 120),
-          next: compactRecordText(fallback.next || '', 120),
+          summary: compactRecordText(fallback.summary || '', 90),
+          next: compactRecordText(fallback.next || '', 90),
           blocker: fallback.blocker
             ? {
                 active: Boolean(fallback.blocker.active),
                 kind: compactRecordText(fallback.blocker.kind || '', 60),
                 status: compactRecordText(fallback.blocker.status || '', 60),
-                summary: compactRecordText(fallback.blocker.summary || '', 100),
-                next: compactRecordText(fallback.blocker.next || '', 100),
+                summary: compactRecordText(fallback.blocker.summary || '', 80),
+                next: compactRecordText(fallback.blocker.next || '', 80),
               }
             : null,
           safety: {
@@ -35798,7 +36082,7 @@ function petStatusSnapshot() {
         },
       };
     })(),
-    localVoice: localVoiceStatusSnapshot({ conversation, voiceHealth: rawVoiceHealth }),
+    localVoice: localVoiceStatusSnapshot({ conversation, voiceHealth: rawVoiceHealth, historyLimit: 1, slim: true }),
     progressVersion: workProgressSnapshot(),
     wake: petWakeSnapshot(wake),
     speech: speechStateSnapshot(),
@@ -37946,7 +38230,8 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     autoProbe: {
       actionId: 'readiness:realtime_voice_provider',
       available: Boolean(OPENAI_API_KEY),
-      autopilotEligible: Boolean(OPENAI_API_KEY && active),
+      autopilotEligible: false,
+      manualOnlyReason: 'Provider probes can consume OpenAI API quota and require explicit user action.',
       cooldownMs: REALTIME_PROVIDER_PROBE_FRESH_MS,
       due: Boolean(OPENAI_API_KEY && active && !providerProbeFreshness.fresh),
       running: Boolean(providerProbeFreshness.running),
@@ -43636,16 +43921,25 @@ async function startRealtimeProviderProbe(options = {}) {
   const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
   const source = String(options.source || 'api').slice(0, 80);
   const rendererAvailable = Boolean(mainWindow && !mainWindow.isDestroyed());
+  const spendPreview = evaluateOpenAiSpendGuard({
+    kind: 'realtime_provider_probe',
+    source,
+    model: models.realtime,
+    isProviderProbe: true,
+    reserve: false,
+    recordBlocked: false,
+  });
   const preview = {
-    ok: Boolean(OPENAI_API_KEY && rendererAvailable),
+    ok: Boolean(OPENAI_API_KEY && rendererAvailable && spendPreview.allowed),
     executed: false,
     runId,
     startsMicrophone: false,
     requiresMicConfirmation: false,
-    manualOnly: false,
-    requiresUserPresence: false,
+    manualOnly: true,
+    requiresUserPresence: true,
     rendererAvailable,
     hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    spendGuard: spendPreview,
     providerProbe: realtimeProviderProbeSnapshot(),
     endpoint: {
       method: 'POST',
@@ -43664,6 +43958,7 @@ async function startRealtimeProviderProbe(options = {}) {
       'This creates a renderer WebRTC offer without getUserMedia, then calls the same Realtime provider session endpoint with probe=true.',
       `Renderer: ${rendererAvailable ? 'ready' : 'missing'}.`,
       `OpenAI key: ${OPENAI_API_KEY ? 'present' : 'missing'}.`,
+      `Cloud spend guard: ${spendPreview.allowed ? 'allowed' : `blocked (${spendPreview.reasons.join(', ')})`}.`,
     ].join('\n'),
   };
   if (!execute) return preview;
@@ -43681,6 +43976,22 @@ async function startRealtimeProviderProbe(options = {}) {
       ok: false,
       status: 409,
       output: 'Cannot run no-mic Realtime provider probe because the renderer window is not available.',
+    };
+  }
+  if (!spendPreview.allowed) {
+    evaluateOpenAiSpendGuard({
+      kind: 'realtime_provider_probe',
+      source,
+      model: models.realtime,
+      isProviderProbe: true,
+      reserve: false,
+      recordBlocked: true,
+    });
+    return {
+      ...preview,
+      ok: false,
+      status: 403,
+      output: `Cannot run no-mic Realtime provider probe because the OpenAI spend guard blocked it: ${spendPreview.reasons.join(', ') || 'spend_guard'}.`,
     };
   }
 
@@ -45867,6 +46178,7 @@ async function observeNow(options = {}) {
         input: String(options.prompt || 'Describe the current screen for a voice assistant.'),
         imageDataUrl: latestScreen?.imageDataUrl,
         maxOutputTokens: 240,
+        source: options.source || 'observe_vision',
       });
     } catch (error) {
       errors.push(`vision: ${error instanceof Error ? error.message : String(error)}`);
@@ -47604,11 +47916,16 @@ function extractOutputText(payload) {
   return chunks.join('\n').trim();
 }
 
-async function callOpenAIResponses({ model, instructions, input, imageDataUrl, maxOutputTokens = 700, signal }) {
+async function callOpenAIResponses({ model, instructions, input, imageDataUrl, maxOutputTokens = 700, signal, source = 'unspecified' }) {
   if (!OPENAI_API_KEY) {
     return 'OpenAI API key is not configured. Add OPENAI_API_KEY to .env and restart JAVIS.';
   }
 
+  const spendDecision = assertOpenAiSpendAllowed({
+    kind: imageDataUrl ? 'responses_vision' : 'responses_text',
+    source,
+    model,
+  });
   const userContent = [{ type: 'input_text', text: input }];
   if (imageDataUrl) {
     userContent.push({ type: 'input_image', image_url: imageDataUrl });
@@ -47631,6 +47948,14 @@ async function callOpenAIResponses({ model, instructions, input, imageDataUrl, m
   });
 
   const data = await response.json().catch(() => ({}));
+  appendAudit('openai.responses.completed', {
+    spendEventId: spendDecision.id,
+    source: spendDecision.source,
+    model,
+    status: response.status,
+    ok: response.ok,
+    usage: data?.usage || null,
+  });
   if (!response.ok) {
     const message = data?.error?.message || response.statusText;
     throw new Error(message);
@@ -47639,6 +47964,7 @@ async function callOpenAIResponses({ model, instructions, input, imageDataUrl, m
 }
 
 function openAiFallbackFailureKind(error) {
+  if (error instanceof OpenAiSpendGuardBlocked) return 'model_quota_or_api';
   const kind = classifyJobFailure(error, { mode: 'background' });
   return ['model_quota_or_api', 'model_failed', 'openai_key_missing'].includes(kind) ? kind : '';
 }
@@ -47680,7 +48006,10 @@ async function callLocalTextWorkerFallback(args = {}, options = {}) {
 
 async function callOpenAIResponsesWithFallback(args = {}, options = {}) {
   try {
-    return await callOpenAIResponses(args);
+    return await callOpenAIResponses({
+      ...args,
+      source: args.source || options.source || 'unspecified',
+    });
   } catch (error) {
     const failureKind = openAiFallbackFailureKind(error);
     if (!failureKind || options.fallback === false || args.imageDataUrl) throw error;
@@ -49774,10 +50103,11 @@ function workflowBriefing(options = {}) {
       readinessAction.localFallback = realtimeWorkbench.voiceHealth?.fallback || null;
       readinessAction.providerProbe = true;
       readinessAction.executable = Boolean(OPENAI_API_KEY);
-      readinessAction.autoEligible = Boolean(OPENAI_API_KEY);
-      readinessAction.autopilotEligible = Boolean(OPENAI_API_KEY);
-      readinessAction.manualOnly = false;
-      readinessAction.requiresUserPresence = false;
+      readinessAction.autoEligible = false;
+      readinessAction.autopilotEligible = false;
+      readinessAction.manualOnly = true;
+      readinessAction.manualOnlyReason = 'OpenAI provider probes can consume API quota and require explicit user action.';
+      readinessAction.requiresUserPresence = true;
       readinessAction.startsMicrophone = false;
       readinessAction.requiresMicConfirmation = false;
       readinessAction.startsRecording = false;
@@ -50859,10 +51189,11 @@ async function workNextAction(options = {}) {
       source: 'readiness',
       providerProbe: true,
       executable: Boolean(OPENAI_API_KEY),
-      autoEligible: Boolean(OPENAI_API_KEY),
-      autopilotEligible: Boolean(OPENAI_API_KEY),
-      manualOnly: false,
-      requiresUserPresence: false,
+      autoEligible: false,
+      autopilotEligible: false,
+      manualOnly: true,
+      manualOnlyReason: 'OpenAI provider probes can consume API quota and require explicit user action.',
+      requiresUserPresence: true,
       startsMicrophone: false,
       requiresMicConfirmation: false,
       startsRecording: false,
@@ -52768,6 +53099,13 @@ function readinessSnapshot(options = {}) {
   const writeFileRoots = actionPolicy.allow?.write_file?.allowedRoots || [];
   const writeFileLimited = writeFileRoots.length > 0 && !writeFileRoots.includes('*');
   const realtimeVoiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: options.includeRecentAudit === true });
+  const openAiSpendGuard = openAiSpendGuardSnapshot();
+  const openAiSpendCounts = openAiSpendGuard.counts || {};
+  const openAiSpendGuardLoose =
+    openAiSpendGuard.mode === 'auto' ||
+    openAiSpendGuard.allowAutopilotCloud ||
+    openAiSpendGuard.allowRendererStartupProbe ||
+    openAiSpendGuard.unattendedDailyRequestLimit > 0;
   const trustedLevel3Mode =
     TRUSTED_LOCAL_MODE &&
     LOCAL_EXEC_ENABLED &&
@@ -52803,6 +53141,16 @@ function readinessSnapshot(options = {}) {
       OPENAI_API_KEY ? 'ready' : 'blocked',
       OPENAI_API_KEY ? 'Configured for realtime and model lanes.' : 'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
       OPENAI_API_KEY ? '' : 'Add OPENAI_API_KEY to .env and restart JAVIS.',
+    ),
+    readinessItem(
+      'openai_spend_guard',
+      'OpenAI spend guard',
+      openAiSpendGuardLoose ? 'warning' : 'ready',
+      `Cloud mode ${openAiSpendGuard.mode}; today ${openAiSpendCounts.total || 0}/${openAiSpendGuard.dailyRequestLimit} total, ${openAiSpendCounts.unattended || 0}/${openAiSpendGuard.unattendedDailyRequestLimit} unattended, ${openAiSpendCounts.blocked || 0} blocked; autopilot cloud ${openAiSpendGuard.allowAutopilotCloud ? 'allowed' : 'blocked'}.`,
+      openAiSpendGuardLoose
+        ? 'For maximum cost safety use JAVIS_OPENAI_CLOUD_MODE=manual, JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0, JAVIS_OPENAI_ALLOW_AUTOPILOT=false, and JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false.'
+        : 'Manual OpenAI calls are allowed within the daily cap; unattended/background calls are blocked by default.',
+      { spendGuard: openAiSpendGuard },
     ),
     readinessItem(
       'realtime_voice_provider',
@@ -53184,6 +53532,7 @@ function configCheckSnapshot(options = {}) {
       workflowsFile: WORKFLOWS_FILE,
       collaborationFile: COLLABORATION_FILE,
       auditFile: AUDIT_FILE,
+      openAiSpendGuardFile: OPENAI_SPEND_GUARD_FILE,
       launchAgentFile: LAUNCH_AGENT_FILE,
     },
     runtime: {
@@ -53237,6 +53586,7 @@ function healthSnapshot() {
       port: API_PORT,
       auth: apiAuthSnapshot(),
       hasOpenAiKey: Boolean(OPENAI_API_KEY),
+      openAiSpendGuard: openAiSpendGuardSnapshot(),
       localExecutionEnabled: LOCAL_EXEC_ENABLED,
       trustedLocalMode: TRUSTED_LOCAL_MODE,
     },
@@ -53254,6 +53604,7 @@ function healthSnapshot() {
       collaborationFile: COLLABORATION_FILE,
       auditFile: AUDIT_FILE,
       audit: auditStorageSnapshot(),
+      openAiSpendGuardFile: OPENAI_SPEND_GUARD_FILE,
       actionPolicyFile: ACTION_POLICY_FILE,
       controlModeFile: CONTROL_MODE_FILE,
       approvalsFile: APPROVALS_FILE,
@@ -59972,6 +60323,10 @@ function startApiServer() {
     res.json({ audit: auditStorageSnapshot() });
   });
 
+  api.get('/api/openai/spend-guard', (_req, res) => {
+    res.json({ spendGuard: openAiSpendGuardSnapshot() });
+  });
+
   api.get('/api/status', (_req, res) => {
     const readiness = readinessSnapshot({ includeRecentAudit: true });
     const presence = presenceStateSnapshot({ readiness, limit: 5 });
@@ -59984,6 +60339,7 @@ function startApiServer() {
         baseUrl: API_BASE,
         auth: apiAuthSnapshot(),
         hasOpenAiKey: Boolean(OPENAI_API_KEY),
+        openAiSpendGuard: openAiSpendGuardSnapshot(),
         localExecutionEnabled: LOCAL_EXEC_ENABLED,
         trustedLocalMode: TRUSTED_LOCAL_MODE,
       },
@@ -61339,7 +61695,9 @@ function startApiServer() {
   api.post('/api/realtime/session', express.text({ type: ['application/sdp', 'text/plain'], limit: '4mb' }), async (req, res) => {
     const isProviderProbe = req.query.probe === 'true' || String(req.query.micMode || '').toLowerCase() === 'probe';
     const runId = String(req.query.runId || '').slice(0, 120);
-    const source = isProviderProbe ? 'renderer_provider_probe' : 'renderer';
+    const source = isProviderProbe
+      ? String(req.query.source || 'renderer_provider_probe').slice(0, 80)
+      : String(req.query.source || 'renderer').slice(0, 80);
     const sessionId = isProviderProbe ? runId : conversationState.sessionId;
     const offerBytes = Buffer.byteLength(String(req.body || ''), 'utf8');
     const recordProviderAttempt = (payload = {}) => {
@@ -61375,6 +61733,29 @@ function startApiServer() {
 
     const startedAt = Date.now();
     const micMode = isProviderProbe ? 'open' : normalizeConversationMicMode(req.query.micMode);
+    let spendDecision = null;
+    try {
+      spendDecision = assertOpenAiSpendAllowed({
+        kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session',
+        source,
+        model: models.realtime,
+        isProviderProbe,
+      });
+    } catch (error) {
+      if (error instanceof OpenAiSpendGuardBlocked) {
+        recordProviderAttempt({
+          micMode,
+          answerBytes: 0,
+          statusCode: 403,
+          ok: false,
+          durationMs: Date.now() - startedAt,
+          error: error.message,
+        });
+        res.status(403).send(error.message);
+        return;
+      }
+      throw error;
+    }
     const fd = new FormData();
     fd.set('sdp', req.body);
     fd.set('session', JSON.stringify(createRealtimeSessionConfig({ micMode })));
@@ -61396,6 +61777,15 @@ function startApiServer() {
         ok: response.ok,
         durationMs: Date.now() - startedAt,
         error: response.ok ? '' : compactRecordText(sdp, 240),
+      });
+      appendAudit('openai.realtime.completed', {
+        spendEventId: spendDecision?.id || '',
+        source,
+        runId,
+        providerProbe: isProviderProbe,
+        status: response.status,
+        ok: response.ok,
+        answerBytes: Buffer.byteLength(sdp, 'utf8'),
       });
       if (!response.ok) {
         res.status(response.status).send(sdp);

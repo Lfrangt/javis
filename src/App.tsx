@@ -2741,7 +2741,12 @@ function App() {
               detail: `No-mic probe offer created (${utf8Bytes(offerSdp)}B).`,
               sessionId: probeSessionId,
             })
-            const params = new URLSearchParams({ micMode: 'open', probe: 'true', runId })
+            const params = new URLSearchParams({
+              micMode: 'open',
+              probe: 'true',
+              runId,
+              source: detail.source || 'renderer_provider_probe',
+            })
             const response = await fetch(`${API_BASE}/api/realtime/session?${params.toString()}`, {
               method: 'POST',
               body: offerSdp,
