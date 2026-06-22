@@ -139,6 +139,64 @@ export default {
         : fail('voice_command.quick_hold', 'Quick lane cloud hold', `expected held quick lane, got ${quickHeld.status}`, quickHeld.data),
     );
 
+    const naturalIncidentReport = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '不是谁给我开了这么多个窗口啊？谁干的？查一下本地审计。',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_incident_report',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalIncidentReportData = naturalIncidentReport.data || {};
+    const incident = naturalIncidentReportData.route?.data?.incident || {};
+    out.push(
+      naturalIncidentReport.ok &&
+        naturalIncidentReportData.ok === true &&
+        naturalIncidentReportData.executed === false &&
+        naturalIncidentReportData.route?.decision?.localCommand === 'incident_report' &&
+        naturalIncidentReportData.route?.localCommand?.intent === 'incident_report' &&
+        typeof naturalIncidentReportData.route?.output === 'string' &&
+        naturalIncidentReportData.route.output.includes('Incident report:') &&
+        naturalIncidentReportData.route.output.includes('边界:') &&
+        incident.version === 1 &&
+        incident.safety?.readOnly === true &&
+        incident.safety?.usesLocalAuditOnly === true &&
+        incident.safety?.startsMicrophone === false &&
+        incident.safety?.usesRealtime === false &&
+        incident.safety?.capturesScreen === false &&
+        incident.safety?.readsClipboardText === false &&
+        incident.safety?.opensTerminal === false &&
+        incident.safety?.executesActions === false &&
+        naturalIncidentReportData.safety?.startsMicrophone === false &&
+        naturalIncidentReportData.safety?.usesRealtime === false &&
+        naturalIncidentReportData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_incident_report', 'Natural incident-report voice command', '谁干的/窗口问题 routes to local audit report without mic, Realtime, screen, clipboard, Terminal, or actions')
+        : fail('voice_command.natural_incident_report', 'Natural incident-report voice command', 'natural incident question did not use the local audit report path safely', naturalIncidentReport.data),
+    );
+
+    const directIncidentReport = await ctx.api('/api/incident/report?query=%E7%AA%97%E5%8F%A3&limit=5&auditLimit=120', {
+      timeoutMs: 30000,
+    });
+    const directIncident = directIncidentReport.data?.incident || {};
+    out.push(
+      directIncidentReport.ok &&
+        directIncident.version === 1 &&
+        directIncident.safety?.readOnly === true &&
+        directIncident.safety?.usesLocalAuditOnly === true &&
+        directIncident.safety?.startsMicrophone === false &&
+        directIncident.safety?.usesRealtime === false &&
+        directIncident.safety?.capturesScreen === false &&
+        directIncident.safety?.readsClipboardText === false &&
+        directIncident.safety?.opensTerminal === false &&
+        directIncident.safety?.executesActions === false
+        ? ok('voice_command.incident_report_api', 'Incident report API', `${directIncident.likelyCause?.id || 'audit'} · ${directIncident.audit?.returned ?? 0}/${directIncident.audit?.scanned ?? 0} event(s)`)
+        : fail('voice_command.incident_report_api', 'Incident report API', 'GET /api/incident/report did not return the read-only local-audit contract', directIncidentReport.data),
+    );
+
     const naturalRealtimeProviderProbe = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -1945,7 +2003,7 @@ export default {
       }
     }
 
-    const history = await ctx.api('/api/voice/history?limit=50&auditLimit=200', { timeoutMs: 30000 });
+    const history = await ctx.api('/api/voice/history?limit=50&auditLimit=500', { timeoutMs: 30000 });
     const historyData = history.data?.history || {};
     const historyItems = Array.isArray(historyData.items) ? historyData.items : [];
     const cliHistory = historyItems.find((item) => (

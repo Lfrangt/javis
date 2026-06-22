@@ -430,6 +430,7 @@ async function printStatus() {
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
   console.log('VH. Show local voice command history');
+  console.log('IR. Show incident report');
   console.log('VS. Show voice standby/fallback status');
   console.log('VC. Start local voice command loop (no mic)');
   console.log('AG. Preview bounded autonomy loop');
@@ -1014,6 +1015,42 @@ async function showVoiceHistory() {
   }
 }
 
+async function showIncidentReport() {
+  const queryIndex = process.argv.findIndex((item) => item === '--query' || item === '-q');
+  const query = queryIndex >= 0 && process.argv[queryIndex + 1] ? process.argv[queryIndex + 1] : '';
+  const params = new URLSearchParams();
+  params.set('limit', '8');
+  params.set('auditLimit', '160');
+  if (query) params.set('query', query);
+  const result = await request(`/api/incident/report?${params.toString()}`);
+  const incident = result.incident || {};
+  const evidence = Array.isArray(incident.evidence) ? incident.evidence : [];
+  const current = incident.current || {};
+  const voice = current.voice || {};
+  const renderer = current.rendererControl || {};
+  const pet = current.window || {};
+  console.log('\nJAVIS Incident Report');
+  console.log('=====================');
+  console.log(`Likely cause: ${incident.likelyCause?.label || '-'}`);
+  if (incident.summary) console.log(compact(incident.summary, 500));
+  console.log(`Current: pet=${pet.mode || '-'} ${pet.width || '-'}x${pet.height || '-'} @ ${pet.parkCorner || '-'} · voice=${voice.status || '-'} active=${voice.active ? 'yes' : 'no'} · renderer=${renderer.status || '-'} · watchdog=${renderer.watchdogReason || '-'}/${renderer.watchdogStops || 0}`);
+  console.log(`Audit: scanned ${incident.audit?.scanned || 0}, returned ${incident.audit?.returned || 0}, file=${incident.audit?.file || '-'}`);
+  if (!evidence.length) {
+    console.log('Evidence: no relevant recent audit event in the scanned local tail.');
+  } else {
+    console.log('\nEvidence');
+    for (const [index, event] of evidence.entries()) {
+      const age = event.ageMs === null || event.ageMs === undefined
+        ? '-'
+        : event.ageMs < 60000
+          ? `${Math.round(event.ageMs / 1000)}s ago`
+          : `${Math.round(event.ageMs / 60000)}m ago`;
+      console.log(`${index + 1}. ${age} · ${event.type} · ${compact(event.summary || '', 260)}`);
+    }
+  }
+  console.log('\nSafety: read-only local audit metadata; starts mic=no; uses Realtime=no; captures screen=no; reads clipboard text=no; opens Terminal=no; executes actions=no.');
+}
+
 async function showLocalVoiceLoopQuickstart() {
   const status = await request('/api/status').catch(() => ({}));
   const voiceHealth = status.voiceHealth || {};
@@ -1033,7 +1070,7 @@ async function showLocalVoiceLoopQuickstart() {
   console.log('  npm run voice:chat -- --no-session --no-screen --no-ui');
   console.log('\nInside the loop:');
   console.log('  Type a request and press Enter.');
-  console.log('  Type /status, /app, /file, /browser, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, or /history for read-only resident checks.');
+  console.log('  Type /status, /app, /file, /browser, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, or /history for read-only resident checks.');
   console.log('  Type /ui <task> to preview a local app/UI workflow; start the loop with --run to execute.');
   console.log('  Type /file list|search|read ... to inspect allowed local files through policy.');
   console.log('  Type /file organize|rename|convert ... to preview file workflow plans without moving files.');
@@ -4634,6 +4671,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-incident') || process.argv.includes('--incident') || process.argv.includes('--incident-report')) {
+    await showIncidentReport();
+    return;
+  }
+
   if (process.argv.includes('--print-realtime-recovery') || process.argv.includes('--realtime-recovery')) {
     await showRealtimeProviderRecovery({ openBilling: process.argv.includes('--open-billing') });
     return;
@@ -4714,6 +4756,8 @@ async function main() {
         await showWorkHandoff();
       } else if (answer === 'vh' || answer === 'voice history' || answer === 'local voice history') {
         await showVoiceHistory();
+      } else if (answer === 'ir' || answer === 'incident' || answer === 'incident report' || answer === 'audit') {
+        await showIncidentReport();
       } else if (answer === 'vs' || answer === 'voice standby' || answer === 'standby' || answer === 'fallback') {
         await showVoiceStandby();
       } else if (answer === 'vc' || answer === 'voice chat' || answer === 'local voice loop' || answer === 'local voice command loop') {

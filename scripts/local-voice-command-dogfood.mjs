@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -484,6 +484,7 @@ function loopHelpText() {
     '  /progress Alias for /jobs.',
     '  /blockers Read why JAVIS is blocked/waiting across voice, approvals, jobs, routes, and autopilot.',
     '  /unblock  Preview how to get unstuck and what safe next step can be prepared.',
+    '  /incident Read the local audit trail for "who did this / what happened" without screenshots or actions.',
     '  /next     Fast-read the next workbench action preview.',
     '  /auto     Read autopilot/agency status and why unattended work is or is not acting.',
     '  /learn    Read local user-distillation, habit candidates, privacy boundaries, and next review actions.',
@@ -1425,6 +1426,35 @@ function formatLoopUnblock(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopIncident(data = {}) {
+  const incident = data.incident || data || {};
+  const current = incident.current || {};
+  const voice = current.voice || {};
+  const renderer = current.rendererControl || {};
+  const pet = current.window || {};
+  const evidence = Array.isArray(incident.evidence) ? incident.evidence : [];
+  const lines = [
+    `Incident: ${incident.likelyCause?.label || 'recent local audit'} · evidence=${incident.counts?.total ?? evidence.length}`,
+  ];
+  if (incident.summary) lines.push(`Likely cause: ${compactText(incident.summary, 420)}`);
+  lines.push(`Current: pet=${pet.mode || '-'} ${pet.width || '-'}x${pet.height || '-'} @ ${pet.parkCorner || '-'} · voice=${voice.status || '-'} active=${voice.active ? 'yes' : 'no'} · renderer=${renderer.status || '-'} · watchdog=${renderer.watchdogReason || '-'}/${renderer.watchdogStops || 0}`);
+  if (evidence.length) {
+    lines.push('Evidence:');
+    for (const event of evidence.slice(0, 5)) {
+      const age = event.ageMs === null || event.ageMs === undefined
+        ? '-'
+        : event.ageMs < 60000
+          ? `${Math.round(event.ageMs / 1000)}s ago`
+          : `${Math.round(event.ageMs / 60000)}m ago`;
+      lines.push(`- ${age} · ${event.type}: ${compactText(event.summary || '', 220)}`);
+    }
+  } else {
+    lines.push('Evidence: no relevant recent audit event in the scanned local tail.');
+  }
+  lines.push('Safety: read-only local audit metadata; no microphone, Realtime, screen capture, clipboard text, Terminal, or action execution.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopAutopilot(data = {}) {
   const payload = parseToolJsonOutput(data);
   const selected = payload.selectedAction || null;
@@ -1924,6 +1954,20 @@ async function runLoopCommand(transcript) {
       const endpoint = '/api/unblock/preview?jobLimit=5&workflowLimit=5&approvalLimit=5';
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopUnblock(response.data || {}), {
+        command,
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'incident' || command === 'why' || command === 'audit' || command === 'what-happened') {
+      const query = String(transcript || '').replace(/^\/[^\s]+/i, '').trim();
+      const params = new URLSearchParams();
+      params.set('limit', '8');
+      params.set('auditLimit', '160');
+      if (query) params.set('query', query);
+      const endpoint = `/api/incident/report?${params.toString()}`;
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopIncident(response.data || {}), {
         command,
         endpoint,
         detailLevel: 'fast',

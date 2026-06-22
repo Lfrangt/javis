@@ -12369,7 +12369,7 @@ function createActionApproval(plan, reason, continuation = null) {
 
 function readRecentAudit(limit = 80) {
   if (!fs.existsSync(AUDIT_FILE)) return [];
-  const normalizedLimit = Math.max(1, Math.min(200, Number(limit || 80)));
+  const normalizedLimit = Math.max(1, Math.min(1000, Number(limit || 80)));
   let fd = null;
   let startedInMiddle = false;
   let chunks = [];
@@ -12412,6 +12412,225 @@ function readRecentAudit(limit = 80) {
       return { ts: null, type: 'audit.parse_failed', data: { line } };
     }
   });
+}
+
+function auditEventTimestampMs(event = {}) {
+  const direct = Date.parse(event.ts || event.createdAt || event.createdAtIso || '');
+  if (Number.isFinite(direct)) return direct;
+  const data = event.data || {};
+  const nested = Date.parse(data.ts || data.createdAt || data.createdAtIso || '');
+  if (Number.isFinite(nested)) return nested;
+  return 0;
+}
+
+function auditEventCategory(type = '') {
+  const value = String(type || '');
+  if (value.startsWith('terminal.') || value.startsWith('local_voice_') || value.startsWith('voice_command.')) return 'voice_terminal';
+  if (value.startsWith('realtime.') || value.startsWith('conversation.')) return 'realtime';
+  if (value.startsWith('window.') || value.startsWith('menubar.')) return 'desktop';
+  if (value.startsWith('resident.') || value.startsWith('launch_agent') || value.startsWith('api.')) return 'resident';
+  if (value.startsWith('autopilot.') || value.startsWith('work_next.') || value.startsWith('routing.') || value.startsWith('task.')) return 'work';
+  if (value.startsWith('approval.')) return 'approval';
+  if (value.startsWith('screen.') || value.startsWith('ambient.') || value.startsWith('browser.')) return 'perception';
+  return 'other';
+}
+
+function incidentAuditTypeRelevant(type = '') {
+  const category = auditEventCategory(type);
+  return ['voice_terminal', 'realtime', 'desktop', 'resident', 'work', 'approval'].includes(category);
+}
+
+function incidentQueryMatchesEvent(query = '', event = {}) {
+  const rawQuery = String(query || '').trim().toLowerCase();
+  if (!rawQuery) return true;
+  const type = String(event.type || '');
+  const data = event.data || {};
+  const text = [
+    type,
+    event.summary,
+    data.source,
+    data.reason,
+    data.status,
+    data.action,
+    data.command,
+    data.output,
+    data.summary,
+    data.error,
+  ].filter(Boolean).join(' ').toLowerCase();
+  const compactQuery = rawQuery.replace(/\s+/g, '');
+  if (/(窗口|终端|terminal|voice:chat|谁开的|谁干的|谁给|opened|window|who)/i.test(compactQuery)) {
+    return auditEventCategory(type) === 'voice_terminal' || auditEventCategory(type) === 'desktop' || /terminal|voice:chat|window/.test(text);
+  }
+  if (/(语音|realtime|麦克风|mic|webrtc|voice)/i.test(compactQuery)) {
+    return auditEventCategory(type) === 'voice_terminal' || auditEventCategory(type) === 'realtime' || /voice|realtime|webrtc|mic/.test(text);
+  }
+  if (/(卡住|阻塞|失败|错误|stuck|blocked|failed|error)/i.test(compactQuery)) {
+    return /blocked|failed|error|timeout|stuck|blocked|卡/.test(text) || ['work', 'approval', 'realtime'].includes(auditEventCategory(type));
+  }
+  return text.includes(rawQuery.slice(0, 80));
+}
+
+function compactIncidentAuditEvent(event = {}) {
+  const data = event.data || {};
+  const type = String(event.type || 'unknown').slice(0, 120);
+  const category = auditEventCategory(type);
+  const timestampMs = auditEventTimestampMs(event);
+  const detail = [
+    data.source ? `source=${compactRecordText(data.source, 80)}` : '',
+    data.reason ? `reason=${compactRecordText(data.reason, 120)}` : '',
+    data.status ? `status=${compactRecordText(data.status, 80)}` : '',
+    data.action ? `action=${compactRecordText(data.action, 80)}` : '',
+    data.command ? `command=${compactRecordText(data.command, 120)}` : '',
+    data.output ? `output=${compactRecordText(data.output, 160)}` : '',
+    data.error ? `error=${compactRecordText(data.error, 160)}` : '',
+    data.mode ? `mode=${compactRecordText(data.mode, 60)}` : '',
+    data.corner ? `corner=${compactRecordText(data.corner, 60)}` : '',
+  ].filter(Boolean).join(' · ');
+  return {
+    type,
+    category,
+    ts: event.ts || '',
+    ageMs: timestampMs ? Math.max(0, Date.now() - timestampMs) : null,
+    summary: detail || compactRecordText(JSON.stringify(data || {}), 220),
+  };
+}
+
+function incidentReportLikelyCause(events = []) {
+  const voiceTerminalOpened = events.find((event) => event.type === 'terminal.opened' && /voice:chat|local-voice-command-dogfood\.mjs/i.test(event.summary || ''));
+  if (voiceTerminalOpened) {
+    return {
+      id: 'terminal_voice_loop',
+      label: 'Terminal voice loop was opened',
+      summary: 'A local voice loop command opened Terminal. Current builds redirect API/resident voice-loop requests into the compact pet input instead.',
+      evidenceType: voiceTerminalOpened.type,
+    };
+  }
+  const blockedVoiceLoop = events.find((event) => ['terminal.voice_loop_blocked', 'local_voice_loop.redirected_to_compose'].includes(event.type));
+  if (blockedVoiceLoop) {
+    return {
+      id: 'voice_loop_blocked',
+      label: 'Voice loop request was blocked from Terminal',
+      summary: 'Something requested the local voice loop, but the resident blocked the Terminal path and used the compact pet input.',
+      evidenceType: blockedVoiceLoop.type,
+    };
+  }
+  const realtimeStop = events.find((event) => event.type === 'realtime.renderer_watchdog_stop_requested' || event.type === 'realtime.renderer_control_event');
+  if (realtimeStop) {
+    return {
+      id: 'realtime_renderer_cleanup',
+      label: 'Realtime renderer cleanup',
+      summary: 'Realtime voice cleanup or watchdog activity is the most relevant recent event.',
+      evidenceType: realtimeStop.type,
+    };
+  }
+  const windowEvent = events.find((event) => event.category === 'desktop');
+  if (windowEvent) {
+    return {
+      id: 'desktop_pet_window',
+      label: 'Desktop pet window changed',
+      summary: 'Recent desktop-pet window mode/park/move activity is the most relevant local event.',
+      evidenceType: windowEvent.type,
+    };
+  }
+  const first = events[0];
+  return first
+    ? {
+        id: 'recent_audit_event',
+        label: first.type,
+        summary: first.summary || 'Most recent relevant audit event.',
+        evidenceType: first.type,
+      }
+    : {
+        id: 'no_recent_evidence',
+        label: 'No recent relevant audit event',
+        summary: 'No relevant recent audit event was found in the local audit tail.',
+        evidenceType: '',
+      };
+}
+
+function incidentReportSnapshot(options = {}) {
+  const query = String(options.query || options.q || '').trim();
+  const auditLimit = Math.max(20, Math.min(200, Number(options.auditLimit || 160)));
+  const eventLimit = Math.max(1, Math.min(20, Number(options.limit || 8)));
+  const sinceMs = Math.max(60000, Math.min(7 * 24 * 60 * 60 * 1000, Number(options.sinceMs || 6 * 60 * 60 * 1000)));
+  const now = Date.now();
+  const audit = readRecentAudit(auditLimit);
+  const normalized = audit
+    .map(compactIncidentAuditEvent)
+    .filter((event) => {
+      if (!incidentAuditTypeRelevant(event.type)) return false;
+      if (event.ageMs !== null && event.ageMs > sinceMs) return false;
+      return incidentQueryMatchesEvent(query, event);
+    })
+    .sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));
+  const events = normalized.slice(0, eventLimit);
+  const counts = events.reduce((acc, event) => {
+    acc.total += 1;
+    acc.byCategory[event.category] = (acc.byCategory[event.category] || 0) + 1;
+    acc.byType[event.type] = (acc.byType[event.type] || 0) + 1;
+    return acc;
+  }, { total: 0, byCategory: {}, byType: {} });
+  const cause = incidentReportLikelyCause(events);
+  const conversation = conversationStateSnapshot();
+  const rendererControl = realtimeRendererControlSnapshot();
+  const window = windowStateSnapshot();
+  const voiceHistory = voiceCommandHistorySnapshot({ limit: 3, auditLimit: 80 });
+  return {
+    ok: true,
+    version: 1,
+    generatedAt: new Date(now).toISOString(),
+    query,
+    summary: cause.summary,
+    likelyCause: cause,
+    counts,
+    current: {
+      window: {
+        mode: window.mode,
+        width: window.width,
+        height: window.height,
+        parkCorner: window.parkCorner,
+        position: window.position,
+      },
+      voice: {
+        status: conversation.status,
+        active: Boolean(conversation.active),
+        sessionId: conversation.sessionId || '',
+        micMode: conversation.micMode || '',
+      },
+      rendererControl: {
+        status: rendererControl.status,
+        active: Boolean(rendererControl.active),
+        action: rendererControl.action || '',
+        watchdogReason: rendererControl.watchdog?.trigger?.reason || '',
+        watchdogStops: rendererControl.watchdog?.state?.stopCount || 0,
+      },
+      localVoiceHistory: {
+        count: voiceHistory.count || 0,
+        latest: voiceHistory.items?.[0] || null,
+      },
+    },
+    evidence: events,
+    audit: {
+      file: AUDIT_FILE,
+      scanned: audit.length,
+      returned: events.length,
+      sinceMs,
+    },
+    safety: {
+      readOnly: true,
+      usesLocalAuditOnly: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      capturesScreen: false,
+      returnsScreenImage: false,
+      readsClipboardText: false,
+      returnsBrowserPageText: false,
+      returnsFullAccessibilityTree: false,
+      executesActions: false,
+      opensTerminal: false,
+    },
+  };
 }
 
 function commandExists(command) {
@@ -24841,6 +25060,33 @@ function naturalAutopilotStatusLocalCommand(text) {
   };
 }
 
+function naturalIncidentReportLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const english = /\b(incident|what happened|who did|who opened|who started|audit|audit trail|diagnose|diagnosis|explain)\b.*\b(window|windows|terminal|voice|loop|javis|realtime|opened|started)\b/i.test(raw)
+    || /\b(why did|why is|why are)\b.*\b(window|windows|terminal|voice|loop|javis|realtime|opened|started)\b/i.test(raw)
+    || /\b(window|windows|terminal|voice|loop|realtime|javis|opened|started)\b.*\b(what happened|who did|who opened|why|audit|diagnose|explain)\b/i.test(raw);
+  const chinese = /(?:谁干的|谁开的|谁打开的|谁给我开|谁触发|谁弄的|谁拉起|为什么).*?(?:窗口|终端|Terminal|voicechat|voice:chat|语音循环|实时语音|JAVIS|javis|贾维斯|卡住|阻塞|报错|失败|开了这么多|这么多个)/i.test(compactPlain)
+    || /(?:窗口|终端|Terminal|voicechat|voice:chat|语音循环|实时语音|JAVIS|javis|贾维斯|卡住|阻塞|报错|失败).*?(?:谁干的|谁开的|谁打开的|谁触发|为什么|发生了什么|怎么回事|解释一下|查一下|审计|日志)/i.test(compactPlain)
+    || /(?:刚才|刚刚|最近).*(?:发生了什么|怎么回事|谁干的|谁开的|为什么这样|出什么事|事故|异常)/i.test(compactPlain)
+    || /(?:事故报告|异常报告|本地审计|审计日志|查审计|看审计|读审计|本地日志)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'incident_report',
+    label: 'Incident report',
+    requiresLocalExecution: true,
+    args: {
+      query: raw,
+      limit: 8,
+      auditLimit: 160,
+    },
+  };
+}
+
 function naturalAppUiLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -25084,6 +25330,9 @@ function localCommandDecision(task) {
 
   const blockerStatusCommand = naturalBlockerStatusLocalCommand(text);
   if (blockerStatusCommand) return blockerStatusCommand;
+
+  const incidentReportCommand = naturalIncidentReportLocalCommand(text);
+  if (incidentReportCommand) return incidentReportCommand;
 
   const autopilotStatusCommand = naturalAutopilotStatusLocalCommand(text);
   if (autopilotStatusCommand) return autopilotStatusCommand;
@@ -25356,7 +25605,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'incident_report', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25565,7 +25814,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -25587,7 +25836,7 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
-    } else if (['voice_status', 'realtime_provider_probe'].includes(localCommand)) {
+    } else if (['voice_status', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -26488,6 +26737,32 @@ function formatUnblockPreviewForLocalCommand(preview = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatIncidentReportForLocalCommand(report = {}) {
+  const current = report.current || {};
+  const voice = current.voice || {};
+  const renderer = current.rendererControl || {};
+  const window = current.window || {};
+  const evidence = Array.isArray(report.evidence) ? report.evidence : [];
+  const evidenceLines = evidence
+    .slice(0, 5)
+    .map((event) => {
+      const age = event.ageMs === null || event.ageMs === undefined
+        ? '-'
+        : event.ageMs < 60000
+          ? `${Math.round(event.ageMs / 1000)}s ago`
+          : `${Math.round(event.ageMs / 60000)}m ago`;
+      return `- ${age} · ${event.type}: ${compactRecordText(event.summary || '', 220)}`;
+    });
+  return [
+    `Incident report: ${report.likelyCause?.label || 'recent local audit'} · evidence=${report.counts?.total ?? evidence.length}`,
+    report.summary ? `Likely cause: ${compactRecordText(report.summary, 360)}` : '',
+    `Current: pet=${window.mode || '-'} ${window.width || '-'}x${window.height || '-'} @ ${window.parkCorner || '-'} · voice=${voice.status || '-'} active=${voice.active ? 'yes' : 'no'} · renderer=${renderer.status || '-'} · watchdog=${renderer.watchdogReason || '-'}/${renderer.watchdogStops || 0}`,
+    evidenceLines.length ? `Evidence:\n${evidenceLines.join('\n')}` : 'Evidence: no relevant recent audit event in the scanned local tail.',
+    `Audit: scanned ${report.audit?.scanned ?? 0}, returned ${report.audit?.returned ?? 0}, window ${Math.round((report.audit?.sinceMs || 0) / 60000)}m`,
+    '边界: 这里只读本地审计元数据；不启动麦克风，不创建 Realtime session，不截屏，不读剪贴板文本，不读网页正文，不返回完整 AX 树，不执行动作，不开 Terminal。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatWorkNextForLocalCommand(next = {}, requestedExecute = false) {
   const action = next.action || null;
   const actionText = action
@@ -26868,6 +27143,19 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatVoiceStatusForLocalCommand(voiceStatus),
         data: { voiceStatus },
+      };
+    }
+
+    if (command.intent === 'incident_report') {
+      const incident = incidentReportSnapshot({
+        ...(command.args || {}),
+        query: command.args?.query || options.transcript || options.message || '',
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatIncidentReportForLocalCommand(incident),
+        data: { incident },
       };
     }
 
@@ -28004,6 +28292,9 @@ function voiceCommandAck(route = {}, options = {}) {
   if (route.localCommand?.intent === 'prompt_suggestions' && output) {
     return output;
   }
+  if (route.localCommand?.intent === 'incident_report' && output) {
+    return output;
+  }
   const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
   return `收到。我会走${laneName}。${reason}`;
 }
@@ -28254,7 +28545,7 @@ function voiceCommandLatencySnapshot(items = []) {
 
 function voiceCommandHistorySnapshot(options = {}) {
   const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
-  const auditLimit = Math.max(80, Math.min(200, Number(options.auditLimit || limit * 8)));
+  const auditLimit = Math.max(80, Math.min(1000, Number(options.auditLimit || limit * 16)));
   const items = readRecentAudit(auditLimit)
     .map(voiceCommandHistoryItemFromAudit)
     .filter(Boolean)
@@ -29162,7 +29453,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'prompt_suggestions', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -61413,6 +61704,17 @@ function startApiServer() {
 
   api.get('/api/voice/history', (req, res) => {
     res.json({ history: voiceCommandHistorySnapshot({ limit: req.query.limit, auditLimit: req.query.auditLimit }) });
+  });
+
+  api.get('/api/incident/report', (req, res) => {
+    res.json({
+      incident: incidentReportSnapshot({
+        query: req.query.query || req.query.q || '',
+        limit: req.query.limit,
+        auditLimit: req.query.auditLimit,
+        sinceMs: req.query.sinceMs,
+      }),
+    });
   });
 
   api.post('/api/tasks/route', async (req, res) => {
