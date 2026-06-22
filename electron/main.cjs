@@ -45976,12 +45976,55 @@ async function setupRecoveryBundleSnapshot(options = {}) {
 async function runNextSetupAction(options = {}) {
   const guide = setupGuideSnapshot({ includeRecentAudit: true });
   const step = guide.nextStep;
+  const execute = options.execute !== false;
+  const source = String(options.source || 'api').slice(0, 80);
+  const previewAction = step ? setupRecoveryActionFromSetupStep(step) : null;
+  const safety = {
+    previewOnly: !execute,
+    startsMicrophone: false,
+    callsOpenAi: false,
+    grantsPermissions: false,
+    writesApiKey: false,
+    changesActionPolicy: false,
+    mutatesFiles: execute ? Boolean(previewAction?.mutatesFiles) : false,
+    opensFinder: execute ? Boolean(previewAction?.opensFinder) : false,
+    opensSystemUi: execute ? Boolean(previewAction?.opensSystemUi) : false,
+    opensBrowser: execute ? Boolean(previewAction?.opensBrowser) : false,
+  };
   if (!step?.action?.action) {
     return {
       ok: true,
+      executed: false,
+      previewOnly: !execute,
       output: guide.steps.length ? guide.output : 'Setup 已经就绪，没有下一步 setup action。',
       guide,
+      step: null,
       actionResult: null,
+      setupAction: null,
+      safety,
+    };
+  }
+  if (!execute) {
+    appendAudit('setup_next.previewed', {
+      checkId: step.id,
+      action: step.action.action,
+      source,
+    });
+    return {
+      ok: true,
+      executed: false,
+      previewOnly: true,
+      output: [
+        `Setup 下一步: ${step.label}`,
+        step.action.label ? `Action: ${step.action.label}` : '',
+        step.action.reason || '',
+        step.next || step.summary,
+      ].filter(Boolean).join('\n'),
+      guide,
+      step,
+      actionResult: null,
+      setupAction: previewAction,
+      safety,
     };
   }
   const actionResult = await runSetupAction(step.action.action);
@@ -45993,14 +46036,24 @@ async function runNextSetupAction(options = {}) {
   appendAudit('setup_next.completed', {
     checkId: step.id,
     action: step.action.action,
-    source: String(options.source || 'api').slice(0, 80),
+    source,
   });
   return {
     ok: true,
+    executed: true,
+    previewOnly: false,
     output,
     guide,
     step,
     actionResult,
+    setupAction: previewAction,
+    safety: {
+      ...safety,
+      mutatesFiles: Boolean(previewAction?.mutatesFiles),
+      opensFinder: Boolean(previewAction?.opensFinder),
+      opensSystemUi: Boolean(previewAction?.opensSystemUi),
+      opensBrowser: Boolean(previewAction?.opensBrowser),
+    },
   };
 }
 

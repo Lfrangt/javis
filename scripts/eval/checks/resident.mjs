@@ -107,6 +107,43 @@ export default {
         }),
     );
 
+    const setupNextPreviewResponse = await ctx.api('/api/setup/next', {
+      method: 'POST',
+      body: {
+        execute: false,
+        source: 'eval_resident_setup_next_preview',
+      },
+    });
+    const setupNextPreview = setupNextPreviewResponse.data || {};
+    const setupNextSafety = setupNextPreview.safety || {};
+    const setupAction = setupNextPreview.setupAction;
+    out.push(
+      setupNextPreviewResponse.ok &&
+        setupNextPreview.ok === true &&
+        setupNextPreview.executed === false &&
+        setupNextPreview.previewOnly === true &&
+        setupNextPreview.actionResult === null &&
+        setupNextSafety.previewOnly === true &&
+        setupNextSafety.startsMicrophone === false &&
+        setupNextSafety.callsOpenAi === false &&
+        setupNextSafety.grantsPermissions === false &&
+        setupNextSafety.writesApiKey === false &&
+        setupNextSafety.changesActionPolicy === false &&
+        setupNextSafety.mutatesFiles === false &&
+        setupNextSafety.opensFinder === false &&
+        setupNextSafety.opensSystemUi === false &&
+        setupNextSafety.opensBrowser === false &&
+        (setupAction === null ||
+          (setupAction.endpoint === '/api/setup/next' &&
+            setupAction.method === 'POST' &&
+            setupAction.startsMicrophone === false))
+        ? ok('resident.setup_next_preview', 'Setup next preview', setupAction ? `${setupAction.action} · no side effects` : 'ready · no setup action')
+        : fail('resident.setup_next_preview', 'Setup next preview', 'execute:false must preview the next setup action without opening UI, mutating files, calling OpenAI, or starting microphone capture', {
+          status: setupNextPreviewResponse.status,
+          body: setupNextPreview,
+        }),
+    );
+
     const voiceStandbyResponse = await ctx.api('/api/voice/standby');
     const voiceStandby = voiceStandbyResponse.data?.standby || {};
     const voiceStandbyPromptPack = voiceStandby.promptPack || {};

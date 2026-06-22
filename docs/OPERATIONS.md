@@ -107,6 +107,7 @@ curl -X POST http://127.0.0.1:3417/api/setup/next \
 ```
 
 `/api/setup/next` only opens the relevant local target, such as `.env` or a macOS permission pane. It does not write API keys, grant permissions, or enable local execution.
+Use `{"execute":false}` to preview the next setup action and its safety flags without opening Finder, System Settings, a browser, or mutating local files.
 
 The doctor command calls `/api/doctor/report` and combines health, readiness, resident status, worker availability, workflow storage, queue state, approval state, and safe policy previews. It exits non-zero when blocked unless `-- --allow-blocked` is provided:
 
