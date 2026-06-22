@@ -236,6 +236,7 @@ const REALTIME_PREFLIGHT_FRESH_MS = Math.max(60000, Math.min(86400000, Number(pr
 const REALTIME_PROVIDER_PROBE_FRESH_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_REALTIME_PROVIDER_PROBE_FRESH_MS || 1800000)));
 const RECORD_REPLAY_TEACHING_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_RECORD_REPLAY_TEACHING_FRESH_MS || 43200000)));
 const PRODUCTIVITY_DOGFOOD_FRESH_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_PRODUCTIVITY_DOGFOOD_FRESH_MS || 43200000)));
+const BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS = Math.max(60000, Math.min(3600000, Number(process.env.JAVIS_BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS || 600000)));
 const REALTIME_PROVIDER_WARNING_MAX_AGE_MS = Math.max(60000, Math.min(604800000, Number(process.env.JAVIS_REALTIME_PROVIDER_WARNING_MAX_AGE_MS || 86400000)));
 const MAX_REALTIME_TOOL_CALL_EVENTS = Math.max(20, Math.min(300, Number(process.env.JAVIS_MAX_REALTIME_TOOL_CALL_EVENTS || 80)));
 const RENDERER_DOGFOOD_EVENT_NAME = 'javis:realtime-dogfood';
@@ -942,6 +943,14 @@ let autopilotState = {
   lastDecision: null,
   lastResult: '',
   lastError: '',
+};
+let browserRecoveryAutopilotState = {
+  lastAttemptAt: 0,
+  lastActionId: '',
+  lastRouteId: '',
+  lastApp: '',
+  lastReadinessStatus: '',
+  runCount: 0,
 };
 let maintenanceState = {
   lastSnapshotAt: 0,
@@ -25191,6 +25200,7 @@ function buildContextPlan(message, options = {}) {
   const text = task.replace(/\s+/g, ' ').trim().toLowerCase();
   const localCommand = String(options.localCommand || '').trim();
   const lane = normalizeRoutingLane(options.lane || options.mode || '');
+  const explicitLearningSignal = /habit|preference|learning|learned|distill|distillation|usage pattern|personalization|profile|最近.*使用|使用.*习惯|习惯|偏好|学习|蒸馏|画像|个性化|更懂我|记忆/.test(text);
   const reasons = [];
   const needs = {
     residentState: false,
@@ -25207,8 +25217,8 @@ function buildContextPlan(message, options = {}) {
     clipboardText: false,
     files: false,
     knowledge: false,
-    memory: options.useMemory !== false && !localCommand,
-    learning: options.useMemory !== false && !localCommand && learningRuntimeEnabled() && currentLearningControls().includeInPrompts !== false,
+    memory: options.useMemory !== false && (!localCommand || explicitLearningSignal),
+    learning: options.useMemory !== false && (!localCommand || explicitLearningSignal) && learningRuntimeEnabled() && currentLearningControls().includeInPrompts !== false,
     localSkills: options.useMemory !== false && !localCommand,
     delegatedWorkerContext: false,
     localExecution: false,
@@ -25324,10 +25334,15 @@ function buildContextPlan(message, options = {}) {
   }
 
   if (localCommand) {
-    needs.memory = false;
-    needs.learning = false;
+    needs.memory = explicitLearningSignal && options.useMemory !== false;
+    needs.learning = explicitLearningSignal && options.useMemory !== false && learningRuntimeEnabled() && currentLearningControls().includeInPrompts !== false;
     needs.localSkills = false;
-    contextPlanPushReason(reasons, `deterministic local command matched first: ${localCommand}`);
+    contextPlanPushReason(
+      reasons,
+      explicitLearningSignal
+        ? `deterministic local command matched first: ${localCommand}; explicit learning intent keeps memory/learning context available`
+        : `deterministic local command matched first: ${localCommand}`,
+    );
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
@@ -28833,6 +28848,12 @@ async function routeTask(options = {}) {
   const preferShortcuts = options.preferShortcuts === true || String(options.preferShortcuts || '').toLowerCase() === 'true';
   const preferredShortcut = preferShortcuts && options.useShortcuts !== false ? shortcutMatchForTask(task) : null;
   const localCommand = preferredShortcut ? null : localCommandDecision(task);
+  const learningEvidenceForLocalCommand = (intent = '') => ({
+    ...routeLearningEvidence,
+    decisionEffect: intent === 'learning_distillation'
+      ? 'used_by_deterministic_learning_distillation_command'
+      : 'not_attached_because_deterministic_local_command_matched_first',
+  });
   if (localCommand) {
     const decision = localCommandDecisionPayload(localCommand, execute);
     decision.contextPlan = buildContextPlan(task, {
@@ -28869,14 +28890,11 @@ async function routeTask(options = {}) {
           localCommand: result.localCommand,
           approval: result.approval,
           memory: { matches: [], count: 0 },
-          learningEvidence: {
-            ...routeLearningEvidence,
-            decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
-          },
+          learningEvidence: learningEvidenceForLocalCommand(localCommand.intent),
           contextPlan: decision.contextPlan,
           output: result.output,
           data: result.data,
-        }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence, contextPlan: decision.contextPlan });
+        }, { ...routingContext, decision, localCommand, learningEvidence: learningEvidenceForLocalCommand(localCommand.intent), contextPlan: decision.contextPlan });
       }
       return finalizeRouteResult({
         ok: true,
@@ -28885,13 +28903,10 @@ async function routeTask(options = {}) {
         decision,
         localCommand,
         memory: { matches: [], count: 0 },
-        learningEvidence: {
-          ...routeLearningEvidence,
-          decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
-        },
+        learningEvidence: learningEvidenceForLocalCommand(localCommand.intent),
         contextPlan: decision.contextPlan,
         output: `Local: ${localCommand.label}`,
-      }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence, contextPlan: decision.contextPlan });
+      }, { ...routingContext, decision, localCommand, learningEvidence: learningEvidenceForLocalCommand(localCommand.intent), contextPlan: decision.contextPlan });
     }
     const result = await runLocalCommand(localCommand, { execute: true });
     appendAudit('local_command.completed', {
@@ -28907,14 +28922,11 @@ async function routeTask(options = {}) {
       localCommand: result.localCommand,
       approval: result.approval,
       memory: { matches: [], count: 0 },
-      learningEvidence: {
-        ...routeLearningEvidence,
-        decisionEffect: 'not_attached_because_deterministic_local_command_matched_first',
-      },
+      learningEvidence: learningEvidenceForLocalCommand(localCommand.intent),
       contextPlan: decision.contextPlan,
       output: result.output,
       data: result.data,
-    }, { ...routingContext, decision, localCommand, learningEvidence: routeLearningEvidence, contextPlan: decision.contextPlan });
+    }, { ...routingContext, decision, localCommand, learningEvidence: learningEvidenceForLocalCommand(localCommand.intent), contextPlan: decision.contextPlan });
   }
   const memoryContext = memoryContextForTask(task, {
     useMemory: options.useMemory !== false,
@@ -35294,6 +35306,90 @@ function compactRealtimePreflightFreshnessForVoice(freshness = null) {
   };
 }
 
+function browserRecoveryAutopilotFreshness(action = {}) {
+  const cooldownMs = Math.max(0, Number(
+    action.autopilotCooldownMs ||
+    action.browserRecovery?.autopilotCooldownMs ||
+    BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
+  ));
+  const recovery = action.browserRecovery || {};
+  const expectedActionId = String(action.id || 'browser_recovery:open_supported_browser');
+  const expectedRouteId = String(recovery.firstRouteId || '').trim();
+  const expectedApp = String(recovery.app || action.macAction?.value || '').trim();
+  const candidates = [];
+  const addCandidate = (candidate) => {
+    if (!candidate?.createdAt) return;
+    const actionId = String(candidate.actionId || '').trim();
+    const routeId = String(candidate.routeId || '').trim();
+    const app = String(candidate.app || '').trim();
+    const sameAction = !expectedActionId || !actionId || actionId === expectedActionId;
+    const sameRoute = !expectedRouteId || !routeId || routeId === expectedRouteId;
+    const sameApp = !expectedApp || !app || app === expectedApp;
+    if (sameAction && sameRoute && sameApp) candidates.push(candidate);
+  };
+
+  addCandidate({
+    createdAt: Number(browserRecoveryAutopilotState.lastAttemptAt || 0),
+    at: browserRecoveryAutopilotState.lastAttemptAt ? new Date(browserRecoveryAutopilotState.lastAttemptAt).toISOString() : '',
+    source: 'memory',
+    eventType: 'browser_recovery.autopilot_attempted',
+    id: compactRecordText(browserRecoveryAutopilotState.lastActionId || expectedActionId, 120),
+    app: compactRecordText(browserRecoveryAutopilotState.lastApp || expectedApp, 120),
+    routeId: compactRecordText(browserRecoveryAutopilotState.lastRouteId || expectedRouteId, 120),
+    phase: 'browser_recovery',
+    status: compactRecordText(browserRecoveryAutopilotState.lastReadinessStatus || '', 80),
+    runCount: Number(browserRecoveryAutopilotState.runCount || 0),
+  });
+
+  try {
+    const events = readRecentAudit(300);
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index] || {};
+      if (event.type !== 'browser_recovery.autopilot_attempted') continue;
+      const data = event.data || {};
+      const createdAt = Date.parse(event.ts || '') || Number(data.createdAt || 0);
+      addCandidate({
+        createdAt,
+        at: createdAt ? new Date(createdAt).toISOString() : '',
+        source: compactRecordText(data.source || 'audit', 80),
+        eventType: event.type,
+        id: compactRecordText(data.actionId || expectedActionId, 120),
+        app: compactRecordText(data.app || expectedApp, 120),
+        routeId: compactRecordText(data.routeId || expectedRouteId, 120),
+        phase: 'browser_recovery',
+        status: compactRecordText(data.readinessStatus || data.status || '', 80),
+        runCount: Number(data.runCount || 0),
+      });
+    }
+  } catch {}
+
+  const latest = candidates
+    .filter((candidate) => Number.isFinite(candidate.createdAt) && candidate.createdAt > 0)
+    .sort((a, b) => b.createdAt - a.createdAt)[0] || null;
+  if (!cooldownMs || !latest) {
+    return {
+      fresh: false,
+      cooldownMs,
+      ageMs: null,
+      waitMs: 0,
+      ageLabel: '',
+      waitLabel: '',
+      latest,
+    };
+  }
+  const ageMs = Math.max(0, Date.now() - latest.createdAt);
+  const waitMs = Math.max(0, cooldownMs - ageMs);
+  return {
+    fresh: waitMs > 0,
+    cooldownMs,
+    ageMs,
+    waitMs,
+    ageLabel: autopilotWaitDurationLabel(ageMs),
+    waitLabel: autopilotWaitDurationLabel(waitMs),
+    latest,
+  };
+}
+
 function autopilotEligibilityDecision(action) {
   if (!action || typeof action !== 'object') {
     return {
@@ -35372,6 +35468,77 @@ function autopilotEligibilityDecision(action) {
       detail: executable
         ? 'Trusted local mode can retry this blocked app workflow.'
         : 'Workflow retry needs local execution and trusted local mode.',
+    };
+  }
+  if (action.source === 'browser_recovery') {
+    const freshness = browserRecoveryAutopilotFreshness(action);
+    const compactFreshness = compactRealtimePreflightFreshness(freshness);
+    const macAction = action.macAction || { action: 'open_app', value: action.browserRecovery?.app || 'Google Chrome' };
+    const safeShape = Boolean(
+      action.executable &&
+      action.autoEligible &&
+      action.autopilotEligible !== false &&
+      action.browserRecovery?.type === 'browser_window_unavailable' &&
+      macAction.action === 'open_app' &&
+      macAction.value &&
+      action.requiresUserPresence === false &&
+      action.startsMicrophone === false &&
+      action.requiresMicConfirmation === false &&
+      action.startsRecording === false &&
+      action.startsWorkers === false &&
+      action.executesTask === false &&
+      action.sendsMessages !== true &&
+      action.mutatesUserFiles !== true &&
+      action.mutatesUserRecords !== true
+    );
+    let policyEvaluation = null;
+    let policyError = '';
+    if (safeShape) {
+      try {
+        const plan = buildLocalActionPlan(macAction);
+        policyEvaluation = evaluateMacActionPlan(plan, {
+          preview: true,
+          approvalContext: {
+            source: 'autopilot_browser_recovery_preview',
+            reason: action.summary,
+          },
+        });
+      } catch (error) {
+        policyError = error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (freshness?.fresh) {
+      const agePhrase = freshness.ageLabel ? `${freshness.ageLabel} ago` : 'recently';
+      return {
+        executable: false,
+        reason: 'browser_recovery_fresh',
+        detail: `Browser recovery was attempted ${agePhrase}; wait ${freshness.waitLabel || 'for the cooldown'} before opening the browser again.`,
+        freshness: compactFreshness,
+      };
+    }
+    const blockedByPolicy = Boolean(policyEvaluation?.blocked || policyEvaluation?.needsApproval || policyError);
+    const executable = Boolean(safeShape && !blockedByPolicy);
+    return {
+      executable,
+      reason: executable
+        ? 'eligible_browser_recovery'
+        : blockedByPolicy
+          ? 'browser_recovery_blocked_by_policy'
+          : 'browser_recovery_not_safe_for_autopilot',
+      detail: executable
+        ? 'Autopilot may open or focus the supported browser once, then recheck readiness; it will not click, fill, submit, or start microphone capture.'
+        : blockedByPolicy
+          ? (policyError || policyEvaluation?.reason || 'Current local action policy blocks this browser recovery.')
+          : 'Browser recovery must be a bounded open-app action with no microphone, recording, workers, task execution, messages, or file mutations.',
+      freshness: compactFreshness,
+      policy: policyEvaluation
+        ? {
+          dryRun: Boolean(policyEvaluation.dryRun),
+          needsApproval: Boolean(policyEvaluation.needsApproval),
+          blocked: Boolean(policyEvaluation.blocked),
+          reason: compactRecordText(policyEvaluation.reason || '', 120),
+        }
+        : null,
     };
   }
   if (action.source === 'readiness' && action.providerProbe === true) {
@@ -35698,6 +35865,27 @@ function autopilotWaitingConditions({ reason = '', candidates = [], selectedActi
       status: running ? 'running' : 'cooldown',
       actionId: providerProbeWaiting.id,
       actionSource: providerProbeWaiting.source,
+      waitMs,
+      waitLabel,
+    });
+  }
+
+  const browserRecoveryFresh = candidates.find((candidate) => (
+    candidate.decision?.reason === 'browser_recovery_fresh' &&
+    candidate.decision?.freshness?.fresh === true
+  ));
+  if (browserRecoveryFresh) {
+    const waitMs = Math.max(0, Number(browserRecoveryFresh.decision?.freshness?.waitMs || 0));
+    const waitLabel = browserRecoveryFresh.decision?.freshness?.waitLabel || autopilotWaitDurationLabel(waitMs);
+    pushAutopilotWaitingCondition(waiting, {
+      id: 'browser_recovery_fresh',
+      label: 'Browser recovery cooldown',
+      summary: waitLabel
+        ? `Browser recovery just tried opening the supported browser; wait about ${waitLabel} before repeating it.`
+        : 'Browser recovery just tried opening the supported browser; skip repeating it for now.',
+      status: 'cooldown',
+      actionId: browserRecoveryFresh.id,
+      actionSource: browserRecoveryFresh.source,
       waitMs,
       waitLabel,
     });
@@ -41472,22 +41660,67 @@ function readRealtimeDogfoodArchiveFile(filePath = '') {
   }
 }
 
+function realtimeDogfoodArchiveEvidenceScore(archive = {}) {
+  const evidence = archive.evidence || {};
+  const toolGroups = [
+    'shortcutTools',
+    'handoffTools',
+    'workNextTools',
+    'delegateTools',
+    'autopilotTools',
+    'attentionTools',
+    'perceptionTools',
+    'capabilityTools',
+    'mcpTools',
+    'approvalTools',
+    'collaborationTools',
+    'learningTools',
+    'browserTools',
+    'productivityDogfoodTools',
+    'recordReplayTeachingTools',
+    'demonstrationTools',
+  ];
+  const toolScore = toolGroups.reduce((score, key) => {
+    const group = evidence[key] || {};
+    const observed = Number(group.count || 0);
+    const flags = Object.keys(group).filter((name) => /^(has|no|ok)/.test(name) && group[name] === true).length;
+    return score + observed + flags;
+  }, 0);
+  const toolCallScore = Array.isArray(evidence.toolCalls) ? evidence.toolCalls.length * 4 : 0;
+  const checklistScore = Array.isArray(evidence.checklist) ? evidence.checklist.filter((step) => step?.ok).length * 2 : 0;
+  const source = String(archive.source || '').toLowerCase();
+  const preflightOnlyPenalty = /no_mic_preflight|prepare_preflight|provider_probe/.test(source) && !toolCallScore ? -20 : 0;
+  return toolScore + toolCallScore + checklistScore + preflightOnlyPenalty;
+}
+
 function latestSavedRealtimeDogfoodArchive(options = {}) {
   const archives = realtimeDogfoodArchiveList({ limit: options.limit || 20 });
+  const preferEvidence = options.preferEvidence !== false;
+  let best = null;
   for (const item of archives.items || []) {
     const archive = readRealtimeDogfoodArchiveFile(item.file);
     const filePath = archive?.file?.path || item.file || '';
     if (archive?.saved === true && filePath && fs.existsSync(filePath)) {
-      return {
+      const candidate = {
         archive,
         metadata: {
           ...item,
           ...realtimeDogfoodArchiveMetadata(archive, filePath),
         },
       };
+      if (!preferEvidence) return candidate;
+      const score = realtimeDogfoodArchiveEvidenceScore(archive);
+      const createdAt = Date.parse(archive.savedAt || archive.generatedAt || item.savedAt || item.generatedAt || '') || 0;
+      if (!best || score > best.score || (score === best.score && createdAt > best.createdAt)) {
+        best = {
+          ...candidate,
+          score,
+          createdAt,
+        };
+      }
     }
   }
-  return null;
+  return best;
 }
 
 function realtimeDogfoodAcceptanceArchiveFromRequest(query = {}) {
@@ -41505,7 +41738,10 @@ function realtimeDogfoodAcceptanceArchiveFromRequest(query = {}) {
     query.latestSaved !== 'false' &&
     query.latestSaved !== '0';
   if (useLatestSaved) {
-    const latest = latestSavedRealtimeDogfoodArchive({ limit: query.archiveLimit || 20 });
+    const latest = latestSavedRealtimeDogfoodArchive({
+      limit: query.archiveLimit || 20,
+      preferEvidence: query.preferEvidence !== 'false' && query.preferEvidence !== '0',
+    });
     if (latest?.archive) {
       return {
         archive: latest.archive,
@@ -41515,6 +41751,7 @@ function realtimeDogfoodAcceptanceArchiveFromRequest(query = {}) {
           file: latest.archive.file?.path || latest.metadata?.file || '',
           savedAt: latest.archive.savedAt || latest.metadata?.savedAt || '',
           generatedAt: latest.archive.generatedAt || latest.metadata?.generatedAt || '',
+          evidenceScore: Number(latest.score || 0),
         },
       };
     }
@@ -46934,17 +47171,23 @@ function browserUnavailableRecoveryAction(activeRoutes = [], routingLedger = [])
       workNextEndpoint: '/api/work/next',
       blocker: compactRecordText(first.entry?.blocker || 'browser_window_unavailable', 160),
       next: `Open or focus ${appName}; JAVIS will keep using the current supported browser tab by default and will not ask which window.`,
+      autopilotCooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
     },
     executable: true,
-    autoEligible: false,
-    autopilotEligible: false,
+    autoEligible: true,
+    autopilotEligible: true,
+    autopilotCooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
     manualOnly: false,
     requiresUserPresence: false,
     startsMicrophone: false,
     requiresMicConfirmation: false,
     startsRecording: false,
     startsWorkers: false,
+    startsApps: true,
     executesTask: false,
+    sendsMessages: false,
+    mutatesUserFiles: false,
+    mutatesUserRecords: false,
     riskLevel: 2,
     macAction: {
       action: 'open_app',
@@ -49028,6 +49271,25 @@ async function workNextAction(options = {}) {
           };
         }
         executed = true;
+        browserRecoveryAutopilotState = {
+          lastAttemptAt: Date.now(),
+          lastActionId: action.id,
+          lastRouteId: action.browserRecovery?.firstRouteId || '',
+          lastApp: action.browserRecovery?.app || macAction.value || '',
+          lastReadinessStatus: readinessAfter?.status || readinessAfter?.overall || '',
+          runCount: Number(browserRecoveryAutopilotState.runCount || 0) + 1,
+        };
+        appendAudit('browser_recovery.autopilot_attempted', {
+          source: String(options.source || 'work_next_browser_recovery').slice(0, 80),
+          autopilot: options.autopilot === true,
+          actionId: action.id,
+          app: action.browserRecovery?.app || macAction.value || '',
+          routeId: action.browserRecovery?.firstRouteId || '',
+          routeCount: Number(action.browserRecovery?.routeCount || 0),
+          readinessStatus: readinessAfter?.status || readinessAfter?.overall || '',
+          cooldownMs: BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS,
+          runCount: browserRecoveryAutopilotState.runCount,
+        });
         result = {
           ok: true,
           executed: true,
@@ -49434,6 +49696,7 @@ function compactWorkNextActionPayload(action = null) {
         readinessEndpoint: compactRecordText(action.browserRecovery.readinessEndpoint || '', 140),
         workNextEndpoint: compactRecordText(action.browserRecovery.workNextEndpoint || '', 140),
         next: compactRecordText(action.browserRecovery.next || '', 240),
+        autopilotCooldownMs: boundedCount(action.browserRecovery.autopilotCooldownMs, 3600000),
       }
     : null;
   return {
@@ -49448,7 +49711,9 @@ function compactWorkNextActionPayload(action = null) {
     requiresUserPresence: Boolean(action.requiresUserPresence),
     startsMicrophone: Boolean(action.startsMicrophone),
     requiresMicConfirmation: Boolean(action.requiresMicConfirmation),
+    startsApps: Boolean(action.startsApps),
     riskLevel: boundedCount(action.riskLevel, 10),
+    autopilotCooldownMs: boundedCount(action.autopilotCooldownMs, 3600000),
     localFallback,
     browserRecovery,
   };

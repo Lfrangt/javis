@@ -49,11 +49,15 @@ export default {
       mainSource.includes('browserRecovery: action.browserRecovery') &&
       mainSource.includes('browserRecoveryFollowUpAction') &&
       mainSource.includes('readinessAfter: compactBrowserRecoveryReadiness') &&
+      mainSource.includes('BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS') &&
+      mainSource.includes('eligible_browser_recovery') &&
+      mainSource.includes("reason: 'browser_recovery_fresh'") &&
+      mainSource.includes("appendAudit('browser_recovery.autopilot_attempted'") &&
       mainSource.includes('After execution, JAVIS will recheck browser readiness');
     out.push(
       hasBrowserWorkNextRecovery
-        ? ok('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'browser_window_unavailable routes can surface an open-supported-browser recovery candidate')
-        : fail('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'expected work-next to expose and execute browser_window_unavailable recovery through local action policy'),
+        ? ok('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'browser_window_unavailable routes can surface a cooldown-guarded autopilot browser recovery candidate')
+        : fail('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'expected work-next to expose and execute cooldown-guarded browser_window_unavailable recovery through local action policy'),
     );
 
     const progress = await ctx.api('/api/work/progress?jobLimit=8&workflowLimit=8');
@@ -69,12 +73,20 @@ export default {
         ? workNext.ok &&
           browserRecoveryAction?.source === 'browser_recovery' &&
           browserRecoveryAction?.executable === true &&
-          browserRecoveryAction?.autoEligible === false &&
+          browserRecoveryAction?.autoEligible === true &&
+          browserRecoveryAction?.autopilotEligible === true &&
+          browserRecoveryAction?.startsApps === true &&
+          browserRecoveryAction?.executesTask === false &&
+          browserRecoveryAction?.sendsMessages === false &&
+          browserRecoveryAction?.mutatesUserFiles === false &&
+          browserRecoveryAction?.mutatesUserRecords === false &&
+          Number(browserRecoveryAction?.autopilotCooldownMs || 0) >= 60000 &&
           browserRecoveryAction?.macAction?.action === 'open_app' &&
           browserRecoveryAction?.browserRecovery?.type === 'browser_window_unavailable' &&
+          Number(browserRecoveryAction?.browserRecovery?.autopilotCooldownMs || 0) >= 60000 &&
           String(browserRecoveryAction?.browserRecovery?.retryActionId || '').startsWith('route:') &&
           browserRecoveryAction?.browserRecovery?.readinessEndpoint === '/api/browser/readiness'
-          ? ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'current browser_window_unavailable blocker exposes open-supported-browser recovery')
+          ? ok('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'current browser_window_unavailable blocker exposes autopilot-eligible open-supported-browser recovery with cooldown')
           : fail('browser.work_next_recovery_runtime', 'Browser work-next recovery runtime', 'expected current browser_window_unavailable blocker to produce a browser_recovery work-next action', {
               actions: workNextActions.slice(0, 6),
               progress: progress.data?.progress?.output || '',

@@ -95,6 +95,9 @@ export default {
     const learnedIds = stepIds(learnedLoop);
     const learning = learnedLoop.learning || {};
     const expectedUse = Boolean(learning.sourceEventCount && learning.includeInPrompts && !learning.paused);
+    const deterministicLearningUse = /deterministic_learning_distillation/.test(String(learning.decisionEffect || '')) ||
+      learnedLoop.route?.localCommand?.intent === 'learning_distillation' ||
+      /本地蒸馏|distilled from/i.test(String(learnedLoop.route?.output || ''));
     out.push(
       learnedPreview.ok &&
         learnedLoop.ok === true &&
@@ -109,8 +112,8 @@ export default {
         learning.privacy?.noPageBodies === true &&
         learning.privacy?.noPermissionGrant === true &&
         learnedLoop.safety?.learningContext?.noPolicyBypass === true &&
-        (!expectedUse || learning.usedInPrompt === true)
-        ? ok('autonomy.learning_context', 'Autonomy learning context', `${learning.usedInPrompt ? 'used' : 'not attached'} · ${learning.sourceEventCount || 0} local event(s)`)
+        (!expectedUse || learning.usedInPrompt === true || deterministicLearningUse)
+        ? ok('autonomy.learning_context', 'Autonomy learning context', `${learning.usedInPrompt || deterministicLearningUse ? 'used' : 'not attached'} · ${learning.sourceEventCount || 0} local event(s)`)
         : fail('autonomy.learning_context', 'Autonomy learning context', `expected local learning evidence envelope (${learnedPreview.status})`, learnedPreview.data),
     );
 
@@ -262,6 +265,19 @@ export default {
         autopilotVoice.data?.safety?.callsOpenAIImmediately === false
         ? ok('autonomy.local_voice_autopilot_status', 'Local voice autopilot status', `${autopilotPayload.enabled ? 'enabled' : 'disabled'} · canAct=${autopilotPayload.canActNow ? 'yes' : 'no'} · ${autopilotPayload.reason || autopilotPayload.decisionPreview?.reason || 'status'}`)
         : fail('autonomy.local_voice_autopilot_status', 'Local voice autopilot status', 'expected natural local voice to read compact autopilot status without model, screen, mic, or Realtime', autopilotVoice.data),
+    );
+
+    const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    out.push(
+      mainSource.includes("if (action.source === 'browser_recovery')") &&
+      mainSource.includes('eligible_browser_recovery') &&
+        mainSource.includes("reason: 'browser_recovery_fresh'") &&
+        mainSource.includes('browserRecoveryAutopilotFreshness(action)') &&
+        mainSource.includes('BROWSER_RECOVERY_AUTOPILOT_COOLDOWN_MS') &&
+        mainSource.includes('Browser recovery cooldown') &&
+        mainSource.includes("appendAudit('browser_recovery.autopilot_attempted'")
+        ? ok('autonomy.autopilot_browser_recovery_guard', 'Autopilot browser recovery guard', 'browser recovery is a bounded autopilot candidate with cooldown and audit trail')
+        : fail('autonomy.autopilot_browser_recovery_guard', 'Autopilot browser recovery guard', 'expected browser recovery to be wired into autopilot with cooldown and audit trail'),
     );
 
     const loopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
