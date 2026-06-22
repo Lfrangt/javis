@@ -611,6 +611,17 @@ export default {
       );
     }
 
+    const terminalSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    out.push(
+      terminalSource.includes('function isLocalVoiceTerminalLoopCommand') &&
+        terminalSource.includes("appendAudit('terminal.voice_loop_blocked'") &&
+        terminalSource.includes('voice_terminal_loop_disabled_product_default') &&
+        terminalSource.includes('Blocked Terminal voice loop and opened JAVIS local input inside the desktop pet instead.') &&
+        terminalSource.includes("opensTerminal: false")
+        ? ok('resident.voice_terminal_loop_guard', 'Voice Terminal loop guard', 'app-level Terminal opener blocks voice:chat loops and redirects to compose')
+        : fail('resident.voice_terminal_loop_guard', 'Voice Terminal loop guard', 'expected app-level terminal opener to block voice:chat loops by default'),
+    );
+
     const pet = await ctx.api('/api/pet/status');
     const p = pet.data || {};
     const hasOwn = (key) => Object.prototype.hasOwnProperty.call(p, key);

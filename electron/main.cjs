@@ -1959,7 +1959,36 @@ function runMenuBarSetupAction(action) {
     });
 }
 
+function isLocalVoiceTerminalLoopCommand(command) {
+  const text = String(command || '');
+  return /\bnpm\s+run\s+voice:chat\b/.test(text)
+    || /local-voice-command-dogfood\.mjs\b[\s\S]*\s--chat\b/.test(text);
+}
+
 function openTerminalCommand(command, options = {}) {
+  if (isLocalVoiceTerminalLoopCommand(command)) {
+    const sourceText = String(options.source || 'api').slice(0, 80);
+    const action = openLocalVoiceInput(sourceText, { execute: true });
+    appendAudit('terminal.voice_loop_blocked', {
+      source: sourceText,
+      reason: 'voice_terminal_loop_disabled_product_default',
+      command: compactRecordText(options.auditCommand || command, 180),
+    });
+    return {
+      ok: action.ok !== false,
+      executed: Boolean(action.executed),
+      redirectedToCompose: true,
+      output: 'Blocked Terminal voice loop and opened JAVIS local input inside the desktop pet instead.',
+      command: options.displayCommand || 'npm run voice:chat',
+      window: action.window || null,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        storesRawAudio: false,
+        opensTerminal: false,
+      },
+    };
+  }
   const escapedCommand = command.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   const child = spawn('osascript', [
     '-e',
@@ -24233,6 +24262,26 @@ function naturalWorkNextLocalCommand(text) {
   };
 }
 
+function naturalContinueLastVoiceRouteLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+  const english = /\b(run|execute|continue|confirm|proceed with|do)\b.*\b(this|that|last|previous|recent)\b.*\b(preview|route|voice route|voice task|command|plan)\b/i.test(raw)
+    || /\b(run|execute|continue|confirm)\b.*\b(the )?(preview|last one|previous one|recent one)\b/i.test(raw);
+  const chinese = /(?:执行|运行|确认|继续|开始|跑).*(?:这个|刚才|上一个|上一条|最近|前面).*(?:预览|方案|路线|路由|语音任务|命令|计划|那个|这个)/i.test(compactPlain)
+    || /(?:把)?(?:这个|刚才|上一个|上一条|最近|前面).*(?:预览|方案|路线|路由|语音任务|命令|计划).*(?:执行|运行|确认|继续|开始|跑)/i.test(compactPlain)
+    || /^(?:执行这个预览|执行刚才的预览|确认这个预览|确认刚才那个|运行这个预览|运行刚才那个|把刚才的预览跑起来|把这个预览跑起来)$/i.test(compactPlain);
+  if (!english && !chinese) return null;
+  return {
+    intent: 'continue_last_voice_route',
+    label: 'Continue last voice route',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalCapabilityStatusCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24648,6 +24697,9 @@ function localCommandDecision(task) {
 
   const autopilotStatusCommand = naturalAutopilotStatusLocalCommand(text);
   if (autopilotStatusCommand) return autopilotStatusCommand;
+
+  const continueLastVoiceRouteCommand = naturalContinueLastVoiceRouteLocalCommand(text);
+  if (continueLastVoiceRouteCommand) return continueLastVoiceRouteCommand;
 
   const workNextCommand = naturalWorkNextLocalCommand(text);
   if (workNextCommand) return workNextCommand;
@@ -27507,7 +27559,7 @@ function localVoicePromptExample(id, utterance) {
 function localVoicePromptPack(options = {}) {
   const fallbackReady = options.fallbackReady === true;
   const latest = options.latest || null;
-  const latestCanContinue = latest && latest.executed === false && latest.queued === false && latest.routeId;
+  const latestCanContinue = Boolean(options.latestCanContinue ?? (latest && latest.executed === false && latest.queued === false && latest.routeId));
   const context = options.context || localVoicePromptContextSnapshot();
   const candidates = fallbackReady
     ? [
@@ -27579,7 +27631,12 @@ function localVoiceStatusSnapshot(options = {}) {
     summary: compactRecordText(voiceHealth.summary || '', 220),
     next: compactRecordText(voiceHealth.next || '', 260),
   };
-  const promptPack = localVoicePromptPack({ fallbackReady, latest, blocker });
+  const latestCanContinue = Boolean(latestExecutableVoiceRoute({
+    limit: 8,
+    auditLimit: 120,
+    source: 'local_voice_prompt_pack',
+  }));
+  const promptPack = localVoicePromptPack({ fallbackReady, latest, latestCanContinue, blocker });
   return {
     version: 1,
     available: true,

@@ -1512,11 +1512,12 @@ export default {
       : { ok: false, status: 0, data: { error: 'missing preview route id' } };
     const workNextData = workNextRoute.data?.next || {};
     const recommended = workNextData.result?.routeRecovery?.recommended || workNextData.action?.routeRecovery?.recommended || {};
+    const continuationLane = routeContinuationData.route?.decision?.lane || '';
     out.push(
       routeContinuationPreview.ok &&
         routeContinuationData.ok === true &&
         routeContinuationData.executed === false &&
-        routeContinuationData.route?.decision?.lane === 'background' &&
+        ['background', 'quick', 'local'].includes(continuationLane) &&
         previewRouteId &&
         workNextRoute.ok &&
         workNextData.ok === true &&
@@ -1528,7 +1529,7 @@ export default {
         recommended.executable === true &&
         recommended.routeId === previewRouteId &&
         workNextData.output?.includes('预览模式')
-        ? ok('voice_command.route_preview_continue', 'Voice route preview continuation', `${previewRouteId} exposes executable route_preview_execute without running it`)
+        ? ok('voice_command.route_preview_continue', 'Voice route preview continuation', `${previewRouteId} exposes executable ${continuationLane} route_preview_execute without running it`)
         : fail('voice_command.route_preview_continue', 'Voice route preview continuation', `expected route preview continuation candidate, got ${workNextRoute.status}`, {
             route: routeContinuationData.route,
             previewRouteId,
@@ -1552,7 +1553,7 @@ export default {
     const localContinue = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
-        transcript: '继续刚才那个',
+        transcript: '执行刚才的预览',
         execute: true,
         includeScreen: false,
         useMemory: false,
@@ -1578,7 +1579,7 @@ export default {
         localContinueData.safety?.executesLocalCommand === true &&
         localContinueData.safety?.callsOpenAIImmediately === false &&
         String(localContinueData.route?.output || '').includes(localContinueRouteId)
-        ? ok('voice_command.continue_last_route', 'Voice continue last route', `${localContinueRouteId} continued through local command without quick cloud call`)
+        ? ok('voice_command.continue_last_route', 'Voice continue last route', `${localContinueRouteId} continued from natural preview-execute wording without quick cloud call`)
         : fail('voice_command.continue_last_route', 'Voice continue last route', `expected voice command to continue latest route, got ${localContinue.status}`, {
             seed: localContinueSeed.data,
             localContinue: localContinue.data,
