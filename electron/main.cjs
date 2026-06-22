@@ -22629,6 +22629,23 @@ function cleanBrowserTaskValue(value) {
     .trim();
 }
 
+function cleanBrowserTaskNavigationValue(value) {
+  return cleanBrowserTaskValue(value)
+    .replace(/^(?:url|网址|网站|网页)[:：]?\s*/i, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function normalizeBrowserTaskUrl(value) {
+  const raw = cleanBrowserTaskNavigationValue(value);
+  if (!raw || /\s/.test(raw)) return '';
+  if (/^(?:javascript|mailto|tel|sms|data|blob|file):/i.test(raw)) return '';
+  if (/^https?:\/\//i.test(raw)) return normalizeBrowserHref(raw);
+  if (/^localhost(?::\d+)?(?:\/.*)?$/i.test(raw)) return normalizeBrowserHref(`http://${raw}`);
+  if (/^(?:[a-z0-9-]+\.)+[a-z]{2,}(?::\d+)?(?:\/.*)?$/i.test(raw)) return normalizeBrowserHref(`https://${raw}`);
+  return '';
+}
+
 function parseBrowserTaskFill(segment = '', fullInstruction = '') {
   const text = String(segment || '').trim();
   const patterns = [
@@ -22651,6 +22668,29 @@ function parseBrowserTaskFill(segment = '', fullInstruction = '') {
     return { query: cleanBrowserTaskQuery(text.replace(/\b(fill|enter|type|input|with)\b/gi, '').replace(value, '')), value };
   }
   return null;
+}
+
+function parseBrowserTaskOpenUrl(segment = '') {
+  const text = String(segment || '').trim();
+  const explicitUrl = text.match(/https?:\/\/[^\s"'<>）)]+/i)?.[0];
+  if (explicitUrl) {
+    const url = normalizeBrowserTaskUrl(explicitUrl);
+    if (url) return { url };
+  }
+  const english = text.match(/^(?:please\s+)?(?:open|go to|navigate to|visit)\s+(?:the\s+)?(.+?)$/i);
+  const chinese = text.match(/^(?:请\s*)?(?:帮我\s*)?(?:打开|访问|进入|跳转到)\s*(?:网址|网站|网页)?[:：]?\s*(.+)$/i);
+  const candidate = english?.[1] || chinese?.[1] || '';
+  const url = normalizeBrowserTaskUrl(candidate);
+  return url ? { url } : null;
+}
+
+function parseBrowserTaskSearch(segment = '') {
+  const text = String(segment || '').trim();
+  const english = text.match(/^(?:please\s+)?(?:search(?:\s+(?:the\s+)?(?:web|google))?(?:\s+for)?|google|look up(?:\s+online)?|web search)[:：]?\s+(.+)$/i);
+  const chinese = text.match(/^(?:请\s*)?(?:帮我\s*)?(?:打开(?:浏览器|网页|google|Google|谷歌)\s*)?(?:在(?:浏览器|网页|网上|google|Google|谷歌)(?:里|上)?\s*)?(?:搜索(?:网页|一下)?|搜一下|查一下|查找|查询|网上搜|谷歌一下|google一下|Google一下|百度一下)[:：]?\s*(.+)$/i);
+  const query = cleanBrowserTaskNavigationValue(english?.[1] || chinese?.[1] || '');
+  if (!query) return null;
+  return { query };
 }
 
 function parseBrowserTaskClick(segment = '') {
@@ -22684,6 +22724,26 @@ function fallbackBrowserTaskPlan(instruction = '', dom = {}, maxSteps = 5, plann
 
   for (const segment of segments) {
     if (steps.length >= maxSteps) break;
+    const open = parseBrowserTaskOpenUrl(segment);
+    if (open?.url) {
+      steps.push({
+        action: 'open_url',
+        url: open.url,
+        reason: 'Local fallback recognized a safe browser URL navigation request.',
+      });
+      continue;
+    }
+
+    const search = parseBrowserTaskSearch(segment);
+    if (search?.query) {
+      steps.push({
+        action: 'search',
+        query: search.query,
+        reason: 'Local fallback recognized a safe browser search request.',
+      });
+      continue;
+    }
+
     const fill = parseBrowserTaskFill(segment, text);
     if (fill?.value) {
       const target = findBrowserTaskElement(dom, fill.query, 'fill');
@@ -22753,6 +22813,21 @@ function fallbackBrowserTaskPlan(instruction = '', dom = {}, maxSteps = 5, plann
 }
 
 async function planBrowserTaskSteps(page, dom, instruction, maxSteps) {
+  const localPlan = fallbackBrowserTaskPlan(instruction, dom, maxSteps);
+  if (localPlan.steps.length) {
+    return {
+      ...localPlan,
+      source: 'local_fallback',
+      plannerError: '',
+    };
+  }
+  if (openAiZeroSpendModeActive()) {
+    return {
+      ...localPlan,
+      source: 'blocked',
+      plannerError: 'OpenAI zero-spend mode is active and no safe local fallback steps were inferred.',
+    };
+  }
   if (!OPENAI_API_KEY) {
     return {
       ...fallbackBrowserTaskPlan(instruction, dom, maxSteps, 'OpenAI API key is not configured.'),
@@ -23584,10 +23659,14 @@ async function runBrowserFillDraftWorkflow(options = {}) {
 async function runBrowserTaskWorkflow(options = {}) {
   const instruction = String(options.instruction || '').trim();
   if (!instruction) throw new Error('Browser act workflow requires an instruction.');
-  const execute = options.execute !== false;
+  const fixturePage = normalizeBrowserFillDraftFixturePage(options.page || options.fixturePage);
+  const fixtureDom = normalizeBrowserFillDraftFixtureDom(options.dom || options.fixtureDom);
+  const fixture = Boolean(fixturePage || fixtureDom);
+  const requestedExecute = options.execute !== false;
+  const execute = requestedExecute && !fixture;
   const maxSteps = Math.max(1, Math.min(5, Number(options.maxSteps || 5)));
   const maxChars = normalizeBrowserMaxChars(options.maxChars || 12000);
-  const page = await browserPageSnapshot({ app: options.app, maxChars });
+  const page = fixturePage || await browserPageSnapshot({ app: options.app, maxChars });
   const pageSummary = browserWorkflowPageSummary(page);
   const workflowTitle = `act · ${page.title || page.url || instruction}`.slice(0, 180);
 
@@ -23624,7 +23703,7 @@ async function runBrowserTaskWorkflow(options = {}) {
     };
   }
 
-  const dom = await browserDomSnapshot({ app: options.app, limit: options.domLimit || 80 });
+  const dom = fixtureDom || await browserDomSnapshot({ app: options.app, limit: options.domLimit || 80 });
   const workflow = createWorkflowRecord({
     kind: 'browser',
     source: 'browser_task',
@@ -23678,11 +23757,11 @@ async function runBrowserTaskWorkflow(options = {}) {
     }
   }
 
-  const afterPage = await browserPageSnapshot({ app: options.app, maxChars: Math.min(6000, maxChars) }).catch((error) => ({
+  const afterPage = fixturePage || await browserPageSnapshot({ app: options.app, maxChars: Math.min(6000, maxChars) }).catch((error) => ({
     available: false,
     error: error instanceof Error ? error.message : String(error),
   }));
-  const afterDom = await browserDomSnapshot({ app: options.app, limit: 40 }).catch((error) => ({
+  const afterDom = fixtureDom || await browserDomSnapshot({ app: options.app, limit: 40 }).catch((error) => ({
     available: false,
     error: error instanceof Error ? error.message : String(error),
     elements: [],
@@ -23733,6 +23812,8 @@ async function runBrowserTaskWorkflow(options = {}) {
     mode: 'quick',
     intent: 'act',
     queued: false,
+    fixture,
+    requestedExecute,
     workflow: finalWorkflow,
     routing,
     page: browserWorkflowPageSummary(afterPage?.available ? afterPage : page),
@@ -24904,6 +24985,49 @@ async function browserWorkflowBenchmarkSnapshot(options = {}) {
       summarize.queued === false &&
       Array.isArray(summarize.page?.headings) &&
       summarize.page.headings.includes('Launch Plan'),
+  }));
+
+  const actSearch = await runBrowserWorkflow({
+    intent: 'act',
+    mode: 'quick',
+    execute: false,
+    instruction: '帮我在浏览器搜索 JAVIS spend guard',
+    page: launchPage,
+    dom: {
+      available: true,
+      supported: true,
+      app: 'FixtureBrowser',
+      title: launchPage.title,
+      url: launchPage.url,
+      elements: [],
+    },
+    source: `${sourcePrefix}_act_search_local_fallback`,
+    scope: 'eval:browser:benchmark:act_search_local_fallback',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'act_search_local_fallback_fixture',
+    label: 'Act search local fallback fixture',
+    intent: 'act',
+    result: actSearch,
+    secrets,
+    assertions: {
+      fixture: actSearch.fixture === true,
+      plannerSource: actSearch.plan?.source || '',
+      plannedAction: actSearch.plan?.steps?.[0]?.action || '',
+      plannedQuery: actSearch.plan?.steps?.[0]?.query || '',
+      resultStatus: actSearch.results?.[0]?.status || '',
+    },
+    ok: actSearch.ok === true &&
+      actSearch.executed !== true &&
+      actSearch.fixture === true &&
+      actSearch.plan?.source === 'local_fallback' &&
+      actSearch.plan?.plannerError === '' &&
+      actSearch.plan?.steps?.length === 1 &&
+      actSearch.plan.steps[0].action === 'search' &&
+      actSearch.plan.steps[0].query === 'JAVIS spend guard' &&
+      actSearch.results?.[0]?.status === 'previewed' &&
+      actSearch.results?.[0]?.plan?.args?.browserAction === 'search',
   }));
 
   const fillDraft = await runBrowserFillDraftWorkflow({

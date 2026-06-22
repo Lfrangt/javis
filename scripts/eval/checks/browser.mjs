@@ -417,6 +417,14 @@ export default {
         { text: 'Operator runbook', href: 'https://example.test/runbook' },
       ],
     };
+    const workflowFixtureDom = {
+      available: true,
+      supported: true,
+      app: 'FixtureBrowser',
+      title: 'JAVIS Launch Notes',
+      url: 'https://example.test/javis-launch',
+      elements: [],
+    };
     const workflowPreview = await ctx.api('/api/browser/workflow', {
       method: 'POST',
       body: {
@@ -444,6 +452,38 @@ export default {
         !workflowPreviewBody.includes('sk-test-secret-do-not-return')
         ? ok('browser.workflow_preview_fixture', 'Browser workflow preview fixture', 'previewed extract_actions without model call, queue, or page-text echo')
         : fail('browser.workflow_preview_fixture', 'Browser workflow preview fixture', `POST /api/browser/workflow ${workflowPreview.status}`, workflowPreview.data),
+    );
+
+    const actSearchPreview = await ctx.api('/api/browser/workflow', {
+      method: 'POST',
+      body: {
+        intent: 'act',
+        mode: 'quick',
+        execute: false,
+        instruction: '帮我在浏览器搜索 JAVIS spend guard',
+        page: workflowFixturePage,
+        dom: workflowFixtureDom,
+        source: 'eval_browser_act_search_local_fallback',
+      },
+    });
+    const actSearchBody = JSON.stringify(actSearchPreview.data || {});
+    out.push(
+      actSearchPreview.ok &&
+        actSearchPreview.data?.ok === true &&
+        actSearchPreview.data?.intent === 'act' &&
+        actSearchPreview.data?.fixture === true &&
+        actSearchPreview.data?.requestedExecute === false &&
+        actSearchPreview.data?.plan?.source === 'local_fallback' &&
+        actSearchPreview.data?.plan?.plannerError === '' &&
+        actSearchPreview.data?.plan?.steps?.length === 1 &&
+        actSearchPreview.data?.plan?.steps?.[0]?.action === 'search' &&
+        actSearchPreview.data?.plan?.steps?.[0]?.query === 'JAVIS spend guard' &&
+        actSearchPreview.data?.results?.[0]?.status === 'previewed' &&
+        actSearchPreview.data?.results?.[0]?.plan?.args?.browserAction === 'search' &&
+        actSearchPreview.data?.workflow?.status === 'done' &&
+        !actSearchBody.includes('sk-test-secret-do-not-return')
+        ? ok('browser.act_search_local_fallback', 'Browser act search local fallback', 'natural search request plans locally without model planner or browser execution')
+        : fail('browser.act_search_local_fallback', 'Browser act search local fallback', `POST /api/browser/workflow ${actSearchPreview.status}`, actSearchPreview.data),
     );
 
     const researchPreview = await ctx.api('/api/browser/workflow', {
@@ -491,7 +531,7 @@ export default {
         bench?.executesBrowserActions === false &&
         bench?.modelCalls === false &&
         bench?.storesRawPageText === false &&
-        bench?.counts?.total >= 9 &&
+        bench?.counts?.total >= 10 &&
         bench?.counts?.pass === bench.counts.total &&
         bench?.counts?.fail === 0 &&
         bench?.safety?.noBrowserActions === true &&
@@ -502,7 +542,7 @@ export default {
         bench?.safety?.domConfirmFixtureNoExecute === true &&
         bench?.safety?.noFormSubmitByDefault === true &&
         bench?.safety?.sensitiveFieldsBlocked === true &&
-        ['extract_actions_fixture', 'summarize_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'dom_action_execute_gate_fixture', 'dom_action_confirmed_fixture_gate', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
+        ['extract_actions_fixture', 'summarize_fixture', 'act_search_local_fallback_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'dom_action_execute_gate_fixture', 'dom_action_confirmed_fixture_gate', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
         bench.cases.every((item) => item.ok === true && item.modelCall === false && item.browserAction === false)
         ? ok('browser.workflow_benchmarks', 'Browser workflow benchmarks', `${bench.counts.pass}/${bench.counts.total} preview fixture(s) passed`)
         : fail('browser.workflow_benchmarks', 'Browser workflow benchmarks', `GET /api/browser/benchmarks ${benchmarks.status}`, benchmarks.data),
