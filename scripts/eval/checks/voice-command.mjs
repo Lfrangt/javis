@@ -177,6 +177,46 @@ export default {
         : fail('voice_command.natural_realtime_provider_probe_preview', 'Natural Realtime provider probe voice command', 'natural provider-probe phrase did not preview the local no-mic probe path', naturalRealtimeProviderProbe.data),
     );
 
+    const naturalRealtimeDogfoodStatus = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '实时语音验收还差什么，dogfood 证据到哪了？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_realtime_dogfood_status',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalRealtimeDogfoodStatusData = naturalRealtimeDogfoodStatus.data || {};
+    const realtimeDogfoodPayload = naturalRealtimeDogfoodStatusData.route?.data?.realtimeDogfoodStatus || {};
+    out.push(
+      naturalRealtimeDogfoodStatus.ok &&
+        naturalRealtimeDogfoodStatusData.ok === true &&
+        naturalRealtimeDogfoodStatusData.executed === false &&
+        naturalRealtimeDogfoodStatusData.route?.decision?.localCommand === 'realtime_dogfood_status' &&
+        naturalRealtimeDogfoodStatusData.route?.localCommand?.intent === 'realtime_dogfood_status' &&
+        typeof naturalRealtimeDogfoodStatusData.route?.output === 'string' &&
+        naturalRealtimeDogfoodStatusData.route.output.includes('Realtime dogfood:') &&
+        naturalRealtimeDogfoodStatusData.route.output.includes('下一缺口:') &&
+        naturalRealtimeDogfoodStatusData.route.output.includes('边界:') &&
+        realtimeDogfoodPayload.acceptance?.counts?.gates >= 20 &&
+        realtimeDogfoodPayload.acceptance?.startsMicrophone === false &&
+        realtimeDogfoodPayload.evidence?.dogfood?.manualOnly === true &&
+        realtimeDogfoodPayload.safety?.readOnly === true &&
+        realtimeDogfoodPayload.safety?.startsMicrophone === false &&
+        realtimeDogfoodPayload.safety?.usesRealtime === false &&
+        realtimeDogfoodPayload.safety?.savesArchive === false &&
+        realtimeDogfoodPayload.safety?.callsOpenAI === false &&
+        naturalRealtimeDogfoodStatusData.safety?.startsMicrophone === false &&
+        naturalRealtimeDogfoodStatusData.safety?.usesRealtime === false &&
+        naturalRealtimeDogfoodStatusData.safety?.callsOpenAIImmediately === false &&
+        naturalRealtimeDogfoodStatusData.speech?.dryRun === true
+        ? ok('voice_command.natural_realtime_dogfood_status', 'Natural Realtime dogfood status voice command', '实时语音验收还差什么 reads local evidence/acceptance without mic, Realtime, archive save, or cloud')
+        : fail('voice_command.natural_realtime_dogfood_status', 'Natural Realtime dogfood status voice command', 'natural Realtime dogfood status phrase did not use the local read-only evidence path', naturalRealtimeDogfoodStatus.data),
+    );
+
     const naturalProgress = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

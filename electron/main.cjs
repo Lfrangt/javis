@@ -24094,6 +24094,32 @@ function naturalRealtimeProviderProbeLocalCommand(text) {
   };
 }
 
+function naturalRealtimeDogfoodStatusLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsRealtimeDogfood = /\b(realtime|real[- ]?time|webrtc|live voice|voice)\b.*\b(dogfood|acceptance|evidence|drill|runbook|live drill|gate|gates|checklist|status|progress|missing|gap|gaps)\b/i.test(raw)
+    || /\b(dogfood|acceptance|evidence|drill|runbook|live drill|gate|gates|checklist)\b.*\b(realtime|real[- ]?time|webrtc|live voice|voice)\b/i.test(raw)
+    || /(?:实时语音|实时对话|Realtime|realtime|WebRTC|webrtc|livevoice|语音).*(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|门槛|gate|缺口|差什么|还差|进度|状态|通过|没过)/i.test(compactPlain)
+    || /(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|门槛|gate|缺口|差什么|还差).*(?:实时语音|Realtime|realtime|WebRTC|webrtc|语音)/i.test(compactPlain);
+  if (!mentionsRealtimeDogfood) return null;
+
+  const statusSignal = /\b(status|progress|missing|gap|gaps|next|what remains|how far|accepted|acceptance|evidence|ready|blocked|checklist)\b/i.test(raw)
+    || /(?:状态|进度|还差|差什么|缺口|下一步|通过了吗|过了吗|验收|证据|准备好|卡住|阻塞|哪些没过|还没过|剩什么|做到哪)/i.test(compactPlain);
+  if (!statusSignal) return null;
+
+  return {
+    intent: 'realtime_dogfood_status',
+    label: 'Realtime dogfood status',
+    requiresLocalExecution: true,
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalVoiceStatusLocalCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24626,6 +24652,9 @@ function localCommandDecision(task) {
   const realtimeProviderProbeCommand = naturalRealtimeProviderProbeLocalCommand(text);
   if (realtimeProviderProbeCommand) return realtimeProviderProbeCommand;
 
+  const realtimeDogfoodStatusCommand = naturalRealtimeDogfoodStatusLocalCommand(text);
+  if (realtimeDogfoodStatusCommand) return realtimeDogfoodStatusCommand;
+
   const voiceStatusCommand = naturalVoiceStatusLocalCommand(text);
   if (voiceStatusCommand) return voiceStatusCommand;
 
@@ -24966,7 +24995,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25739,6 +25768,33 @@ function formatRealtimeProviderProbeForLocalCommand(control = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatRealtimeDogfoodStatusForLocalCommand(status = {}) {
+  const acceptance = status.acceptance || {};
+  const evidence = status.evidence || {};
+  const nextGap = acceptance.nextGap || null;
+  const nextPrompt = evidence.dogfood?.gapSummary?.nextPrompt || {};
+  const counts = acceptance.counts || {};
+  const groups = Array.isArray(acceptance.groups) ? acceptance.groups : [];
+  const groupLines = groups
+    .slice(0, 6)
+    .map((group) => `- ${group.ok ? 'pass' : 'gap'} ${group.id || '-'}: ${group.ready ?? 0}/${group.total ?? 0}${group.gaps?.length ? ` · missing ${group.gaps.slice(0, 3).join(', ')}` : ''}`);
+  const gapLines = Array.isArray(acceptance.gaps)
+    ? acceptance.gaps.slice(0, 5).map((gate) => `- ${gate.group || '-'} / ${gate.id || '-'}: ${compactRecordText(gate.label || '', 150)}`)
+    : [];
+  return [
+    `Realtime dogfood: ${acceptance.accepted ? 'accepted' : acceptance.status || 'pending'} · gates ${counts.passed ?? 0}/${counts.gates ?? 0} · gaps ${counts.gaps ?? 0}`,
+    acceptance.summary ? `摘要: ${compactRecordText(acceptance.summary, 360)}` : '',
+    nextGap ? `下一缺口: ${nextGap.group || '-'} / ${nextGap.id || '-'} · ${compactRecordText(nextGap.label || '', 180)}` : '',
+    nextGap?.nextAction ? `下一步: ${compactRecordText(nextGap.nextAction, 260)}` : '',
+    nextPrompt.copyText ? `下一句: ${compactRecordText(nextPrompt.copyText, 220)}` : '',
+    evidence.voiceHealth?.kind ? `Provider: ${evidence.voiceHealth.status || '-'} · ${evidence.voiceHealth.kind || '-'} · ${compactRecordText(evidence.voiceHealth.summary || '', 220)}` : '',
+    groupLines.length ? `Groups:\n${groupLines.join('\n')}` : '',
+    gapLines.length ? `Missing:\n${gapLines.join('\n')}` : '',
+    acceptance.archive?.file ? `Archive: ${compactRecordText(acceptance.archive.file, 220)}${acceptance.archive.saved ? ' · saved' : ' · preview only'}` : '',
+    '边界: 这里只读本地 Realtime dogfood evidence/acceptance；不启动麦克风，不创建 Realtime session，不保存 archive，不开 Terminal，不调用云模型。',
+  ].filter(Boolean).join('\n');
+}
+
 function realtimeProviderProbeControlPayload(result = {}, execute = false) {
   const providerProbe = result.providerProbe || result.probe || realtimeProviderProbeSnapshot();
   return {
@@ -26345,6 +26401,48 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatRealtimeProviderProbeForLocalCommand(control),
         data: { providerProbeControl: control, result },
+      };
+    }
+
+    if (command.intent === 'realtime_dogfood_status') {
+      const evidence = realtimeVoiceEvidenceToolSnapshot({
+        includeChecklist: true,
+        includeRecentTools: true,
+        promptLimit: 3,
+      });
+      const archive = realtimeDogfoodArchiveSnapshot({
+        promptLimit: 8,
+        sessionLimit: 4,
+        auditLimit: 20,
+        source: 'local_command_realtime_dogfood_status',
+      });
+      const acceptance = realtimeDogfoodAcceptanceVoicePayload(
+        realtimeDogfoodAcceptanceSnapshot({
+          archive,
+          source: 'local_command',
+        }),
+        { source: 'local_command' },
+      );
+      const realtimeDogfoodStatus = {
+        ok: true,
+        evidence,
+        acceptance,
+        safety: {
+          readOnly: true,
+          startsMicrophone: false,
+          usesRealtime: false,
+          storesRawAudio: false,
+          savesArchive: false,
+          opensTerminal: false,
+          callsOpenAI: false,
+          startsWorkers: false,
+        },
+      };
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatRealtimeDogfoodStatusForLocalCommand(realtimeDogfoodStatus),
+        data: { realtimeDogfoodStatus },
       };
     }
 
@@ -27892,7 +27990,9 @@ function runVoiceStandbyPrimaryAction(options = {}) {
       output: action.output,
       safety: {
         startsMicrophone: false,
+        requiresMicConfirmation: false,
         usesRealtime: false,
+        wouldUseRealtime: false,
         storesRawAudio: false,
         opensTerminal: Boolean(action.safety?.opensTerminal),
       },
@@ -27919,7 +28019,8 @@ function runVoiceStandbyPrimaryAction(options = {}) {
     safety: {
       startsMicrophone: false,
       requiresMicConfirmation: true,
-      usesRealtime: Boolean(primaryAction.usesRealtime),
+      usesRealtime: false,
+      wouldUseRealtime: Boolean(primaryAction.usesRealtime),
       storesRawAudio: false,
       opensTerminal: false,
     },
@@ -28375,7 +28476,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

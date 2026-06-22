@@ -436,6 +436,7 @@ export default {
         voiceStandbyPrimary.action?.executed === false &&
         voiceStandbyPrimary.safety?.startsMicrophone === false &&
         voiceStandbyPrimary.safety?.usesRealtime === false &&
+        voiceStandbyPrimary.safety?.wouldUseRealtime === Boolean(voiceStandbyPrimary.primaryAction?.usesRealtime) &&
         voiceStandbyPrimary.safety?.storesRawAudio === false &&
         voiceStandbyPrimary.safety?.opensTerminal === false
         ? ok('resident.voice_standby_primary_preview', 'Voice standby primary action preview', `${voiceStandbyPrimary.mode} · primary=${voiceStandbyPrimary.primaryAction?.id}`)
@@ -461,6 +462,7 @@ export default {
         voiceStandbyWorkNextResult.primaryAction?.id === voiceStandby.primaryAction?.id &&
         voiceStandbyWorkNextResult.safety?.startsMicrophone === false &&
         voiceStandbyWorkNextResult.safety?.usesRealtime === false &&
+        voiceStandbyWorkNextResult.safety?.wouldUseRealtime === Boolean(voiceStandbyWorkNextResult.primaryAction?.usesRealtime) &&
         voiceStandbyWorkNextResult.safety?.storesRawAudio === false &&
         voiceStandbyWorkNextResult.safety?.opensTerminal === false &&
         String(voiceStandbyWorkNext.output || '').includes('Preview mode')
@@ -580,6 +582,8 @@ export default {
         timeoutMs: 10000,
       });
       const summonWindow = summonWindowResponse.data?.window || {};
+      const summonFallbackReady = summonWindowResponse.data?.fallbackReady === true;
+      const summonRecoveredBeforeOpen = summonWindowResponse.data?.fallbackReady === false;
       const summonRestoreResponse = await ctx.api('/api/window/mode', {
         method: 'POST',
         body: {
@@ -590,12 +594,12 @@ export default {
       });
       out.push(
         summonWindowResponse.ok &&
-          summonWindowResponse.data?.fallbackReady === true &&
-          summonWindow.mode === 'compose' &&
+          ((summonFallbackReady && summonWindow.mode === 'compose') ||
+            (summonRecoveredBeforeOpen && summonWindow.mode === 'pet')) &&
           summonRestoreResponse.ok &&
           summonRestoreResponse.data?.window?.mode === 'pet'
-          ? ok('resident.summon_compose', 'Summon opens compose in fallback mode', `${summonWindow.width}x${summonWindow.height} · wake=${summonWindowResponse.data?.wake?.triggerCount || 0}`)
-          : fail('resident.summon_compose', 'Summon opens compose in fallback mode', 'expected summon to open compose directly when Realtime is blocked without starting microphone', {
+          ? ok('resident.summon_compose', 'Summon opens compose in fallback mode', `${summonWindow.width}x${summonWindow.height} · fallback=${summonFallbackReady} · wake=${summonWindowResponse.data?.wake?.triggerCount || 0}`)
+          : fail('resident.summon_compose', 'Summon opens compose in fallback mode', 'expected summon to open compose while Realtime is blocked, or stay pet if provider recovered before summon', {
             status: summonWindowResponse.status,
             body: summonWindowResponse.data,
             restoreStatus: summonRestoreResponse.status,
