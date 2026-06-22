@@ -24120,6 +24120,32 @@ function naturalRealtimeDogfoodStatusLocalCommand(text) {
   };
 }
 
+function naturalRealtimeDogfoodPackLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsRealtimeDogfood = /\b(realtime|real[- ]?time|webrtc|live voice|voice)\b.*\b(dogfood|acceptance|evidence|drill|runbook|pack|preflight|brief|checklist)\b/i.test(raw)
+    || /\b(dogfood|acceptance|evidence|drill|runbook|pack|preflight|brief|checklist)\b.*\b(realtime|real[- ]?time|webrtc|live voice|voice)\b/i.test(raw)
+    || /(?:实时语音|实时对话|Realtime|realtime|WebRTC|webrtc|livevoice|语音).*(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|门槛|gate|预检|preflight|操作包|pack|brief|runbook|脚本)/i.test(compactPlain)
+    || /(?:dogfood|验收|证据|evidence|实测|测试|drill|演练|门槛|gate|预检|preflight|操作包|pack|brief|runbook|脚本).*(?:实时语音|Realtime|realtime|WebRTC|webrtc|语音)/i.test(compactPlain);
+  if (!mentionsRealtimeDogfood) return null;
+
+  const prepareSignal = /\b(prepare|prep|preflight|pack|brief|runbook|drill|start|operator|copy prompt|cue card|live run|live drill)\b/i.test(raw)
+    || /(?:准备|预检|操作包|验收包|演练包|脚本|启动|开始|怎么跑|怎么验收|给我.*下一句|下一句怎么说|提示词|cue|流程|步骤)/i.test(compactPlain);
+  if (!prepareSignal) return null;
+
+  return {
+    intent: 'realtime_dogfood_pack',
+    label: 'Realtime dogfood live drill pack',
+    requiresLocalExecution: true,
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalVoiceStatusLocalCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24652,6 +24678,9 @@ function localCommandDecision(task) {
   const realtimeProviderProbeCommand = naturalRealtimeProviderProbeLocalCommand(text);
   if (realtimeProviderProbeCommand) return realtimeProviderProbeCommand;
 
+  const realtimeDogfoodPackCommand = naturalRealtimeDogfoodPackLocalCommand(text);
+  if (realtimeDogfoodPackCommand) return realtimeDogfoodPackCommand;
+
   const realtimeDogfoodStatusCommand = naturalRealtimeDogfoodStatusLocalCommand(text);
   if (realtimeDogfoodStatusCommand) return realtimeDogfoodStatusCommand;
 
@@ -24995,7 +25024,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'browser_recovery', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25795,6 +25824,35 @@ function formatRealtimeDogfoodStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatRealtimeDogfoodPackForLocalCommand(pack = {}) {
+  const readiness = pack.readiness || {};
+  const prompts = pack.prompts || {};
+  const nextPrompt = prompts.next || {};
+  const acceptance = pack.acceptance || {};
+  const nextGap = acceptance.nextGap || null;
+  const commands = pack.commands || {};
+  const safety = pack.safety || {};
+  const operatorSteps = Array.isArray(pack.operatorSteps) ? pack.operatorSteps : [];
+  const stepLines = operatorSteps
+    .filter((step) => ['open_monitor', 'prepare_live_run', 'start_live_voice', 'speak_prompt', 'check_acceptance'].includes(step.id))
+    .slice(0, 5)
+    .map((step) => `- ${step.id}: ${step.startsMicrophone ? 'starts mic' : 'no mic'}${step.requiresMicConfirmation ? ' · confirm mic' : ''} · ${compactRecordText(step.command || step.prompt || step.nextAction || '', 220)}`);
+  return [
+    `Realtime live drill: ${pack.status || '-'} · accepted=${pack.accepted ? 'yes' : 'no'} · gates ${readiness.acceptancePassed ?? 0}/${readiness.acceptanceGates ?? 0}`,
+    `准备: renderer=${readiness.rendererReady ? 'ready' : 'blocked'} · provider=${readiness.providerReady ? 'ready' : 'blocked'} · prompt=${readiness.nextPromptReady ? 'ready' : 'missing'}`,
+    nextPrompt.copyText ? `下一句: ${compactRecordText(nextPrompt.copyText, 260)}` : '',
+    nextGap ? `下一缺口: ${nextGap.group || '-'} / ${nextGap.id || '-'} · ${compactRecordText(nextGap.label || '', 180)}` : '',
+    nextGap?.nextAction ? `下一步: ${compactRecordText(nextGap.nextAction, 260)}` : '',
+    commands.monitor ? `监控: ${commands.monitor}` : '',
+    commands.preflight ? `预检: ${commands.preflight}` : '',
+    commands.startRequireAcceptance || commands.start ? `启动: ${commands.startRequireAcceptance || commands.start}` : '',
+    commands.acceptance ? `验收: ${commands.acceptance}` : '',
+    stepLines.length ? `步骤:\n${stepLines.join('\n')}` : '',
+    `边界: 这个 pack 只整理 live drill 操作包；本次不启动麦克风，不创建 Realtime session，不保存 archive，不开 Terminal。真正启动麦克风需要用户在场并显式运行 confirm-mic。`,
+    safety.executeRequiresConfirmMic ? '麦克风: 只有 confirm-mic 的 live command 会启动。' : '',
+  ].filter(Boolean).join('\n');
+}
+
 function realtimeProviderProbeControlPayload(result = {}, execute = false) {
   const providerProbe = result.providerProbe || result.probe || realtimeProviderProbeSnapshot();
   return {
@@ -26401,6 +26459,32 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatRealtimeProviderProbeForLocalCommand(control),
         data: { providerProbeControl: control, result },
+      };
+    }
+
+    if (command.intent === 'realtime_dogfood_pack') {
+      const realtimeDogfoodPack = realtimeDogfoodLiveDrillPackSnapshot({
+        promptLimit: 8,
+        sessionLimit: 4,
+        auditLimit: 20,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatRealtimeDogfoodPackForLocalCommand(realtimeDogfoodPack),
+        data: {
+          realtimeDogfoodPack,
+          safety: {
+            readOnly: true,
+            startsMicrophone: false,
+            usesRealtime: false,
+            storesRawAudio: false,
+            savesArchive: false,
+            opensTerminal: false,
+            callsOpenAI: false,
+            startsWorkers: false,
+          },
+        },
       };
     }
 
@@ -28476,7 +28560,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

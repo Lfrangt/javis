@@ -177,6 +177,52 @@ export default {
         : fail('voice_command.natural_realtime_provider_probe_preview', 'Natural Realtime provider probe voice command', 'natural provider-probe phrase did not preview the local no-mic probe path', naturalRealtimeProviderProbe.data),
     );
 
+    const naturalRealtimeDogfoodPack = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '帮我准备实时语音验收，给我 live drill pack 和下一句。',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_realtime_dogfood_pack',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalRealtimeDogfoodPackData = naturalRealtimeDogfoodPack.data || {};
+    const realtimeDogfoodPack = naturalRealtimeDogfoodPackData.route?.data?.realtimeDogfoodPack || {};
+    out.push(
+      naturalRealtimeDogfoodPack.ok &&
+        naturalRealtimeDogfoodPackData.ok === true &&
+        naturalRealtimeDogfoodPackData.executed === false &&
+        naturalRealtimeDogfoodPackData.route?.decision?.localCommand === 'realtime_dogfood_pack' &&
+        naturalRealtimeDogfoodPackData.route?.localCommand?.intent === 'realtime_dogfood_pack' &&
+        typeof naturalRealtimeDogfoodPackData.route?.output === 'string' &&
+        naturalRealtimeDogfoodPackData.route.output.includes('Realtime live drill:') &&
+        naturalRealtimeDogfoodPackData.route.output.includes('下一句:') &&
+        naturalRealtimeDogfoodPackData.route.output.includes('启动:') &&
+        naturalRealtimeDogfoodPackData.route.output.includes('边界:') &&
+        realtimeDogfoodPack.kind === 'realtime_live_drill_pack' &&
+        realtimeDogfoodPack.manualOnly === true &&
+        realtimeDogfoodPack.startsMicrophone === false &&
+        realtimeDogfoodPack.triggerStartsMicrophone === true &&
+        realtimeDogfoodPack.requiresMicConfirmation === true &&
+        realtimeDogfoodPack.readiness?.acceptanceGates >= 20 &&
+        realtimeDogfoodPack.safety?.packStartsMicrophone === false &&
+        realtimeDogfoodPack.safety?.executeRequiresConfirmMic === true &&
+        realtimeDogfoodPack.safety?.desktopPetDiagnostics === false &&
+        naturalRealtimeDogfoodPackData.route?.data?.safety?.readOnly === true &&
+        naturalRealtimeDogfoodPackData.route?.data?.safety?.startsMicrophone === false &&
+        naturalRealtimeDogfoodPackData.route?.data?.safety?.usesRealtime === false &&
+        naturalRealtimeDogfoodPackData.route?.data?.safety?.savesArchive === false &&
+        naturalRealtimeDogfoodPackData.safety?.startsMicrophone === false &&
+        naturalRealtimeDogfoodPackData.safety?.usesRealtime === false &&
+        naturalRealtimeDogfoodPackData.safety?.callsOpenAIImmediately === false &&
+        naturalRealtimeDogfoodPackData.speech?.dryRun === true
+        ? ok('voice_command.natural_realtime_dogfood_pack', 'Natural Realtime dogfood pack voice command', '准备实时语音验收 returns the live drill pack without mic, Realtime, archive save, Terminal, or cloud')
+        : fail('voice_command.natural_realtime_dogfood_pack', 'Natural Realtime dogfood pack voice command', 'natural Realtime dogfood pack phrase did not use the local read-only pack path', naturalRealtimeDogfoodPack.data),
+    );
+
     const naturalRealtimeDogfoodStatus = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
