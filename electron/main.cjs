@@ -30331,6 +30331,95 @@ function voiceCommandContextPrompt(context = {}) {
   return lines.join('\n');
 }
 
+const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
+  'app_ui',
+  'app_ui_status',
+  'app_workflow',
+  'approval_status',
+  'autopilot_status',
+  'blocker_status',
+  'browser_dom',
+  'browser_page',
+  'browser_readiness',
+  'browser_recovery',
+  'browser_workflow',
+  'capability_status',
+  'capture_clipboard',
+  'capture_text',
+  'continue_last_voice_route',
+  'creative_workflow',
+  'delegate_task',
+  'incident_report',
+  'keep_awake',
+  'learning_distillation',
+  'perception_status',
+  'prompt_suggestions',
+  'realtime_dogfood_archive',
+  'realtime_dogfood_pack',
+  'realtime_dogfood_prompt_copy',
+  'realtime_dogfood_script_copy',
+  'realtime_dogfood_status',
+  'realtime_provider_probe',
+  'recent_activity',
+  'session_check_in',
+  'session_note',
+  'session_status',
+  'start_session',
+  'resume_session',
+  'end_session',
+  'unblock_preview',
+  'voice_latency',
+  'voice_status',
+  'window_control',
+  'work_next',
+  'work_progress',
+]);
+
+function voiceCommandLocalCommandOwnsContext(command = null) {
+  return Boolean(command?.intent && VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS.has(command.intent));
+}
+
+function skippedVoiceCommandContextSnapshot(command = null, options = {}) {
+  const includeScreen = booleanOption(options.includeScreen);
+  const includeAccessibility = booleanOption(options.includeAccessibility || options.includeUi || options.includeUI);
+  const context = {
+    ok: true,
+    metadataOnly: true,
+    includesScreenImage: false,
+    includesClipboardText: false,
+    includesAccessibilityNodes: false,
+    includeScreenRequested: includeScreen,
+    includeAccessibilityRequested: includeAccessibility,
+    cached: false,
+    cacheAgeMs: null,
+    contextTimedOut: false,
+    skippedLiveContext: true,
+    skippedPreRouteContext: true,
+    skipReason: 'deterministic_local_command_owns_context',
+    localCommand: compactRecordText(command?.intent || '', 80),
+    capturedAt: new Date().toISOString(),
+    frontmost: { available: false, app: '', windowTitle: '' },
+    browser: { available: false, app: '', title: '', host: '', source: '', supported: false },
+    screen: { available: false, skipped: includeScreen },
+    accessibility: {
+      requested: false,
+      skipped: includeAccessibility,
+      available: false,
+      nodeCount: 0,
+      truncated: false,
+      outline: '',
+      error: '',
+    },
+    clipboard: { hasText: false, length: 0 },
+    activeJobs: { count: activeJobRuns.size },
+    pendingApprovals: { count: pendingApprovalSnapshot(20).length },
+    prompt: '',
+    summary: `local ${command?.intent || 'command'} fast path; pre-route context skipped`,
+  };
+  context.prompt = voiceCommandContextPrompt(context);
+  return context;
+}
+
 async function voiceCommandContextSnapshot(options = {}) {
   const includeScreen = booleanOption(options.includeScreen);
   const includeAccessibility = booleanOption(options.includeAccessibility || options.includeUi || options.includeUI);
@@ -30501,13 +30590,23 @@ async function runVoiceCommand(options = {}) {
   const confirmSpeak = booleanOption(options.confirmSpeak || options.confirmAudio || options.confirmSpeech);
   const mode = options.mode || options.lane;
   const source = String(options.source || 'voice_command').slice(0, 80);
+  const preflightLocalCommand = localCommandDecision(transcript);
+  const skipPreRouteContext =
+    voiceCommandLocalCommandOwnsContext(preflightLocalCommand) &&
+    options.forceLiveContext !== true &&
+    options.liveContext !== true;
   const contextStartedAt = Date.now();
-  const contextSnapshot = await voiceCommandContextSnapshot({
-    includeScreen,
-    includeAccessibility,
-    maxAccessibilityNodes: options.maxAccessibilityNodes,
-    maxAccessibilityDepth: options.maxAccessibilityDepth,
-  });
+  const contextSnapshot = skipPreRouteContext
+    ? skippedVoiceCommandContextSnapshot(preflightLocalCommand, {
+        includeScreen,
+        includeAccessibility,
+      })
+    : await voiceCommandContextSnapshot({
+        includeScreen,
+        includeAccessibility,
+        maxAccessibilityNodes: options.maxAccessibilityNodes,
+        maxAccessibilityDepth: options.maxAccessibilityDepth,
+      });
   const contextMs = Date.now() - contextStartedAt;
   const baseRouteOptions = {
     message: transcript,
@@ -30533,6 +30632,8 @@ async function runVoiceCommand(options = {}) {
     useMemory,
     speakRequested,
     confirmSpeak,
+    preflightLocalCommand: preflightLocalCommand?.intent || '',
+    skippedPreRouteContext: Boolean(contextSnapshot.skippedPreRouteContext),
     hasContext: Boolean(contextSnapshot.prompt),
   });
 
@@ -30600,6 +30701,7 @@ async function runVoiceCommand(options = {}) {
       storesRawAudio: false,
       usesMemory: useMemory,
       usesContextMetadata: Boolean(contextSnapshot.prompt),
+      skippedPreRouteContext: Boolean(contextSnapshot.skippedPreRouteContext),
       usesAccessibilityMetadata: Boolean(contextSnapshot.accessibility?.requested),
       callsOpenAIImmediately: Boolean(canExecute && previewLane === 'quick' && allowCloudQuick && !previewIsLocalCommand),
       mayQueueCloudModel: Boolean(canExecute && previewLane === 'background'),
@@ -30641,6 +30743,7 @@ async function runVoiceCommand(options = {}) {
     jobId: route.job?.id || '',
     workflowId: route.workflow?.id || route.data?.workflow?.id || '',
     contextSummary: contextSnapshot.summary,
+    skippedPreRouteContext: Boolean(contextSnapshot.skippedPreRouteContext),
     includeScreen,
     includeAccessibility,
     usesMemory: useMemory,

@@ -295,6 +295,45 @@ export default {
         : fail('voice_command.natural_latency_status', 'Natural voice latency command', 'expected natural latency question to use read-only local audit metrics without mic, Realtime, screen, or Terminal', naturalVoiceLatency.data),
     );
 
+    const latencyWithRedundantContext = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '语音延迟怎么样？',
+        execute: false,
+        includeScreen: true,
+        includeAccessibility: true,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_latency_skip_context',
+      },
+      timeoutMs: 30000,
+    });
+    const latencyWithRedundantContextData = latencyWithRedundantContext.data || {};
+    const skippedContext = latencyWithRedundantContextData.context || {};
+    out.push(
+      latencyWithRedundantContext.ok &&
+        latencyWithRedundantContextData.ok === true &&
+        latencyWithRedundantContextData.executed === false &&
+        latencyWithRedundantContextData.route?.decision?.localCommand === 'voice_latency' &&
+        latencyWithRedundantContextData.route?.contextPlan?.needs?.screen === false &&
+        latencyWithRedundantContextData.route?.contextPlan?.needs?.accessibility === false &&
+        skippedContext.skippedPreRouteContext === true &&
+        skippedContext.skipReason === 'deterministic_local_command_owns_context' &&
+        skippedContext.localCommand === 'voice_latency' &&
+        skippedContext.includeScreenRequested === true &&
+        skippedContext.includeAccessibilityRequested === true &&
+        skippedContext.includesScreenImage === false &&
+        skippedContext.includesAccessibilityNodes === false &&
+        skippedContext.screen?.available === false &&
+        skippedContext.accessibility?.requested === false &&
+        latencyWithRedundantContextData.safety?.skippedPreRouteContext === true &&
+        latencyWithRedundantContextData.safety?.startsMicrophone === false &&
+        latencyWithRedundantContextData.safety?.usesRealtime === false &&
+        latencyWithRedundantContextData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.latency_skip_redundant_context', 'Latency command skips redundant pre-route context', 'voice_latency owns its local audit context even when renderer sends screen/UI flags')
+        : fail('voice_command.latency_skip_redundant_context', 'Latency command skips redundant pre-route context', 'voice_latency did not skip redundant screen/UI pre-route context safely', latencyWithRedundantContext.data),
+    );
+
     const directVoiceLatency = await ctx.api('/api/voice/latency?limit=20&auditLimit=500', {
       timeoutMs: 30000,
     });
