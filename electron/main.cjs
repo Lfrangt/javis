@@ -22678,7 +22678,7 @@ function parseBrowserTaskOpenUrl(segment = '') {
     if (url) return { url };
   }
   const english = text.match(/^(?:please\s+)?(?:open|go to|navigate to|visit)\s+(?:the\s+)?(.+?)$/i);
-  const chinese = text.match(/^(?:请\s*)?(?:帮我\s*)?(?:打开|访问|进入|跳转到)\s*(?:网址|网站|网页)?[:：]?\s*(.+)$/i);
+  const chinese = text.match(/^(?:请\s*)?(?:帮我\s*)?(?:在(?:浏览器|网页|网站|google|Google|谷歌)(?:里|上)?\s*)?(?:打开|访问|进入|跳转到)\s*(?:网址|网站|网页)?[:：]?\s*(.+)$/i);
   const candidate = english?.[1] || chinese?.[1] || '';
   const url = normalizeBrowserTaskUrl(candidate);
   return url ? { url } : null;
@@ -22687,7 +22687,7 @@ function parseBrowserTaskOpenUrl(segment = '') {
 function parseBrowserTaskSearch(segment = '') {
   const text = String(segment || '').trim();
   const english = text.match(/^(?:please\s+)?(?:search(?:\s+(?:the\s+)?(?:web|google))?(?:\s+for)?|google|look up(?:\s+online)?|web search)[:：]?\s+(.+)$/i);
-  const chinese = text.match(/^(?:请\s*)?(?:帮我\s*)?(?:打开(?:浏览器|网页|google|Google|谷歌)\s*)?(?:在(?:浏览器|网页|网上|google|Google|谷歌)(?:里|上)?\s*)?(?:搜索(?:网页|一下)?|搜一下|查一下|查找|查询|网上搜|谷歌一下|google一下|Google一下|百度一下)[:：]?\s*(.+)$/i);
+  const chinese = text.match(/^(?:请\s*)?(?:帮我\s*)?(?:打开(?:浏览器|网页|google|Google|谷歌)\s*)?(?:在(?:浏览器|网页|网上|google|Google|谷歌)(?:里|上)?\s*)?(?:搜索(?:网页|一下)?|搜一下|查一下|查找|查询|查网页|网上搜|谷歌一下|google一下|Google一下|百度一下)[:：]?\s*(.+)$/i);
   const query = cleanBrowserTaskNavigationValue(english?.[1] || chinese?.[1] || '');
   if (!query) return null;
   return { query };
@@ -26241,6 +26241,36 @@ function naturalBrowserLocalCommand(text) {
   return null;
 }
 
+function naturalBrowserActLocalCommand(text) {
+  const raw = String(text || '').trim();
+  if (!raw) return null;
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  const open = parseBrowserTaskOpenUrl(raw);
+  const search = parseBrowserTaskSearch(raw);
+  if (!open?.url && !search?.query) return null;
+
+  const browserOrWebSignal = /\b(browser|chrome|safari|arc|brave|edge|web|webpage|web page|url|website|site|google|search engine)\b/i.test(raw)
+    || /(浏览器|Chrome|chrome|Safari|safari|Arc|arc|Brave|brave|Edge|edge|网页|网站|网址|Google|google|谷歌|百度|网上|查网页|搜索网页)/i.test(compactTextNoSpace);
+  if (!open?.url && !browserOrWebSignal) return null;
+
+  const analysisSignal = /\b(summari[sz]e|summary|research|compare|review|read|extract|answer|ask|explain|analy[sz]e|report)\b/i.test(raw)
+    || /(总结|概括|调研|研究|比较|对比|复盘|阅读|读一下|提取|回答|解释|分析|报告|资料|结果)/i.test(compactPlain);
+  if (search?.query && analysisSignal) return null;
+
+  return {
+    intent: 'browser_workflow',
+    label: 'Browser local action',
+    requiresLocalExecution: true,
+    args: {
+      intent: 'act',
+      instruction: raw,
+      mode: 'quick',
+      maxSteps: 3,
+    },
+  };
+}
+
 function naturalBrowserRecoveryLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -26523,6 +26553,9 @@ function localCommandDecision(task) {
 
   const promptSuggestionsCommand = naturalPromptSuggestionsLocalCommand(text);
   if (promptSuggestionsCommand) return promptSuggestionsCommand;
+
+  const browserActCommand = naturalBrowserActLocalCommand(text);
+  if (browserActCommand) return browserActCommand;
 
   const browserRecoveryCommand = naturalBrowserRecoveryLocalCommand(text);
   if (browserRecoveryCommand) return browserRecoveryCommand;

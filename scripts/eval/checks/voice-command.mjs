@@ -1250,6 +1250,47 @@ export default {
         : fail('voice_command.natural_browser_dom', 'Natural browser DOM voice command', 'natural browser DOM phrase did not use the local browser_dom fast path', naturalBrowserDom.data),
     );
 
+    const naturalBrowserActSearch = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '帮我在浏览器搜索 JAVIS spend guard',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_act_search',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserActSearchData = naturalBrowserActSearch.data || {};
+    const naturalBrowserActSearchRoute = naturalBrowserActSearchData.route || {};
+    const naturalBrowserActSearchPayload = naturalBrowserActSearchRoute.data?.browserWorkflow || {};
+    const naturalBrowserActSearchResult = naturalBrowserActSearchRoute.data?.result || {};
+    out.push(
+      naturalBrowserActSearch.ok &&
+        naturalBrowserActSearchData.ok === true &&
+        naturalBrowserActSearchData.executed === false &&
+        naturalBrowserActSearchRoute.decision?.localCommand === 'browser_workflow' &&
+        naturalBrowserActSearchRoute.localCommand?.intent === 'browser_workflow' &&
+        naturalBrowserActSearchRoute.localCommand?.args?.intent === 'act' &&
+        naturalBrowserActSearchPayload.requestedExecute === false &&
+        naturalBrowserActSearchPayload.executed === false &&
+        naturalBrowserActSearchPayload.intent === 'act' &&
+        naturalBrowserActSearchPayload.safety?.previewOnly === true &&
+        naturalBrowserActSearchPayload.safety?.executesBrowserWorkflow === false &&
+        naturalBrowserActSearchPayload.safety?.executesBrowserAction === false &&
+        naturalBrowserActSearchResult.plan?.source === 'local_fallback' &&
+        naturalBrowserActSearchResult.plan?.plannerError === '' &&
+        naturalBrowserActSearchResult.plan?.steps?.[0]?.action === 'search' &&
+        naturalBrowserActSearchResult.plan?.steps?.[0]?.query === 'JAVIS spend guard' &&
+        naturalBrowserActSearchResult.results?.[0]?.status === 'previewed' &&
+        naturalBrowserActSearchData.safety?.startsMicrophone === false &&
+        naturalBrowserActSearchData.safety?.usesRealtime === false &&
+        naturalBrowserActSearchData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_browser_act_search', 'Natural browser act-search voice command', '浏览器搜索 routes to local browser act fallback without browser execution or cloud')
+        : fail('voice_command.natural_browser_act_search', 'Natural browser act-search voice command', 'natural browser search did not use local act fallback safely', naturalBrowserActSearch.data),
+    );
+
     const naturalBrowserWorkflow = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
