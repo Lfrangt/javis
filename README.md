@@ -127,7 +127,7 @@ Local Mac-first realtime desktop buddy.
 - Global tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Space` on Mac), which wakes JAVIS and parks it at the Dynamic Island/notch position.
 - Global clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`.
 - Resident system notifications for approvals and background task completion, with approval/setup/voice attention alerts gated by the quiet attention policy.
-- Voice mode defaults to open mic from the pet, with push-to-talk plumbing still available internally.
+- Voice mode defaults to push-to-talk from the pet: click/summon starts the Realtime session when available, then hold the compact capsule or press Space to talk. Open-mic mode remains a manual toggle in the expanded controls.
 - Setup/config diagnostics for `.env`, permissions, resident mode, policy, and local workers.
 - Local evaluation harness for product-lane regression checks across health, Realtime voice configuration, briefing, memory, Inbox, routing, parallel multi-agent ownership, collaboration, browser, file, control, worker, Accessibility, and learning surfaces.
 - Shared AX targeting verifier for Chromium/Gemini side-pane input regressions.

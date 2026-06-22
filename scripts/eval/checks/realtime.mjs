@@ -2522,7 +2522,7 @@ export default {
       !rendererDogfoodListener.includes('beginAssistantSession()') &&
       !/\}, \[[^\]]*voiceStatus[^\]]*\]\)/.test(rendererDogfoodListener);
     const rendererProviderGateBeforeMic =
-      rendererSource.includes('/api/realtime/config?micMode=open') &&
+      rendererSource.includes('`/api/realtime/config?micMode=${micMode}`') &&
       rendererSource.includes('realtimeStartupBlockMessage') &&
       startupBlockIndex >= 0 &&
       getUserMediaIndex >= 0 &&
@@ -2536,7 +2536,7 @@ export default {
       rendererProviderGateBeforeMic
         ? ok('realtime.renderer_provider_gate_before_mic', 'Renderer provider gate before microphone', 'renderer checks provider health before screen/microphone startup and falls back locally when known blocked')
         : fail('realtime.renderer_provider_gate_before_mic', 'Renderer provider gate before microphone', 'renderer may still open microphone before checking known Realtime provider failures', {
-            hasConfigPrecheck: rendererSource.includes('/api/realtime/config?micMode=open'),
+            hasConfigPrecheck: rendererSource.includes('`/api/realtime/config?micMode=${micMode}`'),
             hasStartupBlock: startVoiceSource.includes('readRealtimeStartupBlock'),
             startupBlockBeforeMic: startupBlockIndex >= 0 && getUserMediaIndex >= 0 && startupBlockIndex < getUserMediaIndex,
             rendererDogfoodHandlesBlockedProvider: rendererDogfoodListener.includes("type: 'provider_blocked'") && rendererDogfoodListener.includes('started === false'),

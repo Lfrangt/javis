@@ -97,6 +97,19 @@ select {
   transform: translateY(1px);
 }
 
+.voice-capsule.ptt-capsule {
+  cursor: pointer;
+  border-color: rgba(139, 231, 202, 0.42);
+}
+
+.voice-capsule.ptt-capsule:active {
+  cursor: pointer;
+  box-shadow:
+    0 9px 20px rgba(0, 0, 0, 0.34),
+    0 0 0 1px rgba(139, 231, 202, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.2);
+}
+
 .voice-capsule[aria-disabled='true'] {
   cursor: wait;
 }

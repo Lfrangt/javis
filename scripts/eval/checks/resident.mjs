@@ -1159,6 +1159,20 @@ export default {
     const appSource = fs.readFileSync('src/App.tsx', 'utf8');
     const startupCheckIndex = appSource.indexOf('const startupBlock = await readRealtimeStartupBlock().catch');
     const getUserMediaIndex = appSource.indexOf('navigator.mediaDevices.getUserMedia');
+    const hasPushToTalkDefault =
+      appSource.includes("useState<MicMode>('push')") &&
+      appSource.includes('track.enabled = micMode === \'open\'') &&
+      appSource.includes("event.code !== 'Space'") &&
+      appSource.includes('input_audio_buffer.commit') &&
+      appSource.includes('pushToTalkPointerRef') &&
+      appSource.includes('ptt-capsule') &&
+      appSource.includes('Hold the capsule or press Space. Release to send.') &&
+      appSource.includes('`/api/realtime/config?micMode=${micMode}`');
+    out.push(
+      hasPushToTalkDefault
+        ? ok('resident.push_to_talk_default', 'Push-to-talk default voice mode', 'renderer defaults to PTT, gates mic tracks, supports Space and compact-capsule hold-to-talk')
+        : fail('resident.push_to_talk_default', 'Push-to-talk default voice mode', 'expected renderer to default to PTT and expose compact hold-to-talk without open mic by default'),
+    );
     out.push(
       appSource.includes('runRealtimeProviderRecoveryProbe') &&
         appSource.includes('shouldRetryRealtimeProviderBeforeMic') &&

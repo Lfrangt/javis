@@ -1373,7 +1373,7 @@ function App() {
   const [setupBusy, setSetupBusy] = useState<SetupAction | ''>('')
   const [busy, setBusy] = useState(false)
   const [voiceStatus, setVoiceStatus] = useState<VoiceStatus>('idle')
-  const [micMode, setMicMode] = useState<MicMode>('open')
+  const [micMode, setMicMode] = useState<MicMode>('push')
   const [isPushingToTalk, setIsPushingToTalk] = useState(false)
   const [screenLive, setScreenLive] = useState(false)
   const [screenPreview, setScreenPreview] = useState('')
@@ -1426,6 +1426,7 @@ function App() {
   const dragPendingRef = useRef<{ x: number; y: number } | null>(null)
   const dragFrameRef = useRef<number | null>(null)
   const dragSuppressClickRef = useRef(false)
+  const pushToTalkPointerRef = useRef<number | null>(null)
   const previousPushStateRef = useRef(false)
   const responseActiveRef = useRef(false)
   const lastRealtimeWorkProgressSignatureRef = useRef('')
@@ -1668,6 +1669,14 @@ function App() {
   const startPetDrag = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0) return
+      if (voiceStatus === 'live' && micMode === 'push') {
+        event.preventDefault()
+        pushToTalkPointerRef.current = event.pointerId
+        dragSuppressClickRef.current = true
+        setIsPushingToTalk(true)
+        event.currentTarget.setPointerCapture(event.pointerId)
+        return
+      }
       const position = status?.window?.position
       if (!position) return
       dragStateRef.current = {
@@ -1680,11 +1689,15 @@ function App() {
       }
       event.currentTarget.setPointerCapture(event.pointerId)
     },
-    [status?.window?.position],
+    [micMode, status?.window?.position, voiceStatus],
   )
 
   const movePetDrag = useCallback(
     (event: ReactPointerEvent<HTMLButtonElement>) => {
+      if (pushToTalkPointerRef.current === event.pointerId) {
+        event.preventDefault()
+        return
+      }
       const drag = dragStateRef.current
       if (!drag || drag.pointerId !== event.pointerId) return
       const dx = event.screenX - drag.startScreenX
@@ -1698,6 +1711,20 @@ function App() {
   )
 
   const endPetDrag = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (pushToTalkPointerRef.current === event.pointerId) {
+      event.preventDefault()
+      pushToTalkPointerRef.current = null
+      setIsPushingToTalk(false)
+      try {
+        event.currentTarget.releasePointerCapture(event.pointerId)
+      } catch {
+        // Pointer capture may already be released by the browser.
+      }
+      window.setTimeout(() => {
+        dragSuppressClickRef.current = false
+      }, 0)
+      return
+    }
     const drag = dragStateRef.current
     if (!drag || drag.pointerId !== event.pointerId) return
     dragSuppressClickRef.current = drag.moved
@@ -2110,7 +2137,7 @@ function App() {
       }
       return configuredBlock
     }
-    const result = await apiJson<{ realtime: { voiceHealth?: RealtimeVoiceHealth } }>('/api/realtime/config?micMode=open')
+    const result = await apiJson<{ realtime: { voiceHealth?: RealtimeVoiceHealth } }>(`/api/realtime/config?micMode=${micMode}`)
     const health = result.realtime?.voiceHealth
     const block = realtimeStartupBlockMessage(health)
     if (block && shouldRetryRealtimeProviderBeforeMic(health)) {
@@ -2121,7 +2148,7 @@ function App() {
       return probeBlock
     }
     return block
-  }, [refreshStatus, realtimeStartupBlockMessage, runRealtimeProviderRecoveryProbe, status?.voiceHealth])
+  }, [micMode, refreshStatus, realtimeStartupBlockMessage, runRealtimeProviderRecoveryProbe, status?.voiceHealth])
 
   const runLocalVoiceFallback = useCallback(async (reason = '') => {
     const prompt = quickInput.trim()
@@ -3507,6 +3534,7 @@ function App() {
     void startScreen({ describe: true })
   }, [screenLive, startScreen, stopScreen])
   const talking = voiceStatus === 'live' && (micMode === 'open' || isPushingToTalk)
+  const compactPushToTalk = voiceStatus === 'live' && micMode === 'push'
   const activeWindowMode = status?.window?.mode || (expanded ? 'panel' : 'pet')
   const composeOpen = activeWindowMode === 'compose'
   useEffect(() => {
@@ -3532,12 +3560,18 @@ function App() {
     }
     void startAssistantSession()
   }, [hasOpenAiKey, openConfigCui, openLocalVoiceEntry, petLocalInputReady, screenLive, startAssistantSession, status?.localVoice?.blocker?.summary, status?.voiceHealth?.summary, stopScreen, stopVoice, voiceStatus])
-  const petStatusLabel = talking ? 'Hearing you' : petTrafficLight?.label || petMoodLabel(mood, presence, false)
-  const petStatusDetail = petTrafficLight?.reason || presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
-  const petAccessibleLabel = petTrafficLight?.accessibleLabel || `${petStatusLabel}. ${petStatusDetail}`
+  const petStatusLabel = talking ? 'Hearing you' : compactPushToTalk ? 'Hold to talk' : petTrafficLight?.label || petMoodLabel(mood, presence, false)
+  const petStatusDetail = compactPushToTalk
+    ? 'Hold the capsule or press Space. Release to send.'
+    : petTrafficLight?.reason || presence?.intervention?.next || latestLine || 'Click to talk. Right-click for config.'
+  const petAccessibleLabel = compactPushToTalk
+    ? `${petStatusLabel}. ${petStatusDetail}`
+    : petTrafficLight?.accessibleLabel || `${petStatusLabel}. ${petStatusDetail}`
   const petActionLabel = hasOpenAiKey !== true
     ? 'Open JAVIS config'
-    : voiceStatus === 'live' || screenLive
+    : compactPushToTalk
+      ? 'Hold to talk; use the voice control to stop'
+      : voiceStatus === 'live' || screenLive
       ? 'Stop JAVIS voice and screen'
       : voiceStatus === 'connecting'
         ? 'Connecting JAVIS'
@@ -3554,7 +3588,7 @@ function App() {
       <section className="pet-stage" aria-label="JAVIS desktop buddy">
         <button
           type="button"
-          className="pet-body voice-capsule no-drag"
+          className={`pet-body voice-capsule no-drag ${compactPushToTalk ? 'ptt-capsule' : ''}`}
           onPointerDown={startPetDrag}
           onPointerMove={movePetDrag}
           onPointerUp={endPetDrag}
