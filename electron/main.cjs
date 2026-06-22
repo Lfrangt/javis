@@ -24037,6 +24037,34 @@ function naturalDelegateCommand(text) {
   };
 }
 
+function naturalRealtimeProviderProbeLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsRealtime = /\b(realtime|real[- ]?time|webrtc|voice provider|provider|voice|speech|mic|microphone|audio)\b/i.test(raw)
+    || /(实时语音|实时对话|Realtime|realtime|WebRTC|webrtc|语音|麦克风|麦|音频|provider|供应商|OpenAI|API|额度|账单|充值|付费|billing|quota)/i.test(compactPlain);
+  if (!mentionsRealtime) return null;
+
+  const english = /\b(retry|recheck|check again|test again|probe|run probe|provider probe|verify|reverify|quota|billing|paid|credits?|limit|rate limit)\b/i.test(raw)
+    || /\b(i paid|billing fixed|credits added|quota fixed|should work now|try realtime again|retry voice|check realtime)\b/i.test(raw);
+  const chinese = /(?:重试|再试|重新试|重新检查|重新检测|检测一下|检查一下|跑一下|探测|probe|验证|重新验证).*(?:实时语音|Realtime|realtime|WebRTC|webrtc|语音|provider|OpenAI|API|额度|账单|充值|付费|限流)/i.test(compactPlain)
+    || /(?:实时语音|Realtime|realtime|WebRTC|webrtc|语音|provider|OpenAI|API|额度|账单|充值|付费|限流).*(?:重试|再试|重新试|重新检查|重新检测|检测一下|检查一下|跑一下|探测|probe|验证|重新验证|好了|可以了吗|能用了吗)/i.test(compactPlain)
+    || /(?:充好了|充值好了|已经充|付费好了|账单好了|额度好了|API好了|应该可以了).*(?:实时语音|Realtime|realtime|语音|OpenAI|API|provider)?/i.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'realtime_provider_probe',
+    label: 'Realtime provider probe',
+    requiresLocalExecution: true,
+    args: {
+      query: raw,
+      source: 'local_voice_realtime_provider_probe',
+    },
+  };
+}
+
 function naturalVoiceStatusLocalCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
@@ -24519,6 +24547,9 @@ function localCommandDecision(task) {
   const delegateCommand = naturalDelegateCommand(text);
   if (delegateCommand) return delegateCommand;
 
+  const realtimeProviderProbeCommand = naturalRealtimeProviderProbeLocalCommand(text);
+  if (realtimeProviderProbeCommand) return realtimeProviderProbeCommand;
+
   const voiceStatusCommand = naturalVoiceStatusLocalCommand(text);
   if (voiceStatusCommand) return voiceStatusCommand;
 
@@ -24853,7 +24884,7 @@ function localCommandDecision(task) {
 }
 
 function localCommandDecisionPayload(command, execute) {
-  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
+  const localExecutionIntents = new Set(['app_workflow', 'creative_workflow', 'delegate_task', 'browser_workflow', 'browser_control', 'cli_command', 'open_app', 'open_url', 'web_search', 'observe_now', 'realtime_provider_probe', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake', 'work_next']);
   const speedProfile = serializeRoutingSpeedProfile(routingSpeedProfileForLane('local'));
   return {
     lane: 'quick',
@@ -25052,7 +25083,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -25069,7 +25100,7 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
-    } else if (['voice_status'].includes(localCommand)) {
+    } else if (['voice_status', 'realtime_provider_probe'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -25604,6 +25635,57 @@ function formatVoiceStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatRealtimeProviderProbeForLocalCommand(control = {}) {
+  const probe = control.providerProbe || {};
+  const result = control.result || {};
+  return [
+    `Realtime provider probe: ${control.executed ? 'dispatched' : 'preview only'} · status=${probe.status || '-'} · ready=${probe.providerReady ? 'yes' : 'no'}`,
+    `Renderer: ${probe.rendererAvailable ? 'ready' : 'missing'} · OpenAI key=${probe.hasOpenAiKey ? 'present' : 'missing'}`,
+    probe.summary ? `Summary: ${compactRecordText(probe.summary, 260)}` : '',
+    result.output ? `Output: ${compactRecordText(result.output, 300)}` : '',
+    probe.next ? `Next: ${compactRecordText(probe.next, 320)}` : '',
+    control.executed && probe.runId ? `Run: ${probe.runId}` : '',
+    '边界: 这个 probe 只检查 Realtime provider；不启动麦克风，不录音，不截图，不开 Terminal，不执行用户任务。',
+  ].filter(Boolean).join('\n');
+}
+
+function realtimeProviderProbeControlPayload(result = {}, execute = false) {
+  const providerProbe = result.providerProbe || result.probe || realtimeProviderProbeSnapshot();
+  return {
+    ok: result.ok !== false,
+    requestedExecute: Boolean(execute),
+    executed: Boolean(result.executed),
+    status: result.status || 200,
+    runId: result.runId || providerProbe.runId || '',
+    providerProbe: {
+      status: compactRecordText(providerProbe.status || '', 80),
+      providerReady: Boolean(providerProbe.providerReady),
+      active: Boolean(providerProbe.active),
+      runId: compactRecordText(providerProbe.runId || '', 120),
+      rendererAvailable: Boolean(providerProbe.rendererAvailable),
+      hasOpenAiKey: Boolean(providerProbe.hasOpenAiKey),
+      startsMicrophone: Boolean(providerProbe.startsMicrophone),
+      requiresMicConfirmation: Boolean(providerProbe.requiresMicConfirmation),
+      summary: compactRecordText(providerProbe.summary || '', 260),
+      next: compactRecordText(providerProbe.next || '', 320),
+    },
+    result: {
+      output: compactRecordText(result.output || '', 500),
+    },
+    safety: {
+      previewOnly: !execute,
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      capturesAudio: false,
+      storesRawAudio: false,
+      startsScreenCapture: false,
+      opensTerminal: false,
+      executesUserTask: false,
+      usesRealtimeProvider: Boolean(execute && result.executed),
+    },
+  };
+}
+
 function formatPromptSuggestionsForLocalCommand(status = {}) {
   const standby = status.standby || {};
   const local = standby.local || {};
@@ -26101,6 +26183,22 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatVoiceStatusForLocalCommand(voiceStatus),
         data: { voiceStatus },
+      };
+    }
+
+    if (command.intent === 'realtime_provider_probe') {
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const result = await startRealtimeProviderProbe({
+        execute,
+        source: command.args?.source || (execute ? 'local_command_realtime_provider_probe_execute' : 'local_command_realtime_provider_probe_preview'),
+      });
+      const control = realtimeProviderProbeControlPayload(result, execute);
+      return {
+        ok: result.ok !== false,
+        executed: Boolean(result.executed),
+        localCommand: command,
+        output: formatRealtimeProviderProbeForLocalCommand(control),
+        data: { providerProbeControl: control, result },
       };
     }
 
@@ -28097,7 +28195,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'browser_readiness', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'prompt_suggestions', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'browser_readiness', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

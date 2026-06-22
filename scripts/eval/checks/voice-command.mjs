@@ -139,6 +139,44 @@ export default {
         : fail('voice_command.quick_hold', 'Quick lane cloud hold', `expected held quick lane, got ${quickHeld.status}`, quickHeld.data),
     );
 
+    const naturalRealtimeProviderProbe = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '我已经充值好了，帮我重试实时语音 provider probe，先不要开麦',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_realtime_provider_probe',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalRealtimeProviderProbeData = naturalRealtimeProviderProbe.data || {};
+    const naturalRealtimeProviderProbeRoute = naturalRealtimeProviderProbeData.route || {};
+    const naturalRealtimeProviderProbePayload = naturalRealtimeProviderProbeRoute.data?.providerProbeControl || {};
+    out.push(
+      naturalRealtimeProviderProbe.ok &&
+        naturalRealtimeProviderProbeData.ok === true &&
+        naturalRealtimeProviderProbeData.executed === false &&
+        naturalRealtimeProviderProbeRoute.decision?.localCommand === 'realtime_provider_probe' &&
+        naturalRealtimeProviderProbeRoute.localCommand?.intent === 'realtime_provider_probe' &&
+        naturalRealtimeProviderProbeRoute.executed === false &&
+        naturalRealtimeProviderProbePayload.requestedExecute === false &&
+        naturalRealtimeProviderProbePayload.executed === false &&
+        naturalRealtimeProviderProbePayload.safety?.previewOnly === true &&
+        naturalRealtimeProviderProbePayload.safety?.startsMicrophone === false &&
+        naturalRealtimeProviderProbePayload.safety?.capturesAudio === false &&
+        naturalRealtimeProviderProbePayload.safety?.storesRawAudio === false &&
+        naturalRealtimeProviderProbePayload.safety?.usesRealtimeProvider === false &&
+        naturalRealtimeProviderProbeData.safety?.startsMicrophone === false &&
+        naturalRealtimeProviderProbeData.safety?.usesRealtime === false &&
+        naturalRealtimeProviderProbeData.safety?.callsOpenAIImmediately === false &&
+        typeof naturalRealtimeProviderProbeRoute.output === 'string' &&
+        naturalRealtimeProviderProbeRoute.output.includes('Realtime provider probe: preview only')
+        ? ok('voice_command.natural_realtime_provider_probe_preview', 'Natural Realtime provider probe voice command', '充值好了/重试实时语音 routes to no-mic provider-probe preview without OpenAI call')
+        : fail('voice_command.natural_realtime_provider_probe_preview', 'Natural Realtime provider probe voice command', 'natural provider-probe phrase did not preview the local no-mic probe path', naturalRealtimeProviderProbe.data),
+    );
+
     const naturalProgress = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
