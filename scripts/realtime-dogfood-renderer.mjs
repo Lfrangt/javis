@@ -258,7 +258,7 @@ async function loadAcceptance(ctx, { saveArchive: shouldSaveArchive, note }) {
           saveArchive: true,
         },
       })
-    : await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=50&source=renderer_dogfood_script', {
+    : await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=50&source=renderer_dogfood_script&preview=true', {
         timeoutMs: 30000,
       });
   const acceptance = result.data?.acceptance || {};

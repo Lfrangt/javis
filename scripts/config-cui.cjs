@@ -3935,6 +3935,7 @@ function printRealtimeDogfoodArchive(result) {
 function printRealtimeDogfoodAcceptance(result) {
   const acceptance = result?.acceptance || result || {};
   const archive = result?.archive || {};
+  const archiveSource = result?.archiveSource || acceptance.archiveSource || {};
   const counts = acceptance.counts || {};
   console.log('JAVIS Realtime Dogfood Acceptance');
   console.log('=================================');
@@ -3945,6 +3946,9 @@ function printRealtimeDogfoodAcceptance(result) {
   if (acceptance.nextGap) {
     console.log(`Next gap: ${acceptance.nextGap.group || '-'} / ${acceptance.nextGap.id || '-'} · ${compact(acceptance.nextGap.label || '', 220)}`);
     if (acceptance.nextGap.nextAction) console.log(`Next action: ${compact(acceptance.nextGap.nextAction, 260)}`);
+  }
+  if (archiveSource.mode) {
+    console.log(`Archive source: ${archiveSource.mode} · saved=${archiveSource.saved ? 'yes' : 'no'} · ${archiveSource.file || '-'}`);
   }
   console.log(`Archive required: ${acceptance.archive?.saved ? 'saved' : 'not saved'} · ${acceptance.archive?.file || archive.file?.path || '-'}`);
   console.log(`Safety: raw audio stored=${acceptance.safety?.rawAudioStored ? 'yes' : 'no'} · screen image included=${acceptance.safety?.screenImageIncluded ? 'yes' : 'no'} · policy bypass=${acceptance.safety?.actionPolicyBypassed ? 'yes' : 'no'}`);
@@ -4048,7 +4052,8 @@ async function showRealtimeDogfoodArchive(options = {}) {
 }
 
 async function showRealtimeDogfoodAcceptance(options = {}) {
-  const result = await request('/api/realtime/dogfood/acceptance', {
+  const query = options.preview ? '?preview=true' : '';
+  const result = await request(`/api/realtime/dogfood/acceptance${query}`, {
     method: options.saveArchive ? 'POST' : 'GET',
     body: options.saveArchive ? { saveArchive: true, source: 'cui_acceptance_save' } : undefined,
   });
@@ -4206,7 +4211,10 @@ async function main() {
   }
 
   if (process.argv.includes('--print-realtime-dogfood-acceptance') || process.argv.includes('--realtime-dogfood-acceptance')) {
-    await showRealtimeDogfoodAcceptance({ saveArchive: process.argv.includes('--save-archive') });
+    await showRealtimeDogfoodAcceptance({
+      saveArchive: process.argv.includes('--save-archive'),
+      preview: process.argv.includes('--preview') || process.argv.includes('--current-preview'),
+    });
     return;
   }
 

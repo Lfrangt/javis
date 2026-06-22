@@ -3050,7 +3050,7 @@ export default {
       out.push(fail('realtime.cui_dogfood_brief', 'Realtime CUI dogfood brief', error instanceof Error ? error.message : String(error)));
     }
 
-    const acceptance = await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=12');
+    const acceptance = await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=12&preview=true');
     const acceptanceData = acceptance.data?.acceptance;
     const acceptanceGateIds = new Set((Array.isArray(acceptanceData?.gates) ? acceptanceData.gates : []).map((gate) => gate.id));
     const acceptanceGroupIds = new Set((Array.isArray(acceptanceData?.groups) ? acceptanceData.groups : []).map((group) => group.id));
@@ -3096,6 +3096,7 @@ export default {
         ['operator', 'live_voice', 'spoken_answer', 'voice_tools', 'learning_loop', 'computer_tools', 'shortcut_loop', 'audit_trail'].every((id) => acceptanceGroupIds.has(id)) &&
         acceptanceData?.nextGap?.id &&
         acceptanceData?.archive?.saved === false &&
+        acceptanceData?.archiveSource?.mode === 'current_preview' &&
         acceptanceData?.safety?.rawAudioStored === false &&
         acceptanceData?.safety?.screenImageIncluded === false &&
         acceptanceData?.safety?.actionPolicyBypassed === false
@@ -3127,8 +3128,22 @@ export default {
         : fail('realtime.dogfood_acceptance_save', 'Realtime dogfood acceptance save path', `POST /api/realtime/dogfood/acceptance ${acceptanceSave.status}`, acceptanceSave.data),
     );
 
+    const latestSavedAcceptance = await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=12');
+    const latestSavedData = latestSavedAcceptance.data?.acceptance;
+    const latestSavedArchiveGate = (latestSavedData?.gates || []).find((gate) => gate.id === 'archive_saved');
+    out.push(
+      latestSavedAcceptance.ok &&
+        latestSavedAcceptance.data?.archiveSource?.mode === 'latest_saved' &&
+        latestSavedData?.archive?.saved === true &&
+        latestSavedArchiveGate?.ok === true &&
+        latestSavedData?.archive?.file === acceptanceSave.data?.archive?.file?.path &&
+        fs.existsSync(latestSavedData.archive.file)
+        ? ok('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', latestSavedData.archive.file)
+        : fail('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', `GET /api/realtime/dogfood/acceptance ${latestSavedAcceptance.status}`, latestSavedAcceptance.data),
+    );
+
     try {
-      const acceptanceCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-acceptance'], {
+      const acceptanceCui = await execFileAsync('node', ['scripts/config-cui.cjs', '--print-realtime-dogfood-acceptance', '--preview'], {
         cwd: process.cwd(),
         env: process.env,
         timeout: 10000,
@@ -3136,8 +3151,9 @@ export default {
       });
       const output = `${acceptanceCui.stdout || ''}\n${acceptanceCui.stderr || ''}`;
       out.push(
-        output.includes('JAVIS Realtime Dogfood Acceptance') &&
+          output.includes('JAVIS Realtime Dogfood Acceptance') &&
           output.includes('starts microphone=no') &&
+          output.includes('Archive source: current_preview') &&
           output.includes('Archive required: not saved') &&
           output.includes('Missing gates:') &&
           output.includes('policy bypass=no')

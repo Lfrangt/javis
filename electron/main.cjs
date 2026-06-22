@@ -28830,7 +28830,9 @@ async function routeTask(options = {}) {
     ownership: options.ownership,
   };
   const routeLearningEvidence = learningEvidenceForTask(task, { usedInPrompt: false });
-  const localCommand = localCommandDecision(task);
+  const preferShortcuts = options.preferShortcuts === true || String(options.preferShortcuts || '').toLowerCase() === 'true';
+  const preferredShortcut = preferShortcuts && options.useShortcuts !== false ? shortcutMatchForTask(task) : null;
+  const localCommand = preferredShortcut ? null : localCommandDecision(task);
   if (localCommand) {
     const decision = localCommandDecisionPayload(localCommand, execute);
     decision.contextPlan = buildContextPlan(task, {
@@ -28925,7 +28927,7 @@ async function routeTask(options = {}) {
     mode: options.mode || options.lane,
     useMemory: options.useMemory !== false,
   });
-  const matchedShortcut = options.useShortcuts === false ? null : shortcutMatchForTask(task);
+  const matchedShortcut = preferredShortcut || (options.useShortcuts === false ? null : shortcutMatchForTask(task));
   const shortcutSkillRecallPlan = skillRecallPlanFromShortcut(matchedShortcut);
   const skillRecallPlan = shortcutSkillRecallPlan.applied
     ? shortcutSkillRecallPlan
@@ -38987,6 +38989,7 @@ async function prepareRealtimeDogfoodShortcutRecall(options = {}) {
     includeScreen: false,
     useMemory: false,
     useShortcuts: true,
+    preferShortcuts: true,
     source,
     owner: 'Realtime dogfood',
     scope: 'realtime shortcut recall dogfood',
@@ -41079,6 +41082,13 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
   const stepById = realtimeDogfoodAcceptanceStepMap(evidence);
   const archivePath = archive.file?.path || '';
   const archiveSaved = archive.saved === true && archivePath && fs.existsSync(archivePath);
+  const archiveSource = options.archiveSource || {
+    mode: archiveSaved ? 'provided_saved_archive' : 'provided_preview',
+    saved: Boolean(archiveSaved),
+    file: archivePath,
+    savedAt: archive.savedAt || '',
+    generatedAt: archive.generatedAt || '',
+  };
   const gates = [
     realtimeDogfoodAcceptanceStepGate(stepById, 'open_monitor', 'operator', 'Open the Realtime evidence monitor'),
     realtimeDogfoodAcceptanceStepGate(stepById, 'start_live_voice', 'live_voice', 'Start a real renderer/WebRTC voice session'),
@@ -41175,6 +41185,7 @@ function realtimeDogfoodAcceptanceSnapshot(options = {}) {
       phase: archive.phase || '',
       summary: archive.archiveSummary || archive.summary || '',
     },
+    archiveSource,
     evidence: {
       status: evidence.status || '',
       phase: evidence.phase || '',
@@ -41399,6 +41410,90 @@ function realtimeDogfoodArchiveList(options = {}) {
     maxArchives: MAX_REALTIME_DOGFOOD_ARCHIVES,
     count: items.length,
     items,
+  };
+}
+
+function readRealtimeDogfoodArchiveFile(filePath = '') {
+  const archivePath = String(filePath || '');
+  if (!archivePath || !fs.existsSync(archivePath)) return null;
+  try {
+    const archive = JSON.parse(fs.readFileSync(archivePath, 'utf8'));
+    if (!archive || typeof archive !== 'object' || archive.kind !== 'realtime_dogfood_archive') return null;
+    return {
+      ...archive,
+      file: {
+        ...(archive.file || {}),
+        path: archivePath,
+        filename: archive.file?.filename || path.basename(archivePath),
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function latestSavedRealtimeDogfoodArchive(options = {}) {
+  const archives = realtimeDogfoodArchiveList({ limit: options.limit || 20 });
+  for (const item of archives.items || []) {
+    const archive = readRealtimeDogfoodArchiveFile(item.file);
+    const filePath = archive?.file?.path || item.file || '';
+    if (archive?.saved === true && filePath && fs.existsSync(filePath)) {
+      return {
+        archive,
+        metadata: {
+          ...item,
+          ...realtimeDogfoodArchiveMetadata(archive, filePath),
+        },
+      };
+    }
+  }
+  return null;
+}
+
+function realtimeDogfoodAcceptanceArchiveFromRequest(query = {}) {
+  const wantsPreview =
+    query.preview === 'true' ||
+    query.preview === '1' ||
+    query.current === 'true' ||
+    query.current === '1' ||
+    query.currentPreview === 'true' ||
+    query.currentPreview === '1';
+  const useLatestSaved =
+    !wantsPreview &&
+    query.useLatestSaved !== 'false' &&
+    query.useLatestSaved !== '0' &&
+    query.latestSaved !== 'false' &&
+    query.latestSaved !== '0';
+  if (useLatestSaved) {
+    const latest = latestSavedRealtimeDogfoodArchive({ limit: query.archiveLimit || 20 });
+    if (latest?.archive) {
+      return {
+        archive: latest.archive,
+        source: {
+          mode: 'latest_saved',
+          saved: true,
+          file: latest.archive.file?.path || latest.metadata?.file || '',
+          savedAt: latest.archive.savedAt || latest.metadata?.savedAt || '',
+          generatedAt: latest.archive.generatedAt || latest.metadata?.generatedAt || '',
+        },
+      };
+    }
+  }
+  const archive = realtimeDogfoodArchiveSnapshot({
+    promptLimit: query.promptLimit,
+    sessionLimit: query.sessionLimit,
+    auditLimit: query.auditLimit,
+    source: wantsPreview ? 'api_acceptance_preview' : 'api_acceptance_current_preview',
+  });
+  return {
+    archive,
+    source: {
+      mode: wantsPreview ? 'current_preview' : 'current_preview_no_saved_archive',
+      saved: false,
+      file: archive.file?.path || '',
+      savedAt: '',
+      generatedAt: archive.generatedAt || '',
+    },
   };
 }
 
@@ -58020,18 +58115,15 @@ function startApiServer() {
 
   api.get('/api/realtime/dogfood/acceptance', (req, res) => {
     try {
-      const archive = realtimeDogfoodArchiveSnapshot({
-        promptLimit: req.query.promptLimit,
-        sessionLimit: req.query.sessionLimit,
-        auditLimit: req.query.auditLimit,
-        source: 'api_acceptance_preview',
-      });
+      const { archive, source: archiveSource } = realtimeDogfoodAcceptanceArchiveFromRequest(req.query || {});
       res.json({
         acceptance: realtimeDogfoodAcceptanceSnapshot({
           archive,
+          archiveSource,
           source: req.query.source || 'api',
         }),
         archive,
+        archiveSource,
       });
     } catch (error) {
       jsonError(res, 500, 'Realtime dogfood acceptance failed', error instanceof Error ? error.message : String(error));
