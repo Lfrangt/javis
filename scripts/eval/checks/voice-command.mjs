@@ -1526,6 +1526,44 @@ export default {
         }),
     );
 
+    const naturalPerceptionPreview = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '你现在看到什么？',
+        execute: false,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_perception_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalPerceptionPreviewData = naturalPerceptionPreview.data || {};
+    const perceptionPreviewRoute = naturalPerceptionPreviewData.route || {};
+    const perceptionPreview = perceptionPreviewRoute.data?.perceptionStatus || {};
+    out.push(
+      naturalPerceptionPreview.ok &&
+        naturalPerceptionPreviewData.ok === true &&
+        naturalPerceptionPreviewData.executed === false &&
+        perceptionPreviewRoute.decision?.localCommand === 'perception_status' &&
+        perceptionPreviewRoute.localCommand?.intent === 'perception_status' &&
+        typeof perceptionPreviewRoute.output === 'string' &&
+        perceptionPreviewRoute.output.includes('Perception:') &&
+        perceptionPreview.version === 1 &&
+        perceptionPreview.safety?.readOnly === true &&
+        perceptionPreview.safety?.capturesScreenNow === false &&
+        perceptionPreview.safety?.startsMicrophone === false &&
+        perceptionPreview.safety?.usesRealtime === false &&
+        perceptionPreview.safety?.returnsScreenImage === false &&
+        perceptionPreview.safety?.returnsBrowserPageText === false &&
+        naturalPerceptionPreviewData.safety?.startsMicrophone === false &&
+        naturalPerceptionPreviewData.safety?.usesRealtime === false &&
+        naturalPerceptionPreviewData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_perception_preview', 'Natural perception preview voice command', '你现在看到什么 returns a local perception summary in preview without screen capture, cloud, mic, or Realtime')
+        : fail('voice_command.natural_perception_preview', 'Natural perception preview voice command', 'natural perception question did not expand the read-only local perception preview', naturalPerceptionPreview.data),
+    );
+
     const naturalObserveNow = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -1914,6 +1952,40 @@ export default {
       );
     } catch (error) {
       out.push(fail('voice_command.local_cli', 'Local voice command CLI', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const { stdout } = await execFileAsync('npm', [
+        'run',
+        'voice',
+        '--',
+        '--no-speech',
+        '--request-timeout-ms',
+        '30000',
+        '你现在看到什么？',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 45000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('JAVIS Local Voice Command') &&
+          stdout.includes('Route: quick') &&
+          stdout.includes('Ack:') &&
+          stdout.includes('Output:') &&
+          stdout.includes('Perception:') &&
+          stdout.includes('microphone=no') &&
+          stdout.includes('realtime=no')
+          ? ok('voice_command.local_cli_perception_output', 'Local voice CLI perception output', 'human CLI prints the local perception result, not only the acknowledgement')
+          : fail('voice_command.local_cli_perception_output', 'Local voice CLI perception output', 'npm run voice did not print the local perception output in human mode', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.local_cli_perception_output', 'Local voice CLI perception output', error instanceof Error ? error.message : String(error)));
     }
 
     try {

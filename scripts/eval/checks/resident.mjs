@@ -414,7 +414,7 @@ export default {
       method: 'POST',
       body: {
         transcript: '实时语音连上了吗，为什么现在不能直接说话？',
-        execute: true,
+        execute: false,
         includeScreen: false,
         includeAccessibility: false,
         useMemory: false,
@@ -429,6 +429,7 @@ export default {
     out.push(
       voiceStatusCommandResponse.ok &&
         voiceStatusCommand.ok === true &&
+        voiceStatusCommand.executed === false &&
         voiceStatusRoute.localCommand?.intent === 'voice_status' &&
         voiceStatusRoute.decision?.localCommand === 'voice_status' &&
         String(voiceStatusRoute.output || '').includes('Voice:') &&
@@ -452,7 +453,7 @@ export default {
       method: 'POST',
       body: {
         transcript: '你现在在看我的屏幕吗，最近看到什么窗口？',
-        execute: true,
+        execute: false,
         includeScreen: false,
         includeAccessibility: false,
         useMemory: false,
@@ -465,8 +466,9 @@ export default {
     const perceptionStatusRoute = perceptionStatusCommand.route || {};
     const perceptionStatus = perceptionStatusRoute.data?.perceptionStatus || {};
     out.push(
-      perceptionStatusCommandResponse.ok &&
+        perceptionStatusCommandResponse.ok &&
         perceptionStatusCommand.ok === true &&
+        perceptionStatusCommand.executed === false &&
         perceptionStatusRoute.localCommand?.intent === 'perception_status' &&
         perceptionStatusRoute.decision?.localCommand === 'perception_status' &&
         String(perceptionStatusRoute.output || '').includes('Perception:') &&
@@ -495,7 +497,7 @@ export default {
       method: 'POST',
       body: {
         transcript: '我刚才在电脑上干嘛？',
-        execute: true,
+        execute: false,
         includeScreen: false,
         includeAccessibility: false,
         useMemory: false,
@@ -539,7 +541,7 @@ export default {
       method: 'POST',
       body: {
         transcript: '现在有没有需要我确认的审批，哪些动作卡住了？',
-        execute: true,
+        execute: false,
         includeScreen: false,
         includeAccessibility: false,
         useMemory: false,
@@ -554,6 +556,7 @@ export default {
     out.push(
       approvalStatusCommandResponse.ok &&
         approvalStatusCommand.ok === true &&
+        approvalStatusCommand.executed === false &&
         approvalStatusRoute.localCommand?.intent === 'approval_status' &&
         approvalStatusRoute.decision?.localCommand === 'approval_status' &&
         String(approvalStatusRoute.output || '').includes('Approvals:') &&
@@ -582,7 +585,7 @@ export default {
       method: 'POST',
       body: {
         transcript: '现在有哪些阻塞卡住了，为什么不动？',
-        execute: true,
+        execute: false,
         includeScreen: false,
         includeAccessibility: false,
         useMemory: false,
@@ -597,6 +600,7 @@ export default {
     out.push(
       blockerStatusCommandResponse.ok &&
         blockerStatusCommand.ok === true &&
+        blockerStatusCommand.executed === false &&
         blockerStatusRoute.localCommand?.intent === 'blocker_status' &&
         blockerStatusRoute.decision?.localCommand === 'blocker_status' &&
         String(blockerStatusRoute.output || '').includes('Blockers:') &&
@@ -709,7 +713,7 @@ export default {
       method: 'POST',
       body: {
         transcript: '怎么解除这些阻塞，下一步能安全准备什么？',
-        execute: true,
+        execute: false,
         includeScreen: false,
         includeAccessibility: false,
         useMemory: false,
@@ -724,6 +728,7 @@ export default {
     out.push(
       unblockPreviewCommandResponse.ok &&
         unblockPreviewCommand.ok === true &&
+        unblockPreviewCommand.executed === false &&
         unblockPreviewRoute.localCommand?.intent === 'unblock_preview' &&
         unblockPreviewRoute.decision?.localCommand === 'unblock_preview' &&
         String(unblockPreviewRoute.output || '').includes('Unblock preview:') &&

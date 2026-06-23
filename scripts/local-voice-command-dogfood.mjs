@@ -324,7 +324,7 @@ function summarize(data = {}) {
       label: route.decision?.label || '',
       queued: Boolean(route.queued || route.job?.id),
       jobId: route.job?.id || '',
-      output: String(route.output || '').slice(0, 180),
+      output: String(route.output || '').slice(0, 1600),
     },
     spokenAck: String(data.spokenAck || '').slice(0, 220),
     context: data.context
@@ -436,6 +436,10 @@ function printResult(result, payload, userCli) {
     console.log(`UI: ${result.context.accessibility.available ? `${result.context.accessibility.nodeCount || 0} node(s)` : result.context.accessibility.error || 'unavailable'}`);
   }
   console.log(`Ack: ${result.spokenAck}`);
+  if (result.route.output && !/^Local:\s*/i.test(result.route.output)) {
+    console.log('Output:');
+    console.log(result.route.output);
+  }
   if (userCli && !payload.execute) console.log('Next: add --run to queue non-quick work through normal policy gates.');
   if (!result.ok) console.log(`Error: HTTP ${result.responseStatus}`);
 }

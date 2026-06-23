@@ -24255,43 +24255,36 @@ async function runBrowserTaskWorkflow(options = {}) {
   const maxSteps = Math.max(1, Math.min(5, Number(options.maxSteps || 5)));
   const maxChars = normalizeBrowserMaxChars(options.maxChars || 12000);
   const page = fixturePage || await browserPageSnapshot({ app: options.app, maxChars });
+  const planningPage = page.available
+    ? page
+    : {
+        ...page,
+        available: true,
+        supported: page.supported !== false,
+        app: page.app || options.app || 'Google Chrome',
+        title: 'Browser navigation preview',
+        url: '',
+        selectedText: '',
+        text: '',
+        textLength: 0,
+        returnedLength: 0,
+        headings: [],
+        links: [],
+      };
   const pageSummary = browserWorkflowPageSummary(page);
   const workflowTitle = `act · ${page.title || page.url || instruction}`.slice(0, 180);
-
-  if (!page.available) {
-    const workflow = createWorkflowRecord({
-      kind: 'browser',
-      source: 'browser_task',
-      status: 'failed',
-      title: workflowTitle,
-      intent: 'act',
-      mode: 'quick',
-      request: instruction,
-      target: pageSummary,
-      result: page.error || 'No supported browser page is available.',
-    });
-    const routing = createRoutingRecordForWorkflow({
-      task: instruction,
-      workflow,
-      mode: 'quick',
-      source: options.source || 'browser_task',
-      scope: options.scope || 'browser:act',
-      parallelGroup: options.parallelGroup || options.group || 'browser:quick',
-      resultSummary: workflow.result,
-    });
-    return {
-      ok: false,
-      mode: 'quick',
-      intent: 'act',
-      queued: false,
-      workflow,
-      routing,
-      page: pageSummary,
-      output: page.error || 'No supported browser page is available.',
-    };
-  }
-
-  const dom = fixtureDom || await browserDomSnapshot({ app: options.app, limit: options.domLimit || 80 });
+  const dom = page.available
+    ? fixtureDom || await browserDomSnapshot({ app: options.app, limit: options.domLimit || 80 })
+    : fixtureDom || {
+        available: false,
+        supported: false,
+        app: planningPage.app,
+        title: planningPage.title,
+        url: planningPage.url,
+        count: 0,
+        elements: [],
+        error: page.error || 'browser_page_unavailable',
+      };
   const workflow = createWorkflowRecord({
     kind: 'browser',
     source: 'browser_task',
@@ -24307,15 +24300,16 @@ async function runBrowserTaskWorkflow(options = {}) {
   });
 
   appendAudit('browser_task.requested', {
-    app: page.app,
-    title: page.title,
-    url: page.url,
+    app: planningPage.app,
+    title: planningPage.title,
+    url: planningPage.url,
     execute,
+    pageAvailable: Boolean(page.available),
     domCount: dom.elements?.length || 0,
     maxSteps,
   });
 
-  const plan = await planBrowserTaskSteps(page, dom, instruction, maxSteps);
+  const plan = await planBrowserTaskSteps(planningPage, dom, instruction, maxSteps);
   const results = [];
   for (const step of plan.steps) {
     try {
@@ -24345,15 +24339,19 @@ async function runBrowserTaskWorkflow(options = {}) {
     }
   }
 
-  const afterPage = fixturePage || await browserPageSnapshot({ app: options.app, maxChars: Math.min(6000, maxChars) }).catch((error) => ({
-    available: false,
-    error: error instanceof Error ? error.message : String(error),
-  }));
-  const afterDom = fixtureDom || await browserDomSnapshot({ app: options.app, limit: 40 }).catch((error) => ({
-    available: false,
-    error: error instanceof Error ? error.message : String(error),
-    elements: [],
-  }));
+  const afterPage = !execute && !page.available
+    ? page
+    : fixturePage || await browserPageSnapshot({ app: options.app, maxChars: Math.min(6000, maxChars) }).catch((error) => ({
+        available: false,
+        error: error instanceof Error ? error.message : String(error),
+      }));
+  const afterDom = !execute && !page.available
+    ? dom
+    : fixtureDom || await browserDomSnapshot({ app: options.app, limit: 40 }).catch((error) => ({
+        available: false,
+        error: error instanceof Error ? error.message : String(error),
+        elements: [],
+      }));
   const noSafeSteps = plan.steps.length === 0;
   const blocked = noSafeSteps || results.some((result) => ['blocked', 'approval_required'].includes(result.status));
   const output = [
@@ -32456,7 +32454,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
