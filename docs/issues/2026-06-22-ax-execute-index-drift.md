@@ -94,3 +94,30 @@ fallback, and the value re-read (or confirmed focus) verifies it — with no
 The current behavior is **safe** — the `expectedRole` guard prevents typing into the wrong
 element. This report is about making the feature *complete* (actually land text on the
 contenteditable case it was built for), not about a safety hole.
+
+## Update 2026-06-23 — fix C landed; read-timeout is the remaining blocker
+
+Fix C (retry-on-drift) is implemented in `controlCurrentApp` (commit
+`5df2079`): on an execute-time `accessibility_role_changed` / `no_target`, it
+re-snapshots once (220ms settle) and re-resolves. Verified firing via the
+`accessibility_control.no_target_retry` / `…drift_retry` audit events.
+
+But end-to-end acceptance on a **busy** desktop still fails for a more
+fundamental reason the retry cannot fix: **`accessibility_tree_read_timeout`**.
+On a heavy Chrome (many tabs + competing frontmost apps), the JXA/System Events
+walk can't finish within the timeout, so there is no tree to resolve a target
+from, and re-snapshotting at the same budget just times out again. Two
+observations:
+
+1. Retry-on-drift only helps when the read *succeeds* but the node moved; it is
+   useless against a read that never completes.
+2. Suggested follow-ups for the read-timeout (Codex owns the read path):
+   - On `accessibility_tree_read_timeout` during execute, retry once at a
+     **reduced** node/depth budget (a shallow read may still expose a top-docked
+     composer and completes under the timeout).
+   - Longer term, the per-node Apple-Event cost is the wall; a native
+     `AXUIElement` C-API path (helper) would remove the JXA ceiling entirely.
+
+Also note: interactive AX testing on this machine is unreliable because
+Chrome/Codex/League keep stealing frontmost between activate and read
+(`no_frontmost_app`). A stable single-app target is needed to get a clean PASS.
