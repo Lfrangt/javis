@@ -1774,6 +1774,9 @@ export default {
         spendGuard.runtimeKeyIsolation?.enabled === true &&
         spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv === false &&
         Number(spendGuard.runtimeKeyIsolation?.openAiCredentialKeyCount || 0) === 0 &&
+        spendGuard.runtimeKeyIsolation?.availableForGuardedCalls === false &&
+        spendGuard.runtimeKeyIsolation?.memoryKeyVault?.enabled === true &&
+        spendGuard.runtimeKeyIsolation?.safety?.zeroSpendModeDoesNotRetainKeyInMemory === true &&
         spendGuard.runtimeKeyIsolation?.safety?.defaultRuntimeProcessEnvOpenAiCredentialsBlocked === true &&
         spendGuard.runtimeKeyIsolation?.safety?.childProcessesCannotInheritRuntimeOpenAiCredentials === true &&
         spendGuard.childEnvGuard?.enabled === true &&
@@ -1837,6 +1840,8 @@ export default {
         spendSentinel.guard?.hardSpendLock === true &&
         spendSentinel.guard?.mode === 'off' &&
         spendSentinel.guard?.runtimeKeyEnvIsolated === true &&
+        spendSentinel.guard?.memoryKeyVaultEnabled === true &&
+        spendSentinel.guard?.guardedCallsHaveApiKey === false &&
         spendSentinel.guard?.childEnvGuardEnabled === true &&
         spendSentinel.forensics?.zeroLocked === true &&
         spendSentinel.safety?.callsOpenAI === false &&
@@ -2016,10 +2021,12 @@ export default {
 			        childEnvProbe.guard?.defaultChildReceivesOpenAiCredentials === false &&
 			        childEnvProbe.guard?.blocksInlineCredentialEnv === true &&
 			        childEnvProbe.guard?.defaultChildProcessEnv === 'openai_credentials_redacted' &&
-			        childEnvProbe.guard?.runtimeKeyIsolation?.enabled === true &&
-			        childEnvProbe.guard?.runtimeKeyIsolation?.openAiApiKeyInProcessEnv === false &&
-			        Number(childEnvProbe.guard?.runtimeKeyIsolation?.openAiCredentialKeyCount || 0) === 0 &&
-			        childEnvProbe.guard?.safety?.mcpConfiguredEnvCredentialsBlocked === true &&
+				        childEnvProbe.guard?.runtimeKeyIsolation?.enabled === true &&
+				        childEnvProbe.guard?.runtimeKeyIsolation?.openAiApiKeyInProcessEnv === false &&
+				        Number(childEnvProbe.guard?.runtimeKeyIsolation?.openAiCredentialKeyCount || 0) === 0 &&
+				        childEnvProbe.guard?.runtimeKeyIsolation?.availableForGuardedCalls === false &&
+				        childEnvProbe.guard?.runtimeKeyIsolation?.memoryKeyVault?.enabled === true &&
+				        childEnvProbe.guard?.safety?.mcpConfiguredEnvCredentialsBlocked === true &&
 			        childEnvProbe.guard?.safety?.knownChildEntrypointsUseSanitizedEnv === true &&
 			        childEnvProbe.guard?.safety?.runtimeProcessEnvOpenAiCredentialsBlocked === true &&
 			        childEnvProbe.sanitizedHasOpenAiCredentials === false &&
@@ -2124,9 +2131,12 @@ export default {
 		      mainSource.includes('OPENAI_EGRESS_GUARD_ENABLED') &&
 		      mainSource.includes('OPENAI_REQUIRE_SPEND_LEASE') &&
 		      mainSource.includes('OPENAI_SPEND_LEASE_TTL_MS') &&
-			      mainSource.includes('OPENAI_CHILD_ENV_GUARD_ENABLED') &&
-			      mainSource.includes('OPENAI_RUNTIME_KEY_ISOLATION') &&
-			      mainSource.includes('OPENAI_RUNTIME_ENV_ISOLATED_KEYS') &&
+				      mainSource.includes('OPENAI_CHILD_ENV_GUARD_ENABLED') &&
+				      mainSource.includes('OPENAI_RUNTIME_KEY_ISOLATION') &&
+				      mainSource.includes('OPENAI_MEMORY_KEY_VAULT') &&
+				      mainSource.includes('function vaultOpenAiApiKeyFromMemory') &&
+				      mainSource.includes('zeroSpendModeDoesNotRetainKeyInMemory') &&
+				      mainSource.includes('OPENAI_RUNTIME_ENV_ISOLATED_KEYS') &&
 			      mainSource.includes('function openAiRuntimeKeyIsolationSnapshot') &&
 			      mainSource.includes('function createOpenAiSpendLease') &&
 			      mainSource.includes('function sanitizeChildProcessEnv') &&
@@ -2195,9 +2205,10 @@ export default {
 		      envExampleSource.includes('JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE=false') &&
 		      envExampleSource.includes('JAVIS_OPENAI_EGRESS_GUARD=true') &&
 		      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_LEASE=true') &&
-		      envExampleSource.includes('JAVIS_OPENAI_SPEND_LEASE_TTL_MS=60000') &&
-		      envExampleSource.includes('JAVIS_OPENAI_CHILD_ENV_GUARD=true') &&
-		      envExampleSource.includes('JAVIS_OPENAI_RUNTIME_KEY_ISOLATION=true');
+			      envExampleSource.includes('JAVIS_OPENAI_SPEND_LEASE_TTL_MS=60000') &&
+			      envExampleSource.includes('JAVIS_OPENAI_CHILD_ENV_GUARD=true') &&
+			      envExampleSource.includes('JAVIS_OPENAI_RUNTIME_KEY_ISOLATION=true') &&
+			      envExampleSource.includes('JAVIS_OPENAI_MEMORY_KEY_VAULT=true');
 	    out.push(
 		      hasOpenAiSpendGuardStatic
 		        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls and worker child env are guarded, lockdown stops existing Realtime voice, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')

@@ -196,7 +196,27 @@ express.text = localTextBodyParser;
 const execFileAsync = promisify(execFile);
 const API_PORT = Number(process.env.JAVIS_API_PORT || 3417);
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
+const OPENAI_API_KEY_FROM_ENV = process.env.OPENAI_API_KEY || '';
+let OPENAI_API_KEY = OPENAI_API_KEY_FROM_ENV;
+let openAiApiKeyVaultedFromMemory = false;
+let openAiApiKeyVaultReason = '';
+
+function vaultOpenAiApiKeyFromMemory(reason = 'zero_spend_memory_vault') {
+  if (!OPENAI_API_KEY) return false;
+  OPENAI_API_KEY = '';
+  openAiApiKeyVaultedFromMemory = true;
+  openAiApiKeyVaultReason = String(reason || 'zero_spend_memory_vault').slice(0, 120);
+  return true;
+}
+
+function openAiApiKeyConfigured() {
+  return Boolean(OPENAI_API_KEY_FROM_ENV);
+}
+
+function openAiApiKeyAvailableForCalls() {
+  return Boolean(OPENAI_API_KEY);
+}
+
 function boundedRuntimeNumber(value, fallback, min, max) {
   const parsed = Number(value);
   const number = Number.isFinite(parsed) ? parsed : fallback;
@@ -303,6 +323,7 @@ const OPENAI_SPEND_SENTINEL_INTERVAL_MS = boundedRuntimeInteger(process.env.JAVI
 const OPENAI_SPEND_SENTINEL_NOTIFY = process.env.JAVIS_OPENAI_SPEND_SENTINEL_NOTIFY !== 'false';
 const OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS, 900000, 60000, 86400000);
 const OPENAI_CHILD_ENV_GUARD_ENABLED = process.env.JAVIS_OPENAI_CHILD_ENV_GUARD !== 'false';
+const OPENAI_MEMORY_KEY_VAULT = process.env.JAVIS_OPENAI_MEMORY_KEY_VAULT !== 'false';
 const OPENAI_CHILD_ENV_CREDENTIAL_KEYS = [
   'OPENAI_API_KEY',
   'OPENAI_ADMIN_KEY',
@@ -322,6 +343,9 @@ if (OPENAI_RUNTIME_KEY_ISOLATION) {
       OPENAI_RUNTIME_ENV_ISOLATED_KEYS.push(key);
     }
   }
+}
+if (OPENAI_MEMORY_KEY_VAULT && (OPENAI_HARD_SPEND_LOCK || OPENAI_CLOUD_MODE === 'off' || OPENAI_DAILY_REQUEST_LIMIT <= 0)) {
+  vaultOpenAiApiKeyFromMemory('zero_spend_startup');
 }
 const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true';
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
@@ -3222,6 +3246,24 @@ function openAiSpendSentinelSnapshot(options = {}) {
       'OpenAI credential variables are visible in resident process.env instead of being isolated.',
     ));
   }
+  if (runtimeKeyIsolation.memoryKeyVault?.enabled !== true) {
+    issues.push(openAiSpendSentinelIssue(
+      'openai_memory_key_vault_disabled',
+      'high',
+      'OpenAI memory key vault disabled',
+      'The resident can retain an OpenAI key in memory even when zero-spend guard settings are active.',
+      { next: 'Set JAVIS_OPENAI_MEMORY_KEY_VAULT=true, then restart JAVIS.' },
+    ));
+  }
+  if (forensics.zeroLocked && runtimeKeyIsolation.availableForGuardedCalls) {
+    issues.push(openAiSpendSentinelIssue(
+      'openai_key_retained_during_zero_spend',
+      'high',
+      'OpenAI key retained during zero-spend mode',
+      'The current resident has a callable OpenAI key in memory while zero-spend mode is locked.',
+      { next: 'Run npm run openai:lockdown so the current process vaults the key from memory and restarts with zero-spend defaults.' },
+    ));
+  }
   if (childEnvGuard.defaultChildReceivesOpenAiCredentials || childEnvGuard.blocksInlineCredentialEnv !== true) {
     issues.push(openAiSpendSentinelIssue(
       'openai_child_env_guard_loose',
@@ -3275,6 +3317,10 @@ function openAiSpendSentinelSnapshot(options = {}) {
       requireSpendLease: Boolean(guard.requireSpendLease),
       egressGuardEnabled: Boolean(guard.egressGuardEnabled),
       runtimeKeyEnvIsolated: runtimeKeyIsolation.openAiApiKeyInProcessEnv === false && Number(runtimeKeyIsolation.openAiCredentialKeyCount || 0) === 0,
+      keyConfiguredAtStartup: Boolean(runtimeKeyIsolation.keyConfiguredAtStartup),
+      guardedCallsHaveApiKey: Boolean(runtimeKeyIsolation.availableForGuardedCalls),
+      memoryKeyVaultEnabled: Boolean(runtimeKeyIsolation.memoryKeyVault?.enabled),
+      memoryKeyVaultActive: Boolean(runtimeKeyIsolation.memoryKeyVault?.active),
       childEnvGuardEnabled: Boolean(childEnvGuard.enabled),
     },
     forensics: {
@@ -3606,19 +3652,34 @@ function openAiRuntimeCredentialEnvKeys(env = process.env) {
 
 function openAiRuntimeKeyIsolationSnapshot() {
   const processEnvOpenAiKeys = openAiRuntimeCredentialEnvKeys(process.env);
+  const configuredAtStartup = openAiApiKeyConfigured();
+  const availableForGuardedCalls = openAiApiKeyAvailableForCalls();
   return {
     version: 1,
     enabled: OPENAI_RUNTIME_KEY_ISOLATION,
     protectedKeys: OPENAI_RUNTIME_ENV_CREDENTIAL_KEYS,
     isolatedKeys: OPENAI_RUNTIME_ENV_ISOLATED_KEYS,
+    configuredAtStartup,
+    availableForGuardedCalls,
+    keyConfiguredAtStartup: configuredAtStartup,
     openAiApiKeyInProcessEnv: Object.prototype.hasOwnProperty.call(process.env, 'OPENAI_API_KEY') &&
       String(process.env.OPENAI_API_KEY || '').trim() !== '',
     openAiCredentialKeyCount: processEnvOpenAiKeys.length,
     processEnvOpenAiCredentialKeys: processEnvOpenAiKeys,
-    preservedForGuardedCalls: Boolean(OPENAI_API_KEY),
+    preservedForGuardedCalls: availableForGuardedCalls,
+    memoryKeyVault: {
+      enabled: OPENAI_MEMORY_KEY_VAULT,
+      active: configuredAtStartup && !availableForGuardedCalls,
+      reason: openAiApiKeyVaultReason,
+      vaultedFromMemory: openAiApiKeyVaultedFromMemory,
+      unlockRequiresRestart: true,
+      env: 'JAVIS_OPENAI_MEMORY_KEY_VAULT',
+    },
     safety: {
       defaultRuntimeProcessEnvOpenAiCredentialsBlocked: OPENAI_RUNTIME_KEY_ISOLATION,
       childProcessesCannotInheritRuntimeOpenAiCredentials: OPENAI_RUNTIME_KEY_ISOLATION && processEnvOpenAiKeys.length === 0,
+      zeroSpendModeDoesNotRetainKeyInMemory: !configuredAtStartup || (OPENAI_MEMORY_KEY_VAULT && !availableForGuardedCalls),
+      guardedCallsKeyUnavailableWhileVaulted: configuredAtStartup && !availableForGuardedCalls,
       preservesEnvFile: true,
       callsOpenAi: false,
       createsSpendLease: false,
@@ -3968,6 +4029,9 @@ function activateOpenAiEmergencyZeroSpendLock(options = {}) {
       removedEnvKeys.push(key);
     }
   }
+  const vaultedKeyFromMemory = OPENAI_MEMORY_KEY_VAULT
+    ? vaultOpenAiApiKeyFromMemory('emergency_zero_spend_lock')
+    : false;
   openAiEmergencyZeroSpendLock = true;
   openAiEmergencyZeroSpendAt = Date.now();
   openAiEmergencyZeroSpendSource = source;
@@ -3977,6 +4041,7 @@ function activateOpenAiEmergencyZeroSpendLock(options = {}) {
     reason,
     clearedSpendLeases: leases.cleared,
     removedEnvKeys,
+    vaultedKeyFromMemory,
   });
   const after = openAiSpendGuardSnapshot();
   return {
@@ -3988,6 +4053,7 @@ function activateOpenAiEmergencyZeroSpendLock(options = {}) {
     activatedAtIso: new Date(openAiEmergencyZeroSpendAt).toISOString(),
     clearedSpendLeases: leases.cleared,
     removedEnvKeys,
+    vaultedKeyFromMemory,
     before,
     after,
     safety: {
@@ -7094,6 +7160,8 @@ function localCapabilityStatusForContract(contract = {}) {
   const id = contract.id;
   const control = controlModeSnapshot();
   const cliReady = LOCAL_EXEC_ENABLED && actionPolicy.allow?.cli_command?.enabled === true;
+  const openAiKeyConfigured = openAiApiKeyConfigured();
+  const openAiKeyAvailable = openAiApiKeyAvailableForCalls();
   const status = (value, summary, next = '') => ({
     status: value,
     summary: compactRecordText(summary, 260),
@@ -7108,9 +7176,11 @@ function localCapabilityStatusForContract(contract = {}) {
   }
 
   if (id === 'background') {
-    return OPENAI_API_KEY
+    return openAiKeyAvailable
       ? status('ready', 'Background model work can be queued without blocking the live voice turn.')
-      : status('limited', 'Background model work is limited because OPENAI_API_KEY is missing.', 'Add OPENAI_API_KEY before relying on model-backed background work.');
+      : openAiKeyConfigured
+        ? status('limited', 'Background model work is limited because OpenAI is in zero-spend key-vault mode.', 'Keep using local/Codex/Claude fallback, or deliberately unlock OpenAI spend and restart when present.')
+        : status('limited', 'Background model work is limited because OPENAI_API_KEY is missing.', 'Add OPENAI_API_KEY before relying on model-backed background work.');
   }
 
   if (id === 'codex') {
@@ -38304,7 +38374,9 @@ function perceptionConsentSnapshot(options = {}) {
     : screenBlocked
       ? 'blocked'
       : 'waiting';
-  const voiceBlocked = microphoneStatus === 'denied' || microphoneStatus === 'restricted' || !OPENAI_API_KEY;
+  const openAiKeyConfigured = openAiApiKeyConfigured();
+  const openAiKeyAvailable = openAiApiKeyAvailableForCalls();
+  const voiceBlocked = microphoneStatus === 'denied' || microphoneStatus === 'restricted' || !openAiKeyAvailable;
   const voiceStatus = conversation.status === 'live'
     ? 'active'
     : voiceBlocked
@@ -38372,7 +38444,7 @@ function perceptionConsentSnapshot(options = {}) {
     perceptionSurface({
       id: 'voice_microphone',
       label: 'Voice microphone',
-      enabled: Boolean(OPENAI_API_KEY) && microphoneStatus !== 'denied' && microphoneStatus !== 'restricted',
+      enabled: openAiKeyAvailable && microphoneStatus !== 'denied' && microphoneStatus !== 'restricted',
       available: conversation.active,
       status: voiceStatus,
       dataClass: 'live_audio',
@@ -38398,13 +38470,18 @@ function perceptionConsentSnapshot(options = {}) {
         microphone: conversation.microphone || conversationMicrophoneSnapshot(conversation),
         screenLive: conversation.screenLive,
         ageMs: conversation.ageMs,
-        hasOpenAiKey: Boolean(OPENAI_API_KEY),
+        hasOpenAiKey: openAiKeyConfigured,
+        openAiKeyAvailableForCalls: openAiKeyAvailable,
       },
       summary: conversation.active
         ? `Voice is ${conversation.status}; ${conversation.microphone?.label || `mic mode ${conversation.micMode}`}.`
         : 'Voice is idle and waits for explicit user action.',
       nextAction: voiceStatus === 'blocked'
-        ? (OPENAI_API_KEY ? 'Open Microphone settings and approve JAVIS/Electron.' : 'Add OPENAI_API_KEY locally before starting live voice.')
+        ? (openAiKeyAvailable
+          ? 'Open Microphone settings and approve JAVIS/Electron.'
+          : openAiKeyConfigured
+            ? 'OpenAI key is configured but vaulted by zero-spend protection; use local no-mic fallback or intentionally unlock spend before live voice.'
+            : 'Add OPENAI_API_KEY locally before starting live voice.')
         : 'Use the pet or summon hotkey when you want JAVIS to answer.',
     }, auditEvents),
     perceptionSurface({
@@ -39080,7 +39157,7 @@ function presenceStateSnapshot(options = {}) {
 }
 
 function petReadinessSnapshot() {
-  if (!OPENAI_API_KEY) {
+  if (!openAiApiKeyConfigured()) {
     return {
       overall: 'blocked',
       label: 'Setup blocked',
@@ -39714,7 +39791,8 @@ function petStatusSnapshot() {
     },
     api: {
       baseUrl: API_BASE,
-      hasOpenAiKey: Boolean(OPENAI_API_KEY),
+      hasOpenAiKey: openAiApiKeyConfigured(),
+      openAiKeyAvailableForCalls: openAiApiKeyAvailableForCalls(),
       localExecutionEnabled: LOCAL_EXEC_ENABLED,
       trustedLocalMode: TRUSTED_LOCAL_MODE,
     },
@@ -41762,7 +41840,7 @@ function classifyRealtimeProviderIssue(details = {}) {
       summary: statusCode === 429
         ? 'Realtime voice last hit an OpenAI quota/rate-limit error (HTTP 429).'
         : 'Realtime voice last hit an OpenAI quota or billing error.',
-      next: OPENAI_API_KEY
+      next: openAiApiKeyConfigured()
         ? 'OPENAI_API_KEY is loaded, but the OpenAI API project is out of usable quota or rate-limited. ChatGPT app subscriptions do not cover API/Realtime usage; add API Platform billing/credits, raise project limits, or replace OPENAI_API_KEY with a project key that has Realtime quota, then restart JAVIS.'
         : 'Add OPENAI_API_KEY to .env, confirm the project has Realtime quota, then restart JAVIS.',
     };
@@ -41830,7 +41908,7 @@ function compactOpenAiSpendGuardDecision(decision = {}) {
 
 function openAiSpendGuardBlocksRealtimeProviderProbe(decision = null) {
   const guard = decision || realtimeProviderProbeSpendGuardDecision();
-  return Boolean(OPENAI_API_KEY && guard.allowed === false && Array.isArray(guard.reasons) && guard.reasons.length);
+  return Boolean(openAiApiKeyConfigured() && guard.allowed === false && Array.isArray(guard.reasons) && guard.reasons.length);
 }
 
 function realtimeProviderRetryPolicySnapshot(issue = null, options = {}) {
@@ -41853,7 +41931,7 @@ function realtimeProviderRetryPolicySnapshot(issue = null, options = {}) {
     version: 1,
     active,
     state,
-    canProbeNow: Boolean(OPENAI_API_KEY && active && !spendLocked && !freshness.running && !freshness.fresh),
+    canProbeNow: Boolean(openAiApiKeyAvailableForCalls() && active && !spendLocked && !freshness.running && !freshness.fresh),
     shouldUseLocalFallback: active,
     requiresOpenAiSpendUnlock: spendLocked,
     spendGuard,
@@ -41888,7 +41966,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
   const keysUrl = 'https://platform.openai.com/api-keys';
   const steps = [];
 
-  if (!OPENAI_API_KEY || kind === 'missing_key') {
+  if (!openAiApiKeyConfigured() || kind === 'missing_key') {
     steps.push({
       id: 'add_api_key',
       label: 'Add an OpenAI API key',
@@ -42008,13 +42086,13 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     steps,
     autoProbe: {
       actionId: 'readiness:realtime_voice_provider',
-      available: Boolean(OPENAI_API_KEY && !spendLocked),
+      available: Boolean(openAiApiKeyAvailableForCalls() && !spendLocked),
       autopilotEligible: false,
       manualOnlyReason: spendLocked
         ? 'OpenAI zero-spend guard is active; provider probes stay disabled until the user intentionally unlocks one request.'
         : 'Provider probes can consume OpenAI API quota and require explicit user action.',
       cooldownMs: REALTIME_PROVIDER_PROBE_FRESH_MS,
-      due: Boolean(OPENAI_API_KEY && active && !spendLocked && !providerProbeFreshness.fresh),
+      due: Boolean(openAiApiKeyAvailableForCalls() && active && !spendLocked && !providerProbeFreshness.fresh),
       running: Boolean(providerProbeFreshness.running),
       freshness: compactRealtimePreflightFreshness(providerProbeFreshness),
       safety: {
@@ -42103,6 +42181,8 @@ function realtimeLocalVoiceFallbackSnapshot(issue = null) {
 }
 
 function realtimeVoiceHealthSnapshot(options = {}) {
+  const openAiKeyConfigured = openAiApiKeyConfigured();
+  const openAiKeyAvailable = openAiApiKeyAvailableForCalls();
   const conversation = options.conversation || conversationStateSnapshot();
   const negotiation = latestRealtimeNegotiationSnapshot(conversation, {
     includeRecentAudit: options.includeRecentAudit === true,
@@ -42119,11 +42199,11 @@ function realtimeVoiceHealthSnapshot(options = {}) {
         : negotiation;
   const errorText = parseRealtimeErrorPayload(providerCheck?.error || conversation?.error || '');
   const statusCode = Number(providerCheck?.statusCode || 0);
-  const lastSuccess = Boolean(providerCheck?.ok && (!statusCode || (statusCode >= 200 && statusCode < 300)));
-  const spendGuardDecision = OPENAI_API_KEY
+  const lastSuccess = Boolean(openAiKeyAvailable && providerCheck?.ok && (!statusCode || (statusCode >= 200 && statusCode < 300)));
+  const spendGuardDecision = openAiKeyConfigured
     ? realtimeProviderProbeSpendGuardDecision('realtime_voice_health')
     : null;
-  const issue = OPENAI_API_KEY
+  const issue = openAiKeyConfigured
     ? classifyRealtimeProviderIssue({
       ok: providerCheck?.ok,
       statusCode,
@@ -42151,7 +42231,8 @@ function realtimeVoiceHealthSnapshot(options = {}) {
     kind: issue?.kind || (lastSuccess ? (providerCheck.kind === 'provider_probe' ? 'provider_probe_success' : 'last_success') : 'no_provider_error'),
     summary,
     next: issue?.next || '',
-    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    hasOpenAiKey: openAiKeyConfigured,
+    openAiKeyAvailableForCalls: openAiKeyAvailable,
     maxAuditAgeMs: REALTIME_PROVIDER_WARNING_MAX_AGE_MS,
     recovery,
     retryPolicy: recovery.retryPolicy || null,
@@ -47647,6 +47728,8 @@ function recordRealtimeProviderProbeEvent(options = {}) {
 }
 
 function realtimeProviderProbeSnapshot(options = {}) {
+  const openAiKeyConfigured = openAiApiKeyConfigured();
+  const openAiKeyAvailable = openAiApiKeyAvailableForCalls();
   const result = options.result || latestRealtimeProviderProbeResultSnapshot({ includeRecentAudit: true });
   const issue = result
     ? classifyRealtimeProviderIssue({
@@ -47655,21 +47738,23 @@ function realtimeProviderProbeSnapshot(options = {}) {
       error: result.error,
     })
     : null;
-  const providerReady = OPENAI_API_KEY
+  const providerReady = openAiKeyAvailable
     ? result?.ok === true && !issue
     : false;
-  const spendGuardDecision = OPENAI_API_KEY
+  const spendGuardDecision = openAiKeyConfigured
     ? realtimeProviderProbeSpendGuardDecision('realtime_provider_probe_status')
     : null;
   const spendLocked = Boolean(!providerReady && !realtimeProviderProbeState.active && !issue && openAiSpendGuardBlocksRealtimeProviderProbe(spendGuardDecision));
   const spendGuard = spendGuardDecision ? compactOpenAiSpendGuardDecision(spendGuardDecision) : null;
-  const status = !OPENAI_API_KEY
+  const status = !openAiKeyConfigured
     ? 'blocked'
     : realtimeProviderProbeState.active
       ? realtimeProviderProbeState.status || 'running'
       : issue?.status || (providerReady ? 'ready' : (spendLocked ? 'spend_locked' : (result ? 'warning' : 'idle')));
-  const summary = !OPENAI_API_KEY
+  const summary = !openAiKeyConfigured
     ? 'OPENAI_API_KEY is missing, so the no-mic Realtime provider probe cannot run.'
+    : !openAiKeyAvailable && spendLocked
+      ? 'OPENAI_API_KEY is configured, but zero-spend memory vault has removed it from callable runtime memory; no provider request has been sent.'
     : issue?.summary
       || (providerReady
         ? `No-mic Realtime provider probe succeeded${result.statusCode ? ` (HTTP ${result.statusCode})` : ''}.`
@@ -47686,7 +47771,8 @@ function realtimeProviderProbeSnapshot(options = {}) {
     status,
     source: realtimeProviderProbeState.source || '',
     rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
-    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    hasOpenAiKey: openAiKeyConfigured,
+    openAiKeyAvailableForCalls: openAiKeyAvailable,
     providerReady,
     startsMicrophone: false,
     requiresMicConfirmation: false,
@@ -47701,8 +47787,10 @@ function realtimeProviderProbeSnapshot(options = {}) {
       required: true,
     }),
     summary,
-    next: !OPENAI_API_KEY
+    next: !openAiKeyConfigured
       ? 'Add OPENAI_API_KEY to .env and restart JAVIS.'
+      : !openAiKeyAvailable && spendLocked
+        ? 'Use local voice fallback now. To spend later, unlock the hard lock, set a positive daily limit, restart so the key is intentionally retained, create one short-lived spend lease, then run the probe.'
       : issue?.next || (providerReady
         ? 'The provider lane is ready; keep OpenAI spend locked unless the user is present and explicitly unlocks a one-request check.'
         : spendLocked
@@ -47741,6 +47829,8 @@ function realtimeProviderProbeSnapshot(options = {}) {
 }
 
 async function startRealtimeProviderProbe(options = {}) {
+  const openAiKeyConfigured = openAiApiKeyConfigured();
+  const openAiKeyAvailable = openAiApiKeyAvailableForCalls();
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
   const source = String(options.source || 'api').slice(0, 80);
@@ -47774,7 +47864,7 @@ async function startRealtimeProviderProbe(options = {}) {
     recordBlocked: false,
   });
   const preview = {
-    ok: Boolean(OPENAI_API_KEY && rendererAvailable),
+    ok: !execute || Boolean(openAiKeyAvailable && rendererAvailable),
     executed: false,
     runId,
     startsMicrophone: false,
@@ -47782,7 +47872,8 @@ async function startRealtimeProviderProbe(options = {}) {
     manualOnly: true,
     requiresUserPresence: true,
     rendererAvailable,
-    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    hasOpenAiKey: openAiKeyConfigured,
+    openAiKeyAvailableForCalls: openAiKeyAvailable,
     requiresOpenAiSpendConfirmation: spendConfirmation.required,
     openAiSpendConfirmation: spendConfirmation,
     spendGuard: spendPreview,
@@ -47803,7 +47894,7 @@ async function startRealtimeProviderProbe(options = {}) {
       'Preview no-mic Realtime provider probe.',
       'No OpenAI request is made in preview. If explicitly confirmed, JAVIS will create a renderer WebRTC offer without getUserMedia, then call the Realtime provider session endpoint with probe=true.',
       `Renderer: ${rendererAvailable ? 'ready' : 'missing'}.`,
-      `OpenAI key: ${OPENAI_API_KEY ? 'present' : 'missing'}.`,
+      `OpenAI key: ${openAiKeyConfigured ? (openAiKeyAvailable ? 'present' : 'vaulted by zero-spend memory guard') : 'missing'}.`,
       `Cloud spend guard: ${spendPreview.allowed ? 'allowed' : `blocked (${spendPreview.reasons.join(', ')})`}.`,
       spendConfirmation.required ? `OpenAI spend confirmation: ${spendConfirmation.confirmed ? 'confirmed for this request' : 'required before execution'}.` : '',
       OPENAI_REQUIRE_SPEND_LEASE ? `OpenAI spend lease: ${spendConfirmation.lease?.ok ? 'valid for one request' : `required (${spendConfirmation.lease?.reason || 'missing'})`}.` : '',
@@ -47833,7 +47924,9 @@ async function startRealtimeProviderProbe(options = {}) {
       ...preview,
       ok: false,
       status: 400,
-      output: 'Cannot run no-mic Realtime provider probe because OPENAI_API_KEY is missing.',
+      output: openAiKeyConfigured
+        ? 'Cannot run no-mic Realtime provider probe because OPENAI_API_KEY is vaulted from callable runtime memory by zero-spend protection. Unlock spend intentionally and restart before creating a one-request lease.'
+        : 'Cannot run no-mic Realtime provider probe because OPENAI_API_KEY is missing.',
     };
   }
   if (!rendererAvailable) {
@@ -50523,12 +50616,16 @@ function buildAutonomyAgencyPlan(context = {}) {
       next: 'Retry with narrower context, fix the named permission, or use non-screen/browser evidence.',
     });
   }
-  if (route.requiresOpenAiKey && !OPENAI_API_KEY) {
+  if (route.requiresOpenAiKey && !openAiApiKeyAvailableForCalls()) {
     blockers.push({
       id: 'openai_key',
-      label: 'OpenAI key missing',
-      summary: 'The routed lane needs an OpenAI key.',
-      next: 'Open .env from CUI and add OPENAI_API_KEY, or route to an available local worker.',
+      label: openAiApiKeyConfigured() ? 'OpenAI key vaulted' : 'OpenAI key missing',
+      summary: openAiApiKeyConfigured()
+        ? 'The routed lane needs a callable OpenAI key, but zero-spend protection has vaulted it from runtime memory.'
+        : 'The routed lane needs an OpenAI key.',
+      next: openAiApiKeyConfigured()
+        ? 'Route to an available local worker, or deliberately unlock OpenAI spend and restart when present.'
+        : 'Open .env from CUI and add OPENAI_API_KEY, or route to an available local worker.',
     });
   }
   if (route.requiresLocalExecution && !LOCAL_EXEC_ENABLED) {
@@ -51859,7 +51956,9 @@ async function callOpenAIResponses({
   leaseId,
 }) {
   if (!OPENAI_API_KEY) {
-    return 'OpenAI API key is not configured. Add OPENAI_API_KEY to .env and restart JAVIS.';
+    return openAiApiKeyConfigured()
+      ? 'OpenAI API key is configured but vaulted from runtime memory by zero-spend protection. Keep using local/Codex/Claude fallback, or deliberately unlock spend and restart JAVIS.'
+      : 'OpenAI API key is not configured. Add OPENAI_API_KEY to .env and restart JAVIS.';
   }
 
   const spendDecision = assertOpenAiSpendAllowed({
@@ -52044,7 +52143,7 @@ function routeResultLink(record) {
 function approvalRequirementForRoute(decision = {}, result = {}) {
   if (result.approval) return `approval:${result.approval.action || 'local_action'}`;
   if (decision.requiresLocalExecution) return LOCAL_EXEC_ENABLED ? 'local_execution_enabled' : 'local_execution_required';
-  if (decision.requiresOpenAiKey && !OPENAI_API_KEY) return 'openai_key_required';
+  if (decision.requiresOpenAiKey && !openAiApiKeyAvailableForCalls()) return openAiApiKeyConfigured() ? 'openai_key_vaulted' : 'openai_key_required';
   return 'none';
 }
 
@@ -54310,7 +54409,7 @@ function workflowBriefing(options = {}) {
       const providerProbeFreshness = realtimeProviderProbeFreshness();
       readinessAction.localFallback = realtimeWorkbench.voiceHealth?.fallback || null;
       readinessAction.providerProbe = true;
-      readinessAction.executable = Boolean(OPENAI_API_KEY);
+      readinessAction.executable = Boolean(openAiApiKeyAvailableForCalls());
       readinessAction.autoEligible = false;
       readinessAction.autopilotEligible = false;
       readinessAction.manualOnly = true;
@@ -55412,7 +55511,7 @@ async function workNextAction(options = {}) {
       summary: voiceHealth.next || voiceHealth.summary || 'Run the no-mic Realtime provider probe.',
       source: 'readiness',
       providerProbe: true,
-      executable: Boolean(OPENAI_API_KEY),
+      executable: Boolean(openAiApiKeyAvailableForCalls()),
       autoEligible: false,
       autopilotEligible: false,
       manualOnly: true,
@@ -57333,6 +57432,8 @@ function readinessSnapshot(options = {}) {
   const writeFileLimited = writeFileRoots.length > 0 && !writeFileRoots.includes('*');
   const realtimeVoiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: options.includeRecentAudit === true });
   const openAiSpendGuard = openAiSpendGuardSnapshot();
+  const openAiKeyConfigured = openAiApiKeyConfigured();
+  const openAiKeyAvailable = openAiApiKeyAvailableForCalls();
   const openAiSpendCounts = openAiSpendGuard.counts || {};
   const openAiSpendGuardLoose =
     !openAiSpendGuard.hardSpendLock ||
@@ -57375,9 +57476,17 @@ function readinessSnapshot(options = {}) {
     readinessItem(
       'openai_key',
       'OpenAI key',
-      OPENAI_API_KEY ? 'ready' : 'blocked',
-      OPENAI_API_KEY ? 'Configured for realtime and model lanes.' : 'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
-      OPENAI_API_KEY ? '' : 'Add OPENAI_API_KEY to .env and restart JAVIS.',
+      openAiKeyAvailable ? 'ready' : openAiKeyConfigured ? 'warning' : 'blocked',
+      openAiKeyAvailable
+        ? 'Configured and available for explicitly guarded realtime/model lanes.'
+        : openAiKeyConfigured
+          ? 'Configured locally, but vaulted from callable runtime memory by zero-spend protection.'
+          : 'Missing OPENAI_API_KEY; voice/model lanes cannot connect.',
+      openAiKeyAvailable
+        ? ''
+        : openAiKeyConfigured
+          ? 'Keep using local/Codex/Claude fallback, or deliberately unlock OpenAI spend and restart when present.'
+          : 'Add OPENAI_API_KEY to .env and restart JAVIS.',
     ),
     readinessItem(
       'openai_spend_guard',
@@ -57822,7 +57931,8 @@ function healthSnapshot() {
       baseUrl: API_BASE,
       port: API_PORT,
       auth: apiAuthSnapshot(),
-      hasOpenAiKey: Boolean(OPENAI_API_KEY),
+      hasOpenAiKey: openAiApiKeyConfigured(),
+      openAiKeyAvailableForCalls: openAiApiKeyAvailableForCalls(),
       openAiSpendGuard: openAiSpendGuardSnapshot(),
       localExecutionEnabled: LOCAL_EXEC_ENABLED,
       trustedLocalMode: TRUSTED_LOCAL_MODE,
@@ -63816,7 +63926,8 @@ function realtimeConfigSnapshot(options = {}) {
     model: config.model,
     voice: config.audio?.output?.voice || '',
     micMode: options.micMode === 'open' ? 'open' : 'push',
-    hasOpenAiKey: Boolean(OPENAI_API_KEY),
+    hasOpenAiKey: openAiApiKeyConfigured(),
+    openAiKeyAvailableForCalls: openAiApiKeyAvailableForCalls(),
     preflightContextEnabled: REALTIME_PREFLIGHT_CONTEXT_ENABLED,
     wakeWords: WAKE_WORDS,
     audio: config.audio,
@@ -64846,7 +64957,8 @@ function startApiServer() {
       api: {
         baseUrl: API_BASE,
         auth: apiAuthSnapshot(),
-        hasOpenAiKey: Boolean(OPENAI_API_KEY),
+        hasOpenAiKey: openAiApiKeyConfigured(),
+        openAiKeyAvailableForCalls: openAiApiKeyAvailableForCalls(),
         openAiSpendGuard: openAiSpendGuardSnapshot(),
         localExecutionEnabled: LOCAL_EXEC_ENABLED,
         trustedLocalMode: TRUSTED_LOCAL_MODE,
@@ -66273,9 +66385,15 @@ function startApiServer() {
         statusCode: 400,
         ok: false,
         durationMs: 0,
-        error: 'missing_openai_api_key',
+        error: openAiApiKeyConfigured() ? 'openai_api_key_vaulted_by_zero_spend' : 'missing_openai_api_key',
       });
-      jsonError(res, 400, 'Missing OPENAI_API_KEY');
+      jsonError(
+        res,
+        400,
+        openAiApiKeyConfigured()
+          ? 'OPENAI_API_KEY is configured but vaulted from callable runtime memory by zero-spend protection'
+          : 'Missing OPENAI_API_KEY',
+      );
       return;
     }
 
