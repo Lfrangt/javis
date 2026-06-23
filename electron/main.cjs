@@ -1835,6 +1835,10 @@ function readinessIssueIsQuietOpenAiKeyZeroSpend(readiness, voiceHealth = null) 
   );
 }
 
+function quietZeroSpendFallbackSummary() {
+  return 'Local input ready: OpenAI spend is intentionally locked to zero; use local no-mic intake, Codex, Claude, browser, file, and app lanes without provider spend.';
+}
+
 function attentionPolicySnapshot(options = {}) {
   const now = Date.now();
   const readiness = options.readiness || readinessSnapshot();
@@ -2537,6 +2541,7 @@ function openLocalVoiceLoop(source = 'api', options = {}) {
 function menuBarStatusLabel(readiness) {
   if (readiness.overall === 'ready') return 'Ready';
   if (readiness.overall === 'blocked') return `Blocked: ${readiness.primaryIssue?.label || 'Setup'}`;
+  if (readinessIssueIsQuietOpenAiKeyZeroSpend(readiness, realtimeVoiceHealthSnapshot({ includeRecentAudit: true }))) return 'Local input ready';
   return `Needs attention: ${readiness.primaryIssue?.label || 'Setup'}`;
 }
 
@@ -55219,10 +55224,10 @@ function workflowBriefing(options = {}) {
   const productivityDogfoodFreshness = options.includeProductivityDogfoodArchive === false
     ? null
     : productivityDogfoodArchiveFreshness(options.productivityDogfoodFreshMs || PRODUCTIVITY_DOGFOOD_FRESH_MS);
+  const quietOpenAiKeyZeroSpend = readinessIssueIsQuietOpenAiKeyZeroSpend(readiness, realtimeWorkbench.voiceHealth);
   const nextActions = [];
 
   if (readiness.primaryIssue) {
-    const quietOpenAiKeyZeroSpend = readinessIssueIsQuietOpenAiKeyZeroSpend(readiness, realtimeWorkbench.voiceHealth);
     const readinessAction = {
       id: `readiness:${readiness.primaryIssue.id}`,
       priority: quietOpenAiKeyZeroSpend ? 4 : readiness.primaryIssue.status === 'blocked' ? 1 : 2,
@@ -55486,8 +55491,15 @@ function workflowBriefing(options = {}) {
     });
   }
 
+  const readinessSummaryLine = quietOpenAiKeyZeroSpend
+    ? quietZeroSpendFallbackSummary()
+    : readiness.overall === 'blocked'
+      ? `Setup blocked: ${readiness.summary}`
+      : readiness.overall === 'degraded'
+        ? `Needs attention: ${readiness.summary}`
+        : 'Resident is ready.';
   const summary = [
-    readiness.overall === 'blocked' ? `Setup blocked: ${readiness.summary}` : readiness.overall === 'degraded' ? `Needs attention: ${readiness.summary}` : 'Resident is ready.',
+    readinessSummaryLine,
     `${workflowCounts().total} workflow(s), ${queueCounts().total} job(s), ${memories.size} memory record(s).`,
     activeRoutes.length ? `${activeRoutes.length} routed task(s) active.` : '',
     collaboration.counts.active ? `${collaboration.counts.active} agent collaboration claim(s) active.` : '',
@@ -55929,7 +55941,10 @@ function workHandoff(options = {}) {
   const nextActions = (briefing.nextActions || []).slice(0, nextLimit);
   const followUps = (briefing.followUps || []).slice(0, followUpLimit);
   const collaboration = briefing.collaboration || progress.collaboration || collaborationSnapshot(4);
-  const readinessLabel = briefing.readiness?.overall === 'ready'
+  const quietOpenAiKeyZeroSpend = readinessIssueIsQuietOpenAiKeyZeroSpend(briefing.readiness, briefing.realtimeVoice?.voiceHealth);
+  const readinessLabel = quietOpenAiKeyZeroSpend
+    ? 'JAVIS 本地输入可用，OpenAI 付费通道保持 zero-spend 锁定。'
+    : briefing.readiness?.overall === 'ready'
     ? 'JAVIS 现在是 ready。'
     : briefing.readiness?.overall === 'blocked'
       ? `JAVIS 当前有 setup blocker: ${compactRecordText(briefing.readiness?.primaryIssue?.summary || briefing.readiness?.label || '需要处理权限或配置', 150)}。`

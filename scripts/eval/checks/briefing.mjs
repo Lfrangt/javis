@@ -151,7 +151,9 @@ export default {
           zeroSpendVoiceAction.autopilotEligible === false &&
           zeroSpendVoiceIndex >= 0 &&
           zeroSpendReadinessIndex >= 0 &&
-          zeroSpendVoiceIndex < zeroSpendReadinessIndex
+          zeroSpendVoiceIndex < zeroSpendReadinessIndex &&
+          String(b.summary || '').startsWith('Local input ready:') &&
+          !String(b.summary || '').startsWith('Needs attention:')
         )
         ? ok('briefing.zero_spend_local_voice_first', 'Zero-spend local voice first', zeroSpendActive
           ? 'voice:standby_primary is ahead of paid-provider setup while OpenAI spend is hard-locked'
@@ -680,7 +682,11 @@ export default {
       handoff.collaboration?.counts,
     );
     out.push(
-      handoffReady
+      handoffReady &&
+        (!zeroSpendActive || !zeroSpendVoiceAction || (
+          handoff.spokenSummary.includes('JAVIS 本地输入可用') &&
+          !handoff.spokenSummary.includes('JAVIS 当前需要注意: Needs attention')
+        ))
         ? ok('briefing.handoff', 'Spoken work handoff', handoff.spokenSummary.slice(0, 180), {
           nextActions: handoff.nextActions.length,
           followUps: handoff.followUps.length,
