@@ -962,15 +962,18 @@ export default {
         typeof naturalPromptSuggestionsData.route?.output === 'string' &&
         naturalPromptSuggestionsData.route.output.includes('可以这样叫我:') &&
         naturalPromptSuggestionsData.route.output.includes('建议:') &&
-        naturalPromptSuggestionsData.route.output.includes('说话方式: Push-to-talk') &&
+        naturalPromptSuggestionsData.route.output.includes('说话方式: Local typed input') &&
         naturalPromptSuggestionsData.route.output.includes('不启动麦克风') &&
         naturalPromptSuggestionsData.route.output.includes('不调用云模型') &&
         typeof naturalPromptPack.nextUtterance === 'string' &&
         naturalPromptPack.nextUtterance.length > 0 &&
         Array.isArray(naturalPromptPack.examples) &&
         naturalPromptSuggestionsData.route?.data?.standby?.version === 1 &&
-        naturalPromptInputMode.mode === 'push_to_talk' &&
-        naturalPromptInputMode.micDefault === 'push' &&
+        naturalPromptInputMode.mode === 'typed_local_intake' &&
+        naturalPromptInputMode.micDefault === 'off' &&
+        naturalPromptInputMode.startsMicrophone === false &&
+        naturalPromptInputMode.usesRealtime === false &&
+        naturalPromptInputMode.callsOpenAI === false &&
         naturalPromptSuggestionsData.safety?.startsMicrophone === false &&
         naturalPromptSuggestionsData.safety?.usesRealtime === false &&
         naturalPromptSuggestionsData.safety?.storesRawAudio === false &&
@@ -2251,7 +2254,7 @@ export default {
       out.push(
         stdout.includes('JAVIS Local Voice Command Loop') &&
           stdout.includes('npm run voice:chat') &&
-          stdout.includes('Input mode: Push-to-talk') &&
+          stdout.includes('Input mode: Local typed input') &&
           stdout.includes('/jobs or /progress') &&
           stdout.includes('starts microphone=no') &&
           stdout.includes('uses Realtime=no') &&

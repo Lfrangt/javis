@@ -28392,6 +28392,7 @@ function formatBrowserActivityForLocalCommand(activity = {}) {
 function formatVoiceStatusForLocalCommand(status = {}) {
   const standby = status.standby || {};
   const provider = standby.provider || {};
+  const spend = standby.spendGuard || {};
   const local = standby.local || {};
   const localInteraction = local.interaction || {};
   const inputMode = standby.inputMode || local.inputMode || {};
@@ -28414,6 +28415,7 @@ function formatVoiceStatusForLocalCommand(status = {}) {
     `Voice: ${standby.label || standby.mode || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
     provider.summary ? `Realtime: ${compactRecordText(provider.summary, 260)}` : '',
     provider.subscriptionBoundary ? `Billing/API: ${compactRecordText(provider.subscriptionBoundary, 260)}` : '',
+    spend.zeroSpendLocked ? `OpenAI spend: zero-locked · remaining=${spend.remainingTotal ?? 0} · blocked=${spend.blockedCount ?? 0}` : '',
     retryPolicy.active ? `Retry: ${retryPolicy.state || '-'} · canProbe=${retryPolicy.canProbeNow ? 'yes' : 'no'}${retryPolicy.waitLabel ? ` · wait ${retryPolicy.waitLabel}` : ''} · use local fallback=${retryPolicy.shouldUseLocalFallback ? 'yes' : 'no'}` : '',
     blocker.active ? `Blocker: ${blocker.kind || provider.kind || '-'} · ${compactRecordText(blocker.summary || provider.summary || '', 240)}` : '',
     `Primary: ${primary.label || primary.id || '-'} · mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`,
@@ -31239,13 +31241,16 @@ function localVoicePromptPack(options = {}) {
 
 function localVoiceInputModeSnapshot() {
   return {
-    mode: 'push_to_talk',
-    micDefault: 'push',
-    label: 'Push-to-talk',
-    prompt: 'Hold capsule or Space; release to send.',
-    control: 'hold_or_space',
+    mode: 'typed_local_intake',
+    micDefault: 'off',
+    label: 'Local typed input',
+    prompt: 'Type/dictate; Enter to send.',
+    control: 'keyboard_or_dictation',
     startsMuted: true,
-    openMicToggle: true,
+    openMicToggle: false,
+    startsMicrophone: false,
+    usesRealtime: false,
+    callsOpenAI: false,
   };
 }
 
@@ -31254,6 +31259,23 @@ function localVoiceStatusSnapshot(options = {}) {
   const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
   const fallback = voiceHealth.fallback || realtimeLocalVoiceFallbackSnapshot();
   const slim = options.slim === true;
+  const spendGuard = openAiSpendGuardSnapshot();
+  const zeroSpendLocked = openAiZeroSpendModeActive();
+  const spendGuardStatus = slim
+    ? { zeroSpendLocked }
+    : {
+        zeroSpendLocked,
+        mode: spendGuard.mode,
+        hardSpendLock: Boolean(spendGuard.hardSpendLock),
+        dailyRequestLimit: Number(spendGuard.dailyRequestLimit || 0),
+        remainingTotal: Number(spendGuard.remaining?.total || 0),
+        blockedCount: Number(spendGuard.counts?.blocked || 0),
+        requireSpendLease: Boolean(spendGuard.requireSpendLease),
+        requireSpendConfirmationPhrase: Boolean(spendGuard.requireSpendConfirmationPhrase),
+        summary: zeroSpendLocked
+          ? 'OpenAI cloud spend is locked to zero; local typed intake will not call the provider.'
+          : 'OpenAI cloud spend is not fully zero-locked; local typed intake still avoids provider calls unless an explicit route allows them.',
+      };
   const history = voiceCommandHistorySnapshot({ limit: options.historyLimit || 8 });
   const latest = history.items[0] || null;
   const fallbackReady = voiceHealth.status !== 'ready';
@@ -31269,30 +31291,45 @@ function localVoiceStatusSnapshot(options = {}) {
     auditLimit: 120,
     source: 'local_voice_prompt_pack',
   }));
-  const promptPack = localVoicePromptPack({ fallbackReady, latest, latestCanContinue, blocker });
+  const rawPromptPack = localVoicePromptPack({ fallbackReady, latest, latestCanContinue, blocker });
+  const promptPack = slim
+    ? {
+        version: rawPromptPack.version,
+        nextUtterance: compactRecordText(rawPromptPack.nextUtterance || '', 80),
+        placeholder: compactRecordText(rawPromptPack.placeholder || rawPromptPack.nextUtterance || '', 80),
+        examples: Array.isArray(rawPromptPack.examples)
+          ? rawPromptPack.examples.slice(0, 3).map((example) => ({
+              id: compactRecordText(example.id || '', 32),
+              utterance: compactRecordText(example.utterance || '', 72),
+            }))
+          : [],
+        safety: rawPromptPack.safety,
+      }
+    : rawPromptPack;
   return {
     version: 1,
     available: true,
     mode: fallbackReady ? 'fallback_ready' : 'standby',
-    label: fallbackReady ? 'Local voice ready' : 'Local voice standby',
+    label: fallbackReady ? 'Local input ready' : 'Local input standby',
     summary: compactRecordText(
       fallbackReady
-        ? 'Realtime voice is not ready; local typed voice-command intake can still route work.'
-        : 'Local typed voice-command intake is ready for no-mic preview or fallback use.',
-      120,
+        ? `${zeroSpendLocked ? 'OpenAI spend is zero-locked; ' : ''}Realtime voice is not ready; local typed intake can still route work without microphone, Realtime, Terminal, or provider spend.`
+        : 'Local typed intake is ready for no-mic preview or fallback use.',
+      slim ? 80 : 120,
     ),
     next: compactRecordText(
       fallbackReady
-        ? fallback.next || 'Use npm run voice with a quoted request while Realtime is unavailable.'
-        : 'Use npm run voice when you want no-mic intake, or start Realtime when provider health is ready.',
-      140,
+        ? fallback.next || 'Use the compact pet input or npm run voice with a quoted request while Realtime is unavailable.'
+        : 'Use the compact pet input or npm run voice when you want no-mic intake, or start Realtime when provider health is ready.',
+      slim ? 90 : 140,
     ),
+    spendGuard: spendGuardStatus,
     blocker: {
       active: Boolean(blocker.active),
       kind: compactRecordText(blocker.kind || '', 60),
       status: compactRecordText(blocker.status || '', 60),
-      summary: compactRecordText(blocker.summary || '', 120),
-      next: compactRecordText(blocker.next || '', 90),
+      summary: compactRecordText(blocker.summary || '', slim ? 72 : 120),
+      next: compactRecordText(blocker.next || '', slim ? 72 : 90),
     },
     input: {
       endpoint: '/api/voice/command',
@@ -31352,6 +31389,7 @@ function localVoiceStatusSnapshot(options = {}) {
     safety: {
       startsMicrophone: false,
       usesRealtime: false,
+      callsOpenAI: false,
       storesRawAudio: false,
       storesScreenImage: false,
       storesClipboardText: false,
@@ -31417,19 +31455,31 @@ function voiceStandbySnapshot(options = {}) {
   const localVoice = options.localVoice || localVoiceStatusSnapshot({ conversation, voiceHealth });
   const wake = options.wake || wakeHandoffSnapshot({ conversation, voiceHealth, localVoice });
   const recovery = voiceHealth.recovery || realtimeProviderRecoverySnapshot(null, { source: 'voice_standby' });
+  const guardSnapshot = localVoice.spendGuard ? null : openAiSpendGuardSnapshot();
+  const spendGuard = localVoice.spendGuard || {
+    zeroSpendLocked: openAiZeroSpendModeActive(),
+    mode: guardSnapshot.mode,
+    hardSpendLock: guardSnapshot.hardSpendLock,
+    dailyRequestLimit: guardSnapshot.dailyRequestLimit,
+    remainingTotal: guardSnapshot.remaining?.total || 0,
+    blockedCount: guardSnapshot.counts?.blocked || 0,
+    requireSpendLease: guardSnapshot.requireSpendLease,
+    requireSpendConfirmationPhrase: guardSnapshot.requireSpendConfirmationPhrase,
+  };
   const realtimeReady = voiceHealth.status === 'ready';
   const fallbackReady = !realtimeReady && localVoice.available === true;
   const primaryAction = fallbackReady
     ? {
         id: 'open_local_input',
         label: 'Open local input',
-        summary: 'Use the no-mic local input inside the desktop pet; it can route tasks with metadata-only Mac context while Realtime is unavailable.',
+        summary: 'Use the no-mic local input inside the desktop pet; it can route tasks with metadata-only Mac context while Realtime is unavailable and OpenAI spend remains guarded.',
         command: '',
         endpoint: '/api/voice/standby',
         method: 'POST',
         opensTerminal: false,
         startsMicrophone: false,
         usesRealtime: false,
+        callsOpenAI: false,
         storesRawAudio: false,
       }
     : {
@@ -31456,11 +31506,11 @@ function voiceStandbySnapshot(options = {}) {
   return {
     version: 1,
     mode: realtimeReady ? 'realtime_ready' : 'local_fallback_ready',
-    label: realtimeReady ? 'Realtime ready' : 'Local voice standby',
+    label: realtimeReady ? 'Realtime ready' : 'Local input standby',
     summary: compactRecordText(
       realtimeReady
         ? 'Realtime voice is ready; the pet can start the live voice path, and local no-mic intake remains available.'
-        : 'Realtime voice is blocked or unverified; JAVIS can still accept typed/local voice-command turns without microphone capture.',
+        : `${spendGuard.zeroSpendLocked ? 'OpenAI spend is zero-locked; ' : ''}Realtime voice is blocked or unverified; JAVIS can still accept typed/local voice-command turns without microphone capture, Realtime, Terminal, or provider calls.`,
       260,
     ),
     next: compactRecordText(
@@ -31473,6 +31523,7 @@ function voiceStandbySnapshot(options = {}) {
     inputMode: localVoice.inputMode || localVoiceInputModeSnapshot(),
     primaryAction,
     recoveryActions,
+    spendGuard,
     provider: {
       status: compactRecordText(voiceHealth.status || '', 80),
       kind: compactRecordText(voiceHealth.kind || '', 80),
@@ -31511,6 +31562,7 @@ function voiceStandbySnapshot(options = {}) {
       readOnly: true,
       startsMicrophone: Boolean(primaryAction.startsMicrophone),
       usesRealtime: Boolean(primaryAction.usesRealtime),
+      callsOpenAI: false,
       storesRawAudio: false,
       storesScreenImage: false,
       storesClipboardText: false,
@@ -38133,24 +38185,24 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
       ready: Boolean(handoff.ready),
       mode: compactRecordText(handoff.mode || '', 80),
       label: compactRecordText(handoff.label || '', 120),
-      summary: compactRecordText(handoff.summary || '', 90),
-      next: compactRecordText(handoff.next || '', 90),
+      summary: compactRecordText(handoff.summary || '', 70),
+      next: compactRecordText(handoff.next || '', 70),
       input: {
-        endpoint: compactRecordText(handoff.input?.endpoint || '', 120),
-        cliCommand: compactRecordText(handoff.input?.cliCommand || '', 140),
+        endpoint: compactRecordText(handoff.input?.endpoint || '', 80),
+        cliCommand: compactRecordText(handoff.input?.cliCommand || '', 80),
       },
       inputMode: handoff.inputMode
         ? {
             mode: compactRecordText(handoff.inputMode.mode || '', 40),
             micDefault: compactRecordText(handoff.inputMode.micDefault || '', 20),
-            control: compactRecordText(handoff.inputMode.control || '', 80),
+            control: compactRecordText(handoff.inputMode.control || '', 48),
           }
         : null,
       promptPack: handoff.promptPack
         ? {
             version: Number(handoff.promptPack.version || 1),
-            nextUtterance: compactRecordText(handoff.promptPack.nextUtterance || '', 120),
-            placeholder: compactRecordText(handoff.promptPack.placeholder || handoff.promptPack.nextUtterance || '', 120),
+            nextUtterance: compactRecordText(handoff.promptPack.nextUtterance || '', 80),
+            placeholder: compactRecordText(handoff.promptPack.placeholder || handoff.promptPack.nextUtterance || '', 80),
           }
         : null,
       localVoiceMode: compactRecordText(handoff.localVoiceMode || '', 80),
@@ -38159,8 +38211,8 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
             active: Boolean(handoff.blocker.active),
             kind: compactRecordText(handoff.blocker.kind || '', 60),
             status: compactRecordText(handoff.blocker.status || '', 60),
-            summary: compactRecordText(handoff.blocker.summary || '', 80),
-            next: compactRecordText(handoff.blocker.next || '', 80),
+            summary: compactRecordText(handoff.blocker.summary || '', 60),
+            next: compactRecordText(handoff.blocker.next || '', 60),
           }
         : null,
       safety: {

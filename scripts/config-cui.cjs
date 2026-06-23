@@ -1165,7 +1165,8 @@ async function showLocalVoiceLoopQuickstart() {
   const localVoice = status.localVoice || {};
   console.log('\nJAVIS Local Voice Command Loop');
   console.log('==============================');
-  console.log('Use this when Realtime voice is unavailable or when you want a quiet terminal intake loop.');
+  console.log('Use this as a local typed intake when Realtime voice is unavailable or when cloud spend is locked.');
+  console.log('Resident/API requests open the compact pet input instead of spawning Terminal windows; this shell loop is manual-only.');
   console.log(`Realtime: ${voiceHealth.status || 'unknown'} · ${compact(voiceHealth.summary || '-', 220)}`);
   console.log(`Local fallback: ${localVoice.mode || 'standby'} · ${localVoice.input?.endpoint || '/api/voice/command'}`);
   if (localVoice.inputMode?.mode) {
@@ -1195,6 +1196,7 @@ async function showLocalVoiceLoopQuickstart() {
 function printVoiceStandby(result) {
   const standby = result?.standby || result?.voiceStandby || result || {};
   const provider = standby.provider || {};
+  const spend = standby.spendGuard || {};
   const local = standby.local || {};
   const primary = standby.primaryAction || {};
   const safety = standby.safety || {};
@@ -1219,6 +1221,9 @@ function printVoiceStandby(result) {
   if (provider.summary) console.log(`- ${compact(provider.summary, 300)}`);
   if (provider.next) console.log(`- next: ${compact(provider.next, 320)}`);
   if (provider.subscriptionBoundary) console.log(`- billing: ${compact(provider.subscriptionBoundary, 320)}`);
+  if (spend.zeroSpendLocked) {
+    console.log(`- OpenAI spend: zero-locked · mode=${spend.mode || '-'} · remaining=${spend.remainingTotal ?? 0} · blocked=${spend.blockedCount ?? 0}`);
+  }
   if (retryPolicy.active) {
     console.log(`- retry: ${retryPolicy.state || '-'} · can probe now=${retryPolicy.canProbeNow ? 'yes' : 'no'}${retryPolicy.waitLabel ? ` · wait ${retryPolicy.waitLabel}` : ''} · local fallback=${retryPolicy.shouldUseLocalFallback ? 'yes' : 'no'}`);
   }

@@ -301,9 +301,13 @@ export default {
         voiceStandby.version === 1 &&
         ['realtime_ready', 'local_fallback_ready'].includes(voiceStandby.mode) &&
         voiceStandby.primaryAction?.id &&
-        voiceStandbyInputMode.mode === 'push_to_talk' &&
-        voiceStandbyInputMode.micDefault === 'push' &&
+        voiceStandbyInputMode.mode === 'typed_local_intake' &&
+        voiceStandbyInputMode.micDefault === 'off' &&
         voiceStandbyInputMode.startsMuted === true &&
+        voiceStandbyInputMode.startsMicrophone === false &&
+        voiceStandbyInputMode.usesRealtime === false &&
+        voiceStandbyInputMode.callsOpenAI === false &&
+        typeof voiceStandby.spendGuard?.zeroSpendLocked === 'boolean' &&
         (voiceStandby.provider?.status === 'ready' ||
           (voiceStandbyRetryPolicy.active === true &&
             ['spend_locked', 'probe_due', 'cooldown', 'probe_running'].includes(voiceStandbyRetryPolicy.state) &&
@@ -313,7 +317,7 @@ export default {
         voiceStandby.local?.available === true &&
         voiceStandby.local?.input?.endpoint === '/api/voice/command' &&
         voiceStandby.local?.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
-        voiceStandby.local?.inputMode?.mode === 'push_to_talk' &&
+        voiceStandby.local?.inputMode?.mode === 'typed_local_intake' &&
         typeof voiceStandbyPromptPack.nextUtterance === 'string' &&
         voiceStandbyPromptPack.nextUtterance.length > 0 &&
         Array.isArray(voiceStandbyPromptPack.examples) &&
@@ -328,9 +332,10 @@ export default {
         voiceStandby.local?.safety?.usesRealtime === false &&
         voiceStandby.local?.safety?.storesRawAudio === false &&
         voiceStandby.safety?.storesRawAudio === false &&
+        voiceStandby.safety?.callsOpenAI === false &&
         voiceStandbyCui.status === 0 &&
         voiceStandbyCui.stdout.includes('JAVIS Voice Standby') &&
-        voiceStandbyCui.stdout.includes('Input mode: Push-to-talk') &&
+        voiceStandbyCui.stdout.includes('Input mode: Local typed input') &&
         (voiceStandby.provider?.status === 'ready' || voiceStandbyCui.stdout.includes('retry:')) &&
         voiceStandbyCui.stdout.includes('Try saying') &&
         voiceStandbyCui.stdout.includes('local loop: npm run voice:chat')
@@ -1129,10 +1134,13 @@ export default {
         String(localVoice.input?.cliCommand || '').includes('npm run voice') &&
         String(localVoice.input?.openLoopCommand || '').includes('npm run voice:chat') &&
         String(localVoice.input?.historyCommand || '').includes('--print-voice-history') &&
-        localVoiceInputMode.mode === 'push_to_talk' &&
-        localVoiceInputMode.micDefault === 'push' &&
+        localVoiceInputMode.mode === 'typed_local_intake' &&
+        localVoiceInputMode.micDefault === 'off' &&
         localVoiceInputMode.startsMuted === true &&
-        localVoiceInputMode.openMicToggle === true &&
+        localVoiceInputMode.openMicToggle === false &&
+        localVoiceInputMode.startsMicrophone === false &&
+        localVoiceInputMode.usesRealtime === false &&
+        localVoiceInputMode.callsOpenAI === false &&
         typeof localVoicePromptPack.nextUtterance === 'string' &&
         localVoicePromptPack.nextUtterance.length > 0 &&
         localVoicePromptPack.placeholder === localVoicePromptPack.nextUtterance &&
@@ -1167,6 +1175,7 @@ export default {
         (localVoice.mode === 'fallback_ready' ? localBlocker.active === true : localBlocker.active === false) &&
         localVoice.safety?.startsMicrophone === false &&
         localVoice.safety?.usesRealtime === false &&
+        localVoice.safety?.callsOpenAI === false &&
         localVoice.safety?.storesRawAudio === false &&
         localVoice.safety?.storesScreenImage === false &&
         localVoice.safety?.storesClipboardText === false &&
@@ -1175,8 +1184,8 @@ export default {
         petWakeHandoff.ready === true &&
         ['local_voice_fallback', 'realtime_or_local'].includes(petWakeHandoff.mode) &&
         petWakeHandoff.input?.endpoint === '/api/voice/command' &&
-        petWakeHandoff.inputMode?.mode === 'push_to_talk' &&
-        petWakeHandoff.inputMode?.micDefault === 'push' &&
+        petWakeHandoff.inputMode?.mode === 'typed_local_intake' &&
+        petWakeHandoff.inputMode?.micDefault === 'off' &&
         petWakePromptPack.nextUtterance === localVoicePromptPack.nextUtterance &&
         String(petWakeHandoff.input?.cliCommand || '').includes('npm run voice') &&
         (petWakeHandoff.mode === 'local_voice_fallback' ? wakeBlocker.active === true : typeof wakeBlocker.active === 'boolean') &&
@@ -1617,11 +1626,15 @@ export default {
       status.ok &&
         statusLocalVoice.available === true &&
         statusLocalVoice.input?.endpoint === '/api/voice/command' &&
-        statusLocalVoice.inputMode?.mode === 'push_to_talk' &&
-        statusLocalVoice.inputMode?.micDefault === 'push' &&
+        statusLocalVoice.inputMode?.mode === 'typed_local_intake' &&
+        statusLocalVoice.inputMode?.micDefault === 'off' &&
         statusLocalVoice.inputMode?.startsMuted === true &&
+        statusLocalVoice.inputMode?.startsMicrophone === false &&
+        statusLocalVoice.inputMode?.usesRealtime === false &&
+        statusLocalVoice.inputMode?.callsOpenAI === false &&
         statusLocalVoice.safety?.startsMicrophone === false &&
         statusLocalVoice.safety?.usesRealtime === false &&
+        statusLocalVoice.safety?.callsOpenAI === false &&
         statusLocalVoice.safety?.storesRawAudio === false &&
         (realtimeReady
           ? statusLocalVoice.mode === 'standby'
