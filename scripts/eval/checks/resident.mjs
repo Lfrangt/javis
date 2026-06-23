@@ -1596,6 +1596,7 @@ export default {
 	    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
 	    const spendGuard = spendGuardResponse.data?.spendGuard || {};
 	    const egressGuard = spendGuardResponse.data?.egressGuard || {};
+	    const spendForensics = spendGuardResponse.data?.forensics || {};
 		const spendGuardTotalBefore = Number(spendGuard.counts?.total || 0);
 		out.push(
 		  spendGuardResponse.ok &&
@@ -1622,6 +1623,12 @@ export default {
 	        egressGuard.installed === true &&
 	        egressGuard.mode === 'scoped_allow_only' &&
 	        egressGuard.safety?.blocksUnscopedOpenAiFetch === true &&
+	        spendForensics.version === 1 &&
+	        spendForensics.likelyBillableFromJavis === false &&
+	        spendForensics.zeroLocked === true &&
+	        spendForensics.status === 'zero_spend_locked' &&
+	        spendForensics.safety?.callsOpenAI === false &&
+	        spendForensics.safety?.createsSpendLease === false &&
 	        spendGuard.safety?.off === true &&
 	        spendGuard.safety?.zeroBudgetDefault === true &&
 		        spendGuard.safety?.hardSpendLockDefault === true &&
@@ -1805,6 +1812,10 @@ export default {
 		      mainSource.includes('function sanitizeChildProcessEnv') &&
 		      mainSource.includes('function assertOpenAiChildEnvCommandAllowed') &&
 		      mainSource.includes('function openAiChildEnvGuardProbe') &&
+		      mainSource.includes('function openAiSpendForensicsSnapshot') &&
+		      mainSource.includes('likelyBillableFromJavis') &&
+		      mainSource.includes('blockedBySource') &&
+		      mainSource.includes('Allowed sources: none in local guard records.') &&
 		      mainSource.includes('spend_lease_required') &&
 		      mainSource.includes('renderer_startup_probe_disabled') &&
 	      mainSource.includes('function installOpenAiEgressGuard') &&
@@ -1828,6 +1839,8 @@ export default {
 		      configCuiSource.includes("source: 'openai_lockdown'") &&
 		      configCuiSource.includes('stopScreen: true') &&
 		      configCuiSource.includes('Realtime voice stop:') &&
+		      configCuiSource.includes('Forensics: likely billable from JAVIS=') &&
+		      configCuiSource.includes('Latest allowed: none in local guard records') &&
       packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
       packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&

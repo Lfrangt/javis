@@ -237,6 +237,7 @@ export default {
     const naturalSpendStatusData = naturalSpendStatus.data || {};
     const naturalSpendStatusRoute = naturalSpendStatusData.route || {};
     const spendStatus = naturalSpendStatusRoute.data?.spendStatus || {};
+    const spendForensics = spendStatus.forensics || naturalSpendStatusRoute.data?.forensics || {};
     const spendGuardAfterVoice = await ctx.api('/api/openai/spend-guard');
     const spendGuardAfter = spendGuardAfterVoice.data?.spendGuard || {};
     out.push(
@@ -252,8 +253,15 @@ export default {
         spendStatus.spendGuard?.hardSpendLock === true &&
         spendStatus.spendGuard?.dailyRequestLimit === 0 &&
         spendStatus.egressGuard?.mode === 'scoped_allow_only' &&
+        spendForensics.version === 1 &&
+        spendForensics.likelyBillableFromJavis === false &&
+        spendForensics.zeroLocked === true &&
+        spendForensics.safety?.callsOpenAI === false &&
+        spendForensics.safety?.createsSpendLease === false &&
         typeof naturalSpendStatusRoute.output === 'string' &&
         naturalSpendStatusRoute.output.includes('OpenAI spend:') &&
+        naturalSpendStatusRoute.output.includes('Likely billable from JAVIS today: no') &&
+        naturalSpendStatusRoute.output.includes('Allowed sources: none') &&
         naturalSpendStatusRoute.output.includes('Blocked locally:') &&
         naturalSpendStatusData.safety?.startsMicrophone === false &&
         naturalSpendStatusData.safety?.usesRealtime === false &&

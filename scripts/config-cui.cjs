@@ -3803,6 +3803,7 @@ async function showRealtimeProviderRecoveryFromCui(rl) {
 
 function printOpenAiSpendGuard(result) {
   const guard = result?.spendGuard || result || {};
+  const forensics = result?.forensics || guard.forensics || {};
   const counts = guard.counts || {};
   const remaining = guard.remaining || {};
   const safety = guard.safety || {};
@@ -3810,10 +3811,20 @@ function printOpenAiSpendGuard(result) {
   const lease = guard.spendLease || {};
   const childEnvGuard = guard.childEnvGuard || {};
   const activeLeases = Array.isArray(lease.active) ? lease.active : [];
+  const blockedSources = Array.isArray(forensics.blockedBySource) ? forensics.blockedBySource.slice(0, 4) : [];
+  const allowedSources = Array.isArray(forensics.allowedBySource) ? forensics.allowedBySource.slice(0, 4) : [];
   console.log('JAVIS OpenAI Spend Guard');
   console.log('========================');
   console.log(`Mode: ${guard.mode || 'off'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · daily=${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · remaining=${remaining.total ?? 0}`);
   console.log(`Unattended: ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · manual=${counts.manual || 0} · blocked=${counts.blocked || 0}`);
+  if (forensics.version) {
+    console.log(`Forensics: likely billable from JAVIS=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'} · status=${forensics.status || '-'}`);
+    if (forensics.summary) console.log(`Summary: ${compact(forensics.summary, 220)}`);
+    console.log(`Allowed sources: ${allowedSources.length ? allowedSources.map((item) => `${item.value}=${item.count}`).join(' · ') : 'none in local guard records'}`);
+    console.log(`Blocked sources: ${blockedSources.length ? blockedSources.map((item) => `${item.value}=${item.count}`).join(' · ') : 'none'}`);
+    if (forensics.latestAllowed) console.log(`Latest allowed: ${forensics.latestAllowed.at || '-'} · ${forensics.latestAllowed.kind || '-'} · ${forensics.latestAllowed.source || '-'}`);
+    else console.log('Latest allowed: none in local guard records');
+  }
   console.log(`Autopilot cloud: ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · renderer startup probe: ${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'}`);
   console.log(`Spend lease: ${guard.requireSpendLease ? 'required' : 'off'} · ttl=${formatInterval(guard.spendLeaseTtlMs || lease.ttlMs || 0)} · active=${lease.activeCount || activeLeases.length || 0} · one-request-only=${lease.oneRequestOnly === false ? 'no' : 'yes'}`);
   console.log(`Egress guard: ${guard.egressGuardEnabled ? 'on' : 'off'} · ${guard.egressGuardMode || '-'}`);

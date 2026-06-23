@@ -2658,6 +2658,109 @@ function openAiZeroSpendModeActive() {
   );
 }
 
+function openAiSpendForensicsSnapshot(options = {}) {
+  const guard = options.guard || openAiSpendGuardSnapshot();
+  const egress = options.egress || openAiEgressGuardSnapshot();
+  const events = Array.isArray(guard.recent) ? guard.recent : [];
+  const allowed = events.filter((event) => event.allowed === true);
+  const blocked = events.filter((event) => event.allowed !== true);
+  const countBy = (items, key) => {
+    const counts = new Map();
+    for (const item of items) {
+      const value = compactRecordText(item?.[key] || 'unknown', 100) || 'unknown';
+      counts.set(value, (counts.get(value) || 0) + 1);
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .slice(0, 8)
+      .map(([value, count]) => ({ value, count }));
+  };
+  const latestAllowed = allowed[0] || null;
+  const latestBlocked = blocked[0] || null;
+  const zeroLocked = Boolean(
+    guard.hardSpendLock === true &&
+      guard.mode === 'off' &&
+      Number(guard.dailyRequestLimit || 0) === 0 &&
+      Number(guard.unattendedDailyRequestLimit || 0) === 0 &&
+      guard.allowAutopilotCloud === false &&
+      guard.allowRendererStartupProbe === false &&
+      guard.requireSpendLease === true &&
+      guard.egressGuardEnabled === true &&
+      egress.safety?.blocksUnscopedOpenAiFetch === true
+  );
+  const localAllowedCount = Number(guard.counts?.total || 0);
+  const localUnattendedAllowedCount = Number(guard.counts?.unattended || 0);
+  const status = localAllowedCount > 0
+    ? 'local_allowed_spend_recorded'
+    : zeroLocked
+      ? 'zero_spend_locked'
+      : 'spend_guard_needs_review';
+  const likelyBillableFromJavis = localAllowedCount > 0;
+  const summary = likelyBillableFromJavis
+    ? `JAVIS has ${localAllowedCount} local allowed OpenAI request record(s) today; inspect latest allowed event before leaving it unattended.`
+    : zeroLocked
+      ? 'JAVIS has no local allowed OpenAI spend records today; recent OpenAI events were blocked locally before confirmed spend.'
+      : 'JAVIS has no local allowed OpenAI spend records today, but the guard is not fully zero-locked; review before unattended use.';
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    day: guard.day || openAiSpendDayKey(),
+    status,
+    summary,
+    likelyBillableFromJavis,
+    zeroLocked,
+    counts: {
+      allowed: localAllowedCount,
+      manualAllowed: Number(guard.counts?.manual || 0),
+      unattendedAllowed: localUnattendedAllowedCount,
+      blocked: Number(guard.counts?.blocked || 0),
+      recentAllowed: allowed.length,
+      recentBlocked: blocked.length,
+    },
+    latestAllowed: latestAllowed
+      ? {
+          at: latestAllowed.at || '',
+          kind: compactRecordText(latestAllowed.kind || '', 80),
+          source: compactRecordText(latestAllowed.source || '', 80),
+          model: compactRecordText(latestAllowed.model || '', 120),
+          manual: Boolean(latestAllowed.manual),
+          leaseId: compactRecordText(latestAllowed.leaseId || '', 120),
+        }
+      : null,
+    latestBlocked: latestBlocked
+      ? {
+          at: latestBlocked.at || '',
+          kind: compactRecordText(latestBlocked.kind || '', 80),
+          source: compactRecordText(latestBlocked.source || '', 80),
+          reasons: Array.isArray(latestBlocked.reasons)
+            ? latestBlocked.reasons.map((reason) => compactRecordText(reason, 120)).filter(Boolean).slice(0, 8)
+            : [],
+        }
+      : null,
+    blockedBySource: countBy(blocked, 'source'),
+    blockedByKind: countBy(blocked, 'kind'),
+    allowedBySource: countBy(allowed, 'source'),
+    allowedByKind: countBy(allowed, 'kind'),
+    recommendations: [
+      zeroLocked ? '' : 'Run npm run openai:lockdown before unattended use.',
+      localAllowedCount > 0 ? 'Inspect the latest allowed event and OpenAI dashboard usage for billing reconciliation.' : '',
+      localUnattendedAllowedCount > 0 ? 'Disable autopilot cloud and set JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0 before leaving JAVIS running.' : '',
+      !egress.safety?.blocksUnscopedOpenAiFetch ? 'Enable JAVIS_OPENAI_EGRESS_GUARD=true so direct OpenAI egress is scoped through the spend guard.' : '',
+    ].filter(Boolean),
+    safety: {
+      readOnly: true,
+      localGuardStateOnly: true,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      startsWorkers: false,
+      readsUserFiles: false,
+      opensTerminal: false,
+    },
+  };
+}
+
 function evaluateOpenAiSpendGuard(options = {}) {
   const kind = compactRecordText(options.kind || 'openai', 80);
   const source = compactRecordText(options.source || 'unspecified', 80);
@@ -27932,10 +28035,15 @@ function formatVoiceStatusForLocalCommand(status = {}) {
 function formatOpenAiSpendStatusForLocalCommand(status = {}) {
   const guard = status.spendGuard || {};
   const egress = status.egressGuard || {};
+  const forensics = status.forensics || {};
   const counts = guard.counts || {};
   const remaining = guard.remaining || {};
   const lease = guard.spendLease || {};
   const recent = Array.isArray(guard.recent) ? guard.recent.slice(0, 4) : [];
+  const blockedBySource = Array.isArray(forensics.blockedBySource) ? forensics.blockedBySource.slice(0, 3) : [];
+  const blockedByKind = Array.isArray(forensics.blockedByKind) ? forensics.blockedByKind.slice(0, 3) : [];
+  const allowedBySource = Array.isArray(forensics.allowedBySource) ? forensics.allowedBySource.slice(0, 3) : [];
+  const recommendations = Array.isArray(forensics.recommendations) ? forensics.recommendations.slice(0, 3) : [];
   const modeLabel = guard.hardSpendLock ? 'hard-locked' : guard.mode || 'unknown';
   const day = guard.day || openAiSpendDayKey();
   const recentLines = recent.map((event) => {
@@ -27947,10 +28055,18 @@ function formatOpenAiSpendStatusForLocalCommand(status = {}) {
   });
   return [
     `OpenAI spend: ${modeLabel} · cloud=${guard.mode || '-'} · egress=${egress.mode || guard.egressGuardMode || '-'}`,
+    forensics.summary ? `Forensics: ${compactRecordText(forensics.summary, 360)}` : '',
+    `Likely billable from JAVIS today: ${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'} · status=${forensics.status || '-'}`,
     `Today ${day}: allowed ${counts.total ?? 0}/${guard.dailyRequestLimit ?? 0} · manual ${counts.manual ?? 0} · unattended ${counts.unattended ?? 0}/${guard.unattendedDailyRequestLimit ?? 0} · remaining ${remaining.total ?? 0}`,
     `Blocked locally: ${counts.blocked ?? 0} · these are guard stops, not confirmed billable JAVIS requests.`,
+    blockedBySource.length ? `Blocked sources: ${blockedBySource.map((item) => `${item.value}=${item.count}`).join(' · ')}` : '',
+    blockedByKind.length ? `Blocked kinds: ${blockedByKind.map((item) => `${item.value}=${item.count}`).join(' · ')}` : '',
+    allowedBySource.length ? `Allowed sources: ${allowedBySource.map((item) => `${item.value}=${item.count}`).join(' · ')}` : 'Allowed sources: none in local guard records.',
+    forensics.latestBlocked ? `Latest blocked: ${forensics.latestBlocked.at || '-'} · ${forensics.latestBlocked.kind || '-'} · ${forensics.latestBlocked.source || '-'}${forensics.latestBlocked.reasons?.length ? ` · ${forensics.latestBlocked.reasons.slice(0, 3).join(', ')}` : ''}` : '',
+    forensics.latestAllowed ? `Latest allowed: ${forensics.latestAllowed.at || '-'} · ${forensics.latestAllowed.kind || '-'} · ${forensics.latestAllowed.source || '-'}` : 'Latest allowed: none in local guard records.',
     `Lease: ${lease.required ? 'required' : 'off'} · active ${lease.activeCount ?? 0} · ttl ${Math.round(Number(guard.spendLeaseTtlMs || lease.ttlMs || 0) / 1000)}s · one-request=${lease.oneRequestOnly ? 'yes' : 'no'}`,
     `Safety: hard lock=${guard.hardSpendLock ? 'on' : 'off'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · autopilot cloud=${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · startup probe=${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · unscoped egress=${egress.safety?.blocksUnscopedOpenAiFetch ? 'blocked' : 'unknown'}`,
+    recommendations.length ? `Next:\n${recommendations.map((item) => `- ${item}`).join('\n')}` : '',
     recentLines.length ? `Recent guard events:\n${recentLines.join('\n')}` : 'Recent guard events: none for the current local guard day.',
     '边界: 这里只读本地 OpenAI spend guard / egress guard 审计；不创建 spend lease，不调用 OpenAI，不启动麦克风或 Realtime。',
   ].filter(Boolean).join('\n');
@@ -28832,9 +28948,12 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'openai_spend_status') {
+      const spendGuard = openAiSpendGuardSnapshot();
+      const egressGuard = openAiEgressGuardSnapshot();
       const spendStatus = {
-        spendGuard: openAiSpendGuardSnapshot(),
-        egressGuard: openAiEgressGuardSnapshot(),
+        spendGuard,
+        egressGuard,
+        forensics: openAiSpendForensicsSnapshot({ guard: spendGuard, egress: egressGuard }),
         safety: {
           readOnly: true,
           callsOpenAI: false,
@@ -28856,6 +28975,7 @@ async function runLocalCommand(command, options = {}) {
           spendStatus,
           spendGuard: spendStatus.spendGuard,
           egressGuard: spendStatus.egressGuard,
+          forensics: spendStatus.forensics,
         },
       };
     }
@@ -30628,9 +30748,9 @@ function localVoicePromptPack(options = {}) {
   const hasActiveSession = Boolean(context.activeSession?.id);
   const candidates = fallbackReady
     ? [
-        latestCanContinue ? localVoicePromptExample('continue', '继续刚才那个') : null,
         hasActiveSession ? localVoicePromptExample('session_check_in', '会话汇报') : null,
         hasActiveSession ? localVoicePromptExample('session_note', '记到当前会话：下一步要做什么') : null,
+        latestCanContinue ? localVoicePromptExample('continue', '继续刚才那个') : null,
         (context.activeJobCount || context.activeRouteCount) ? localVoicePromptExample('progress', '后台现在怎么样？') : null,
         context.browserAvailable ? localVoicePromptExample('browser_page', '读一下当前网页。') : null,
         context.browserAvailable ? localVoicePromptExample('browser_dom', '当前网页有哪些按钮？') : null,
@@ -62639,7 +62759,13 @@ function startApiServer() {
   });
 
   api.get('/api/openai/spend-guard', (_req, res) => {
-    res.json({ spendGuard: openAiSpendGuardSnapshot(), egressGuard: openAiEgressGuardSnapshot() });
+    const spendGuard = openAiSpendGuardSnapshot();
+    const egressGuard = openAiEgressGuardSnapshot();
+    res.json({
+      spendGuard,
+      egressGuard,
+      forensics: openAiSpendForensicsSnapshot({ guard: spendGuard, egress: egressGuard }),
+    });
   });
 
   api.post('/api/openai/spend-guard/check', (req, res) => {
