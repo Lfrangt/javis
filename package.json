@@ -29,6 +29,7 @@
     "resident:watchdog:check": "node scripts/resident-watchdog.cjs --dry-run",
     "doctor": "node scripts/doctor.mjs",
     "setup:bundle": "node scripts/config-cui.cjs --print-setup-recovery-bundle",
+    "board": "node scripts/open-status-board.cjs",
     "collab": "node scripts/collab.mjs",
     "overnight": "node scripts/config-cui.cjs --print-overnight",
     "overnight:start": "node scripts/config-cui.cjs --start-overnight",

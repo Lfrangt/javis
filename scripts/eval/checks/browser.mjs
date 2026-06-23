@@ -534,6 +534,84 @@ export default {
         : fail('browser.act_search_local_fallback', 'Browser act search local fallback', `POST /api/browser/workflow ${actSearchPreview.status}`, actSearchPreview.data),
     );
 
+    const actControlsPreview = await ctx.api('/api/browser/workflow', {
+      method: 'POST',
+      body: {
+        intent: 'act',
+        mode: 'quick',
+        execute: false,
+        instruction: '刷新当前网页，然后打开新标签页',
+        page: workflowFixturePage,
+        dom: workflowFixtureDom,
+        source: 'eval_browser_act_controls_local_fallback',
+      },
+    });
+    const actControlsBody = JSON.stringify(actControlsPreview.data || {});
+    out.push(
+      actControlsPreview.ok &&
+        actControlsPreview.data?.ok === true &&
+        actControlsPreview.data?.intent === 'act' &&
+        actControlsPreview.data?.fixture === true &&
+        actControlsPreview.data?.requestedExecute === false &&
+        actControlsPreview.data?.executed === false &&
+        actControlsPreview.data?.plan?.source === 'local_fallback' &&
+        actControlsPreview.data?.plan?.plannerError === '' &&
+        actControlsPreview.data?.plan?.steps?.length === 2 &&
+        actControlsPreview.data?.plan?.steps?.[0]?.action === 'reload' &&
+        actControlsPreview.data?.plan?.steps?.[1]?.action === 'new_tab' &&
+        actControlsPreview.data?.results?.[0]?.status === 'previewed' &&
+        actControlsPreview.data?.results?.[0]?.plan?.args?.browserAction === 'reload' &&
+        actControlsPreview.data?.results?.[1]?.status === 'previewed' &&
+        actControlsPreview.data?.results?.[1]?.plan?.args?.browserAction === 'new_tab' &&
+        actControlsPreview.data?.workflow?.status === 'done' &&
+        !actControlsBody.includes('sk-test-secret-do-not-return')
+        ? ok('browser.act_controls_local_fallback', 'Browser act controls local fallback', 'natural browser chrome controls plan locally without model planner or browser execution')
+        : fail('browser.act_controls_local_fallback', 'Browser act controls local fallback', `POST /api/browser/workflow ${actControlsPreview.status}`, actControlsPreview.data),
+    );
+
+    const browserControlCases = [
+      ['reload', '刷新当前网页', 2],
+      ['back', '浏览器后退一页', 2],
+      ['forward', '浏览器前进一页', 2],
+      ['new_tab', '打开新标签页', 2],
+      ['close_tab', '关闭当前标签页', 3],
+      ['focus_address', '选中地址栏', 2],
+    ];
+    for (const [action, instruction, riskLevel] of browserControlCases) {
+      const controlPreview = await ctx.api('/api/browser/workflow', {
+        method: 'POST',
+        body: {
+          intent: 'act',
+          mode: 'quick',
+          execute: false,
+          instruction,
+          page: workflowFixturePage,
+          dom: workflowFixtureDom,
+          source: `eval_browser_act_control_${action}_local_fallback`,
+        },
+      });
+      out.push(
+        controlPreview.ok &&
+          controlPreview.data?.ok === true &&
+          controlPreview.data?.intent === 'act' &&
+          controlPreview.data?.fixture === true &&
+          controlPreview.data?.requestedExecute === false &&
+          controlPreview.data?.executed === false &&
+          controlPreview.data?.plan?.source === 'local_fallback' &&
+          controlPreview.data?.plan?.plannerError === '' &&
+          controlPreview.data?.plan?.steps?.length === 1 &&
+          controlPreview.data?.plan?.steps?.[0]?.action === action &&
+          controlPreview.data?.results?.[0]?.status === 'previewed' &&
+          controlPreview.data?.results?.[0]?.plan?.args?.browserAction === action &&
+          controlPreview.data?.results?.[0]?.plan?.riskLevel === riskLevel &&
+          controlPreview.data?.results?.[0]?.evaluation?.blocked === false &&
+          controlPreview.data?.results?.[0]?.output?.startsWith('Prepared Browser') &&
+          controlPreview.data?.workflow?.status === 'done'
+          ? ok(`browser.act_control_${action}_local_fallback`, `Browser act ${action} local fallback`, `${instruction} previews locally without model planner or browser execution`)
+          : fail(`browser.act_control_${action}_local_fallback`, `Browser act ${action} local fallback`, `POST /api/browser/workflow ${controlPreview.status}`, controlPreview.data),
+      );
+    }
+
     const researchPreview = await ctx.api('/api/browser/workflow', {
       method: 'POST',
       body: {
@@ -590,7 +668,7 @@ export default {
         bench?.safety?.domConfirmFixtureNoExecute === true &&
         bench?.safety?.noFormSubmitByDefault === true &&
         bench?.safety?.sensitiveFieldsBlocked === true &&
-        ['extract_actions_fixture', 'summarize_fixture', 'act_search_local_fallback_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'dom_action_execute_gate_fixture', 'dom_action_confirmed_fixture_gate', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
+        ['extract_actions_fixture', 'summarize_fixture', 'act_search_local_fallback_fixture', 'act_controls_local_fallback_fixture', 'fill_draft_fixture', 'dom_action_contract_fixture', 'dom_action_execute_gate_fixture', 'dom_action_confirmed_fixture_gate', 'research_continuation_fixture', 'compare_preview_fixture', 'review_result_preview_fixture'].every((id) => caseIds.has(id)) &&
         bench.cases.every((item) => item.ok === true && item.modelCall === false && item.browserAction === false)
         ? ok('browser.workflow_benchmarks', 'Browser workflow benchmarks', `${bench.counts.pass}/${bench.counts.total} preview fixture(s) passed`)
         : fail('browser.workflow_benchmarks', 'Browser workflow benchmarks', `GET /api/browser/benchmarks ${benchmarks.status}`, benchmarks.data),

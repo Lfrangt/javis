@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JAVIS 本地进度看板</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0d1117;
+      --panel: #151b23;
+      --panel-2: #1b232e;
+      --line: #303946;
+      --text: #edf2f7;
+      --muted: #9aa7b5;
+      --ready: #47d18c;
+      --running: #6bb8ff;
+      --warning: #ffd166;
+      --blocked: #ff6b6b;
+      --unknown: #a9b3c1;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+    }
+
+    .shell {
+      width: min(1180px, calc(100vw - 32px));
+      margin: 0 auto;
+      padding: 28px 0 36px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 18px;
+      align-items: start;
+      padding-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(24px, 3vw, 36px);
+      line-height: 1.15;
+      letter-spacing: 0;
+    }
+
+    .summary {
+      max-width: 840px;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .meta {
+      text-align: right;
+      color: var(--muted);
+      font-size: 13px;
+      white-space: nowrap;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--text);
+      background: var(--panel);
+      margin-bottom: 8px;
+    }
+
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--unknown);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--unknown), transparent 80%);
+      flex: 0 0 auto;
+    }
+
+    .ready .dot { background: var(--ready); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ready), transparent 80%); }
+    .running .dot { background: var(--running); box-shadow: 0 0 0 3px color-mix(in srgb, var(--running), transparent 80%); }
+    .warning .dot { background: var(--warning); box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning), transparent 80%); }
+    .blocked .dot { background: var(--blocked); box-shadow: 0 0 0 3px color-mix(in srgb, var(--blocked), transparent 80%); }
+
+    main {
+      display: grid;
+      gap: 22px;
+      margin-top: 22px;
+    }
+
+    .section-title {
+      margin: 0 0 12px;
+      color: var(--muted);
+      font-size: 13px;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+    }
+
+    .nodes {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(118px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .node {
+      position: relative;
+      min-height: 164px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      gap: 8px;
+    }
+
+    .node::before {
+      content: "";
+      position: absolute;
+      inset: 0 auto 0 0;
+      width: 3px;
+      border-radius: 8px 0 0 8px;
+      background: var(--unknown);
+    }
+
+    .node.ready::before { background: var(--ready); }
+    .node.running::before { background: var(--running); }
+    .node.warning::before { background: var(--warning); }
+    .node.blocked::before { background: var(--blocked); }
+
+    .node-head {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      min-width: 0;
+    }
+
+    .node h2 {
+      margin: 0;
+      font-size: 15px;
+      line-height: 1.25;
+      letter-spacing: 0;
+    }
+
+    .pill {
+      width: fit-content;
+      padding: 2px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .node p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .next {
+      color: var(--text);
+      font-size: 13px;
+      border-top: 1px solid var(--line);
+      padding-top: 8px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(5, minmax(160px, 1fr));
+    }
+
+    .step {
+      padding: 13px;
+      background: var(--panel-2);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      min-height: 128px;
+    }
+
+    .step h3 {
+      margin: 8px 0 6px;
+      font-size: 15px;
+      letter-spacing: 0;
+    }
+
+    .step p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .footer-grid {
+      display: grid;
+      grid-template-columns: 1.15fr .85fr;
+      gap: 16px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 15px;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 18px;
+      color: var(--muted);
+    }
+
+    li + li { margin-top: 6px; }
+
+    code {
+      color: var(--text);
+      background: #0b0f14;
+      border: 1px solid var(--line);
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .error {
+      padding: 14px;
+      border: 1px solid color-mix(in srgb, var(--blocked), transparent 45%);
+      border-radius: 8px;
+      background: color-mix(in srgb, var(--blocked), transparent 88%);
+      color: var(--text);
+    }
+
+    @media (max-width: 980px) {
+      .nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .footer-grid { grid-template-columns: 1fr; }
+      header { grid-template-columns: 1fr; }
+      .meta { text-align: left; }
+    }
+
+    @media (max-width: 560px) {
+      .shell { width: min(100vw - 20px, 1180px); padding-top: 18px; }
+      .nodes, .timeline { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <h1 id="headline">JAVIS 本地进度看板</h1>
+        <p class="summary" id="summary">正在读取本机 resident 状态。</p>
+      </div>
+      <div class="meta">
+        <div class="status unknown" id="overall"><span class="dot"></span><span>连接中</span></div>
+        <div id="updated">尚未更新</div>
+        <div>自动刷新：<span id="refresh">5s</span></div>
+      </div>
+    </header>
+
+    <main>
+      <section>
+        <p class="section-title">节点状态</p>
+        <div class="nodes" id="nodes"></div>
+      </section>
+
+      <section>
+        <p class="section-title">最近工作</p>
+        <div class="timeline" id="timeline"></div>
+      </section>
+
+      <section class="footer-grid">
+        <div class="panel">
+          <p class="section-title">下一步</p>
+          <ul id="next"></ul>
+        </div>
+        <div class="panel">
+          <p class="section-title">安全边界</p>
+          <ul id="safety"></ul>
+        </div>
+      </section>
+
+      <div id="error"></div>
+    </main>
+  </div>
+
+  <script>
+    const endpoint = new URLSearchParams(location.search).get("api") || "http://127.0.0.1:3417/api/progress-board";
+    let refreshMs = 5000;
+
+    const statusText = {
+      ready: "正常",
+      running: "进行中",
+      warning: "注意",
+      blocked: "阻塞",
+      unknown: "未知"
+    };
+
+    function el(tag, attrs = {}, text = "") {
+      const node = document.createElement(tag);
+      for (const [key, value] of Object.entries(attrs)) {
+        if (key === "class") node.className = value;
+        else node.setAttribute(key, value);
+      }
+      if (text) node.textContent = text;
+      return node;
+    }
+
+    function statusClass(status) {
+      return ["ready", "running", "warning", "blocked"].includes(status) ? status : "unknown";
+    }
+
+    function renderNode(item) {
+      const status = statusClass(item.status);
+      const card = el("article", { class: `node ${status}` });
+      const head = el("div", { class: "node-head" });
+      head.append(el("span", { class: "dot" }));
+      head.append(el("h2", {}, item.label || item.id || "节点"));
+      card.append(head);
+      card.append(el("div", { class: "pill" }, statusText[status] || status));
+      card.append(el("p", {}, item.summary || ""));
+      card.append(el("div", { class: "next" }, item.next || "暂无下一步"));
+      return card;
+    }
+
+    function renderStep(item) {
+      const status = statusClass(item.status);
+      const card = el("article", { class: `step ${status}` });
+      card.append(el("span", { class: "status " + status }, statusText[status] || status));
+      card.querySelector(".status").prepend(el("span", { class: "dot" }));
+      card.append(el("h3", {}, item.title || item.id || "工作节点"));
+      card.append(el("p", {}, item.body || ""));
+      return card;
+    }
+
+    function renderList(target, items) {
+      target.innerHTML = "";
+      for (const item of items) target.append(el("li", {}, item));
+      if (!items.length) target.append(el("li", {}, "暂无"));
+    }
+
+    function renderSafety(safety = {}) {
+      const rows = [
+        ["不返回 API token", safety.returnsApiToken === false],
+        ["不返回 OpenAI key", safety.returnsOpenAiKey === false],
+        ["不返回屏幕图像", safety.returnsScreenImage === false],
+        ["不读取剪贴板正文", safety.returnsClipboardText === false],
+        ["不调用 OpenAI", safety.callsOpenAi === false],
+        ["不启动麦克风/Realtime", safety.startsMicrophone === false && safety.usesRealtime === false],
+        ["不执行电脑动作", safety.executesActions === false]
+      ];
+      return rows.map(([label, ok]) => `${ok ? "OK" : "CHECK"} · ${label}`);
+    }
+
+    async function refresh() {
+      try {
+        const response = await fetch(endpoint, { cache: "no-store" });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const board = data.board || data;
+        refreshMs = Number(board.refreshMs || 5000);
+
+        const overall = document.getElementById("overall");
+        const status = statusClass(board.status);
+        overall.className = `status ${status}`;
+        overall.innerHTML = "";
+        overall.append(el("span", { class: "dot" }));
+        overall.append(el("span", {}, statusText[status] || status));
+
+        document.getElementById("headline").textContent = board.headline || "JAVIS 本地进度看板";
+        document.getElementById("summary").textContent = board.summary || "";
+        document.getElementById("updated").textContent = board.generatedAt ? `更新：${new Date(board.generatedAt).toLocaleString()}` : "已更新";
+        document.getElementById("refresh").textContent = `${Math.round(refreshMs / 1000)}s`;
+
+        const nodes = document.getElementById("nodes");
+        nodes.innerHTML = "";
+        for (const item of board.nodes || []) nodes.append(renderNode(item));
+
+        const timeline = document.getElementById("timeline");
+        timeline.innerHTML = "";
+        for (const item of board.timeline || []) timeline.append(renderStep(item));
+
+        renderList(document.getElementById("next"), board.nextActions || []);
+        renderList(document.getElementById("safety"), renderSafety(board.safety || {}));
+        document.getElementById("error").innerHTML = "";
+      } catch (error) {
+        document.getElementById("error").innerHTML = `<div class="error">看板暂时连不上本机 JAVIS：${String(error.message || error)}。确认 resident 在运行后刷新页面。</div>`;
+      } finally {
+        window.setTimeout(refresh, refreshMs);
+      }
+    }
+
+    refresh();
+  </script>
+</body>
+</html>

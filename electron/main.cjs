@@ -3063,7 +3063,7 @@ function isTrustedApiOrigin(origin) {
 }
 
 function isPublicApiPath(pathname) {
-  return pathname === '/api/health';
+  return pathname === '/api/health' || pathname === '/api/progress-board';
 }
 
 function apiAuthSnapshot() {
@@ -7036,7 +7036,7 @@ function routingSpeedProfiles() {
       summary: 'Use browser DOM/page tools for webpage-aware work before falling back to background synthesis.',
       useWhen: ['current page summary', 'extract actions', 'safe form-fill draft', 'search/result review', 'multi-page research continuation'],
       avoidWhen: ['submits, purchases, logins, account changes without explicit confirmation'],
-      firstTools: ['get_browser_context', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow'],
+      firstTools: ['get_browser_context', 'read_browser_page', 'read_browser_dom', 'control_browser', 'run_browser_workflow'],
       handoffRule: 'Read page/DOM first, preview actions, then execute only through browser policy and confirmation gates.',
     }),
     profile({
@@ -7178,7 +7178,7 @@ function routingToolFirstCandidateForTask(message, contextPlan = {}, options = {
   const localCommand = String(options.localCommand || '').trim();
   const browserLocalCommand = ['browser_control', 'web_search', 'open_url'].includes(localCommand);
   const appLocalCommand = ['app_workflow', 'creative_workflow'].includes(localCommand);
-  const browserToolSignal = ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'run_browser_workflow']
+  const browserToolSignal = ['get_browser_context', 'get_browser_activity', 'read_browser_page', 'read_browser_dom', 'control_browser', 'run_browser_workflow']
     .some((tool) => toolSet.has(tool));
   const fileAppToolSignal = ['run_file_workflow', 'read_accessibility_tree', 'plan_ui_action', 'plan_app_workflow', 'plan_creative_workflow', 'plan_productivity_workflow']
     .some((tool) => toolSet.has(tool));
@@ -16065,6 +16065,254 @@ async function prepareOvernight(options = {}) {
       mutatesUserFiles: false,
       mutatesProjectFiles: false,
       changesLaunchdJob: !before.keepAwake.running,
+    },
+  };
+}
+
+function boardStatus(value = '') {
+  const status = String(value || '').trim().toLowerCase();
+  if (['ready', 'ok', 'healthy', 'done', 'safe', 'local_fallback_ready', 'fallback_ready'].includes(status)) return 'ready';
+  if (['running', 'active', 'in_progress', 'working'].includes(status)) return 'running';
+  if (['blocked', 'failed', 'error', 'unsafe_cloud'].includes(status)) return 'blocked';
+  if (['warning', 'degraded', 'needs_attention', 'needs_keep_awake', 'attention'].includes(status)) return 'warning';
+  return status || 'unknown';
+}
+
+function boardNode(id, label, status, summary, next = '', details = {}) {
+  return {
+    id: compactRecordText(id || label || 'node', 80),
+    label: compactRecordText(label || id || 'Node', 120),
+    status: boardStatus(status),
+    summary: compactRecordText(summary || '', 360),
+    next: compactRecordText(next || '', 280),
+    details,
+  };
+}
+
+async function progressBoardSnapshot(options = {}) {
+  const source = compactRecordText(options.source || 'progress_board', 80);
+  const health = healthSnapshot();
+  const pet = petStatusSnapshot();
+  const spendGuard = openAiSpendGuardSnapshot();
+  const conversation = conversationStateSnapshot();
+  const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: false });
+  const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const standby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
+  const progress = workProgressCheckIn({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    includeInternal: false,
+    source,
+  });
+  const blockers = blockerStatusSnapshot({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    approvalLimit: options.approvalLimit || 5,
+    includeAutopilot: true,
+    source,
+  });
+  const overnight = await overnightStatusSnapshot({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    approvalLimit: options.approvalLimit || 5,
+    source,
+  }).catch((error) => ({
+    status: 'warning',
+    summary: `Overnight snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
+    issues: [],
+    keepAwake: null,
+  }));
+
+  const spendLocked = Boolean(
+    spendGuard.hardSpendLock &&
+      spendGuard.mode === 'off' &&
+      Number(spendGuard.dailyRequestLimit || 0) === 0 &&
+      Number(spendGuard.unattendedDailyRequestLimit || 0) === 0,
+  );
+  const voiceSpendLocked = voiceHealth.kind === 'spend_locked' || spendLocked;
+  const activeJobs = Number(progress.counts?.running || 0) + Number(progress.counts?.queued || 0);
+  const blockerCount = Number(blockers.counts?.total || blockers.count || 0);
+  const keepAwake = overnight.keepAwake || {};
+
+  const nodes = [
+    boardNode(
+      'desktop_pet',
+      '桌面小胶囊',
+      pet.status || pet.mode || 'ready',
+      `桌面层保持轻量；状态=${pet.mode || pet.status || 'unknown'}，不会显示工程日志。`,
+      pet.classroom?.active ? '课堂/隐藏模式开启中，需要时再显示。' : '保持小胶囊待机，配置和日志放在 CUI/本地看板。',
+      {
+        mode: pet.mode || '',
+        surface: pet.surface || '',
+        hidden: Boolean(pet.hidden || pet.classroom?.active),
+      },
+    ),
+    boardNode(
+      'realtime_voice',
+      '实时语音',
+      voiceSpendLocked ? 'blocked' : voiceHealth.status,
+      voiceSpendLocked
+        ? 'Realtime 语音现在被零花费锁挡住；这就是它不能像之前一样直接说话的主因。'
+        : compactRecordText(voiceHealth.summary || 'Realtime voice status is available.', 360),
+      voiceSpendLocked
+        ? '你在场并明确允许后，才做一次性 provider 探针；睡觉期间不自动花钱。'
+        : compactRecordText(voiceHealth.next || '继续 Realtime dogfood 验收。', 240),
+      {
+        providerStatus: voiceHealth.status || '',
+        blockerKind: voiceHealth.kind || '',
+        startsMicrophoneNow: false,
+      },
+    ),
+    boardNode(
+      'local_voice',
+      '本地输入兜底',
+      standby.mode || 'ready',
+      '不用麦克风、不用 Realtime、不打 OpenAI，也能把文字/本地语音转成任务路由。',
+      'Realtime 锁住时先用这个入口继续做事。',
+      {
+        mode: standby.mode || '',
+        endpoint: standby.primaryAction?.endpoint || '/api/voice/command',
+      },
+    ),
+    boardNode(
+      'browser_control',
+      '浏览器控制',
+      'running',
+      '正在补齐刷新、后退、前进、新标签、关闭标签、地址栏这些本地浏览器控制的安全预览链路。',
+      '先本地预览，不调用模型；明确执行时才通过本地策略按浏览器快捷键。',
+      {
+        previewFirst: true,
+        modelCall: false,
+        actions: ['reload', 'back', 'forward', 'new_tab', 'close_tab', 'focus_address'],
+      },
+    ),
+    boardNode(
+      'openai_spend',
+      '费用安全',
+      spendLocked ? 'ready' : 'warning',
+      spendLocked
+        ? 'OpenAI 云调用已锁死：cloud=off、daily=0、hard lock=on。当前 JAVIS 没有允许花费记录。'
+        : 'OpenAI 花费保护不是最严格状态，需要先锁住再无人值守。',
+      spendLocked
+        ? '睡觉期间保持零花费；不会自动解锁新 key。'
+        : '运行 npm run openai:lockdown 恢复零花费锁。',
+      {
+        mode: spendGuard.mode,
+        hardLock: Boolean(spendGuard.hardSpendLock),
+        dailyLimit: Number(spendGuard.dailyRequestLimit || 0),
+        latestAllowed: spendGuard.latestAllowed?.source || '',
+      },
+    ),
+    boardNode(
+      'background_work',
+      '后台工作',
+      activeJobs ? 'running' : 'ready',
+      activeJobs ? `${activeJobs} 个后台任务正在排队或运行。` : '当前没有必须靠后台 worker 才能继续的任务。',
+      '5 小时后自动唤醒会继续本地开发和看板更新。',
+      {
+        running: Number(progress.counts?.running || 0),
+        queued: Number(progress.counts?.queued || 0),
+        workflows: Number(progress.counts?.workflows || 0),
+      },
+    ),
+    boardNode(
+      'overnight',
+      '睡觉期间',
+      overnight.status || 'warning',
+      compactRecordText(overnight.summary || 'Overnight status unavailable.', 360),
+      keepAwake.active ? '可以保持常驻；显示器可睡，resident 继续。' : '如果要整夜跑，需要开启 keep-awake。',
+      {
+        keepAwake: Boolean(keepAwake.active),
+        issues: Array.isArray(overnight.issues) ? overnight.issues.length : 0,
+      },
+    ),
+  ];
+
+  const timeline = [
+    {
+      id: 'quiet_pet',
+      status: 'done',
+      title: '桌面层降噪',
+      body: '把复杂按钮/诊断从宠物上拿走，方向改成小胶囊、灵动岛、课堂隐藏。',
+    },
+    {
+      id: 'voice_blocker',
+      status: voiceSpendLocked ? 'blocked' : 'running',
+      title: '实时语音卡点',
+      body: voiceSpendLocked ? '当前不是 UI 坏，而是 Realtime 被零花费锁挡住。' : 'Realtime 链路可继续做 live dogfood。',
+    },
+    {
+      id: 'spend_forensics',
+      status: spendLocked ? 'done' : 'warning',
+      title: '费用取证',
+      body: spendLocked ? '本地 JAVIS 没有允许 OpenAI 花费记录；当前进程拿不到可调用 key。' : '费用保护需要恢复到 zero-spend。',
+    },
+    {
+      id: 'browser_controls',
+      status: 'running',
+      title: '浏览器本地控制',
+      body: '正在把自然语言刷新/后退/新标签等动作接入本地 fallback 和评测。',
+    },
+    {
+      id: 'visual_board',
+      status: 'running',
+      title: '可视化进度',
+      body: '本页面会替代聊天里的长工程日志，显示节点、卡点和下一步。',
+    },
+  ];
+
+  const status = nodes.some((node) => node.status === 'blocked')
+    ? 'blocked'
+    : nodes.some((node) => node.status === 'warning')
+      ? 'warning'
+      : nodes.some((node) => node.status === 'running')
+        ? 'running'
+        : 'ready';
+
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    refreshMs: 5000,
+    status,
+    headline: 'JAVIS 本地进度看板',
+    summary: voiceSpendLocked
+      ? '当前重点：保持零花费安全，同时用本地输入和浏览器控制继续推进；Realtime 需要用户在场时再解锁一次性探针。'
+      : '当前重点：继续 Realtime 验收、本地浏览器控制和后台工作流。',
+    health: {
+      status: health.status,
+      pid: health.pid,
+      uptimeSeconds: health.uptimeSeconds,
+    },
+    nodes,
+    timeline,
+    blockers: {
+      status: blockers.status,
+      count: blockerCount,
+      top: Array.isArray(blockers.blockers)
+        ? blockers.blockers.slice(0, 4).map((item) => ({
+            id: item.id,
+            label: compactRecordText(item.label || item.id || '', 120),
+            summary: compactRecordText(item.summary || '', 240),
+            next: compactRecordText(item.next || item.nextAction || '', 220),
+          }))
+        : [],
+    },
+    nextActions: [
+      voiceSpendLocked ? '睡觉期间不要自动解锁 OpenAI；5 小时后先继续本地开发。' : '继续 Realtime live dogfood。',
+      '完成并复跑浏览器控制本地评测。',
+      '让本看板成为后续长任务的默认汇报界面。',
+    ],
+    safety: {
+      publicEndpoint: true,
+      returnsApiToken: false,
+      returnsOpenAiKey: false,
+      returnsScreenImage: false,
+      returnsClipboardText: false,
+      returnsBrowserPageText: false,
+      callsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      executesActions: false,
     },
   };
 }
@@ -27475,6 +27723,50 @@ async function browserWorkflowBenchmarkSnapshot(options = {}) {
       actSearch.results?.[0]?.plan?.args?.browserAction === 'search',
   }));
 
+  const actControls = await runBrowserWorkflow({
+    intent: 'act',
+    mode: 'quick',
+    execute: false,
+    instruction: '刷新当前网页，然后打开新标签页',
+    page: launchPage,
+    dom: {
+      available: true,
+      supported: true,
+      app: 'FixtureBrowser',
+      title: launchPage.title,
+      url: launchPage.url,
+      elements: [],
+    },
+    source: `${sourcePrefix}_act_controls_local_fallback`,
+    scope: 'eval:browser:benchmark:act_controls_local_fallback',
+    parallelGroup: 'browser:benchmark',
+  });
+  cases.push(browserBenchmarkCaseResult({
+    id: 'act_controls_local_fallback_fixture',
+    label: 'Act browser controls local fallback fixture',
+    intent: 'act',
+    result: actControls,
+    secrets,
+    assertions: {
+      fixture: actControls.fixture === true,
+      plannerSource: actControls.plan?.source || '',
+      plannedActions: (actControls.plan?.steps || []).map((step) => step.action).join(','),
+      resultStatuses: (actControls.results || []).map((result) => result.status).join(','),
+    },
+    ok: actControls.ok === true &&
+      actControls.executed !== true &&
+      actControls.fixture === true &&
+      actControls.plan?.source === 'local_fallback' &&
+      actControls.plan?.plannerError === '' &&
+      actControls.plan?.steps?.length === 2 &&
+      actControls.plan.steps[0].action === 'reload' &&
+      actControls.plan.steps[1].action === 'new_tab' &&
+      actControls.results?.[0]?.status === 'previewed' &&
+      actControls.results?.[0]?.plan?.args?.browserAction === 'reload' &&
+      actControls.results?.[1]?.status === 'previewed' &&
+      actControls.results?.[1]?.plan?.args?.browserAction === 'new_tab',
+  }));
+
   const fillDraft = await runBrowserFillDraftWorkflow({
     instruction: 'Benchmark safe form-fill draft.',
     execute: false,
@@ -35075,7 +35367,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight', 'observe_now', 'realtime_recovery_guide', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight', 'observe_now', 'realtime_recovery_guide', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'browser_control', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false, source: routingContext.source });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -66148,6 +66440,21 @@ function startApiServer() {
 
   api.get('/api/health', (_req, res) => {
     res.json(healthSnapshot());
+  });
+
+  api.get('/api/progress-board', async (req, res) => {
+    try {
+      res.json({
+        board: await progressBoardSnapshot({
+          jobLimit: req.query.jobLimit,
+          workflowLimit: req.query.workflowLimit,
+          approvalLimit: req.query.approvalLimit,
+          source: 'api_progress_board',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Progress board failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/renderer/status', (_req, res) => {

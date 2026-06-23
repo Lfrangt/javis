@@ -6,6 +6,10 @@ import { ok, skip, fail } from '../_client.mjs';
 
 const execFileAsync = promisify(execFile);
 
+function waitMs(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function spawnWithInput(command, args = [], options = {}, input = '') {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -1668,6 +1672,82 @@ export default {
         : fail('voice_command.natural_browser_act_search', 'Natural browser act-search voice command', 'natural browser search did not use local act fallback safely', naturalBrowserActSearch.data),
     );
 
+    const naturalBrowserActControl = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '刷新当前网页，先不要执行',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_act_control',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserActControlData = naturalBrowserActControl.data || {};
+    const naturalBrowserActControlRoute = naturalBrowserActControlData.route || {};
+    const naturalBrowserActControlPayload = naturalBrowserActControlRoute.data?.browserWorkflow || {};
+    const naturalBrowserActControlResult = naturalBrowserActControlRoute.data?.result || {};
+    out.push(
+      naturalBrowserActControl.ok &&
+        naturalBrowserActControlData.ok === true &&
+        naturalBrowserActControlData.executed === false &&
+        naturalBrowserActControlRoute.decision?.localCommand === 'browser_workflow' &&
+        naturalBrowserActControlRoute.localCommand?.intent === 'browser_workflow' &&
+        naturalBrowserActControlRoute.localCommand?.args?.intent === 'act' &&
+        naturalBrowserActControlPayload.requestedExecute === false &&
+        naturalBrowserActControlPayload.executed === false &&
+        naturalBrowserActControlPayload.intent === 'act' &&
+        naturalBrowserActControlPayload.safety?.previewOnly === true &&
+        naturalBrowserActControlPayload.safety?.executesBrowserWorkflow === false &&
+        naturalBrowserActControlPayload.safety?.executesBrowserAction === false &&
+        naturalBrowserActControlResult.plan?.source === 'local_fallback' &&
+        naturalBrowserActControlResult.plan?.plannerError === '' &&
+        naturalBrowserActControlResult.plan?.steps?.[0]?.action === 'reload' &&
+        naturalBrowserActControlResult.results?.[0]?.status === 'previewed' &&
+        naturalBrowserActControlResult.results?.[0]?.plan?.args?.browserAction === 'reload' &&
+        naturalBrowserActControlData.safety?.startsMicrophone === false &&
+        naturalBrowserActControlData.safety?.usesRealtime === false &&
+        naturalBrowserActControlData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_browser_act_control', 'Natural browser act-control voice command', '刷新当前网页 routes to local browser workflow preview without browser execution or cloud')
+        : fail('voice_command.natural_browser_act_control', 'Natural browser act-control voice command', 'natural browser control did not use local act fallback safely', naturalBrowserActControl.data),
+    );
+
+    const directBrowserBack = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '后退',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_direct_browser_back_preview',
+      },
+      timeoutMs: 30000,
+    });
+    const directBrowserBackData = directBrowserBack.data || {};
+    const directBrowserBackRoute = directBrowserBackData.route || {};
+    const directBrowserBackResult = directBrowserBackRoute.data?.result || {};
+    out.push(
+      directBrowserBack.ok &&
+        directBrowserBackData.ok === true &&
+        directBrowserBackData.executed === false &&
+        directBrowserBackRoute.decision?.localCommand === 'browser_control' &&
+        directBrowserBackRoute.localCommand?.intent === 'browser_control' &&
+        directBrowserBackRoute.localCommand?.args?.browserAction === 'back' &&
+        directBrowserBackRoute.executed === false &&
+        directBrowserBackResult.executed === false &&
+        directBrowserBackResult.plan?.args?.browserAction === 'back' &&
+        directBrowserBackResult.plan?.riskLevel === 2 &&
+        typeof directBrowserBackRoute.output === 'string' &&
+        directBrowserBackRoute.output.includes('Browser control: preview only') &&
+        directBrowserBackData.safety?.startsMicrophone === false &&
+        directBrowserBackData.safety?.usesRealtime === false &&
+        directBrowserBackData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.direct_browser_control_preview', 'Direct browser control preview voice command', '后退 routes to browser_control preview without browser execution, mic, Realtime, or cloud')
+        : fail('voice_command.direct_browser_control_preview', 'Direct browser control preview voice command', 'direct browser_control phrase did not stay preview-only', directBrowserBack.data),
+    );
+
     const liveBrowserActions = ['1', 'true', 'yes', 'on'].includes(String(process.env.JAVIS_EVAL_LIVE_BROWSER_ACTIONS || '').toLowerCase());
     if (liveBrowserActions) {
       const spendGuardBeforeBrowserExecuteResponse = await ctx.api('/api/openai/spend-guard');
@@ -1941,7 +2021,7 @@ export default {
         : fail('voice_command.natural_app_ui_cached', 'Natural current-app UI cache hit', 'second current-app UI phrase did not reuse the bounded AX cache', naturalAppUiCached.data),
     );
 
-    const ambientPrewarm = await ctx.api('/api/ambient/sample', {
+    const ambientPrewarmRequest = () => ctx.api('/api/ambient/sample', {
       method: 'POST',
       body: {
         source: 'eval_voice_command_app_ui_prewarm',
@@ -1950,16 +2030,26 @@ export default {
       },
       timeoutMs: 30000,
     });
+    const ambientPrewarmOk = (response) => {
+      const state = response.data?.ambient?.appUiPrewarm || {};
+      const cache = state.cache || {};
+      return response.ok &&
+        response.data?.ok === true &&
+        state.enabled === true &&
+        ['cached', 'warmed'].includes(state.lastStatus) &&
+        typeof state.lastNodeCount === 'number' &&
+        typeof cache.ageMs === 'number' &&
+        !('nodes' in cache);
+    };
+    let ambientPrewarm = await ambientPrewarmRequest();
+    if (!ambientPrewarmOk(ambientPrewarm)) {
+      await waitMs(500);
+      ambientPrewarm = await ambientPrewarmRequest();
+    }
     const ambientPrewarmState = ambientPrewarm.data?.ambient?.appUiPrewarm || {};
     const ambientPrewarmCache = ambientPrewarmState.cache || {};
     out.push(
-      ambientPrewarm.ok &&
-        ambientPrewarm.data?.ok === true &&
-        ambientPrewarmState.enabled === true &&
-        ['cached', 'warmed'].includes(ambientPrewarmState.lastStatus) &&
-        typeof ambientPrewarmState.lastNodeCount === 'number' &&
-        typeof ambientPrewarmCache.ageMs === 'number' &&
-        !('nodes' in ambientPrewarmCache)
+      ambientPrewarmOk(ambientPrewarm)
         ? ok('voice_command.ambient_app_ui_prewarm', 'Ambient current-app UI prewarm', `${ambientPrewarmState.lastStatus} · app=${ambientPrewarmState.lastApp || '-'} · nodes=${ambientPrewarmState.lastNodeCount}`)
         : fail('voice_command.ambient_app_ui_prewarm', 'Ambient current-app UI prewarm', 'ambient sample did not expose a bounded current-app UI prewarm cache', ambientPrewarm.data),
     );
