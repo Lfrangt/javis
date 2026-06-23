@@ -157,7 +157,20 @@ chrome before it ever descends into web content.
 `accessibilityTreeSnapshot`, when the frontmost app `isChromiumApp`, locate the
 `AXWebArea` (shallow descent, cap depth ~12) and use it as the BFS root for web
 targets (optionally union with a small pass over native chrome for back/forward
-etc.). Keep the existing window-root walk for non-Chromium apps. This removes the
+etc.). Keep the existing window-root walk for non-Chromium apps.
+
+> **CRITICAL — apply identically to BOTH walk sites.** The `nodeId` is the BFS
+> index, and `runAccessibilityNodeAction`'s execute re-walk re-resolves the
+> target by that index, so its root-selection + BFS seeding MUST match
+> `accessibilityTreeSnapshot`'s exactly. The two JXA strings are already subtly
+> divergent today (the plan walk has a `nonMenuChildrenOf(process)` fallback and
+> ends with `|| null`; the execute walk ends with `|| process`). Any AXWebArea
+> rooting must be added to BOTH identically (same descent depth cap, same
+> web-area selection when multiple exist) or every `set_value` will fail
+> `accessibility_role_changed`. Best to factor the root selection into one shared
+> JXA helper string injected into both scripts. Acceptance after implementing:
+> `node scripts/verify-ax-webarea.mjs` PASS **and** a real
+> `verify:ax --require-chromium --execute` lands+verifies text on the composer. This removes the
 read-timeout wall for the Gemini/contenteditable case entirely and makes the
 retry-on-drift (fix C, already landed) actually reach a target to retry against.
 PoC is `scripts/ax-webarea-poc.js` — run it with Chrome frontmost to reproduce.
