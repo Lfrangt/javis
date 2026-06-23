@@ -161,6 +161,20 @@ etc.). Keep the existing window-root walk for non-Chromium apps. This removes th
 read-timeout wall for the Gemini/contenteditable case entirely and makes the
 retry-on-drift (fix C, already landed) actually reach a target to retry against.
 PoC is `scripts/ax-webarea-poc.js` — run it with Chrome frontmost to reproduce.
+Acceptance gate: `node scripts/verify-ax-webarea.mjs` (PASS = composer reached
+≤60 nodes / 3s from AXWebArea).
+
+### Scope: the same read feeds 7 features, not just set_value
+
+`accessibilityTreeSnapshot` (window-rooted) backs `observeNow` (first-look
+context), `voiceCommandContextSnapshot`, `planAppWorkflow`, the realtime AX tool
+(`executeTool`), `runLocalCommand`, `maybePrewarmAppUiCache`, and the
+`/api/accessibility/tree` route. So on a **heavy** web page with a Chromium
+browser frontmost, every one of these gets a read that burns its budget on
+browser chrome before reaching the web content the user is asking about (and may
+time out). Light pages (e.g. a 39-node test page) read fine — the degradation is
+heavy-page-specific. The AXWebArea-rooting fix therefore pays off across all of
+JAVIS's "understand the current page" surfaces, not only the Gemini composer.
 
 Also note: interactive AX testing on this machine is unreliable because
 Chrome/Codex/League keep stealing frontmost between activate and read
