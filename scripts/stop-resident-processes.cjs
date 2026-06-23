@@ -58,6 +58,7 @@ function apiListenerPids() {
 function isProjectResidentProcess(processInfo) {
   if (!processInfo || processInfo.pid === selfPid) return false;
   const command = processInfo.command || '';
+  if (/Electron(?:\s|$)/i.test(command) && command.includes(repoRoot)) return true;
   if (!/(npm run start:desktop|node .*electron|Electron \.)/i.test(command)) return false;
   if (command.includes(repoRoot)) return true;
   return processCwd(processInfo.pid) === repoRoot;

@@ -25,6 +25,8 @@
     "resident:install": "node scripts/install-launch-agent.cjs",
     "resident:uninstall": "node scripts/uninstall-launch-agent.cjs",
     "resident:restart": "npm run resident:uninstall && npm run resident:install",
+    "resident:watchdog": "node scripts/resident-watchdog.cjs",
+    "resident:watchdog:check": "node scripts/resident-watchdog.cjs --dry-run",
     "doctor": "node scripts/doctor.mjs",
     "setup:bundle": "node scripts/config-cui.cjs --print-setup-recovery-bundle",
     "collab": "node scripts/collab.mjs",

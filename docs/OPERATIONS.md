@@ -22,6 +22,8 @@ npm run resident:install
 npm run resident:stop
 npm run resident:uninstall
 npm run resident:restart
+npm run resident:watchdog
+npm run resident:watchdog:check
 npm run voice:cleanup
 ```
 
@@ -32,6 +34,13 @@ appears to be running. `npm run voice:cleanup` only closes stale local voice Ter
 their lock file; it does not stop the resident app.
 The Electron app also holds a single-instance lock: if JAVIS is launched again, the existing
 resident process records the event and summons the pet instead of starting a second API/window.
+
+`npm run resident:install` also installs `com.haoge.javis.watchdog`, a lightweight launchd
+health watcher that checks the public local `/api/health` endpoint every minute. If the resident
+process is still alive but the API times out, the watchdog stops stale JAVIS processes and
+kickstarts `com.haoge.javis`. It does not call OpenAI, start microphone capture, capture the
+screen, start workers, or touch user files. `npm run resident:watchdog:check` performs the same
+health check without restarting; `npm run resident:watchdog` performs the self-heal path.
 
 Unattended overnight work:
 

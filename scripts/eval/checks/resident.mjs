@@ -77,6 +77,36 @@ export default {
         : warn('resident.setup', 'Setup guide', `GET /api/setup/guide ${guide.status} ${guide.error || ''}`),
     );
 
+    const watchdogCheck = spawnSync('npm', ['run', 'resident:watchdog:check', '--', '--json'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 15000,
+      env: {
+        ...process.env,
+        ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+      },
+    });
+    let watchdogState = null;
+    try {
+      const jsonStart = String(watchdogCheck.stdout || '').indexOf('{');
+      watchdogState = JSON.parse(String(watchdogCheck.stdout || '').slice(jsonStart));
+    } catch {}
+    out.push(
+      watchdogCheck.status === 0 &&
+        watchdogState?.status === 'healthy' &&
+        watchdogState?.safety?.localHealthOnly === true &&
+        watchdogState?.safety?.callsOpenAi === false &&
+        watchdogState?.safety?.startsMicrophone === false &&
+        watchdogState?.safety?.capturesScreen === false &&
+        watchdogState?.safety?.mutatesUserFiles === false
+        ? ok('resident.watchdog_check', 'Resident watchdog health check', `healthy · api=${watchdogState.apiPort} · pid=${watchdogState.pid || 'unknown'} · ${watchdogState.elapsedMs}ms`)
+        : fail('resident.watchdog_check', 'Resident watchdog health check', 'watchdog dry-run should prove local health without side effects', {
+          status: watchdogCheck.status,
+          stdout: String(watchdogCheck.stdout || '').slice(0, 2000),
+          stderr: String(watchdogCheck.stderr || '').slice(0, 2000),
+        }),
+    );
+
     const recoveryBundleResponse = await ctx.api('/api/setup/recovery-bundle');
     const bundle = recoveryBundleResponse.data?.bundle || {};
     const bundleRaw = JSON.stringify(bundle);

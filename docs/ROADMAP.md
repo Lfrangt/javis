@@ -67,7 +67,9 @@
 ## Phase 1: Reliable Resident Server
 
 - Split the local API service from the Electron buddy UI.
-- Add health checks, structured logs, and restart visibility.
+- Add health checks, structured logs, and restart visibility. Current build includes a resident
+  health watchdog LaunchAgent that restarts JAVIS when `/api/health` accepts a connection but
+  times out.
 - Add readiness diagnostics for setup, permissions, policy, and runtime state.
 - Add Mac context visibility for frontmost app/window and clipboard state.
 - Add browser context visibility for supported active tabs.
