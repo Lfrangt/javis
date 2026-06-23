@@ -103,7 +103,7 @@ npm run doctor
 
 Readiness checks cover the OpenAI key, microphone, screen capture, Accessibility, local execution, action policy, control mode, runtime storage, queue state, and pending approvals.
 
-`npm run config -- --print-control-readiness` is the short local takeover packet. It summarizes whether voice entry, screen awareness, Mac app control, browser control, file/local actions, Codex, Claude Code, the generic CLI lane, resident hotkeys, perception consent, and multi-agent coordination are ready, then prints the next setup action only when a gate is blocked or limited.
+`npm run config -- --print-control-readiness` is the short local takeover packet. It summarizes whether voice entry, screen awareness, Mac app control, browser control, file/local actions, Codex, Claude Code, the generic CLI lane, resident hotkeys, perception consent, and multi-agent coordination are ready, then prints the next setup action only when a gate is blocked or limited. If OpenAI spend is zero-locked and macOS microphone permission is not granted yet, the packet treats live voice as a warning when the local no-mic fallback is ready; that state should not block browser, file, app, Codex, Claude, or CLI lanes.
 
 `npm run setup:bundle` is the compact resident landing packet for daily use. It combines resident LaunchAgent state, setup blockers, permission checks, pet/notch state, Realtime recovery, local voice fallback, worker availability, action policy, learning/autopilot state, and the next safe action. It is read-only: it does not open the microphone, call OpenAI, grant macOS permissions, open a browser, or mutate files.
 

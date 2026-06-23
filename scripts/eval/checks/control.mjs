@@ -76,6 +76,13 @@ export default {
         timeout: 10000,
         maxBuffer: 1024 * 1024,
       });
+      const localFallbackDegraded = stdout.includes('local no-mic voice fallback is ready');
+      const localFallbackPostureOk = !localFallbackDegraded ||
+        (
+          stdout.includes('Overall: limited') &&
+          stdout.includes('blocked 0') &&
+          stdout.includes('Use npm run voice:doctor')
+        );
       out.push(
         stdout.includes('JAVIS Local Control Readiness') &&
           stdout.includes('Takeover posture:') &&
@@ -84,7 +91,8 @@ export default {
           stdout.includes('Screen awareness') &&
           stdout.includes('Browser control') &&
           stdout.includes('Codex and Claude Code') &&
-          stdout.includes('Useful commands:')
+          stdout.includes('Useful commands:') &&
+          localFallbackPostureOk
           ? ok('control.readiness_cui', 'Control readiness CUI', 'config CUI prints local control readiness gates and next actions')
           : fail('control.readiness_cui', 'Control readiness CUI', 'expected --print-control-readiness to print readiness packet', { stdout: stdout.slice(0, 3000) }),
       );

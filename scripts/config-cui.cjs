@@ -1779,6 +1779,37 @@ async function showControlReadiness() {
   const capability = (id) => capabilityRows.find((row) => row.id === id) || null;
   const perception = perceptionResult.perception || {};
   const perceptionCounts = perception.counts || {};
+  const perceptionSurfaces = Array.isArray(perception.surfaces) ? perception.surfaces : [];
+  const blockedPerceptionSurfaces = perceptionSurfaces.filter((surface) => surface.status === 'blocked');
+  const nonVoiceBlockedPerceptionSurfaces = blockedPerceptionSurfaces.filter((surface) => surface.id !== 'voice_microphone');
+  const voiceMicrophoneSurface = perceptionSurfaces.find((surface) => surface.id === 'voice_microphone') || null;
+  const voiceMicBlockedButLocalFallbackReady = Boolean(
+    voiceMicrophoneSurface?.status === 'blocked' &&
+      status.api?.hasOpenAiKey &&
+      status.api?.openAiKeyAvailableForCalls !== true &&
+      (
+        status.voiceStandby?.local?.available === true ||
+        status.localVoice?.available === true ||
+        status.voiceStandby?.primaryAction?.id === 'open_local_input'
+      ),
+  );
+  const perceptionPostureStatus = nonVoiceBlockedPerceptionSurfaces.length > 0
+    ? 'blocked'
+    : Number(perceptionCounts.limited || 0) > 0 || voiceMicBlockedButLocalFallbackReady
+      ? 'warning'
+      : Number(perceptionCounts.blocked || 0) > 0
+        ? 'blocked'
+        : 'ready';
+  const perceptionPostureSummary = voiceMicBlockedButLocalFallbackReady && nonVoiceBlockedPerceptionSurfaces.length === 0
+    ? `${perceptionCounts.enabled || 0}/${perceptionCounts.total || 0} perception/tool surfaces enabled; ${perceptionCounts.active || 0} active; live microphone blocked, but local no-mic voice fallback is ready.`
+    : `${perceptionCounts.enabled || 0}/${perceptionCounts.total || 0} perception/tool surfaces enabled; ${perceptionCounts.active || 0} active; ${perceptionCounts.blocked || 0} blocked.`;
+  const perceptionPostureNext = nonVoiceBlockedPerceptionSurfaces.length > 0
+    ? 'Run npm run config -- --print-perception to inspect blocked surfaces.'
+    : voiceMicBlockedButLocalFallbackReady
+      ? 'Use npm run voice:doctor for live microphone/Realtime recovery; local control can continue through the no-mic fallback.'
+      : Number(perceptionCounts.blocked || 0) > 0
+        ? 'Run npm run config -- --print-perception to inspect blocked surfaces.'
+        : '';
   const collaboration = collaborationResult.handoff || {};
   const collaborationCounts = collaboration.counts || {};
   const writeRoots = allow.write_file?.allowedRoots || allow.create_directory?.allowedRoots || [];
@@ -1876,9 +1907,9 @@ async function showControlReadiness() {
     {
       id: 'perception',
       label: 'Consent and storage posture',
-      status: Number(perceptionCounts.blocked || 0) > 0 ? 'blocked' : Number(perceptionCounts.limited || 0) > 0 ? 'warning' : 'ready',
-      summary: `${perceptionCounts.enabled || 0}/${perceptionCounts.total || 0} perception/tool surfaces enabled; ${perceptionCounts.active || 0} active; ${perceptionCounts.blocked || 0} blocked.`,
-      next: Number(perceptionCounts.blocked || 0) > 0 ? 'Run npm run config -- --print-perception to inspect blocked surfaces.' : '',
+      status: perceptionPostureStatus,
+      summary: perceptionPostureSummary,
+      next: perceptionPostureNext,
     },
     {
       id: 'collaboration',
