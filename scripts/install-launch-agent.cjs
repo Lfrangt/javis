@@ -4,6 +4,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const repoRoot = path.resolve(__dirname, '..');
+const envFile = path.join(repoRoot, '.env');
 const label = 'com.haoge.javis';
 const watchdogLabel = 'com.haoge.javis.watchdog';
 const homeDir = process.env.HOME || os.homedir();
@@ -25,7 +26,7 @@ const openAiCredentialEnvKeys = [
   'OPENAI_ORGANIZATION',
   'OPENAI_PROJECT',
 ];
-const openAiZeroSpendEnv = {
+const openAiSafeDefaultEnv = {
   JAVIS_OPENAI_PARANOID_ZERO_SPEND: 'true',
   JAVIS_OPENAI_HARD_SPEND_LOCK: 'true',
   JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE: 'true',
@@ -42,6 +43,49 @@ const openAiZeroSpendEnv = {
   JAVIS_OPENAI_MEMORY_KEY_VAULT: 'true',
 };
 
+function parseDotEnvValue(value) {
+  const trimmed = String(value).trim();
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1);
+  }
+  return trimmed;
+}
+
+function readDotEnvFile(filePath) {
+  const values = {};
+  try {
+    const text = fs.readFileSync(filePath, 'utf8');
+    for (const line of text.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) continue;
+      const eq = trimmed.indexOf('=');
+      if (eq <= 0) continue;
+      const key = trimmed.slice(0, eq).trim();
+      if (!key) continue;
+      values[key] = parseDotEnvValue(trimmed.slice(eq + 1));
+    }
+  } catch {
+    // Keep the launch agent installable before the first local .env is created.
+  }
+  return values;
+}
+
+function openAiLaunchEnvFromDotEnv() {
+  const dotEnv = readDotEnvFile(envFile);
+  const env = { ...openAiSafeDefaultEnv };
+  for (const [key, value] of Object.entries(dotEnv)) {
+    if (!key.startsWith('JAVIS_OPENAI_')) continue;
+    if (openAiCredentialEnvKeys.includes(key)) continue;
+    env[key] = value;
+  }
+  return env;
+}
+
+const openAiLaunchEnv = openAiLaunchEnvFromDotEnv();
+
 function xmlEscape(value) {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -55,7 +99,7 @@ function run(command, args, options = {}) {
   try {
     execFileSync(command, args, {
       stdio: options.stdio || 'pipe',
-      env: options.env || zeroSpendProcessEnv(),
+      env: options.env || safeProcessEnv(),
     });
     return true;
   } catch (error) {
@@ -64,10 +108,10 @@ function run(command, args, options = {}) {
   }
 }
 
-function zeroSpendProcessEnv(extra = {}) {
+function safeProcessEnv(extra = {}) {
   const env = {
     ...process.env,
-    ...openAiZeroSpendEnv,
+    ...openAiLaunchEnv,
     ...extra,
   };
   for (const key of openAiCredentialEnvKeys) {
@@ -98,14 +142,14 @@ if (!fs.existsSync(watchdogScript)) {
 }
 const residentLaunchEnv = {
   PATH: process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
-  ...openAiZeroSpendEnv,
+  ...openAiLaunchEnv,
   JAVIS_ALLOW_TERMINAL_VOICE_LOOP: 'false',
   JAVIS_RESIDENT_LAUNCH_AGENT: 'true',
   JAVIS_REPO_ROOT: repoRoot,
 };
 const watchdogLaunchEnv = {
   PATH: process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
-  ...openAiZeroSpendEnv,
+  ...openAiLaunchEnv,
   JAVIS_REPO_ROOT: repoRoot,
   JAVIS_WATCHDOG_MANAGED_BY_LAUNCHD: 'true',
 };

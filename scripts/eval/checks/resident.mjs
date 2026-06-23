@@ -201,6 +201,29 @@ export default {
 	    const overnightResponse = await ctx.api('/api/overnight/status');
 	    const overnight = overnightResponse.data?.overnight || {};
 	    const overnightRaw = JSON.stringify(overnight);
+	    const overnightSpendGuard = overnight.openAiSpendGuard || {};
+	    const overnightSpendZeroLocked = Boolean(
+	      overnightSpendGuard.emergencyZeroSpendLock === true ||
+	        (overnightSpendGuard.hardSpendLock === true &&
+	          overnightSpendGuard.mode === 'off' &&
+	          Number(overnightSpendGuard.dailyRequestLimit || 0) === 0),
+	    );
+	    const overnightSpendManualGuarded = Boolean(
+	      overnightSpendGuard.mode === 'manual' &&
+	        overnightSpendGuard.hardSpendLock === false &&
+	        Number(overnightSpendGuard.dailyRequestLimit || 0) > 0 &&
+	        Number(overnightSpendGuard.unattendedDailyRequestLimit || 0) === 0 &&
+	        overnightSpendGuard.allowAutopilotCloud === false &&
+	        overnightSpendGuard.allowRendererStartupProbe === false &&
+	        overnightSpendGuard.requireSpendConfirmationPhrase === true &&
+	        overnightSpendGuard.requireSpendLease === true,
+	    );
+	    const overnightSpendPostureOk = Boolean(
+	      overnightSpendGuard.egressGuardEnabled === true &&
+	        overnightSpendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
+	        (overnightSpendZeroLocked ||
+	          (overnightSpendManualGuarded && ['unsafe_cloud', 'attention'].includes(overnight.status))),
+	    );
 	    const overnightPreparePreviewResponse = await ctx.api('/api/overnight/prepare', {
 	      method: 'POST',
 	      body: {
@@ -239,11 +262,7 @@ export default {
 	        overnight.resident?.watchdog?.safety?.startsMicrophone === false &&
 	        overnight.resident?.watchdog?.safety?.capturesScreen === false &&
 	        typeof overnight.keepAwake?.active === 'boolean' &&
-	        overnight.openAiSpendGuard?.hardSpendLock === true &&
-	        overnight.openAiSpendGuard?.mode === 'off' &&
-	        overnight.openAiSpendGuard?.dailyRequestLimit === 0 &&
-	        overnight.openAiSpendGuard?.egressGuardEnabled === true &&
-	        overnight.openAiSpendGuard?.safety?.unscopedOpenAiEgressBlocked === true &&
+	        overnightSpendPostureOk &&
 	        ['local_fallback_ready', 'realtime_ready'].includes(overnight.voice?.standby?.mode) &&
 	        typeof overnight.autopilot?.enabled === 'boolean' &&
 	        overnight.autopilot?.safety?.enabledByOvernight === false &&
@@ -261,8 +280,8 @@ export default {
 	        overnight.safety?.changesLaunchdJob === false &&
 	        !/sk-[A-Za-z0-9_-]{16,}/.test(overnightRaw) &&
 	        !overnightRaw.includes('imageDataUrl')
-	        ? ok('resident.overnight_status', 'Overnight resident status pack', `${overnight.status} · keepAwake=${overnight.keepAwake?.active ? 'active' : 'off'} · cloud=${overnight.openAiSpendGuard?.mode}/${overnight.openAiSpendGuard?.dailyRequestLimit}`)
-	        : fail('resident.overnight_status', 'Overnight resident status pack', 'expected no-cloud overnight pack with resident, keep-awake, spend guard, voice fallback, progress, blockers, autopilot posture, and safety contract', {
+	        ? ok('resident.overnight_status', 'Overnight resident status pack', `${overnight.status} · keepAwake=${overnight.keepAwake?.active ? 'active' : 'off'} · cloud=${overnightSpendGuard.mode}/${overnightSpendGuard.dailyRequestLimit}`)
+	        : fail('resident.overnight_status', 'Overnight resident status pack', 'expected overnight pack with resident, keep-awake, explicit spend posture, voice fallback, progress, blockers, autopilot posture, and safety contract', {
 	          status: overnightResponse.status,
 	          overnight,
 	        }),
@@ -1929,14 +1948,52 @@ export default {
     const spendForensics = spendGuardResponse.data?.forensics || {};
     const spendGuardTotalBefore = Number(spendGuard.counts?.total || 0);
     const spendGuardBlockedBefore = Number(spendGuard.counts?.blocked || 0);
+    const spendGuardZeroLocked = Boolean(
+      spendForensics.zeroLocked === true ||
+        spendGuard.emergencyZeroSpendLock === true ||
+        (spendGuard.hardSpendLock === true &&
+          spendGuard.mode === 'off' &&
+          Number(spendGuard.dailyRequestLimit || 0) === 0 &&
+          Number(spendGuard.unattendedDailyRequestLimit || 0) === 0),
+    );
+    const spendGuardManualGuarded = Boolean(
+      !spendGuardZeroLocked &&
+        spendGuard.mode === 'manual' &&
+        spendGuard.hardSpendLock === false &&
+        Number(spendGuard.dailyRequestLimit || 0) > 0 &&
+        Number(spendGuard.remaining?.total || 0) > 0 &&
+        Number(spendGuard.unattendedDailyRequestLimit || 0) === 0 &&
+        spendGuard.allowAutopilotCloud === false &&
+        spendGuard.allowRendererStartupProbe === false,
+    );
+    const spendRuntimeKeyIsolationOk = Boolean(
+      spendGuard.runtimeKeyIsolation?.enabled === true &&
+        spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv === false &&
+        Number(spendGuard.runtimeKeyIsolation?.openAiCredentialKeyCount || 0) === 0 &&
+        spendGuard.runtimeKeyIsolation?.memoryKeyVault?.enabled === true &&
+        spendGuard.runtimeKeyIsolation?.safety?.defaultRuntimeProcessEnvOpenAiCredentialsBlocked === true &&
+        spendGuard.runtimeKeyIsolation?.safety?.childProcessesCannotInheritRuntimeOpenAiCredentials === true &&
+        (spendGuardZeroLocked
+          ? spendGuard.runtimeKeyIsolation?.availableForGuardedCalls === false &&
+            spendGuard.runtimeKeyIsolation?.safety?.zeroSpendModeDoesNotRetainKeyInMemory === true
+          : spendGuardManualGuarded &&
+            spendGuard.runtimeKeyIsolation?.availableForGuardedCalls === true &&
+            spendGuard.runtimeKeyIsolation?.memoryKeyVault?.active === false),
+    );
+    const spendForensicsOk = Boolean(
+      spendForensics.version === 1 &&
+        spendForensics.likelyBillableFromJavis === false &&
+        spendForensics.safety?.callsOpenAI === false &&
+        spendForensics.safety?.createsSpendLease === false &&
+        (spendGuardZeroLocked
+          ? spendForensics.zeroLocked === true && spendForensics.status === 'zero_spend_locked'
+          : spendGuardManualGuarded && spendForensics.zeroLocked === false && spendForensics.status === 'spend_guard_needs_review'),
+    );
     out.push(
       spendGuardResponse.ok &&
-        spendGuard.paranoidZeroSpend?.enabled === true &&
-        spendGuard.mode === 'off' &&
-        spendGuard.hardSpendLock === true &&
+        (spendGuardZeroLocked || spendGuardManualGuarded) &&
         spendGuard.egressGuardEnabled === true &&
         spendGuard.egressGuardMode === 'scoped_allow_only' &&
-        spendGuard.dailyRequestLimit === 0 &&
         spendGuard.unattendedDailyRequestLimit === 0 &&
         spendGuard.allowAutopilotCloud === false &&
         spendGuard.allowRendererStartupProbe === false &&
@@ -1944,14 +2001,7 @@ export default {
         spendGuard.requireSpendLease === true &&
         spendGuard.spendLease?.oneRequestOnly === true &&
         Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
-        spendGuard.runtimeKeyIsolation?.enabled === true &&
-        spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv === false &&
-        Number(spendGuard.runtimeKeyIsolation?.openAiCredentialKeyCount || 0) === 0 &&
-        spendGuard.runtimeKeyIsolation?.availableForGuardedCalls === false &&
-        spendGuard.runtimeKeyIsolation?.memoryKeyVault?.enabled === true &&
-        spendGuard.runtimeKeyIsolation?.safety?.zeroSpendModeDoesNotRetainKeyInMemory === true &&
-        spendGuard.runtimeKeyIsolation?.safety?.defaultRuntimeProcessEnvOpenAiCredentialsBlocked === true &&
-        spendGuard.runtimeKeyIsolation?.safety?.childProcessesCannotInheritRuntimeOpenAiCredentials === true &&
+        spendRuntimeKeyIsolationOk &&
         spendGuard.childEnvGuard?.enabled === true &&
         spendGuard.childEnvGuard?.defaultChildReceivesOpenAiCredentials === false &&
         spendGuard.childEnvGuard?.blocksInlineCredentialEnv === true &&
@@ -1964,20 +2014,11 @@ export default {
         egressGuard.installed === true &&
         egressGuard.mode === 'scoped_allow_only' &&
         egressGuard.safety?.blocksUnscopedOpenAiFetch === true &&
-        spendForensics.version === 1 &&
-        spendForensics.likelyBillableFromJavis === false &&
-        spendForensics.zeroLocked === true &&
-        spendForensics.status === 'zero_spend_locked' &&
-        spendForensics.safety?.callsOpenAI === false &&
-        spendForensics.safety?.createsSpendLease === false &&
-        spendGuard.safety?.off === true &&
-        spendGuard.safety?.zeroBudgetDefault === true &&
-        spendGuard.safety?.paranoidZeroSpendDefault === true &&
-        spendGuard.safety?.hardSpendLockDefault === true &&
+        spendForensicsOk &&
         spendGuard.safety?.confirmationPhraseRequired === true &&
         spendGuard.safety?.unattendedCloudDefaultBlocked === true
-        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · runtimeEnv=${spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
-        : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to zero-spend OpenAI usage, hard-lock cloud calls, block unattended/autopilot calls, and disable renderer startup probes', {
+        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · runtimeEnv=${spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · callable=${spendGuard.runtimeKeyIsolation?.availableForGuardedCalls ? 'yes' : 'no'} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
+        : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to be zero-locked or manual-guarded while blocking unattended/autopilot calls and renderer startup probes', {
           status: spendGuardResponse.status,
           body: spendGuardResponse.data,
         }),
@@ -2001,24 +2042,48 @@ export default {
       maxBuffer: 1024 * 1024,
     });
     const sentinelCuiOutput = String(sentinelCui.stdout || '');
+    const spendSentinelZeroLocked = Boolean(
+      spendSentinel.forensics?.zeroLocked === true &&
+        (spendSentinel.guard?.emergencyZeroSpendLock === true ||
+          (spendSentinel.guard?.hardSpendLock === true &&
+            spendSentinel.guard?.paranoidZeroSpend === true &&
+            spendSentinel.guard?.mode === 'off')) &&
+        spendSentinel.guard?.guardedCallsHaveApiKey === false,
+    );
+    const spendSentinelManualGuarded = Boolean(
+      spendSentinel.status === 'breach' &&
+        spendSentinel.clear === false &&
+        spendSentinel.forensics?.likelyBillableFromJavis === false &&
+        spendSentinel.forensics?.zeroLocked === false &&
+        spendSentinel.guard?.hardSpendLock === false &&
+        spendSentinel.guard?.paranoidZeroSpend === false &&
+        spendSentinel.guard?.mode === 'manual' &&
+        spendSentinel.guard?.childEnvGuardEnabled === true,
+    );
+    const spendSentinelCheckZeroLocked = Boolean(
+      spendSentinelCheck.status === 'clear' &&
+        spendSentinelCheck.clear === true &&
+        spendSentinelCheck.forensics?.zeroLocked === true,
+    );
+    const spendSentinelCheckManualGuarded = Boolean(
+      spendSentinelCheck.status === 'breach' &&
+        spendSentinelCheck.clear === false &&
+        spendSentinelCheck.forensics?.likelyBillableFromJavis === false &&
+        spendSentinelCheck.forensics?.zeroLocked === false &&
+        spendSentinelCheck.guard?.mode === 'manual',
+    );
     out.push(
       spendSentinelResponse.ok &&
         spendSentinel.ok === true &&
         spendSentinel.version === 1 &&
         spendSentinel.enabled === true &&
         spendSentinel.running === true &&
-        spendSentinel.status === 'clear' &&
-        spendSentinel.clear === true &&
         spendSentinel.counts?.allowedToday === 0 &&
         spendSentinel.counts?.activeLeases === 0 &&
-        spendSentinel.guard?.hardSpendLock === true &&
-        spendSentinel.guard?.paranoidZeroSpend === true &&
-        spendSentinel.guard?.mode === 'off' &&
         spendSentinel.guard?.runtimeKeyEnvIsolated === true &&
         spendSentinel.guard?.memoryKeyVaultEnabled === true &&
-        spendSentinel.guard?.guardedCallsHaveApiKey === false &&
         spendSentinel.guard?.childEnvGuardEnabled === true &&
-        spendSentinel.forensics?.zeroLocked === true &&
+        (spendSentinelZeroLocked || spendSentinelManualGuarded) &&
         spendSentinel.safety?.callsOpenAI === false &&
         spendSentinel.safety?.createsSpendLease === false &&
         spendSentinel.safety?.startsMicrophone === false &&
@@ -2026,17 +2091,17 @@ export default {
         spendSentinel.safety?.startsWorkers === false &&
         spendSentinelCheckResponse.ok &&
         spendSentinelCheck.ok === true &&
-        spendSentinelCheck.status === 'clear' &&
+        (spendSentinelCheckZeroLocked || spendSentinelCheckManualGuarded) &&
         spendSentinelCheck.safety?.callsOpenAI === false &&
         spendGuardAfterSentinelResponse.ok &&
         Number(spendGuardAfterSentinel.counts?.total || 0) === spendGuardTotalBefore &&
         Number(spendGuardAfterSentinel.spendLease?.activeCount || 0) === 0 &&
         sentinelCui.status === 0 &&
         sentinelCuiOutput.includes('JAVIS OpenAI Spend Sentinel') &&
-        sentinelCuiOutput.includes('Status: clear') &&
+        (sentinelCuiOutput.includes('Status: clear') || sentinelCuiOutput.includes('Status: breach')) &&
         sentinelCuiOutput.includes('Safety: local guard state only')
-        ? ok('resident.openai_spend_sentinel', 'OpenAI spend sentinel', `clear · checks=${spendSentinelCheck.watcher?.checkCount ?? spendSentinel.watcher?.checkCount ?? 0} · allowed=${spendSentinel.counts?.allowedToday || 0} · leases=${spendSentinel.counts?.activeLeases || 0}`)
-        : fail('resident.openai_spend_sentinel', 'OpenAI spend sentinel', 'expected resident/CUI spend sentinel to watch local guard state without OpenAI calls, leases, mic, Realtime, or worker side effects', {
+        ? ok('resident.openai_spend_sentinel', 'OpenAI spend sentinel', `${spendSentinelCheck.status || spendSentinel.status} · checks=${spendSentinelCheck.watcher?.checkCount ?? spendSentinel.watcher?.checkCount ?? 0} · allowed=${spendSentinel.counts?.allowedToday || 0} · leases=${spendSentinel.counts?.activeLeases || 0}`)
+        : fail('resident.openai_spend_sentinel', 'OpenAI spend sentinel', 'expected resident/CUI spend sentinel to report clear zero-lock or breach manual-guarded state without OpenAI calls, leases, mic, Realtime, or worker side effects', {
           status: spendSentinelResponse.status,
           sentinel: spendSentinelResponse.data,
           check: spendSentinelCheckResponse.data,
@@ -2274,13 +2339,14 @@ export default {
 	        spendGuardDryRun.allowed === false &&
 	        spendGuardDryRun.confirmed === true &&
 	        Array.isArray(spendGuardDryRun.reasons) &&
-	        spendGuardDryRun.reasons.includes('hard_spend_lock_enabled') &&
-	        spendGuardDryRun.reasons.includes('cloud_mode_off') &&
-	        spendGuardDryRun.reasons.includes('daily_request_limit_reached') &&
+	        (spendGuardDryRun.reasons.includes('emergency_zero_spend_lock_active') ||
+	          (spendGuardDryRun.reasons.includes('hard_spend_lock_enabled') &&
+	            spendGuardDryRun.reasons.includes('cloud_mode_off') &&
+	            spendGuardDryRun.reasons.includes('daily_request_limit_reached'))) &&
 	        spendGuardAfterDryRunResponse.ok &&
 	        Number(spendGuardAfterDryRun.counts?.total || 0) === spendGuardTotalBefore
 	        ? ok('resident.openai_spend_hard_lock_dry_run', 'OpenAI hard spend lock dry-run', `blocked reasons=${spendGuardDryRun.reasons.join(',')}`)
-	        : fail('resident.openai_spend_hard_lock_dry_run', 'OpenAI hard spend lock dry-run', 'expected dry-run guard check to block even phrase-confirmed calls while hard lock/off/zero-budget defaults are active without reserving spend', {
+	        : fail('resident.openai_spend_hard_lock_dry_run', 'OpenAI hard spend lock dry-run', 'expected dry-run guard check to block phrase-confirmed calls after runtime lockdown or while hard lock/off/zero-budget defaults are active without reserving spend', {
 	          status: spendGuardDryRunResponse.status,
 	          dryRun: spendGuardDryRun,
 	          spendGuardAfterDryRun,
