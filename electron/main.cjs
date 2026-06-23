@@ -1822,6 +1822,19 @@ function readinessIsQuietZeroSpendFallback(readiness) {
   );
 }
 
+function readinessIssueIsQuietOpenAiKeyZeroSpend(readiness, voiceHealth = null) {
+  const issue = readiness?.primaryIssue || {};
+  return Boolean(
+    readiness?.overall === 'degraded' &&
+      issue.id === 'openai_key' &&
+      issue.status === 'warning' &&
+      openAiApiKeyConfigured() &&
+      !openAiApiKeyAvailableForCalls() &&
+      openAiZeroSpendModeActive() &&
+      (voiceHealth?.fallback?.available === true || voiceHealth?.recovery?.localFallback?.available === true)
+  );
+}
+
 function attentionPolicySnapshot(options = {}) {
   const now = Date.now();
   const readiness = options.readiness || readinessSnapshot();
@@ -55205,13 +55218,39 @@ function workflowBriefing(options = {}) {
   const nextActions = [];
 
   if (readiness.primaryIssue) {
+    const quietOpenAiKeyZeroSpend = readinessIssueIsQuietOpenAiKeyZeroSpend(readiness, realtimeWorkbench.voiceHealth);
     const readinessAction = {
       id: `readiness:${readiness.primaryIssue.id}`,
-      priority: readiness.primaryIssue.status === 'blocked' ? 1 : 2,
+      priority: quietOpenAiKeyZeroSpend ? 4 : readiness.primaryIssue.status === 'blocked' ? 1 : 2,
       label: readiness.primaryIssue.label,
       summary: readiness.primaryIssue.next || readiness.primaryIssue.summary,
       source: 'readiness',
     };
+    if (quietOpenAiKeyZeroSpend) {
+      Object.assign(readinessAction, {
+        zeroSpendFallbackQuiet: true,
+        executable: false,
+        autoEligible: false,
+        autopilotEligible: false,
+        manualOnly: true,
+        manualOnlyReason: 'OpenAI key is present but intentionally vaulted by zero-spend protection; local no-mic intake is the active path.',
+        requiresUserPresence: false,
+        startsMicrophone: false,
+        requiresMicConfirmation: false,
+        startsRecording: false,
+        startsWorkers: false,
+        executesTask: false,
+        riskLevel: 0,
+        localFallback: realtimeWorkbench.voiceHealth?.fallback || null,
+      });
+      const localVoiceAction = voiceStandbyWorkNextAction({
+        priority: 1.5,
+        zeroSpendFallback: true,
+      });
+      if (localVoiceAction && localVoiceAction.primaryAction?.startsMicrophone === false) {
+        nextActions.push(localVoiceAction);
+      }
+    }
     if (readiness.primaryIssue.id === 'realtime_voice_provider') {
       const providerProbeFreshness = realtimeProviderProbeFreshness();
       readinessAction.localFallback = realtimeWorkbench.voiceHealth?.fallback || null;

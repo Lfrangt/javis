@@ -48,6 +48,7 @@ export default {
     const realtimeVoice = b.realtimeVoice || {};
     const realtimeAction = next.find((action) => action.source === 'realtime_voice') || null;
     const providerReadinessAction = next.find((action) => action.id === 'readiness:realtime_voice_provider') || null;
+    const openAiKeyReadinessAction = next.find((action) => action.id === 'readiness:openai_key') || null;
     const zeroSpendVoiceAction = next.find((action) => action.id === 'voice:standby_primary') || null;
     const realtimePending = realtimeVoice.status && realtimeVoice.status !== 'ready';
     const realtimeGuide = realtimeAction?.dogfoodGuide || {};
@@ -127,9 +128,15 @@ export default {
     );
     const zeroSpendVoiceIndex = next.findIndex((action) => action.id === 'voice:standby_primary');
     const providerReadinessIndex = next.findIndex((action) => action.id === 'readiness:realtime_voice_provider');
+    const openAiKeyReadinessIndex = next.findIndex((action) => action.id === 'readiness:openai_key');
+    const zeroSpendReadinessIndex = providerReadinessAction?.providerProbe
+      ? providerReadinessIndex
+      : openAiKeyReadinessAction?.zeroSpendFallbackQuiet
+        ? openAiKeyReadinessIndex
+        : -1;
     out.push(
       !zeroSpendActive ||
-        !providerReadinessAction?.providerProbe ||
+        zeroSpendReadinessIndex < 0 ||
         (
           zeroSpendVoiceAction?.source === 'voice_standby' &&
           zeroSpendVoiceAction.zeroSpendFallback === true &&
@@ -139,13 +146,13 @@ export default {
           zeroSpendVoiceAction.manualOnly === false &&
           zeroSpendVoiceAction.autopilotEligible === false &&
           zeroSpendVoiceIndex >= 0 &&
-          providerReadinessIndex >= 0 &&
-          zeroSpendVoiceIndex < providerReadinessIndex
+          zeroSpendReadinessIndex >= 0 &&
+          zeroSpendVoiceIndex < zeroSpendReadinessIndex
         )
         ? ok('briefing.zero_spend_local_voice_first', 'Zero-spend local voice first', zeroSpendActive
-          ? 'voice:standby_primary is ahead of provider probe while OpenAI spend is hard-locked'
+          ? 'voice:standby_primary is ahead of paid-provider setup while OpenAI spend is hard-locked'
           : 'OpenAI spend is not zero-locked')
-        : fail('briefing.zero_spend_local_voice_first', 'Zero-spend local voice first', 'expected local no-mic voice entry to outrank provider probe under zero-spend lock', {
+        : fail('briefing.zero_spend_local_voice_first', 'Zero-spend local voice first', 'expected local no-mic voice entry to outrank paid-provider setup under zero-spend lock', {
           spendGuard,
           nextActions: next,
         }),
