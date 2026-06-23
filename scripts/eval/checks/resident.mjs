@@ -446,7 +446,7 @@ export default {
         voiceSetup.safety?.createsSpendLease === false &&
         voiceSetup.safety?.startsMicrophone === false &&
         voiceSetup.safety?.usesRealtime === false &&
-        voiceSetupChecklist.some((item) => item.id === 'microphone_permission' && item.startsMicrophone === false && item.callsOpenAI === false) &&
+        voiceSetupChecklist.some((item) => item.id === 'microphone_permission' && item.startsMicrophone === false && item.callsOpenAI === false && (item.command === '' || item.command === 'npm run voice:mic')) &&
         voiceSetupChecklist.some((item) => item.id === 'provider_probe_preview' && item.status === 'ready' && item.startsMicrophone === false && item.callsOpenAI === false) &&
         voiceSetupChecklist.some((item) => item.id === 'provider_probe_execute' && item.startsMicrophone === false && item.manualOnly === true) &&
         voiceSetupChecklist.some((item) => item.id === 'live_renderer_voice' && item.startsMicrophone === true && item.manualOnly === true) &&
@@ -2581,6 +2581,7 @@ export default {
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&
       packageSource.includes('"openai:zero": "node scripts/config-cui.cjs --lock-openai-spend"') &&
       packageSource.includes('"openai:recover": "node scripts/config-cui.cjs --recover-openai-spend"') &&
+      packageSource.includes('"voice:mic": "node scripts/config-cui.cjs --open-microphone-settings"') &&
       envExampleSource.includes('JAVIS_OPENAI_HARD_SPEND_LOCK=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE=SPEND OPENAI') &&

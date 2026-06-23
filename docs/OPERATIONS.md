@@ -95,6 +95,7 @@ curl -X POST -H "X-JAVIS-Token: $TOKEN" -H 'Content-Type: application/json' \
 curl -H "X-JAVIS-Token: $TOKEN" http://127.0.0.1:3417/api/keep-awake/status
 npm run setup:bundle
 npm run voice:standby
+npm run voice:mic
 npm run keepawake
 npm run config -- --print-control-readiness
 npm run config -- --print-permissions
@@ -152,6 +153,7 @@ For "why is Realtime not connected" questions, use the no-cost recovery guide in
 ```bash
 npm run voice:setup
 npm run voice:doctor
+npm run voice:mic
 npm run voice:chat
 # then type /realtime or /unlock
 curl http://127.0.0.1:3417/api/realtime/recovery-guide
@@ -443,7 +445,7 @@ row tells you what to open or toggle.
 
 Use option `1. Set / replace OpenAI API key` to paste the key locally with hidden input. It writes `OPENAI_API_KEY` to `.env` and can restart the resident service immediately. Do not paste API keys into chat or logs. If the CUI says `OpenAI key: present` and `OpenAI provider: quota/rate-limit`, the API is already connected locally; check OpenAI billing/limits for that project or replace the key with one that has Realtime quota.
 
-Use option `M. Open Microphone settings` when doctor reports microphone permission denied or voice cannot start. macOS still requires a human toggle in System Settings.
+Use `npm run voice:mic` or option `M. Open Microphone settings` when doctor reports microphone permission denied or voice cannot start. macOS still requires a human toggle in System Settings.
 
 Use option `8. Toggle local execution` only when you want Level 3 local actions enabled. It requires typing `ENABLE` or `DISABLE`, writes `JAVIS_ENABLE_LOCAL_EXEC` to `.env`, and can restart the resident service immediately.
 

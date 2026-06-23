@@ -5540,6 +5540,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--open-microphone-settings') || process.argv.includes('--open-mic-settings') || process.argv.includes('--voice-mic')) {
+    await setupAction('open_microphone_settings');
+    return;
+  }
+
   if (process.argv.includes('--print-voice-standby') || process.argv.includes('--voice-standby') || process.argv.includes('--standby')) {
     await showVoiceStandby();
     return;

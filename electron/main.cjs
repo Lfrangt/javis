@@ -34968,7 +34968,7 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
         ? `macOS microphone status is ${microphoneStatus}.`
         : 'Open Microphone settings or start the live path once while present, then approve the macOS prompt.',
       action: microphoneReady ? '' : 'open_microphone_settings',
-      command: microphoneReady ? '' : 'npm run config -> M',
+      command: microphoneReady ? '' : 'npm run voice:mic',
       endpoint: '/api/setup/next',
       startsMicrophone: false,
       callsOpenAI: false,
@@ -35047,7 +35047,7 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
           ? 'Start the live voice path once while present or open Microphone settings, then approve the macOS prompt.'
           : 'Open macOS Microphone settings and allow JAVIS/Electron.',
       action: microphoneReady ? '' : 'open_microphone_settings',
-      command: microphoneReady ? '' : 'npm run config -> M',
+      command: microphoneReady ? '' : 'npm run voice:mic',
     },
     spendGuard: {
       mode: spendGuard.mode,
@@ -42608,19 +42608,19 @@ const PET_TRAFFIC_LIGHT_LEGEND = [
     color: 'green',
     label: 'Available',
     meaning: 'Passive and ready.',
-    nextAction: 'Speak/click.',
+    nextAction: 'Speak.',
   },
   {
     color: 'yellow',
     label: 'Active',
     meaning: 'Listening, working, fallback.',
-    nextAction: 'Wait/click.',
+    nextAction: 'Wait.',
   },
   {
     color: 'red',
     label: 'Attention',
     meaning: 'Needs setup/recovery.',
-    nextAction: 'Open CUI.',
+    nextAction: 'CUI.',
   },
 ];
 
@@ -42669,9 +42669,9 @@ function petTrafficLightSnapshot(options = {}) {
       urgency: 'ambient',
       pulse: 'off',
       label: presence.label || 'Local fallback ready',
-      reason: 'Realtime voice is recovering; local no-mic input is ready.',
+      reason: 'Realtime recovering; local no-mic input is ready.',
       meaning: 'Realtime is recovering; local input works.',
-      nextAction: 'Click for local input, or probe from CUI.',
+      nextAction: 'Click local input; probe in CUI.',
     });
   } else if (mode === 'needs_attention' || intervention.shouldNotify) {
     Object.assign(base, {

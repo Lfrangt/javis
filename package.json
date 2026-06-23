@@ -55,6 +55,7 @@
     "voice:doctor": "node scripts/config-cui.cjs --print-voice-doctor",
     "voice:setup": "node scripts/config-cui.cjs --print-voice-setup",
     "voice:standby": "node scripts/config-cui.cjs --print-voice-standby",
+    "voice:mic": "node scripts/config-cui.cjs --open-microphone-settings",
     "voice:entry": "node scripts/config-cui.cjs --voice-entry",
     "voice:open": "node scripts/config-cui.cjs --open-voice-entry",
     "voice": "JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs",
