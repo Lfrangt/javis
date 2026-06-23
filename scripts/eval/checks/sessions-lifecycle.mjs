@@ -13,6 +13,7 @@ export default {
     const out = [];
     const tag = `eval/sessions/${Date.now()}`;
     let id = '';
+    let resumedId = ''; // resume forks a NEW session id — must be cleaned too.
 
     const start = await ctx.api('/api/sessions/start', {
       method: 'POST',
@@ -57,17 +58,20 @@ export default {
         method: 'POST',
         body: { source: 'eval' },
       });
+      resumedId = resume.data?.session?.id || '';
       out.push(
         resume.ok && resume.data?.session
-          ? ok('sl.resume', 'Resume from history', `resumed ${id.slice(0, 8)} (status=${resume.data.session.status})`)
+          ? ok('sl.resume', 'Resume from history', `resumed as ${resumedId.slice(0, 8)}${resumedId && resumedId !== id ? ' (forks a new session id)' : ''}`)
           : fail('sl.resume', 'Resume from history', `POST …/resume ${resume.status} ${resume.error || ''}`),
       );
     } finally {
-      const del = await ctx.api(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE', body: { source: 'eval' } });
+      // resume forks a new session, so clean up both ids.
+      const ids = [...new Set([id, resumedId].filter(Boolean))];
+      const dels = await Promise.all(ids.map((sid) => ctx.api(`/api/sessions/${encodeURIComponent(sid)}`, { method: 'DELETE', body: { source: 'eval' } })));
       out.push(
-        del.ok
-          ? ok('sl.cleanup', 'Cleanup', `throwaway session ${id.slice(0, 8)} removed`)
-          : fail('sl.cleanup', 'Cleanup', `DELETE /api/sessions/${id.slice(0, 8)} ${del.status} ${del.error || ''} — may leave a test session behind`),
+        dels.every((d) => d.ok)
+          ? ok('sl.cleanup', 'Cleanup', `${ids.length} throwaway session(s) removed`)
+          : fail('sl.cleanup', 'Cleanup', `cleanup incomplete (${dels.filter((d) => d.ok).length}/${ids.length} removed) — may leave a test session behind`),
       );
     }
 
