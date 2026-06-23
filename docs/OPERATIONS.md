@@ -353,7 +353,17 @@ curl -X POST http://127.0.0.1:3417/api/tasks/parallel \
   -d '{"execute":false,"requestedAgents":20,"tasks":[{"task":"Read docs A","mode":"codex","scope":"docs/A.md","access":"read"}]}'
 ```
 
-Use `waveIndex` on a later call with the same task payload to route a later wave deliberately. `execute:true` queues only the selected wave; it does not start microphone capture, create a Realtime session, open frontmost Terminal windows, or bypass the worker/action policy.
+Each route response includes `parallelPlan.id` and saves the full plan in `parallel-plans.json`, so later waves can be continued without repeating the payload:
+
+```bash
+curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/tasks/parallel/plans?limit=5"
+curl -X POST "http://127.0.0.1:3417/api/tasks/parallel/plans/$PLAN_ID/run" \
+  -H "X-JAVIS-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"execute":false,"waveIndex":1}'
+```
+
+Use `waveIndex` when you want a specific later wave, or omit it to route the next remaining safe wave. `execute:true` queues only the selected wave; it does not start microphone capture, create a Realtime session, open frontmost Terminal windows, or bypass the worker/action policy.
 
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
@@ -807,7 +817,7 @@ reuse the existing queued/running job instead of starting another worker.
 
 `/api/tasks/route` persists a routing record for each previewed or executed task. Direct quick chat, voice delegation, direct task-queue requests, explicit CLI runs, browser workflows, file workflows, and continuation workflows also write routing records. The record is stored in `routing.json` beside `jobs.json` and `workflows.json`, and includes lane, owner, scope, parallel group, approval requirement, status, blocker/next-action context, result link, `contextPlan` evidence showing which context was used or skipped for speed/privacy, and `skillRecallPlan` evidence when a matching local `SKILL.md` changed the routed plan. Executed background/Codex/Claude jobs also store the same `skillRecallPlan` in `jobs.json`, log that the recalled plan is being used, and expose the skill name in work progress groups. Use `/api/tasks`, `/api/tasks/routing`, `/api/tasks/routing/<route-id>`, or `/api/jobs/<job-id>` to inspect the evidence. Internal `eval` / `doctor` route, workflow, and worker records stay in the ledgers for evidence, but do not appear as active Work Next or spoken progress items.
 
-`/api/tasks/parallel` accepts up to `JAVIS_MAX_PARALLEL_TASKS` independent task items and assigns them to one `parallelGroup`. Each item can specify its own `mode`, `owner`, `scope`, `access`, and `ownershipKey`; explicit `command` items queue through the guarded local CLI lane. The parallel router records an `ownership` block on each route and serializes overlapping write scopes instead of launching competing Codex/Claude/local workers against the same file or folder. This is the API surface for splitting work across background, Codex, Claude, and local workers while keeping progress check-ins coherent.
+`/api/tasks/parallel` accepts up to `JAVIS_MAX_PARALLEL_AGENT_REQUESTS` task items for a persisted plan, then routes at most `JAVIS_MAX_PARALLEL_TASKS` ready items in one safe wave. Each item can specify its own `mode`, `owner`, `scope`, `access`, and `ownershipKey`; explicit `command` items queue through the guarded local CLI lane. The parallel router records an `ownership` block on each route and serializes overlapping write scopes instead of launching competing Codex/Claude/local workers against the same file or folder. This is the API surface for splitting work across background, Codex, Claude, and local workers while keeping progress check-ins coherent.
 
 `/api/collaboration` is for external workers that are not launched by JAVIS, such as a separate Claude Code session. A worker should create a claim before editing, heartbeat it during long work, and release it when finished. Claims expire automatically after `JAVIS_COLLABORATION_CLAIM_TTL_MS` if the worker disappears. Active write claims seed `/api/tasks/parallel`, so a later Codex/Claude/local task that overlaps the claimed scope is serialized instead of started in parallel.
 

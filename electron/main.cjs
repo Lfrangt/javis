@@ -240,6 +240,7 @@ const DATA_DIR = process.env.JAVIS_DATA_DIR || path.join(APP_SUPPORT_DIR, 'Runti
 const JOBS_FILE = path.join(DATA_DIR, 'jobs.json');
 const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
+const PARALLEL_PLANS_FILE = path.join(DATA_DIR, 'parallel-plans.json');
 const COLLABORATION_FILE = path.join(DATA_DIR, 'collaboration.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
 const OPENAI_SPEND_GUARD_FILE = path.join(DATA_DIR, 'openai-spend-guard.json');
@@ -379,6 +380,7 @@ const API_AUTH_ENABLED = process.env.JAVIS_API_AUTH !== 'false';
 const MAX_PERSISTED_JOBS = Number(process.env.JAVIS_MAX_PERSISTED_JOBS || 200);
 const MAX_PERSISTED_WORKFLOWS = Number(process.env.JAVIS_MAX_PERSISTED_WORKFLOWS || 300);
 const MAX_PERSISTED_ROUTING = Number(process.env.JAVIS_MAX_PERSISTED_ROUTING || 500);
+const MAX_PERSISTED_PARALLEL_PLANS = Math.max(20, Math.min(500, Number(process.env.JAVIS_MAX_PERSISTED_PARALLEL_PLANS || 200)));
 const MAX_PERSISTED_APPROVALS = Number(process.env.JAVIS_MAX_PERSISTED_APPROVALS || 200);
 const MAX_PERSISTED_MEMORIES = Number(process.env.JAVIS_MAX_PERSISTED_MEMORIES || 500);
 const MAX_PERSISTED_INBOX = Number(process.env.JAVIS_MAX_PERSISTED_INBOX || 300);
@@ -996,6 +998,7 @@ const LANE_CONTRACTS = [
 const jobs = new Map();
 const workflows = new Map();
 const routingRecords = new Map();
+const parallelPlans = new Map();
 const collaborationClaims = new Map();
 const approvals = new Map();
 const memories = new Map();
@@ -1277,6 +1280,7 @@ loadPersistedJobs();
 loadPersistedWorkflows();
 loadPersistedRouting();
 loadPersistedCollaboration();
+loadPersistedParallelPlans();
 loadPersistedApprovals();
 loadPersistedMemories();
 loadPersistedInbox();
@@ -8301,6 +8305,22 @@ function loadPersistedRouting() {
   }
 }
 
+function loadPersistedParallelPlans() {
+  if (!fs.existsSync(PARALLEL_PLANS_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(PARALLEL_PLANS_FILE, 'utf8'));
+    const list = Array.isArray(parsed?.plans) ? parsed.plans : [];
+    for (const rawPlan of list) {
+      const plan = normalizePersistedParallelPlan(rawPlan);
+      if (plan) parallelPlans.set(plan.id, plan);
+    }
+    persistParallelPlans();
+    appendAudit('parallel_plans.loaded', { count: parallelPlans.size });
+  } catch (error) {
+    appendAudit('parallel_plans.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
 function collaborationTimestamp(value, fallback = Date.now()) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? number : fallback;
@@ -9306,6 +9326,17 @@ function persistRouting() {
     version: 1,
     updatedAt: new Date().toISOString(),
     records: recordsForStorage,
+  });
+}
+
+function persistParallelPlans() {
+  const plansForStorage = Array.from(parallelPlans.values())
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, MAX_PERSISTED_PARALLEL_PLANS);
+  writeJsonAtomic(PARALLEL_PLANS_FILE, {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    plans: plansForStorage,
   });
 }
 
@@ -35448,6 +35479,304 @@ function compactParallelExecutionPlan(plan = {}) {
   };
 }
 
+function normalizeParallelPlanStatus(value) {
+  const status = String(value || '').trim().toLowerCase();
+  if (['pending', 'active', 'complete', 'serial_required', 'blocked', 'failed'].includes(status)) return status;
+  return 'pending';
+}
+
+function normalizeParallelPlanTask(raw = {}, index = 0) {
+  const item = normalizeParallelTaskItem(raw, index, {});
+  const originalIndex = Number.isInteger(Number(raw.parallelOriginalIndex ?? raw.originalIndex ?? raw.index))
+    ? Number(raw.parallelOriginalIndex ?? raw.originalIndex ?? raw.index)
+    : index;
+  return {
+    ...item,
+    parallelOriginalIndex: Math.max(0, Math.min(MAX_PARALLEL_AGENT_REQUESTS - 1, originalIndex)),
+    task: compactRecordText(item.task || '', 2000),
+    command: String(item.command || '').slice(0, 4000),
+    title: compactRecordText(item.title || item.task || item.command || `parallel item ${index + 1}`, 220),
+    scope: compactRecordText(item.scope || '', 260),
+    owner: compactRecordText(item.owner || '', 120),
+    access: normalizeOwnershipAccess(item.access || raw.access || raw.ownershipAccess),
+    ownershipKey: compactRecordText(item.ownershipKey || '', 260),
+  };
+}
+
+function normalizeParallelPlanTasks(tasks = []) {
+  return (Array.isArray(tasks) ? tasks : [])
+    .slice(0, MAX_PARALLEL_AGENT_REQUESTS)
+    .map((item, index) => normalizeParallelPlanTask(item, index))
+    .filter((item) => item.task || item.command);
+}
+
+function normalizeParallelPlanRoutedWaves(value = []) {
+  return Array.from(new Set((Array.isArray(value) ? value : [])
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item >= 0)
+    .slice(0, MAX_PARALLEL_AGENT_REQUESTS)))
+    .sort((a, b) => a - b);
+}
+
+function parallelPlanRemainingBatches(preflight = {}, routedWaves = []) {
+  const routed = new Set(normalizeParallelPlanRoutedWaves(routedWaves));
+  return (Array.isArray(preflight.parallelBatches) ? preflight.parallelBatches : [])
+    .filter((batch) => !routed.has(Number(batch.index)))
+    .map((batch) => ({
+      index: batch.index,
+      label: batch.label,
+      count: batch.count,
+      itemIndexes: (batch.items || []).map((item) => item.index),
+    }));
+}
+
+function parallelPlanStatusFromState(preflight = {}, routedWaves = []) {
+  const remaining = parallelPlanRemainingBatches(preflight, routedWaves);
+  if (remaining.length) return 'pending';
+  if ((preflight.serialQueue || []).length) return 'serial_required';
+  if ((preflight.blocked || []).length) return 'blocked';
+  return 'complete';
+}
+
+function parallelPlanNextWaveIndex(plan = {}) {
+  const preflight = parallelWorkbenchPreflightSnapshot({
+    tasks: plan.tasks || [],
+    requestedAgents: plan.requestedAgents || MAX_PARALLEL_AGENT_REQUESTS,
+  });
+  const remaining = parallelPlanRemainingBatches(preflight, plan.routedWaves || []);
+  return remaining[0]?.index ?? null;
+}
+
+function compactParallelRouteResult(item = {}) {
+  return {
+    index: Number(item.index || 0),
+    waveIndex: Number(item.waveIndex || 0),
+    task: compactRecordText(item.task || item.command || '', 220),
+    ok: item.ok !== false,
+    queued: Boolean(item.queued),
+    lane: compactRecordText(item.routing?.lane || item.decision?.lane || '', 40),
+    status: compactRecordText(item.routing?.status || '', 40),
+    routeId: compactRecordText(item.routing?.id || '', 120),
+    jobId: compactRecordText(item.job?.id || item.routing?.jobId || '', 120),
+    resultLink: compactRecordText(item.routing?.resultLink || '', 180),
+    ownership: compactDelegateOwnership(item.ownership || {}),
+  };
+}
+
+function refreshParallelPlanExecution(plan = {}, preflight = {}) {
+  const routedWaves = normalizeParallelPlanRoutedWaves(plan.routedWaves || []);
+  const remainingParallelBatches = parallelPlanRemainingBatches(preflight, routedWaves);
+  const serialQueue = Array.isArray(preflight.serialQueue) ? preflight.serialQueue : [];
+  const blocked = Array.isArray(preflight.blocked) ? preflight.blocked : [];
+  const nextWaveIndex = remainingParallelBatches[0]?.index ?? null;
+  return {
+    mode: 'persisted_plan',
+    acceptedTasks: Number(preflight.counts?.acceptedTasks || plan.tasks?.length || 0),
+    safeConcurrency: Number(preflight.safeConcurrency || MAX_PARALLEL_TASKS),
+    routedWaves,
+    nextWaveIndex,
+    pending: remainingParallelBatches.length > 0,
+    pendingParallelCount: remainingParallelBatches.reduce((sum, batch) => sum + Number(batch.count || 0), 0),
+    remainingParallelBatches,
+    serialQueue,
+    blocked,
+    counts: {
+      accepted: Number(preflight.counts?.acceptedTasks || plan.tasks?.length || 0),
+      routedWaves: routedWaves.length,
+      remainingWaves: remainingParallelBatches.length,
+      pendingParallel: remainingParallelBatches.reduce((sum, batch) => sum + Number(batch.count || 0), 0),
+      serialRequired: serialQueue.length,
+      blocked: blocked.length,
+    },
+    nextAction: nextWaveIndex !== null
+      ? `POST /api/tasks/parallel/plans/${plan.id}/run with waveIndex=${nextWaveIndex}`
+      : serialQueue.length
+        ? 'Review serialized scopes after active owners finish.'
+        : blocked.length
+          ? 'Fix worker readiness for blocked lanes.'
+          : 'Parallel plan has no remaining safe wave.',
+  };
+}
+
+function normalizePersistedParallelPlan(raw = {}) {
+  if (!raw || typeof raw !== 'object') return null;
+  const tasks = normalizeParallelPlanTasks(raw.tasks);
+  if (!tasks.length) return null;
+  const id = compactRecordText(raw.id || crypto.randomUUID(), 120);
+  const requestedAgents = requestedParallelAgentCount({ requestedAgents: raw.requestedAgents }, tasks.length);
+  const preflight = parallelWorkbenchPreflightSnapshot({ tasks, requestedAgents });
+  const routedWaves = normalizeParallelPlanRoutedWaves(raw.routedWaves || []);
+  const executionPlan = refreshParallelPlanExecution({ id, tasks, routedWaves }, preflight);
+  const status = normalizeParallelPlanStatus(raw.status || parallelPlanStatusFromState(preflight, routedWaves));
+  return {
+    version: 1,
+    id,
+    parallelGroup: compactRecordText(raw.parallelGroup || raw.group || `parallel:${id}`, 120),
+    source: compactRecordText(raw.source || 'parallel_router', 80),
+    status,
+    requestedAgents,
+    maxAgentRequests: MAX_PARALLEL_AGENT_REQUESTS,
+    maxTasksPerWave: MAX_PARALLEL_TASKS,
+    createdAt: Number(raw.createdAt || Date.now()),
+    updatedAt: Number(raw.updatedAt || Date.now()),
+    lastRoutedAt: Number(raw.lastRoutedAt || 0),
+    completedAt: status === 'complete' ? Number(raw.completedAt || Date.now()) : 0,
+    lastWaveIndex: Number.isInteger(Number(raw.lastWaveIndex)) ? Number(raw.lastWaveIndex) : -1,
+    routedWaves,
+    tasks,
+    preflight: compactParallelPreflightSnapshot(preflight),
+    executionPlan,
+    lastResults: (Array.isArray(raw.lastResults) ? raw.lastResults : []).slice(0, MAX_PARALLEL_TASKS).map(compactParallelRouteResult),
+    routingLedger: (Array.isArray(raw.routingLedger) ? raw.routingLedger : []).slice(0, MAX_PARALLEL_AGENT_REQUESTS),
+  };
+}
+
+function compactParallelPlan(plan = {}, options = {}) {
+  if (!plan || typeof plan !== 'object') return null;
+  const includeTasks = options.includeTasks === true;
+  return {
+    id: plan.id,
+    parallelGroup: plan.parallelGroup,
+    source: plan.source,
+    status: plan.status,
+    requestedAgents: plan.requestedAgents,
+    maxAgentRequests: plan.maxAgentRequests,
+    maxTasksPerWave: plan.maxTasksPerWave,
+    createdAt: plan.createdAt,
+    updatedAt: plan.updatedAt,
+    lastRoutedAt: plan.lastRoutedAt,
+    completedAt: plan.completedAt,
+    lastWaveIndex: plan.lastWaveIndex,
+    routedWaves: plan.routedWaves || [],
+    taskCount: Array.isArray(plan.tasks) ? plan.tasks.length : 0,
+    preflight: plan.preflight,
+    executionPlan: plan.executionPlan,
+    lastResults: plan.lastResults || [],
+    routingLedger: plan.routingLedger || [],
+    ...(includeTasks ? { tasks: plan.tasks || [] } : {}),
+  };
+}
+
+function parallelPlanSnapshot(limit = 20, status = '') {
+  const wantedStatus = String(status || '').trim();
+  return Array.from(parallelPlans.values())
+    .filter((plan) => !wantedStatus || plan.status === wantedStatus)
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, Math.max(1, Math.min(200, Number(limit || 20))))
+    .map((plan) => compactParallelPlan(plan));
+}
+
+function parallelPlanCounts() {
+  return Array.from(parallelPlans.values()).reduce(
+    (counts, plan) => {
+      counts.total += 1;
+      const status = normalizeParallelPlanStatus(plan.status);
+      counts[status] = (counts[status] || 0) + 1;
+      return counts;
+    },
+    {
+      total: 0,
+      pending: 0,
+      active: 0,
+      complete: 0,
+      serial_required: 0,
+      blocked: 0,
+      failed: 0,
+    },
+  );
+}
+
+function upsertParallelPlanFromRoute(options = {}) {
+  if (options.persistPlan === false || String(options.persistPlan || '').toLowerCase() === 'false') return null;
+  const tasks = normalizeParallelPlanTasks(options.tasks || []);
+  if (!tasks.length) return null;
+  const requestedId = compactRecordText(options.planId || options.parallelPlanId || '', 120);
+  const existing = requestedId ? parallelPlans.get(requestedId) || null : null;
+  const id = existing?.id || requestedId || crypto.randomUUID();
+  const priorWaves = existing?.routedWaves || [];
+  const waveIndex = Number(options.executionPlan?.waveIndex);
+  const routedWaves = options.results?.length && Number.isInteger(waveIndex)
+    ? normalizeParallelPlanRoutedWaves([...priorWaves, waveIndex])
+    : normalizeParallelPlanRoutedWaves(priorWaves);
+  const preflight = parallelWorkbenchPreflightSnapshot({
+    tasks,
+    requestedAgents: options.requestedAgents || existing?.requestedAgents || MAX_PARALLEL_AGENT_REQUESTS,
+  });
+  const basePlan = {
+    version: 1,
+    id,
+    parallelGroup: options.parallelGroup || existing?.parallelGroup || `parallel:${id}`,
+    source: options.source || existing?.source || 'parallel_router',
+    requestedAgents: requestedParallelAgentCount({ requestedAgents: options.requestedAgents || existing?.requestedAgents }, tasks.length),
+    createdAt: existing?.createdAt || Date.now(),
+    updatedAt: Date.now(),
+    lastRoutedAt: Date.now(),
+    lastWaveIndex: Number.isInteger(waveIndex) ? waveIndex : existing?.lastWaveIndex ?? -1,
+    routedWaves,
+    tasks,
+    preflight: compactParallelPreflightSnapshot(preflight),
+    lastResults: (options.results || []).slice(0, MAX_PARALLEL_TASKS).map(compactParallelRouteResult),
+    routingLedger: (options.routingLedger || []).slice(0, MAX_PARALLEL_AGENT_REQUESTS),
+  };
+  const executionPlan = refreshParallelPlanExecution(basePlan, preflight);
+  const status = parallelPlanStatusFromState(preflight, routedWaves);
+  const plan = normalizePersistedParallelPlan({
+    ...basePlan,
+    status,
+    executionPlan,
+    completedAt: status === 'complete' ? Date.now() : 0,
+  });
+  parallelPlans.set(plan.id, plan);
+  persistParallelPlans();
+  bumpWorkProgress('parallel_plan_updated');
+  appendAudit('parallel_plan.updated', {
+    id: plan.id,
+    parallelGroup: plan.parallelGroup,
+    status: plan.status,
+    waveIndex: plan.lastWaveIndex,
+    routedWaves: plan.routedWaves,
+    taskCount: plan.tasks.length,
+  });
+  return plan;
+}
+
+async function routeParallelPlanWave(planId, options = {}) {
+  const id = compactRecordText(planId || options.planId || options.parallelPlanId || '', 120);
+  const plan = parallelPlans.get(id);
+  if (!plan) {
+    return {
+      ok: false,
+      status: 404,
+      output: 'Parallel plan not found.',
+    };
+  }
+  const nextWaveIndex = options.waveIndex === undefined && options.wave === undefined && options.batch === undefined
+    ? parallelPlanNextWaveIndex(plan)
+    : boundedParallelWaveIndex(options.waveIndex ?? options.wave ?? options.batch);
+  if (nextWaveIndex === null) {
+    return {
+      ok: false,
+      status: 409,
+      plan: compactParallelPlan(plan, { includeTasks: true }),
+      output: 'Parallel plan has no remaining safe wave to route.',
+    };
+  }
+  const result = await routeParallelTasks({
+    tasks: plan.tasks,
+    requestedAgents: plan.requestedAgents,
+    parallelGroup: plan.parallelGroup,
+    waveIndex: nextWaveIndex,
+    execute: options.execute === true || String(options.execute || '').toLowerCase() === 'true',
+    source: options.source || 'parallel_plan_run',
+    planId: plan.id,
+  });
+  return {
+    ...result,
+    continuedPlanId: plan.id,
+    continuedWaveIndex: nextWaveIndex,
+  };
+}
+
 function previewParallelCliTask(item, context = {}) {
   const decision = {
     lane: 'local',
@@ -35547,6 +35876,18 @@ async function routeParallelTasks(options = {}) {
   const results = [];
 
   if (!tasks.length) {
+    const routingLedger = [];
+    const parallelPlan = upsertParallelPlanFromRoute({
+      planId: options.planId || options.parallelPlanId,
+      persistPlan: options.persistPlan,
+      tasks: allTasks,
+      requestedAgents: preflight.requestedAgents || requestedParallelAgentCount(options, allTasks.length),
+      parallelGroup,
+      source,
+      executionPlan,
+      results,
+      routingLedger,
+    });
     const output = [
       `Parallel group ${parallelGroup}: no runnable task in ${executionPlan.waveLabel || 'selected wave'}.`,
       executionPlan.nextAction,
@@ -35578,7 +35919,9 @@ async function routeParallelTasks(options = {}) {
         serialized: executionPlan.serialQueue || [],
       },
       results: [],
-      routingLedger: [],
+      routingLedger,
+      parallelPlan: compactParallelPlan(parallelPlan),
+      parallelPlanFile: parallelPlan ? PARALLEL_PLANS_FILE : '',
       output,
     };
   }
@@ -35672,6 +36015,18 @@ async function routeParallelTasks(options = {}) {
 
   const counts = parallelRouteCounts(results);
   const ownershipConflicts = results.filter((item) => item.ownership?.serialized).length;
+  const routingLedger = results.map((item) => item.routing && routingLedgerEntry(item.routing)).filter(Boolean);
+  const parallelPlan = upsertParallelPlanFromRoute({
+    planId: options.planId || options.parallelPlanId,
+    persistPlan: options.persistPlan,
+    tasks: allTasks,
+    requestedAgents: preflight.requestedAgents || requestedParallelAgentCount(options, allTasks.length),
+    parallelGroup,
+    source,
+    executionPlan,
+    results,
+    routingLedger,
+  });
   const output = [
     `Parallel group ${parallelGroup}: ${counts.ok}/${counts.total} routed, ${counts.queued} queued${ownershipConflicts ? `, ${ownershipConflicts} serialized by ownership guard` : ''}.`,
     results.map((item) => {
@@ -35714,7 +36069,9 @@ async function routeParallelTasks(options = {}) {
       })),
     },
     results,
-    routingLedger: results.map((item) => item.routing && routingLedgerEntry(item.routing)).filter(Boolean),
+    routingLedger,
+    parallelPlan: compactParallelPlan(parallelPlan),
+    parallelPlanFile: parallelPlan ? PARALLEL_PLANS_FILE : '',
     output,
   };
 }
@@ -68717,6 +69074,40 @@ function startApiServer() {
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'Parallel task routing failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/tasks/parallel/plans', (req, res) => {
+    res.json({
+      plans: parallelPlanSnapshot(req.query.limit || 20, req.query.status || ''),
+      counts: parallelPlanCounts(),
+      parallelPlanFile: PARALLEL_PLANS_FILE,
+    });
+  });
+
+  api.get('/api/tasks/parallel/plans/:id', (req, res) => {
+    const plan = parallelPlans.get(String(req.params.id || ''));
+    if (!plan) {
+      jsonError(res, 404, 'Parallel plan not found');
+      return;
+    }
+    res.json({
+      plan: compactParallelPlan(plan, {
+        includeTasks: String(req.query.includeTasks || '').toLowerCase() === 'true',
+      }),
+      parallelPlanFile: PARALLEL_PLANS_FILE,
+    });
+  });
+
+  api.post('/api/tasks/parallel/plans/:id/run', express.json({ limit: '1mb' }), async (req, res) => {
+    try {
+      const result = await routeParallelPlanWave(req.params.id, {
+        ...(req.body || {}),
+        source: req.body?.source || 'api_parallel_plan_run',
+      });
+      res.status(result.status || (result.ok === false ? 400 : 200)).json(result);
+    } catch (error) {
+      jsonError(res, 400, 'Parallel plan run failed', error instanceof Error ? error.message : String(error));
     }
   });
 

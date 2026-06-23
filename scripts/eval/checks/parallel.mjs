@@ -77,6 +77,8 @@ export default {
     });
     const waveData = wavePreview.data || {};
     const wavePlan = waveData.executionPlan || {};
+    const savedPlanId = waveData.parallelPlan?.id || '';
+    const savedPlanSummary = waveData.parallelPlan || {};
     const waveResults = Array.isArray(waveData.results) ? waveData.results : [];
     const expectedSelected = Array.isArray(wavePlan.selectedIndexes) ? wavePlan.selectedIndexes : [];
     const wavePreviewSafe =
@@ -95,42 +97,80 @@ export default {
       wavePlan.remainingParallelBatches.length >= 1 &&
       Array.isArray(wavePlan.serialQueue) &&
       wavePlan.serialQueue.length >= 1 &&
+      savedPlanId &&
+      savedPlanSummary.status === 'pending' &&
+      savedPlanSummary.taskCount === Math.min(20, preflight.maxRequestedAgents) &&
+      Array.isArray(savedPlanSummary.routedWaves) &&
+      savedPlanSummary.routedWaves.includes(0) &&
+      typeof waveData.parallelPlanFile === 'string' &&
+      waveData.parallelPlanFile.includes('parallel-plans.json') &&
       waveData.counts?.total === waveResults.length &&
       waveData.maxAgentRequests >= 20;
     out.push(
       wavePreviewSafe
-        ? ok('parallel.route_20_first_wave', '20-task parallel route first wave', `routed=${waveResults.length}/${wavePlan.acceptedTasks} pending=${wavePlan.pendingParallelCount} serial=${wavePlan.serialQueue.length}`)
+        ? ok('parallel.route_20_first_wave', '20-task parallel route first wave', `routed=${waveResults.length}/${wavePlan.acceptedTasks} plan=${savedPlanId} pending=${wavePlan.pendingParallelCount}`)
         : fail('parallel.route_20_first_wave', '20-task parallel route first wave', 'expected /api/tasks/parallel to route only the safe first wave while retaining pending wave/serial plan', waveData),
     );
 
-    const waveTwoPreview = await ctx.api('/api/tasks/parallel', {
-      method: 'POST',
-      body: {
-        execute: false,
-        requestedAgents: 20,
-        waveIndex: 1,
-        parallelGroup: `${waveGroup}:wave2`,
-        source: 'eval_parallel_wave_two_preview',
-        tasks: preflightTasks,
-      },
-      timeoutMs: 20000,
-    });
+    const savedPlanResponse = savedPlanId
+      ? await ctx.api(`/api/tasks/parallel/plans/${encodeURIComponent(savedPlanId)}?includeTasks=true`, { timeoutMs: 20000 })
+      : { ok: false, data: { error: 'missing plan id' } };
+    const savedPlan = savedPlanResponse.data?.plan || {};
+    const savedPlanReadable =
+      savedPlanResponse.ok &&
+      savedPlan.id === savedPlanId &&
+      savedPlan.status === 'pending' &&
+      savedPlan.taskCount === Math.min(20, preflight.maxRequestedAgents) &&
+      Array.isArray(savedPlan.tasks) &&
+      savedPlan.tasks.length === savedPlan.taskCount &&
+      savedPlan.executionPlan?.nextWaveIndex === 1;
+    out.push(
+      savedPlanReadable
+        ? ok('parallel.plan_persisted', 'Persisted parallel plan', `plan=${savedPlanId} nextWave=${savedPlan.executionPlan.nextWaveIndex}`)
+        : fail('parallel.plan_persisted', 'Persisted parallel plan', 'expected first wave to persist a resumable plan with full task list', savedPlanResponse.data || savedPlanResponse),
+    );
+
+    const waveTwoPreview = savedPlanId
+      ? await ctx.api(`/api/tasks/parallel/plans/${encodeURIComponent(savedPlanId)}/run`, {
+        method: 'POST',
+        body: {
+          execute: false,
+          waveIndex: 1,
+          source: 'eval_parallel_wave_two_preview',
+        },
+        timeoutMs: 20000,
+      })
+      : { ok: false, data: { error: 'missing plan id' } };
     const waveTwoData = waveTwoPreview.data || {};
     const waveTwoPlan = waveTwoData.executionPlan || {};
     const waveTwoResults = Array.isArray(waveTwoData.results) ? waveTwoData.results : [];
     const waveTwoSafe =
       waveTwoPreview.ok &&
+      waveTwoData.continuedPlanId === savedPlanId &&
       waveTwoPlan.mode === 'wave' &&
       waveTwoPlan.waveIndex === 1 &&
       waveTwoPlan.selectedIndexes?.[0] === 6 &&
       waveTwoResults[0]?.index === 6 &&
       waveTwoResults.length === waveTwoPlan.selectedCount &&
       waveTwoPlan.pending === true &&
+      Array.isArray(waveTwoData.parallelPlan?.routedWaves) &&
+      waveTwoData.parallelPlan.routedWaves.includes(0) &&
+      waveTwoData.parallelPlan.routedWaves.includes(1) &&
       waveTwoPlan.safety?.preservesOriginalIndexes === true;
     out.push(
       waveTwoSafe
-        ? ok('parallel.route_20_second_wave', '20-task parallel route second wave', `indexes=${waveTwoPlan.selectedIndexes.join(',')}`)
-        : fail('parallel.route_20_second_wave', '20-task parallel route second wave', 'expected waveIndex=1 to route the second safe wave with original task indexes preserved', waveTwoData),
+        ? ok('parallel.route_20_second_wave', '20-task parallel route second wave', `plan=${savedPlanId} indexes=${waveTwoPlan.selectedIndexes.join(',')}`)
+        : fail('parallel.route_20_second_wave', '20-task parallel route second wave', 'expected plan run endpoint to route the second safe wave with original task indexes preserved', waveTwoData),
+    );
+
+    const planListResponse = await ctx.api('/api/tasks/parallel/plans?limit=10', { timeoutMs: 20000 });
+    const planList = Array.isArray(planListResponse.data?.plans) ? planListResponse.data.plans : [];
+    const planListHasSaved = planListResponse.ok &&
+      planList.some((plan) => plan.id === savedPlanId && Array.isArray(plan.routedWaves) && plan.routedWaves.includes(1));
+    out.push(
+      planListHasSaved
+        ? ok('parallel.plan_list', 'Parallel plan list', `visible=${savedPlanId}`)
+        : fail('parallel.plan_list', 'Parallel plan list', 'expected persisted parallel plan to be visible in plan list after second wave', planListResponse.data || planListResponse),
     );
 
     const spendBeforeVoicePreflight = await ctx.api('/api/openai/spend-guard');
