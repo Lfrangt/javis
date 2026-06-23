@@ -26947,6 +26947,12 @@ function naturalBrowserRecoveryLocalCommand(text) {
     || /(浏览器|Chrome|chrome|Safari|safari|Arc|arc|Brave|brave|Edge|edge|网页|页面|标签页)/i.test(compactPlain);
   if (!mentionsBrowser) return null;
 
+  const explicitRecoveryAction = /\b(open|launch|focus|bring up|recover|recovery|fix|repair|make.*ready)\b/i.test(raw)
+    || /(?:打开|启动|拉起|聚焦|切到|恢复|修复|准备一个|准备可操作|准备可读取|准备浏览器|准备网页|准备目标)/i.test(compactPlain);
+  const readinessOnlyQuestion = /\b(status|ready|readiness|available|usable|working|can you read|can you use|can you see)\b/i.test(raw)
+    || /(?:状态|准备好了吗|准备好了没|好了没|好了吗|就绪了吗|可用吗|能用吗|能读吗|能看吗|默认.*窗口|不要问.*窗口)/i.test(compactPlain);
+  if (readinessOnlyQuestion && !explicitRecoveryAction) return null;
+
   const recoverySignal = /\b(open|launch|focus|bring up|recover|recovery|fix|repair|make.*ready|supported browser|readable browser|operable browser|controllable browser|browser target)\b/i.test(raw)
     || /(?:打开|启动|拉起|聚焦|切到|恢复|修复|准备|准备好|可操作|能操作|能控制|能读取|可读取|支持的|可用的|默认目标|浏览器目标)/i.test(compactPlain);
   const asksWhichWindow = /\bwhich window|choose window|select window\b/i.test(raw)

@@ -1302,6 +1302,35 @@ export default {
         : fail('voice_command.natural_browser_readiness', 'Natural browser readiness voice command', 'natural browser readiness phrase did not use the local browser_readiness fast path', naturalBrowserReady.data),
     );
 
+    const naturalBrowserReadyShort = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '浏览器准备好了吗？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_natural_browser_readiness_short',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalBrowserReadyShortData = naturalBrowserReadyShort.data || {};
+    out.push(
+      naturalBrowserReadyShort.ok &&
+        naturalBrowserReadyShortData.ok === true &&
+        naturalBrowserReadyShortData.executed === false &&
+        naturalBrowserReadyShortData.route?.decision?.localCommand === 'browser_readiness' &&
+        naturalBrowserReadyShortData.route?.localCommand?.intent === 'browser_readiness' &&
+        typeof naturalBrowserReadyShortData.route?.output === 'string' &&
+        naturalBrowserReadyShortData.route.output.includes('浏览器状态:') &&
+        !naturalBrowserReadyShortData.route.output.includes('Browser recovery:') &&
+        naturalBrowserReadyShortData.safety?.startsMicrophone === false &&
+        naturalBrowserReadyShortData.safety?.usesRealtime === false &&
+        naturalBrowserReadyShortData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.natural_browser_readiness_short', 'Short browser readiness voice command', '浏览器准备好了吗 routes to read-only readiness instead of browser recovery')
+        : fail('voice_command.natural_browser_readiness_short', 'Short browser readiness voice command', 'short browser readiness question incorrectly routed away from browser_readiness', naturalBrowserReadyShort.data),
+    );
+
     const naturalBrowserActivity = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
