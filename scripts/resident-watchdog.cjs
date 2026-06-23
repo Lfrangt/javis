@@ -84,7 +84,7 @@ function requestHealth() {
       {
         host: '127.0.0.1',
         port: apiPort,
-        path: '/api/health',
+        path: '/api/health?lite=watchdog',
         method: 'GET',
         timeout: timeoutMs,
       },

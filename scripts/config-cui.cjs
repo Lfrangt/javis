@@ -1330,6 +1330,7 @@ async function showLocalVoiceLoopQuickstart() {
 function printVoiceStandby(result) {
   const standby = result?.standby || result?.voiceStandby || result || {};
   const provider = standby.provider || {};
+  const keySync = provider.keySync || {};
   const spend = standby.spendGuard || {};
   const local = standby.local || {};
   const primary = standby.primaryAction || {};
@@ -1352,6 +1353,9 @@ function printVoiceStandby(result) {
   }
   console.log('\nProvider');
   console.log(`- ${provider.status || '-'} · ${provider.kind || '-'} · key=${provider.hasOpenAiKey ? 'present' : 'missing'} · ok=${provider.ok ? 'yes' : 'no'}`);
+  if (keySync.version) {
+    console.log(`- key sync: ${keySync.status || '-'} · env=${keySync.envFile?.openAiApiKeyPresent ? 'present' : 'missing'} · match=${keySync.fingerprintsMatch ? 'yes' : 'no'} · restart=${keySync.requiresRestart ? 'yes' : 'no'}`);
+  }
   if (provider.summary) console.log(`- ${compact(provider.summary, 300)}`);
   if (provider.next) console.log(`- next: ${compact(provider.next, 320)}`);
   if (provider.subscriptionBoundary) console.log(`- billing: ${compact(provider.subscriptionBoundary, 320)}`);
@@ -4068,10 +4072,14 @@ async function stopRealtimeRendererVoiceFromCui(rl) {
 function printRealtimeProviderProbe(result) {
   const probe = result?.probe || result?.providerProbe || result || {};
   const providerResult = probe.result || result?.result || {};
+  const keySync = probe.keySync || result?.keySync || {};
   console.log('JAVIS Realtime Provider Probe');
   console.log('=============================');
   console.log(`Run: ${probe.runId || result?.runId || providerResult.runId || '-'}`);
   console.log(`Status: ${probe.status || (result?.executed ? 'dispatched' : 'preview')} · renderer=${probe.rendererAvailable ? 'ready' : 'unknown'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'} · starts microphone=${probe.startsMicrophone ? 'yes' : 'no'}`);
+  if (keySync.version) {
+    console.log(`Key sync: ${keySync.status || '-'} · env=${keySync.envFile?.openAiApiKeyPresent ? 'present' : 'missing'} · loaded=${keySync.configuredAtStartup ? 'yes' : 'no'} · match=${keySync.fingerprintsMatch ? 'yes' : 'no'} · restart=${keySync.requiresRestart ? 'yes' : 'no'} · fingerprint=${keySync.loadedFingerprint || keySync.envFile?.fingerprint || '-'}`);
+  }
   console.log(`Provider: ${probe.providerReady ? 'ready' : 'not-ready'}${providerResult.statusCode ? ` · HTTP ${providerResult.statusCode}` : ''}${providerResult.durationMs ? ` · ${providerResult.durationMs}ms` : ''}`);
   if (probe.spendGuard || result?.spendGuard) {
     const guard = probe.spendGuard || result.spendGuard;
@@ -4104,10 +4112,14 @@ function printRealtimeProviderProbe(result) {
 function printRealtimeProviderRecovery(result) {
   const recovery = result?.recovery || result || {};
   const health = result?.voiceHealth || {};
+  const keySync = recovery.keySync || health.openAiKeySync || {};
   const steps = Array.isArray(recovery.steps) ? recovery.steps : [];
   console.log('JAVIS Realtime Provider Recovery');
   console.log('================================');
   console.log(`Status: ${health.status || recovery.status || '-'} · kind=${health.kind || recovery.kind || '-'} · active=${recovery.active ? 'yes' : 'no'}`);
+  if (keySync.version) {
+    console.log(`Key sync: ${keySync.status || '-'} · env=${keySync.envFile?.openAiApiKeyPresent ? 'present' : 'missing'} · loaded=${keySync.configuredAtStartup ? 'yes' : 'no'} · match=${keySync.fingerprintsMatch ? 'yes' : 'no'} · restart=${keySync.requiresRestart ? 'yes' : 'no'}`);
+  }
   if (health.summary || recovery.summary) console.log(`Summary: ${compact(health.summary || recovery.summary, 320)}`);
   if (recovery.subscriptionBoundary) console.log(`Billing: ${compact(recovery.subscriptionBoundary, 320)}`);
   if (recovery.next) console.log(`Next: ${compact(recovery.next, 320)}`);
@@ -4165,6 +4177,7 @@ function printOpenAiSpendGuard(result) {
   const emergency = guard.emergencyLock || {};
   const runtimeKeyIsolation = guard.runtimeKeyIsolation || {};
   const runtimeKeySafety = runtimeKeyIsolation.safety || {};
+  const keySync = runtimeKeyIsolation.keySync || {};
   const memoryVault = runtimeKeyIsolation.memoryKeyVault || {};
   const childEnvGuard = guard.childEnvGuard || {};
   const childEnvSafety = childEnvGuard.safety || {};
@@ -4190,6 +4203,9 @@ function printOpenAiSpendGuard(result) {
   console.log(`Spend lease: ${guard.requireSpendLease ? 'required' : 'off'} · ttl=${formatInterval(guard.spendLeaseTtlMs || lease.ttlMs || 0)} · active=${lease.activeCount || activeLeases.length || 0} · one-request-only=${lease.oneRequestOnly === false ? 'no' : 'yes'}`);
   console.log(`Egress guard: ${guard.egressGuardEnabled ? 'on' : 'off'} · ${guard.egressGuardMode || '-'}`);
   console.log(`Runtime key env: ${runtimeKeyIsolation.enabled ? 'isolated' : 'inherited'} · OPENAI_API_KEY in process.env=${runtimeKeyIsolation.openAiApiKeyInProcessEnv ? 'yes' : 'no'} · OpenAI env keys=${runtimeKeyIsolation.openAiCredentialKeyCount ?? '-'} · memory vault=${memoryVault.enabled ? (memoryVault.active ? 'active' : 'armed') : 'off'} · callable key=${runtimeKeyIsolation.availableForGuardedCalls ? 'yes' : 'no'}`);
+  if (keySync.version) {
+    console.log(`Key sync: ${keySync.status || '-'} · env=${keySync.envFile?.openAiApiKeyPresent ? 'present' : 'missing'} · loaded=${keySync.configuredAtStartup ? 'yes' : 'no'} · match=${keySync.fingerprintsMatch ? 'yes' : 'no'} · restart=${keySync.requiresRestart ? 'yes' : 'no'} · fingerprint=${keySync.loadedFingerprint || keySync.envFile?.fingerprint || '-'}`);
+  }
   console.log(`Child env guard: ${childEnvGuard.enabled ? 'on' : 'off'} · child key inheritance=${childEnvGuard.defaultChildReceivesOpenAiCredentials ? 'allowed' : 'blocked'} · inline key env=${childEnvGuard.blocksInlineCredentialEnv ? 'blocked' : 'allowed'} · MCP key env=${childEnvSafety.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'allowed'}`);
   console.log(`Safety: paranoid zero-spend=${safety.paranoidZeroSpendDefault ? 'yes' : 'no'} · cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · one-request lease=${safety.oneRequestLeaseRequired ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'} · runtime env blocked=${runtimeKeySafety.childProcessesCannotInheritRuntimeOpenAiCredentials ? 'yes' : 'no'} · child creds blocked=${safety.childProcessOpenAiCredentialsBlocked ? 'yes' : 'no'}`);
   console.log('\nTo intentionally spend later: set JAVIS_OPENAI_PARANOID_ZERO_SPEND=false, set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase to create one short-lived, one-request lease.');

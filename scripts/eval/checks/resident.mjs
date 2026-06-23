@@ -4,6 +4,28 @@ import { spawnSync } from 'node:child_process';
 
 import { ok, warn, fail } from '../_client.mjs';
 
+const OPENAI_KEY_SYNC_STATUSES = new Set(['loaded', 'restart_required', 'loaded_from_process_env', 'missing', 'unknown']);
+
+function noOpenAiSecretLeak(value) {
+  return !String(value || '').includes('sk-');
+}
+
+function openAiKeySyncLooksSafe(keySync = {}) {
+  return keySync.version === 1 &&
+    OPENAI_KEY_SYNC_STATUSES.has(String(keySync.status || '')) &&
+    keySync.safety?.readOnly === true &&
+    keySync.safety?.callsOpenAI === false &&
+    keySync.safety?.createsSpendLease === false &&
+    keySync.safety?.startsMicrophone === false &&
+    keySync.safety?.usesRealtime === false &&
+    keySync.safety?.exposesSecretValues === false &&
+    keySync.safety?.fingerprintOnly === true &&
+    typeof keySync.configuredAtStartup === 'boolean' &&
+    typeof keySync.envFile?.openAiApiKeyPresent === 'boolean' &&
+    typeof keySync.requiresRestart === 'boolean' &&
+    noOpenAiSecretLeak(JSON.stringify(keySync));
+}
+
 // Resident control surface (README: wake state, setup guide + one-step fix,
 // global hotkeys / pet window state, LaunchAgent resident status). Read-only.
 export default {
@@ -358,6 +380,7 @@ export default {
     const voiceStandbyPromptPack = voiceStandby.promptPack || {};
     const voiceStandbyInputMode = voiceStandby.inputMode || {};
     const voiceStandbyRetryPolicy = voiceStandby.provider?.retryPolicy || {};
+    const voiceStandbyKeySync = voiceStandby.provider?.keySync || {};
     const voiceStandbyCui = spawnSync('npm', ['run', 'voice:standby'], {
       cwd: process.cwd(),
       encoding: 'utf8',
@@ -378,6 +401,7 @@ export default {
         voiceStandbyInputMode.startsMicrophone === false &&
         voiceStandbyInputMode.usesRealtime === false &&
         voiceStandbyInputMode.callsOpenAI === false &&
+        openAiKeySyncLooksSafe(voiceStandbyKeySync) &&
         typeof voiceStandby.spendGuard?.zeroSpendLocked === 'boolean' &&
         (voiceStandby.provider?.status === 'ready' ||
           (voiceStandbyRetryPolicy.active === true &&
@@ -410,10 +434,12 @@ export default {
         voiceStandbyCui.status === 0 &&
         voiceStandbyCui.stdout.includes('JAVIS Voice Standby') &&
         voiceStandbyCui.stdout.includes('Input mode: Local typed input') &&
+        voiceStandbyCui.stdout.includes('key sync:') &&
+        noOpenAiSecretLeak(voiceStandbyCui.stdout) &&
         (voiceStandby.provider?.status === 'ready' || voiceStandbyCui.stdout.includes('retry:')) &&
         voiceStandbyCui.stdout.includes('Try saying') &&
         voiceStandbyCui.stdout.includes('local loop: npm run voice:chat')
-        ? ok('resident.voice_standby', 'Voice standby/fallback status', `${voiceStandby.mode} · primary=${voiceStandby.primaryAction.id}`)
+        ? ok('resident.voice_standby', 'Voice standby/fallback status', `${voiceStandby.mode} · key=${voiceStandbyKeySync.status} · primary=${voiceStandby.primaryAction.id}`)
         : fail('resident.voice_standby', 'Voice standby/fallback status', 'expected unified voice standby contract plus CUI output', {
           status: voiceStandbyResponse.status,
           voiceStandby,
@@ -493,6 +519,7 @@ export default {
     const voiceSetupResponse = await ctx.api('/api/voice/setup');
     const voiceSetup = voiceSetupResponse.data?.setup || voiceSetupResponse.data?.guide || {};
     const voiceSetupChecklist = Array.isArray(voiceSetup.goLiveChecklist) ? voiceSetup.goLiveChecklist : [];
+    const voiceSetupKeySync = voiceSetup.provider?.keySync || {};
     const voiceSetupCui = spawnSync('npm', ['run', 'voice:setup'], {
       cwd: process.cwd(),
       encoding: 'utf8',
@@ -509,6 +536,7 @@ export default {
         typeof voiceSetup.microphone.status === 'string' &&
         typeof voiceSetup.microphone.ready === 'boolean' &&
         voiceSetup.provider?.status &&
+        openAiKeySyncLooksSafe(voiceSetupKeySync) &&
         voiceSetup.spendGuard?.mode &&
         voiceSetup.localFallback?.endpoint === '/api/voice/command' &&
         voiceSetup.safety?.readOnly === true &&
@@ -522,10 +550,12 @@ export default {
         voiceSetupChecklist.some((item) => item.id === 'live_renderer_voice' && item.startsMicrophone === true && item.manualOnly === true) &&
         voiceSetupCui.status === 0 &&
         voiceSetupCui.stdout.includes('Realtime recovery:') &&
+        voiceSetupCui.stdout.includes('Key sync:') &&
+        noOpenAiSecretLeak(voiceSetupCui.stdout) &&
         voiceSetupCui.stdout.includes('Microphone:') &&
         voiceSetupCui.stdout.includes('Go-live checklist:') &&
         voiceSetupCui.stdout.includes('No-cost now:')
-        ? ok('resident.voice_setup_checklist', 'Voice setup checklist', `${voiceSetup.status || '-'} · mic=${voiceSetup.microphone.status} · checklist=${voiceSetupChecklist.length}`)
+        ? ok('resident.voice_setup_checklist', 'Voice setup checklist', `${voiceSetup.status || '-'} · key=${voiceSetupKeySync.status} · mic=${voiceSetup.microphone.status} · checklist=${voiceSetupChecklist.length}`)
         : fail('resident.voice_setup_checklist', 'Voice setup checklist', 'expected read-only voice setup packet with microphone, provider, spend guard, local fallback, and go-live checklist', {
           status: voiceSetupResponse.status,
           setup: voiceSetupResponse.data,
@@ -2140,6 +2170,7 @@ export default {
     const spendGuard = spendGuardResponse.data?.spendGuard || {};
     const egressGuard = spendGuardResponse.data?.egressGuard || {};
     const spendForensics = spendGuardResponse.data?.forensics || {};
+    const spendKeySync = spendGuard.runtimeKeyIsolation?.keySync || {};
     const spendGuardTotalBefore = Number(spendGuard.counts?.total || 0);
     const spendGuardBlockedBefore = Number(spendGuard.counts?.blocked || 0);
     const spendGuardZeroLocked = Boolean(
@@ -2200,6 +2231,7 @@ export default {
         spendGuard.spendLease?.oneRequestOnly === true &&
         Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
         spendRuntimeKeyIsolationOk &&
+        openAiKeySyncLooksSafe(spendKeySync) &&
         spendGuard.childEnvGuard?.enabled === true &&
         spendGuard.childEnvGuard?.defaultChildReceivesOpenAiCredentials === false &&
         spendGuard.childEnvGuard?.blocksInlineCredentialEnv === true &&
@@ -2215,7 +2247,7 @@ export default {
         spendForensicsOk &&
         spendGuard.safety?.confirmationPhraseRequired === true &&
         spendGuard.safety?.unattendedCloudDefaultBlocked === true
-        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · runtimeEnv=${spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · callable=${spendGuard.runtimeKeyIsolation?.availableForGuardedCalls ? 'yes' : 'no'} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
+        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · key=${spendKeySync.status} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · runtimeEnv=${spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · callable=${spendGuard.runtimeKeyIsolation?.availableForGuardedCalls ? 'yes' : 'no'} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
         : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to be zero-locked or manual-guarded while blocking unattended/autopilot calls and renderer startup probes', {
           status: spendGuardResponse.status,
           body: spendGuardResponse.data,
@@ -2413,6 +2445,40 @@ export default {
 	          body: egressProbe,
 	          spendGuardBefore: spendGuard,
 	          spendGuardAfter: spendGuardAfterEgressProbe,
+	        }),
+	    );
+	    const providerProbePreviewResponse = await ctx.api('/api/realtime/provider/probe');
+	    const providerProbePreview = providerProbePreviewResponse.data?.probe || providerProbePreviewResponse.data || {};
+	    const providerProbePreviewCui = spawnSync('npm', ['run', 'dogfood:realtime-provider-probe'], {
+	      cwd: process.cwd(),
+	      encoding: 'utf8',
+	      timeout: 15000,
+	      maxBuffer: 1024 * 1024,
+	      env: {
+	        ...process.env,
+	        ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+	      },
+	    });
+	    out.push(
+	      providerProbePreviewResponse.ok &&
+	        providerProbePreview.status &&
+	        providerProbePreview.startsMicrophone === false &&
+	        providerProbePreview.requiresMicConfirmation === false &&
+	        providerProbePreview.requiresOpenAiSpendConfirmation === true &&
+	        providerProbePreview.openAiSpendConfirmation?.required === true &&
+	        openAiKeySyncLooksSafe(providerProbePreview.keySync || {}) &&
+	        noOpenAiSecretLeak(JSON.stringify(providerProbePreview)) &&
+	        providerProbePreviewCui.status === 0 &&
+	        providerProbePreviewCui.stdout.includes('JAVIS Realtime Provider Probe') &&
+	        providerProbePreviewCui.stdout.includes('Key sync:') &&
+	        noOpenAiSecretLeak(providerProbePreviewCui.stdout)
+	        ? ok('resident.realtime_provider_probe_key_sync_preview', 'Realtime provider probe key sync preview', `${providerProbePreview.status} · key=${providerProbePreview.keySync?.status || '-'} · restart=${providerProbePreview.keySync?.requiresRestart ? 'yes' : 'no'}`)
+	        : fail('resident.realtime_provider_probe_key_sync_preview', 'Realtime provider probe key sync preview', 'expected no-mic/no-spend provider probe preview to expose safe key sync without leaking API secrets', {
+	          status: providerProbePreviewResponse.status,
+	          body: providerProbePreviewResponse.data,
+	          cui: providerProbePreviewCui.stdout,
+	          cuiError: providerProbePreviewCui.stderr,
+	          cuiStatus: providerProbePreviewCui.status,
 	        }),
 	    );
 	    const unconfirmedProviderProbeResponse = await ctx.api('/api/realtime/provider/probe', {
@@ -2620,6 +2686,10 @@ export default {
 				      mainSource.includes('zeroSpendModeDoesNotRetainKeyInMemory') &&
 				      mainSource.includes('OPENAI_RUNTIME_ENV_ISOLATED_KEYS') &&
 			      mainSource.includes('function openAiRuntimeKeyIsolationSnapshot') &&
+			      mainSource.includes('function openAiApiKeySyncSnapshot') &&
+			      mainSource.includes('function openAiSafeKeyFingerprint') &&
+			      mainSource.includes('function readOpenAiEnvFileKeySnapshot') &&
+			      mainSource.includes('exposesSecretValues: false') &&
 			      mainSource.includes('function createOpenAiSpendLease') &&
 			      mainSource.includes('function sanitizeChildProcessEnv') &&
 			      mainSource.includes('function guardedChildProcessOptions') &&
@@ -2706,10 +2776,12 @@ export default {
     const recovery = recoveryResponse.data?.recovery || {};
     const recoverySteps = Array.isArray(recovery.steps) ? recovery.steps : [];
     const retryPolicy = recovery.retryPolicy || {};
+    const recoveryKeySync = recovery.keySync || {};
     out.push(
       recoveryResponse.ok &&
         recovery.version === 1 &&
         typeof recovery.active === 'boolean' &&
+        openAiKeySyncLooksSafe(recoveryKeySync) &&
         (recovery.active === false ||
           (retryPolicy.active === true &&
             ['spend_locked', 'probe_due', 'cooldown', 'probe_running'].includes(retryPolicy.state) &&
@@ -2728,7 +2800,7 @@ export default {
         recovery.safety?.usesRealtime === false &&
         recovery.safety?.storesRawAudio === false &&
         (!recovery.billingLikely || recoverySteps.some((step) => step.id === 'open_api_billing' && step.url))
-        ? ok('resident.realtime_provider_recovery', 'Realtime provider recovery plan', `${recovery.kind || 'ready'} · active=${recovery.active} · steps=${recoverySteps.length}`)
+        ? ok('resident.realtime_provider_recovery', 'Realtime provider recovery plan', `${recovery.kind || 'ready'} · key=${recoveryKeySync.status} · active=${recovery.active} · steps=${recoverySteps.length}`)
         : fail('resident.realtime_provider_recovery', 'Realtime provider recovery plan', 'expected safe Realtime recovery payload with API billing boundary and local fallback', {
             recovery,
             status: recoveryResponse.status,

@@ -55,6 +55,7 @@ function resolveAppRoot() {
 }
 
 const APP_ROOT = resolveAppRoot();
+const OPENAI_ENV_FILE = path.join(APP_ROOT, '.env');
 try {
   if (safeCurrentWorkingDirectory() !== APP_ROOT) {
     process.chdir(APP_ROOT);
@@ -63,7 +64,7 @@ try {
   console.error(`JAVIS failed to enter app root ${APP_ROOT}: ${error instanceof Error ? error.message : String(error)}`);
 }
 
-dotenv.config({ path: path.join(APP_ROOT, '.env') });
+dotenv.config({ path: OPENAI_ENV_FILE });
 
 function appendStartupTrace(event, data = {}) {
   try {
@@ -197,6 +198,7 @@ const execFileAsync = promisify(execFile);
 const API_PORT = Number(process.env.JAVIS_API_PORT || 3417);
 const API_BASE = `http://127.0.0.1:${API_PORT}`;
 const OPENAI_API_KEY_FROM_ENV = process.env.OPENAI_API_KEY || '';
+const OPENAI_API_KEY_LOADED_AT = Date.now();
 let OPENAI_API_KEY = OPENAI_API_KEY_FROM_ENV;
 let openAiApiKeyVaultedFromMemory = false;
 let openAiApiKeyVaultReason = '';
@@ -215,6 +217,110 @@ function openAiApiKeyConfigured() {
 
 function openAiApiKeyAvailableForCalls() {
   return Boolean(OPENAI_API_KEY);
+}
+
+function openAiSafeKeyFingerprint(value) {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  return `sha256:${crypto.createHash('sha256').update(text).digest('hex').slice(0, 12)}`;
+}
+
+function readOpenAiEnvFileKeySnapshot() {
+  try {
+    if (!fs.existsSync(OPENAI_ENV_FILE)) {
+      return {
+        exists: false,
+        file: '.env',
+        openAiApiKeyPresent: false,
+        fingerprint: '',
+        modifiedAt: 0,
+        modifiedAtIso: '',
+        sizeBytes: 0,
+        error: '',
+      };
+    }
+    const stat = fs.statSync(OPENAI_ENV_FILE);
+    const parsed = dotenv.parse(fs.readFileSync(OPENAI_ENV_FILE));
+    const key = String(parsed.OPENAI_API_KEY || '').trim();
+    return {
+      exists: true,
+      file: '.env',
+      openAiApiKeyPresent: Boolean(key),
+      fingerprint: openAiSafeKeyFingerprint(key),
+      modifiedAt: Math.round(Number(stat.mtimeMs || 0)),
+      modifiedAtIso: stat.mtimeMs ? new Date(stat.mtimeMs).toISOString() : '',
+      sizeBytes: Number(stat.size || 0),
+      error: '',
+    };
+  } catch (error) {
+    return {
+      exists: fs.existsSync(OPENAI_ENV_FILE),
+      file: '.env',
+      openAiApiKeyPresent: false,
+      fingerprint: '',
+      modifiedAt: 0,
+      modifiedAtIso: '',
+      sizeBytes: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function openAiApiKeySyncSnapshot() {
+  const configuredAtStartup = openAiApiKeyConfigured();
+  const loadedFingerprint = openAiSafeKeyFingerprint(OPENAI_API_KEY_FROM_ENV);
+  const file = readOpenAiEnvFileKeySnapshot();
+  const fileHasKey = Boolean(file.openAiApiKeyPresent);
+  const fingerprintsMatch = Boolean(loadedFingerprint && file.fingerprint && loadedFingerprint === file.fingerprint);
+  const fileModifiedAfterLoad = Boolean(file.modifiedAt && file.modifiedAt > OPENAI_API_KEY_LOADED_AT + 1000);
+  const requiresRestart = Boolean(
+    (fileHasKey && !configuredAtStartup) ||
+      (fileHasKey && configuredAtStartup && loadedFingerprint && file.fingerprint && !fingerprintsMatch)
+  );
+  const status = !configuredAtStartup && !fileHasKey
+    ? 'missing'
+    : requiresRestart
+      ? 'restart_required'
+      : fingerprintsMatch
+        ? 'loaded'
+        : configuredAtStartup
+          ? 'loaded_from_process_env'
+          : 'unknown';
+  const summary = status === 'loaded'
+    ? 'The running resident loaded the same OPENAI_API_KEY currently saved in .env.'
+    : status === 'restart_required'
+      ? 'The .env OPENAI_API_KEY differs from what this resident loaded; restart JAVIS before testing Realtime.'
+      : status === 'loaded_from_process_env'
+        ? 'The running resident has an OPENAI_API_KEY from process environment, but .env does not contain the same key.'
+        : 'OPENAI_API_KEY is missing from the running resident and .env.';
+  return {
+    version: 1,
+    status,
+    summary,
+    configuredAtStartup,
+    availableForGuardedCalls: openAiApiKeyAvailableForCalls(),
+    loadedFingerprint,
+    loadedAt: OPENAI_API_KEY_LOADED_AT,
+    loadedAtIso: new Date(OPENAI_API_KEY_LOADED_AT).toISOString(),
+    envFile: file,
+    fingerprintsMatch,
+    fileModifiedAfterLoad,
+    requiresRestart,
+    next: requiresRestart
+      ? 'Run npm run resident:restart, then preview npm run dogfood:realtime-provider-probe again.'
+      : status === 'loaded'
+        ? 'The key is loaded; the next step is the manual one-request no-mic provider probe.'
+        : 'Add OPENAI_API_KEY to .env, restart JAVIS, then preview the provider probe.',
+    safety: {
+      readOnly: true,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      exposesSecretValues: false,
+      fingerprintOnly: true,
+    },
+  };
 }
 
 function boundedRuntimeNumber(value, fallback, min, max) {
@@ -4172,6 +4278,7 @@ function openAiRuntimeKeyIsolationSnapshot() {
   const processEnvOpenAiKeys = openAiRuntimeCredentialEnvKeys(process.env);
   const configuredAtStartup = openAiApiKeyConfigured();
   const availableForGuardedCalls = openAiApiKeyAvailableForCalls();
+  const keySync = openAiApiKeySyncSnapshot();
   return {
     version: 1,
     enabled: OPENAI_RUNTIME_KEY_ISOLATION,
@@ -4185,6 +4292,7 @@ function openAiRuntimeKeyIsolationSnapshot() {
     openAiCredentialKeyCount: processEnvOpenAiKeys.length,
     processEnvOpenAiCredentialKeys: processEnvOpenAiKeys,
     preservedForGuardedCalls: availableForGuardedCalls,
+    keySync,
     memoryKeyVault: {
       enabled: OPENAI_MEMORY_KEY_VAULT,
       active: configuredAtStartup && !availableForGuardedCalls,
@@ -31580,6 +31688,7 @@ function formatVoiceStatusForLocalCommand(status = {}) {
 
 function formatRealtimeRecoveryGuideForLocalCommand(guide = {}) {
   const provider = guide.provider || {};
+  const keySync = provider.keySync || {};
   const microphone = guide.microphone || {};
   const spend = guide.spendGuard || {};
   const egress = guide.egressGuard || {};
@@ -31609,6 +31718,7 @@ function formatRealtimeRecoveryGuideForLocalCommand(guide = {}) {
     `Realtime recovery: ${guide.label || guide.status || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ready=${provider.ready ? 'yes' : 'no'}`,
     guide.meaning ? `意思: ${compactRecordText(guide.meaning, 420)}` : '',
     provider.summary ? `Provider: ${compactRecordText(provider.summary, 260)}` : '',
+    keySync.version ? `Key sync: ${keySync.status || '-'} · env=${keySync.envFile?.openAiApiKeyPresent ? 'present' : 'missing'} · loaded=${keySync.configuredAtStartup ? 'yes' : 'no'} · match=${keySync.fingerprintsMatch ? 'yes' : 'no'} · restart=${keySync.requiresRestart ? 'yes' : 'no'}` : '',
     `Microphone: ${microphone.ready ? 'ready' : 'needs user'} · macOS=${microphone.status || '-'}${microphone.next ? ` · ${compactRecordText(microphone.next, 180)}` : ''}`,
     `OpenAI API key: ${keyLine}`,
     `Spend guard: cloud=${spend.mode || '-'} · paranoid=${spend.paranoidZeroSpend ? 'on' : 'off'} · hard=${spend.hardSpendLock ? 'on' : 'off'} · emergency=${spend.emergencyZeroSpendLock ? 'on' : 'off'} · daily=${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · remaining=${spend.remainingTotal ?? 0}`,
@@ -31753,6 +31863,7 @@ function formatRealtimeProviderProbeForLocalCommand(control = {}) {
   const result = control.result || {};
   const confirmation = control.openAiSpendConfirmation || {};
   const spendGuard = probe.spendGuard || control.spendGuard || {};
+  const keySync = probe.keySync || {};
   const spendGuardStatus = spendGuard.allowed
     ? 'allowed'
     : spendGuard.manualRequired || spendGuard.status === 'manual_required'
@@ -31761,6 +31872,7 @@ function formatRealtimeProviderProbeForLocalCommand(control = {}) {
   return [
     `Realtime provider probe: ${control.executed ? 'dispatched' : 'preview only'} · status=${probe.status || '-'} · ready=${probe.providerReady ? 'yes' : 'no'}`,
     `Renderer: ${probe.rendererAvailable ? 'ready' : 'missing'} · OpenAI key=${probe.hasOpenAiKey ? 'present' : 'missing'}`,
+    keySync.version ? `Key sync: ${keySync.status || '-'} · env=${keySync.envFile?.openAiApiKeyPresent ? 'present' : 'missing'} · loaded=${keySync.configuredAtStartup ? 'yes' : 'no'} · match=${keySync.fingerprintsMatch ? 'yes' : 'no'} · restart=${keySync.requiresRestart ? 'yes' : 'no'}` : '',
     spendGuard.reasons ? `Spend guard: ${spendGuardStatus} · hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} · remaining=${spendGuard.remaining?.total ?? '-'}${spendGuard.reasons?.length ? ` · ${spendGuard.reasons.slice(0, 4).join(', ')}` : ''}` : '',
     confirmation.required ? `OpenAI spend: ${confirmation.confirmed ? 'confirmed for this request' : 'confirmation required'} · one-request only` : '',
     probe.summary ? `Summary: ${compactRecordText(probe.summary, 260)}` : '',
@@ -31899,6 +32011,7 @@ function realtimeProviderProbeControlPayload(result = {}, execute = false) {
       runId: compactRecordText(providerProbe.runId || '', 120),
       rendererAvailable: Boolean(providerProbe.rendererAvailable),
       hasOpenAiKey: Boolean(providerProbe.hasOpenAiKey),
+      keySync: providerProbe.keySync || openAiApiKeySyncSnapshot(),
       startsMicrophone: Boolean(providerProbe.startsMicrophone),
       requiresMicConfirmation: Boolean(providerProbe.requiresMicConfirmation),
       spendGuard: providerProbe.spendGuard || null,
@@ -35103,6 +35216,7 @@ function voiceStandbySnapshot(options = {}) {
       kind: compactRecordText(voiceHealth.kind || '', 80),
       ok: Boolean(voiceHealth.ok),
       hasOpenAiKey: Boolean(voiceHealth.hasOpenAiKey),
+      keySync: voiceHealth.openAiKeySync || openAiApiKeySyncSnapshot(),
       summary: compactRecordText(voiceHealth.summary || '', 260),
       next: compactRecordText(voiceHealth.next || '', 320),
       subscriptionBoundary: compactRecordText(recovery.subscriptionBoundary || '', 320),
@@ -35157,6 +35271,7 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
   const egressGuard = openAiEgressGuardSnapshot();
   const forensics = openAiSpendForensicsSnapshot({ guard: spendGuard, egress: egressGuard });
   const recovery = voiceHealth.recovery || realtimeProviderRecoverySnapshot(null, { source: options.source || 'realtime_recovery_guide' });
+  const keySync = voiceHealth.openAiKeySync || openAiApiKeySyncSnapshot();
   const microphoneStatus = mediaAccessStatus('microphone');
   const microphoneReady = microphoneStatus === 'granted' || microphoneStatus === 'unknown';
   const lease = spendGuard.spendLease || {};
@@ -35177,6 +35292,9 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
     pushBlocker('missing_openai_key', 'Missing OpenAI API key', 'OPENAI_API_KEY is not configured in the local environment.');
   } else if (!callableKey) {
     pushBlocker('openai_key_spend_locked', 'API key saved, paid calls locked', 'The key is in .env, but zero-spend protection is intentionally keeping paid OpenAI calls unavailable in this running process.');
+  }
+  if (keySync.requiresRestart) {
+    pushBlocker('openai_key_restart_required', 'Restart required after API key update', keySync.summary || 'The .env OPENAI_API_KEY differs from the key loaded by this resident process.');
   }
   if (spendGuard.paranoidZeroSpend?.enabled) {
     pushBlocker('paranoid_zero_spend', 'Paranoid zero-spend is on', `${spendGuard.paranoidZeroSpend.env}=true forces cloud off, zero daily budget, hard lock, one-request lease, and key isolation.`);
@@ -35342,6 +35460,7 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
       ready: Boolean(voiceHealth.status === 'ready'),
       hasOpenAiKey: Boolean(voiceHealth.hasOpenAiKey || configuredKey),
       callableOpenAiKey: Boolean(callableKey),
+      keySync,
       summary: compactRecordText(voiceHealth.summary || '', 280),
       next: compactRecordText(voiceHealth.next || '', 320),
       retryPolicy: recovery.retryPolicy || null,
@@ -45472,6 +45591,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
 
   const providerProbeFreshness = realtimeProviderProbeFreshness();
   const retryPolicy = realtimeProviderRetryPolicySnapshot(issue, { freshness: providerProbeFreshness });
+  const keySync = openAiApiKeySyncSnapshot();
 
   return {
     version: 1,
@@ -45491,6 +45611,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     spendGuard: spendLocked
       ? compactOpenAiSpendGuardDecision(issue.spendGuardDecision || realtimeProviderProbeSpendGuardDecision('realtime_provider_recovery'))
       : null,
+    keySync,
     retryPolicy,
     links: {
       billing: billingUrl,
@@ -45640,6 +45761,7 @@ function realtimeVoiceHealthSnapshot(options = {}) {
         : `Last Realtime WebRTC negotiation succeeded${providerCheck.statusCode ? ` (HTTP ${providerCheck.statusCode})` : ''}.`
       : realtimeProviderUnverifiedIssue().summary);
   const recovery = realtimeProviderRecoverySnapshot(issue, { source: 'voice_health' });
+  const openAiKeySync = openAiApiKeySyncSnapshot();
   return {
     ok: status !== 'blocked',
     status,
@@ -45648,6 +45770,7 @@ function realtimeVoiceHealthSnapshot(options = {}) {
     next: issue?.next || '',
     hasOpenAiKey: openAiKeyConfigured,
     openAiKeyAvailableForCalls: openAiKeyAvailable,
+    openAiKeySync,
     maxAuditAgeMs: REALTIME_PROVIDER_WARNING_MAX_AGE_MS,
     recovery,
     retryPolicy: recovery.retryPolicy || null,
@@ -51162,6 +51285,7 @@ function realtimeProviderProbeSnapshot(options = {}) {
   const spendLocked = Boolean(!providerReady && !realtimeProviderProbeState.active && !issue && openAiSpendGuardBlocksRealtimeProviderProbe(spendGuardDecision));
   const manualSpendRequired = Boolean(!providerReady && !realtimeProviderProbeState.active && !issue && openAiSpendGuardRequiresManualRealtimeProviderProbe(spendGuardDecision));
   const spendGuard = spendGuardDecision ? compactOpenAiSpendGuardDecision(spendGuardDecision) : null;
+  const keySync = openAiApiKeySyncSnapshot();
   const status = !openAiKeyConfigured
     ? 'blocked'
     : realtimeProviderProbeState.active
@@ -51191,6 +51315,7 @@ function realtimeProviderProbeSnapshot(options = {}) {
     rendererAvailable: Boolean(mainWindow && !mainWindow.isDestroyed()),
     hasOpenAiKey: openAiKeyConfigured,
     openAiKeyAvailableForCalls: openAiKeyAvailable,
+    keySync,
     providerReady,
     startsMicrophone: false,
     requiresMicConfirmation: false,
@@ -61560,6 +61685,51 @@ function healthSnapshot() {
   };
 }
 
+function healthLiteSnapshot() {
+  const readiness = readinessSnapshot({ includeRecentAudit: false });
+  return {
+    ok: true,
+    status: readiness.overall === 'blocked' ? 'needs_configuration' : readiness.overall,
+    version: packageInfo.version,
+    pid: process.pid,
+    uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
+    startedAt: new Date(startedAt).toISOString(),
+    api: {
+      baseUrl: API_BASE,
+      port: API_PORT,
+      auth: apiAuthSnapshot(),
+      hasOpenAiKey: openAiApiKeyConfigured(),
+      openAiKeyAvailableForCalls: openAiApiKeyAvailableForCalls(),
+      localExecutionEnabled: LOCAL_EXEC_ENABLED,
+      trustedLocalMode: TRUSTED_LOCAL_MODE,
+    },
+    resident: {
+      label: LAUNCH_AGENT_LABEL,
+    },
+    readiness: {
+      overall: readiness.overall,
+      counts: readiness.counts,
+      primaryIssue: readiness.primaryIssue
+        ? {
+            id: readiness.primaryIssue.id || '',
+            status: readiness.primaryIssue.status || '',
+            label: compactRecordText(readiness.primaryIssue.label || '', 120),
+          }
+        : null,
+    },
+    safety: {
+      localHealthOnly: true,
+      callsOpenAi: false,
+      startsMicrophone: false,
+      capturesScreen: false,
+      mutatesUserFiles: false,
+      returnsScreenImage: false,
+      returnsClipboardText: false,
+      returnsBrowserPageText: false,
+    },
+  };
+}
+
 function doctorCheck(id, label, status, summary, evidence = {}, next = '') {
   return { id, label, status, summary, evidence, next };
 }
@@ -67561,8 +67731,9 @@ function startApiServer() {
   });
   api.use(express.json({ limit: '1mb' }));
 
-  api.get('/api/health', (_req, res) => {
-    res.json(healthSnapshot());
+  api.get('/api/health', (req, res) => {
+    const lite = ['1', 'true', 'yes', 'watchdog'].includes(String(req.query.lite || req.query.scope || '').toLowerCase());
+    res.json(lite ? healthLiteSnapshot() : healthSnapshot());
   });
 
   api.get('/api/progress-board', async (req, res) => {

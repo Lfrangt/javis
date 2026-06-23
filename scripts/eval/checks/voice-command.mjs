@@ -70,6 +70,28 @@ function parseJson(text) {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
+const OPENAI_KEY_SYNC_STATUSES = new Set(['loaded', 'restart_required', 'loaded_from_process_env', 'missing', 'unknown']);
+
+function noOpenAiSecretLeak(value) {
+  return !String(value || '').includes('sk-');
+}
+
+function openAiKeySyncLooksSafe(keySync = {}) {
+  return keySync.version === 1 &&
+    OPENAI_KEY_SYNC_STATUSES.has(String(keySync.status || '')) &&
+    keySync.safety?.readOnly === true &&
+    keySync.safety?.callsOpenAI === false &&
+    keySync.safety?.createsSpendLease === false &&
+    keySync.safety?.startsMicrophone === false &&
+    keySync.safety?.usesRealtime === false &&
+    keySync.safety?.exposesSecretValues === false &&
+    keySync.safety?.fingerprintOnly === true &&
+    typeof keySync.configuredAtStartup === 'boolean' &&
+    typeof keySync.envFile?.openAiApiKeyPresent === 'boolean' &&
+    typeof keySync.requiresRestart === 'boolean' &&
+    noOpenAiSecretLeak(JSON.stringify(keySync));
+}
+
 function hasForbiddenHistoryPayload(value) {
   if (!value || typeof value !== 'object') return false;
   const forbidden = new Set([
@@ -747,6 +769,7 @@ export default {
     const naturalRealtimeProviderProbeData = naturalRealtimeProviderProbe.data || {};
     const naturalRealtimeProviderProbeRoute = naturalRealtimeProviderProbeData.route || {};
     const naturalRealtimeProviderProbePayload = naturalRealtimeProviderProbeRoute.data?.providerProbeControl || {};
+    const naturalRealtimeProviderProbeKeySync = naturalRealtimeProviderProbePayload.providerProbe?.keySync || {};
     out.push(
       naturalRealtimeProviderProbe.ok &&
         naturalRealtimeProviderProbeData.ok === true &&
@@ -761,12 +784,16 @@ export default {
         naturalRealtimeProviderProbePayload.safety?.capturesAudio === false &&
         naturalRealtimeProviderProbePayload.safety?.storesRawAudio === false &&
         naturalRealtimeProviderProbePayload.safety?.usesRealtimeProvider === false &&
+        openAiKeySyncLooksSafe(naturalRealtimeProviderProbeKeySync) &&
+        noOpenAiSecretLeak(JSON.stringify(naturalRealtimeProviderProbePayload)) &&
         naturalRealtimeProviderProbeData.safety?.startsMicrophone === false &&
         naturalRealtimeProviderProbeData.safety?.usesRealtime === false &&
         naturalRealtimeProviderProbeData.safety?.callsOpenAIImmediately === false &&
         typeof naturalRealtimeProviderProbeRoute.output === 'string' &&
-        naturalRealtimeProviderProbeRoute.output.includes('Realtime provider probe: preview only')
-        ? ok('voice_command.natural_realtime_provider_probe_preview', 'Natural Realtime provider probe voice command', '充值好了/重试实时语音 routes to no-mic provider-probe preview without OpenAI call')
+        naturalRealtimeProviderProbeRoute.output.includes('Realtime provider probe: preview only') &&
+        naturalRealtimeProviderProbeRoute.output.includes('Key sync:') &&
+        noOpenAiSecretLeak(naturalRealtimeProviderProbeRoute.output)
+        ? ok('voice_command.natural_realtime_provider_probe_preview', 'Natural Realtime provider probe voice command', `充值好了/重试实时语音 routes to no-mic provider-probe preview without OpenAI call · key=${naturalRealtimeProviderProbeKeySync.status}`)
         : fail('voice_command.natural_realtime_provider_probe_preview', 'Natural Realtime provider probe voice command', 'natural provider-probe phrase did not preview the local no-mic probe path', naturalRealtimeProviderProbe.data),
     );
 
