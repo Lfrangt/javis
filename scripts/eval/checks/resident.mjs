@@ -1636,6 +1636,8 @@ export default {
     const statusVoiceHealth = status.data?.voiceHealth || {};
     const statusLocalVoice = status.data?.localVoice || {};
     const statusConversation = status.data?.conversation || {};
+    const statusPresence = status.data?.presence || {};
+    const statusAttention = statusPresence.attention || {};
     const statusMicrophone = statusConversation.microphone || {};
     const realtimeReady = statusVoiceHealth.status === 'ready';
     out.push(
@@ -1659,6 +1661,22 @@ export default {
         : fail('resident.status_local_voice_consistency', 'Status local voice consistency', 'GET /api/status must expose localVoice fallback_ready when Realtime is not ready', {
           voiceHealth: statusVoiceHealth,
           localVoice: statusLocalVoice,
+        }),
+    );
+    const quietZeroSpendFallback = statusVoiceHealth.kind === 'spend_locked' && statusLocalVoice.mode === 'fallback_ready';
+    out.push(
+      status.ok &&
+        (!quietZeroSpendFallback ||
+          (statusPresence.mode === 'fallback_ready' &&
+            statusPresence.label === 'Local fallback ready' &&
+            statusAttention.topReason?.id !== 'setup_degraded' &&
+            !String(statusAttention.summary || '').includes('Setup needs attention')))
+        ? ok('resident.zero_spend_presence_quiet', 'Zero-spend presence quiet', quietZeroSpendFallback ? 'zero-spend Realtime warning stays in local fallback ready presence' : 'Realtime is not in zero-spend fallback mode')
+        : fail('resident.zero_spend_presence_quiet', 'Zero-spend presence quiet', 'zero-spend Realtime fallback should not surface as Needs attention in presence/attention', {
+          voiceHealth: statusVoiceHealth,
+          localVoice: statusLocalVoice,
+          presence: statusPresence,
+          attention: statusAttention,
         }),
     );
 
@@ -1692,54 +1710,66 @@ export default {
           blockerOutput: blockerOutput.slice(0, 1200),
         }),
     );
+    out.push(
+      blockerCui.status === 0 &&
+        (!quietZeroSpendFallback ||
+          (blockerOutput.includes('Presence: Local fallback ready') &&
+            !blockerOutput.includes('Attention: watching · pet yellow · notify no · Setup needs attention')))
+        ? ok('resident.zero_spend_cui_quiet', 'Zero-spend CUI quiet presence', quietZeroSpendFallback ? 'CUI shows local fallback ready without setup attention noise' : 'Realtime is not in zero-spend fallback mode')
+        : fail('resident.zero_spend_cui_quiet', 'Zero-spend CUI quiet presence', 'CUI blocker output should show local fallback ready and avoid setup attention noise when zero-spend lock is intentional', {
+          blockerOutput: blockerOutput.slice(0, 2000),
+          quietZeroSpendFallback,
+        }),
+    );
 
-	    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
-	    const spendGuard = spendGuardResponse.data?.spendGuard || {};
-	    const egressGuard = spendGuardResponse.data?.egressGuard || {};
-	    const spendForensics = spendGuardResponse.data?.forensics || {};
-		const spendGuardTotalBefore = Number(spendGuard.counts?.total || 0);
-		out.push(
-		  spendGuardResponse.ok &&
-		    spendGuard.mode === 'off' &&
-		    spendGuard.hardSpendLock === true &&
-	        spendGuard.egressGuardEnabled === true &&
-	        spendGuard.egressGuardMode === 'scoped_allow_only' &&
-		    spendGuard.dailyRequestLimit === 0 &&
-	        spendGuard.unattendedDailyRequestLimit === 0 &&
-	        spendGuard.allowAutopilotCloud === false &&
-		        spendGuard.allowRendererStartupProbe === false &&
-		        spendGuard.requireSpendConfirmationPhrase === true &&
-			    spendGuard.requireSpendLease === true &&
-			    spendGuard.spendLease?.oneRequestOnly === true &&
-			    Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
-			    spendGuard.childEnvGuard?.enabled === true &&
-			    spendGuard.childEnvGuard?.defaultChildReceivesOpenAiCredentials === false &&
-			    spendGuard.childEnvGuard?.blocksInlineCredentialEnv === true &&
-			    spendGuard.autopilotRequiresExplicitEnv === true &&
-			    spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
-			    spendGuard.safety?.oneRequestLeaseRequired === true &&
-			    spendGuard.safety?.childProcessOpenAiCredentialsBlocked === true &&
-			    egressGuard.enabled === true &&
-	        egressGuard.installed === true &&
-	        egressGuard.mode === 'scoped_allow_only' &&
-	        egressGuard.safety?.blocksUnscopedOpenAiFetch === true &&
-	        spendForensics.version === 1 &&
-	        spendForensics.likelyBillableFromJavis === false &&
-	        spendForensics.zeroLocked === true &&
-	        spendForensics.status === 'zero_spend_locked' &&
-	        spendForensics.safety?.callsOpenAI === false &&
-	        spendForensics.safety?.createsSpendLease === false &&
-	        spendGuard.safety?.off === true &&
-	        spendGuard.safety?.zeroBudgetDefault === true &&
-		        spendGuard.safety?.hardSpendLockDefault === true &&
-		        spendGuard.safety?.confirmationPhraseRequired === true &&
-	        spendGuard.safety?.unattendedCloudDefaultBlocked === true
-	        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
-	        : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to zero-spend OpenAI usage, hard-lock cloud calls, block unattended/autopilot calls, and disable renderer startup probes', {
-	          status: spendGuardResponse.status,
-	          body: spendGuardResponse.data,
-	        }),
-	    );
+    const spendGuardResponse = await ctx.api('/api/openai/spend-guard');
+    const spendGuard = spendGuardResponse.data?.spendGuard || {};
+    const egressGuard = spendGuardResponse.data?.egressGuard || {};
+    const spendForensics = spendGuardResponse.data?.forensics || {};
+    const spendGuardTotalBefore = Number(spendGuard.counts?.total || 0);
+    const spendGuardBlockedBefore = Number(spendGuard.counts?.blocked || 0);
+    out.push(
+      spendGuardResponse.ok &&
+        spendGuard.mode === 'off' &&
+        spendGuard.hardSpendLock === true &&
+        spendGuard.egressGuardEnabled === true &&
+        spendGuard.egressGuardMode === 'scoped_allow_only' &&
+        spendGuard.dailyRequestLimit === 0 &&
+        spendGuard.unattendedDailyRequestLimit === 0 &&
+        spendGuard.allowAutopilotCloud === false &&
+        spendGuard.allowRendererStartupProbe === false &&
+        spendGuard.requireSpendConfirmationPhrase === true &&
+        spendGuard.requireSpendLease === true &&
+        spendGuard.spendLease?.oneRequestOnly === true &&
+        Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
+        spendGuard.childEnvGuard?.enabled === true &&
+        spendGuard.childEnvGuard?.defaultChildReceivesOpenAiCredentials === false &&
+        spendGuard.childEnvGuard?.blocksInlineCredentialEnv === true &&
+        spendGuard.autopilotRequiresExplicitEnv === true &&
+        spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
+        spendGuard.safety?.oneRequestLeaseRequired === true &&
+        spendGuard.safety?.childProcessOpenAiCredentialsBlocked === true &&
+        egressGuard.enabled === true &&
+        egressGuard.installed === true &&
+        egressGuard.mode === 'scoped_allow_only' &&
+        egressGuard.safety?.blocksUnscopedOpenAiFetch === true &&
+        spendForensics.version === 1 &&
+        spendForensics.likelyBillableFromJavis === false &&
+        spendForensics.zeroLocked === true &&
+        spendForensics.status === 'zero_spend_locked' &&
+        spendForensics.safety?.callsOpenAI === false &&
+        spendForensics.safety?.createsSpendLease === false &&
+        spendGuard.safety?.off === true &&
+        spendGuard.safety?.zeroBudgetDefault === true &&
+        spendGuard.safety?.hardSpendLockDefault === true &&
+        spendGuard.safety?.confirmationPhraseRequired === true &&
+        spendGuard.safety?.unattendedCloudDefaultBlocked === true
+        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
+        : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to zero-spend OpenAI usage, hard-lock cloud calls, block unattended/autopilot calls, and disable renderer startup probes', {
+          status: spendGuardResponse.status,
+          body: spendGuardResponse.data,
+        }),
+    );
 	    const spendIncidentResponse = await ctx.api('/api/openai/spend-incident-report');
 	    const spendIncident = spendIncidentResponse.data?.incident || {};
 	    out.push(
@@ -1773,17 +1803,21 @@ export default {
 	    out.push(
 	      egressProbeResponse.ok &&
 	        egressProbe.ok === true &&
-        egressProbe.blocked === true &&
-        egressProbe.decision?.allowed === false &&
-        egressProbe.decision?.source === 'eval_unscoped_openai_egress_probe' &&
-        Array.isArray(egressProbe.decision?.reasons) &&
-        egressProbe.decision.reasons.includes('unscoped_openai_egress_blocked') &&
+	        egressProbe.blocked === true &&
+	        egressProbe.preview === true &&
+	        egressProbe.executed === false &&
+	        egressProbe.decision?.allowed === false &&
+	        egressProbe.decision?.source === 'eval_unscoped_openai_egress_probe' &&
+	        Array.isArray(egressProbe.decision?.reasons) &&
+	        egressProbe.decision.reasons.includes('unscoped_openai_egress_blocked') &&
 	        egressProbe.safety?.callsOpenAi === false &&
+	        egressProbe.safety?.recordsBlockedSpend === false &&
 	        egressProbe.egressGuard?.installed === true &&
 	        spendGuardAfterEgressProbeResponse.ok &&
-	        Number(spendGuardAfterEgressProbe.counts?.total || 0) === spendGuardTotalBefore
-	        ? ok('resident.openai_egress_guard_probe', 'OpenAI egress guard probe', 'unscoped fetch to api.openai.com was blocked locally before any API request could leave JAVIS')
-	        : fail('resident.openai_egress_guard_probe', 'OpenAI egress guard probe', 'expected unscoped OpenAI fetch probe to be blocked locally without incrementing OpenAI spend total', {
+	        Number(spendGuardAfterEgressProbe.counts?.total || 0) === spendGuardTotalBefore &&
+	        Number(spendGuardAfterEgressProbe.counts?.blocked || 0) === spendGuardBlockedBefore
+	        ? ok('resident.openai_egress_guard_probe', 'OpenAI egress guard probe', 'default probe previews the OpenAI egress block without a fetch or blocked-count event')
+	        : fail('resident.openai_egress_guard_probe', 'OpenAI egress guard probe', 'expected default OpenAI egress probe to preview locally without a fetch, spend total increment, or blocked-count increment', {
 	          status: egressProbeResponse.status,
 	          body: egressProbe,
 	          spendGuardBefore: spendGuard,
@@ -1963,9 +1997,11 @@ export default {
 		      mainSource.includes('function installOpenAiEgressGuard') &&
 		      mainSource.includes('function openAiEgressGuardSnapshot') &&
 		      mainSource.includes('function withOpenAiEgressSource') &&
-		      mainSource.includes('currentOpenAiEgressSource(') &&
-		      mainSource.includes('unscoped_openai_egress_blocked') &&
-		      mainSource.includes("api.post('/api/openai/egress-guard/probe'") &&
+			      mainSource.includes('currentOpenAiEgressSource(') &&
+			      mainSource.includes('unscoped_openai_egress_blocked') &&
+			      mainSource.includes('confirmLocalFirewallProbe') &&
+			      mainSource.includes('recordsBlockedSpend: false') &&
+			      mainSource.includes("api.post('/api/openai/egress-guard/probe'") &&
 		      mainSource.includes("api.post('/api/openai/child-env-guard/probe'") &&
 		      mainSource.includes('await withOpenAiEgressAllowed(spendDecision') &&
 	      mainSource.includes("kind: isProviderProbe ? 'realtime_provider_probe' : 'realtime_session'") &&

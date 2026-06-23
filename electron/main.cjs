@@ -1712,9 +1712,26 @@ function isQuietBrowserRecoveryAttentionRoute(route) {
   return browserUnavailableRouteBlocker(route, route);
 }
 
+function readinessIsQuietZeroSpendFallback(readiness) {
+  const issue = readiness?.primaryIssue || {};
+  const recovery = issue.recovery || {};
+  const counts = readiness?.counts || {};
+  return Boolean(
+    readiness?.overall === 'degraded' &&
+      issue.id === 'realtime_voice_provider' &&
+      issue.status === 'warning' &&
+      recovery.spendLocked === true &&
+      recovery.localFallback?.available === true &&
+      Number(counts.blocked || 0) === 0 &&
+      Number(counts.warning || 0) === 1 &&
+      openAiZeroSpendModeActive()
+  );
+}
+
 function attentionPolicySnapshot(options = {}) {
   const now = Date.now();
   const readiness = options.readiness || readinessSnapshot();
+  const quietZeroSpendFallback = readinessIsQuietZeroSpendFallback(readiness);
   const conversation = options.conversation || conversationStateSnapshot();
   const pendingApprovals = options.pendingApprovals || pendingApprovalSnapshot(10);
   const activeJobs = options.activeJobs || jobSnapshot(30).filter((job) => job.status === 'queued' || job.status === 'running');
@@ -1731,7 +1748,7 @@ function attentionPolicySnapshot(options = {}) {
       readiness.primaryIssue?.summary || readiness.summary || 'A setup or permission issue blocks JAVIS.',
       { source: 'readiness', action: readiness.primaryIssue?.next || '' },
     ));
-  } else if (readiness?.overall === 'degraded') {
+  } else if (readiness?.overall === 'degraded' && !quietZeroSpendFallback) {
     reasons.push(attentionReason(
       'setup_degraded',
       'medium',
@@ -37845,7 +37862,7 @@ function presenceModeFromState({ readiness, pendingApprovals, activeJobs, wake, 
   if (conversation?.status === 'error' && Number(conversation.ageMs || 0) < 60000) return 'voice_error';
   if (pendingApprovals.length) return 'needs_attention';
   if (activeJobs.length) return 'working';
-  if (readiness?.overall === 'fallback_ready') return 'fallback_ready';
+  if (readiness?.overall === 'fallback_ready' || readinessIsQuietZeroSpendFallback(readiness)) return 'fallback_ready';
   if (wake?.pending) return 'waking';
   if (readiness?.overall === 'degraded') return 'needs_attention';
   if (AMBIENT_OBSERVE_ENABLED) return 'watching';
@@ -37863,6 +37880,7 @@ function presenceStateSnapshot(options = {}) {
   const activeJobs = jobSnapshot().filter((job) => job.status === 'queued' || job.status === 'running');
   const activeRoutes = activeRoutingSnapshot(6).map(routingLedgerEntry).filter(Boolean);
   const activeSession = activeSessionSnapshot();
+  const quietZeroSpendFallback = readinessIsQuietZeroSpendFallback(readiness);
   const attention = attentionPolicySnapshot({
     readiness,
     conversation,
@@ -37909,7 +37927,7 @@ function presenceStateSnapshot(options = {}) {
     nextIntervention = `Last voice session error: ${conversation.error || 'unknown error'}`;
   } else if (pendingApprovals[0]) {
     nextIntervention = `Waiting for approval: ${compactRecordText(pendingApprovals[0].summary, 120)}`;
-  } else if (readiness.primaryIssue) {
+  } else if (readiness.primaryIssue && !quietZeroSpendFallback) {
     nextIntervention = readiness.primaryIssue.next || readiness.primaryIssue.summary;
   } else if (activeJobs[0]) {
     nextIntervention = `Background work running: ${compactRecordText(activeJobs[0].title, 120)}`;
@@ -63639,7 +63657,64 @@ function startApiServer() {
 
   api.post('/api/openai/egress-guard/probe', express.json({ limit: '64kb' }), async (req, res) => {
     const source = compactRecordText(req.body?.source || 'api_openai_egress_guard_probe', 80);
+    const execute = truthyRequestValue(req.body?.execute);
+    const confirmedLocalProbe = truthyRequestValue(
+      req.body?.confirmLocalFirewallProbe ||
+        req.body?.confirmEgressGuardProbe ||
+        req.body?.confirmLocalEgressProbe,
+    );
     const before = openAiSpendGuardSnapshot();
+    const previewDecision = evaluateOpenAiSpendGuard({
+      kind: 'egress_fetch',
+      source,
+      model: 'direct_openai_egress',
+      reserve: false,
+      recordBlocked: false,
+      forceBlockedReasons: ['unscoped_openai_egress_blocked'],
+      targetHost: 'api.openai.com',
+    });
+    if (!execute) {
+      res.json({
+        ok: true,
+        blocked: true,
+        preview: true,
+        executed: false,
+        output: 'Preview only: unscoped OpenAI egress would be blocked locally. No fetch was attempted and no spend-guard event was recorded.',
+        decision: previewDecision,
+        before,
+        after: openAiSpendGuardSnapshot(),
+        egressGuard: openAiEgressGuardSnapshot(),
+        safety: {
+          callsOpenAi: false,
+          usesRealtime: false,
+          startsMicrophone: false,
+          exposesApiToken: false,
+          recordsBlockedSpend: false,
+        },
+      });
+      return;
+    }
+    if (!confirmedLocalProbe) {
+      res.status(428).json({
+        ok: false,
+        blocked: true,
+        preview: true,
+        executed: false,
+        output: 'Local egress firewall execution requires execute:true plus confirmLocalFirewallProbe:true. Default probe mode is zero-side-effect preview.',
+        decision: previewDecision,
+        before,
+        after: openAiSpendGuardSnapshot(),
+        egressGuard: openAiEgressGuardSnapshot(),
+        safety: {
+          callsOpenAi: false,
+          usesRealtime: false,
+          startsMicrophone: false,
+          exposesApiToken: false,
+          recordsBlockedSpend: false,
+        },
+      });
+      return;
+    }
     try {
       await withOpenAiEgressSource(source, async () => fetch('https://api.openai.com/v1/models', {
         method: 'GET',
@@ -63673,6 +63748,7 @@ function startApiServer() {
             usesRealtime: false,
             startsMicrophone: false,
             exposesApiToken: false,
+            recordsBlockedSpend: true,
           },
         });
         return;
