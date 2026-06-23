@@ -71,6 +71,8 @@ function positionalText() {
   const valueFlags = new Set([
     '--action-id',
     '--agent',
+    '--agents',
+    '--requested-agents',
     '--arguments',
     '--confirm-openai-spend-phrase',
     '--id',
@@ -518,6 +520,7 @@ async function printStatus() {
   console.log('AS. Show autonomy readiness');
   console.log('AG. Preview bounded autonomy loop');
   console.log('AR. Run bounded autonomy loop');
+  console.log('AP. Show parallel agent preflight');
   console.log('WH. Show wake handoff');
   console.log('L. Show local capability map');
   console.log('I. Show permission matrix');
@@ -1071,6 +1074,54 @@ function printAutonomyReadiness(result) {
 async function showAutonomyReadiness() {
   const result = await request('/api/autonomy/readiness?workflowLimit=6&jobLimit=6&source=cui_cli');
   return printAutonomyReadiness(result);
+}
+
+function printParallelWorkbenchPreflight(result) {
+  const preflight = result?.preflight || result || {};
+  const counts = preflight.counts || {};
+  const workers = preflight.workers || {};
+  const lanes = workers.lanes || {};
+  console.log('\nJAVIS Parallel Agent Preflight');
+  console.log('==============================');
+  console.log(`Requested slots: ${preflight.requestedAgents ?? '-'} · safe concurrency: ${preflight.safeConcurrency ?? '-'} · max per wave: ${preflight.configuredMaxParallelTasks ?? '-'}`);
+  console.log(`Status: ${preflight.status || '-'} · ${compact(preflight.summary || '-', 520)}`);
+  console.log(`Tasks: accepted=${counts.acceptedTasks ?? 0} · ready=${counts.readyParallel ?? 0} · serial=${counts.serialRequired ?? 0} · blocked=${counts.blocked ?? 0} · waves=${counts.parallelWaves ?? 0}`);
+  console.log(`Active queue: ${counts.activeJobs ?? 0} running/queued job(s)`);
+  console.log('\nWorkers');
+  for (const id of ['codex', 'claude', 'local', 'background', 'quick']) {
+    const lane = lanes[id] || {};
+    console.log(`- ${id}: ${lane.ready ? 'ready' : 'blocked'} · ${compact(lane.reason || lane.command || '-', 180)}`);
+  }
+  const batches = Array.isArray(preflight.parallelBatches) ? preflight.parallelBatches : [];
+  if (batches.length) {
+    console.log('\nParallel waves');
+    for (const batch of batches.slice(0, 6)) {
+      console.log(`- ${batch.label || `wave ${batch.index + 1}`}: ${batch.count || batch.items?.length || 0} item(s)`);
+    }
+  }
+  const serial = Array.isArray(preflight.serialQueue) ? preflight.serialQueue : [];
+  if (serial.length) {
+    console.log('\nSerialized');
+    for (const item of serial.slice(0, 6)) {
+      console.log(`- #${item.index + 1} ${item.owner || '-'} · ${compact(item.key || item.scope || '-', 120)} · ${compact(item.reason || '', 180)}`);
+    }
+  }
+  const blocked = Array.isArray(preflight.blocked) ? preflight.blocked : [];
+  if (blocked.length) {
+    console.log('\nBlocked');
+    for (const item of blocked.slice(0, 6)) {
+      console.log(`- #${item.index + 1} ${item.lane || '-'} · ${compact(item.reason || '', 180)}`);
+    }
+  }
+  console.log('\nSafety: preview only; starts no worker, no mic/Realtime, no OpenAI call, no Terminal, and writes no routing record.');
+  if (preflight.nextAction) console.log(`Next: ${compact(preflight.nextAction, 360)}`);
+  return preflight;
+}
+
+async function showParallelWorkbenchPreflight(options = {}) {
+  const requestedAgents = options.requestedAgents || argvValue('--agents') || argvValue('--requested-agents') || '20';
+  const result = await request(`/api/tasks/parallel/preflight?agents=${encodeURIComponent(requestedAgents)}&source=cui_cli`);
+  return printParallelWorkbenchPreflight(result);
 }
 
 async function showAutonomyLoop(options = {}) {
@@ -5342,6 +5393,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-agent-preflight') || process.argv.includes('--agent-preflight') || process.argv.includes('--parallel-preflight') || process.argv.includes('--print-parallel-preflight')) {
+    await showParallelWorkbenchPreflight();
+    return;
+  }
+
   if (process.argv.includes('--print-autonomy') || process.argv.includes('--autonomy')) {
     await showAutonomyLoop({ execute: false });
     return;
@@ -5658,6 +5714,8 @@ async function main() {
         await showAutonomyLoop({ task, source: 'cui_autonomy_preview', execute: false });
       } else if (answer === 'ar' || answer === 'agent run' || answer === 'run autonomy' || answer === 'autonomy run') {
         await runAutonomyLoopFromCui(rl);
+      } else if (answer === 'ap' || answer === 'agent preflight' || answer === 'parallel preflight' || answer === '20 agents') {
+        await showParallelWorkbenchPreflight();
       } else if (answer === 'wh' || answer === 'wake handoff' || answer === 'wake') {
         await showWakeHandoff();
       } else if (answer === 'l' || answer === 'capabilities' || answer === 'capability map') {

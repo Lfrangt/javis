@@ -334,6 +334,16 @@ The history is local and sanitized for recovery/debugging: it keeps transcript p
 
 The tiny desktop pet can also read a compact `localVoice` state from `/api/pet/status`. It is not a log viewer: it only says whether no-mic typed voice-command intake is on standby or acting as fallback, lists `/api/voice/command`, `npm run voice -- "..."`, and the history command, includes a small provider `blocker` when Realtime is unavailable, and includes at most the latest sanitized transcript preview plus metadata summary.
 
+Multi-agent capacity starts with a no-spend preflight instead of opening worker windows:
+
+```bash
+npm run agents:preflight
+npm run config -- --print-agent-preflight --requested-agents 20
+curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/tasks/parallel/preflight?agents=20"
+```
+
+The same local path handles natural no-mic phrases such as `开20个Agent先预检一下`. It reports requested slots, safe concurrency, parallel waves, Codex/Claude/local/background readiness, serialized write conflicts, and blocked lanes. It does not start workers, open Terminal, call OpenAI, start microphone capture, create Realtime sessions, write route records, or mutate files.
+
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
 ```bash

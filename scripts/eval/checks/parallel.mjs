@@ -17,6 +17,87 @@ export default {
   async run(ctx) {
     const out = [];
     const parallelGroup = `eval-parallel-${Date.now()}`;
+    const preflightGroup = `eval-parallel-preflight-${Date.now()}`;
+    const preflightTasks = Array.from({ length: 20 }, (_, index) => ({
+      command: `echo preflight-${index + 1}`,
+      title: `preflight task ${index + 1}`,
+      owner: `eval-preflight-${index + 1}`,
+      scope: index >= 18 ? 'docs/eval-parallel-preflight-shared.md' : `docs/eval-parallel-preflight-${index + 1}.md`,
+      access: index >= 18 ? 'write' : 'read',
+    }));
+    const routingBefore = await ctx.api('/api/tasks/routing?limit=1');
+    const preflightResponse = await ctx.api('/api/tasks/parallel/preflight', {
+      method: 'POST',
+      body: {
+        requestedAgents: 20,
+        parallelGroup: preflightGroup,
+        source: 'eval_parallel_preflight',
+        tasks: preflightTasks,
+      },
+      timeoutMs: 20000,
+    });
+    const routingAfter = await ctx.api('/api/tasks/routing?limit=1');
+    const preflight = preflightResponse.data?.preflight || {};
+    const preflightCounts = preflight.counts || {};
+    const preflightSafe =
+      preflightResponse.ok &&
+      preflight.requestedAgents === 20 &&
+      preflight.maxRequestedAgents >= 20 &&
+      preflight.configuredMaxParallelTasks >= 2 &&
+      preflight.safeConcurrency <= preflight.configuredMaxParallelTasks &&
+      preflightCounts.acceptedTasks === Math.min(20, preflight.maxRequestedAgents) &&
+      preflightCounts.serialRequired >= 1 &&
+      Array.isArray(preflight.parallelBatches) &&
+      preflight.safety?.startsWorkers === false &&
+      preflight.safety?.callsOpenAI === false &&
+      preflight.safety?.startsMicrophone === false &&
+      preflight.safety?.createsRoutingRecords === false &&
+      routingBefore.data?.counts?.total === routingAfter.data?.counts?.total;
+    out.push(
+      preflightSafe
+        ? ok('parallel.preflight_20_slots', '20-agent preflight', `requested=${preflight.requestedAgents} safe=${preflight.safeConcurrency} waves=${preflightCounts.parallelWaves} serial=${preflightCounts.serialRequired}`)
+        : fail('parallel.preflight_20_slots', '20-agent preflight', 'parallel preflight should plan 20 requested slots without starting workers or writing route records', {
+          preflight,
+          routingBefore: routingBefore.data?.counts,
+          routingAfter: routingAfter.data?.counts,
+        }),
+    );
+
+    const spendBeforeVoicePreflight = await ctx.api('/api/openai/spend-guard');
+    const spendBeforeCount = Number(spendBeforeVoicePreflight.data?.spendGuard?.counts?.total || 0);
+    const naturalPreflight = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '开20个Agent先预检一下',
+        execute: false,
+        includeScreen: false,
+        speak: false,
+        source: 'eval_parallel_preflight_voice',
+      },
+      timeoutMs: 30000,
+    });
+    const spendAfterVoicePreflight = await ctx.api('/api/openai/spend-guard');
+    const spendAfterCount = Number(spendAfterVoicePreflight.data?.spendGuard?.counts?.total || 0);
+    const naturalRoute = naturalPreflight.data?.route || {};
+    const naturalVoicePreflight = naturalPreflight.data?.parallelPreflight || naturalRoute.data?.parallelPreflight || {};
+    const naturalSafety = naturalVoicePreflight.safety || {};
+    out.push(
+      naturalPreflight.ok &&
+        naturalRoute.localCommand?.intent === 'parallel_preflight' &&
+        naturalVoicePreflight.requestedAgents === 20 &&
+        naturalSafety.startsWorkers === false &&
+        naturalSafety.callsOpenAI === false &&
+        naturalSafety.startsMicrophone === false &&
+        naturalSafety.opensTerminal === false &&
+        spendAfterCount === spendBeforeCount
+        ? ok('parallel.preflight_voice_command', 'Natural 20-agent voice preflight', `requested=${naturalVoicePreflight.requestedAgents} spendDelta=${spendAfterCount - spendBeforeCount}`)
+        : fail('parallel.preflight_voice_command', 'Natural 20-agent voice preflight', 'expected natural voice command to return preflight without spend, workers, mic, or Terminal', {
+          voice: naturalPreflight.data,
+          before: spendBeforeVoicePreflight.data,
+          after: spendAfterVoicePreflight.data,
+        }),
+    );
+
     const body = {
       execute: false,
       parallelGroup,

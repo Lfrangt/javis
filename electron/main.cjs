@@ -393,6 +393,7 @@ const MAX_PERSISTED_AMBIENT = Number(process.env.JAVIS_MAX_PERSISTED_AMBIENT || 
 const MAX_PERSISTED_COLLABORATION_CLAIMS = Math.max(20, Math.min(1000, Number(process.env.JAVIS_MAX_PERSISTED_COLLABORATION_CLAIMS || 200)));
 const COLLABORATION_CLAIM_TTL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_COLLABORATION_CLAIM_TTL_MS || 1800000)));
 const MAX_PARALLEL_TASKS = Math.max(2, Math.min(12, Number(process.env.JAVIS_MAX_PARALLEL_TASKS || 6)));
+const MAX_PARALLEL_AGENT_REQUESTS = boundedRuntimeInteger(process.env.JAVIS_MAX_PARALLEL_AGENT_REQUESTS, 20, MAX_PARALLEL_TASKS, 50);
 const HAS_SINGLE_INSTANCE_LOCK = app.requestSingleInstanceLock({
   projectRoot: process.cwd(),
   apiPort: API_PORT,
@@ -28349,6 +28350,40 @@ function naturalAutonomyReadinessLocalCommand(text) {
   };
 }
 
+function naturalParallelAgentCount(text, fallback = 20) {
+  const raw = String(text || '');
+  const compact = raw.replace(/\s+/g, '');
+  if (/二十|廿/.test(compact)) return 20;
+  const matches = Array.from(raw.matchAll(/\b([1-9]\d?)\b/g))
+    .map((match) => Number(match[1]))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const bounded = matches.find((value) => value >= 2) || fallback;
+  return Math.max(1, Math.min(MAX_PARALLEL_AGENT_REQUESTS, Math.round(bounded)));
+}
+
+function naturalParallelPreflightLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const english = /\b(parallel agent preflight|agent preflight|parallel workbench|agent capacity|parallel capacity|20 agents?)\b/i.test(raw)
+    || /\b(open|start|spawn|run|use|prepare|check)\b.{0,40}\b([1-9]\d?)\b.{0,30}\b(agents?|subagents?|workers?|codex|claude)\b/i.test(raw)
+    || /\b([1-9]\d?)\b.{0,25}\b(agents?|subagents?|workers?)\b.{0,35}\b(preflight|capacity|parallel|ready|readiness)\b/i.test(raw);
+  const chinese = /(?:开|开启|启动|启用|起|跑|多开|并行|准备|检查|预检|容量).*(?:agent|Agent|agents|Agents|subagent|worker|智能体|代理|席位)/i.test(compactPlain)
+    && /(?:\d{1,2}|二十|廿|多个|并行)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'parallel_preflight',
+    label: 'Parallel agent preflight',
+    args: {
+      requestedAgents: naturalParallelAgentCount(raw, 20),
+      query: raw,
+    },
+  };
+}
+
 function naturalContinueLastVoiceRouteLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -28958,6 +28993,9 @@ function localCommandDecision(task) {
   const autonomyReadinessCommand = naturalAutonomyReadinessLocalCommand(text);
   if (autonomyReadinessCommand) return autonomyReadinessCommand;
 
+  const parallelPreflightCommand = naturalParallelPreflightLocalCommand(text);
+  if (parallelPreflightCommand) return parallelPreflightCommand;
+
   const unblockPreviewCommand = naturalUnblockPreviewLocalCommand(text);
   if (unblockPreviewCommand) return unblockPreviewCommand;
 
@@ -29452,7 +29490,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_recovery_guide', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
+  if (statusSignal || ['status', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_recovery_guide', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -29503,7 +29541,7 @@ function buildContextPlan(message, options = {}) {
       needs.browserContext = false;
       needs.browserPage = false;
       needs.browserDom = false;
-    } else if (['autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
+    } else if (['autopilot_status', 'autonomy_readiness', 'parallel_preflight'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -30867,6 +30905,26 @@ function formatAutonomyReadinessForLocalCommand(readiness = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatParallelPreflightForLocalCommand(preflight = {}) {
+  const counts = preflight.counts || {};
+  const lanes = preflight.workers?.lanes || {};
+  const workerLine = ['codex', 'claude', 'local', 'background', 'quick']
+    .map((id) => `${id}=${lanes[id]?.ready ? 'ready' : 'blocked'}`)
+    .join(' · ');
+  const serial = Array.isArray(preflight.serialQueue) ? preflight.serialQueue : [];
+  const blocked = Array.isArray(preflight.blocked) ? preflight.blocked : [];
+  return [
+    `Parallel agents: requested=${preflight.requestedAgents ?? '-'} · safe concurrency=${preflight.safeConcurrency ?? '-'} · max per wave=${preflight.configuredMaxParallelTasks ?? '-'}`,
+    preflight.summary ? `Summary: ${compactRecordText(preflight.summary, 520)}` : '',
+    `Tasks: accepted=${counts.acceptedTasks ?? 0} · ready=${counts.readyParallel ?? 0} · serial=${counts.serialRequired ?? 0} · blocked=${counts.blocked ?? 0} · waves=${counts.parallelWaves ?? 0}`,
+    workerLine ? `Workers: ${workerLine}` : '',
+    serial.length ? `Serialized first: #${serial[0].index + 1} ${serial[0].owner || '-'} · ${compactRecordText(serial[0].reason || serial[0].key || '', 180)}` : '',
+    blocked.length ? `Blocked first: #${blocked[0].index + 1} ${blocked[0].lane || '-'} · ${compactRecordText(blocked[0].reason || '', 180)}` : '',
+    preflight.nextAction ? `Next: ${compactRecordText(preflight.nextAction, 320)}` : '',
+    '边界: 这是预检；不启动 worker，不开麦克风或 Realtime，不调用 OpenAI，不开 Terminal，不写 route 记录，不改文件。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatBrowserUrlForLocalCommand(value) {
   const raw = String(value || '').trim();
   if (!raw) return '-';
@@ -31622,6 +31680,20 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatAutonomyReadinessForLocalCommand(readiness),
         data: { autonomyReadiness: readiness },
+      };
+    }
+
+    if (command.intent === 'parallel_preflight') {
+      const preflight = parallelWorkbenchPreflightSnapshot({
+        requestedAgents: command.args?.requestedAgents || 20,
+        source: 'local_command_parallel_preflight',
+      });
+      return {
+        ok: true,
+        executed: false,
+        localCommand: command,
+        output: formatParallelPreflightForLocalCommand(preflight),
+        data: { parallelPreflight: preflight },
       };
     }
 
@@ -32611,6 +32683,9 @@ function voiceCommandAck(route = {}, options = {}) {
     return output;
   }
   if (route.localCommand?.intent === 'autonomy_readiness' && output) {
+    return output;
+  }
+  if (route.localCommand?.intent === 'parallel_preflight' && output) {
     return output;
   }
   const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
@@ -34652,7 +34727,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'observe_now', 'realtime_recovery_guide', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight', 'observe_now', 'realtime_recovery_guide', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false, source: routingContext.source });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -35051,6 +35126,238 @@ function parallelRouteCounts(results = []) {
   );
 }
 
+function requestedParallelAgentCount(options = {}, taskCount = 0) {
+  const raw = options.requestedAgents ?? options.agents ?? options.agentCount ?? options.concurrency ?? (taskCount || MAX_PARALLEL_TASKS);
+  const number = Number(raw);
+  if (!Number.isFinite(number) || number <= 0) return Math.min(MAX_PARALLEL_TASKS, Math.max(1, taskCount || MAX_PARALLEL_TASKS));
+  return Math.max(1, Math.min(MAX_PARALLEL_AGENT_REQUESTS, Math.round(number)));
+}
+
+function parallelWorkerReadinessSnapshot() {
+  const codexCommand = process.env.JAVIS_CODEX_CMD || 'codex exec';
+  const claudeCommand = process.env.JAVIS_CLAUDE_CMD || 'claude -p';
+  const cliPolicy = actionPolicy.allow?.cli_command || {};
+  const codePolicy = actionPolicy.allow?.code_agent || {};
+  const cloudReady = Boolean(openAiApiKeyAvailableForCalls() && !openAiZeroSpendModeActive());
+  const localReady = Boolean(LOCAL_EXEC_ENABLED && cliPolicy.enabled !== false);
+  const codePolicyReady = Boolean(LOCAL_EXEC_ENABLED && codePolicy.enabled !== false);
+  return {
+    previewOnlyDefault: true,
+    configuredMaxParallelTasks: MAX_PARALLEL_TASKS,
+    maxRequestedAgents: MAX_PARALLEL_AGENT_REQUESTS,
+    localExecutionEnabled: LOCAL_EXEC_ENABLED,
+    trustedLocalMode: TRUSTED_LOCAL_MODE,
+    cloudSpendLocked: openAiZeroSpendModeActive(),
+    lanes: {
+      local: {
+        ready: localReady,
+        command: 'cli_command',
+        reason: localReady ? 'local CLI lane is policy-enabled' : 'local execution or CLI policy is disabled',
+      },
+      codex: {
+        ready: Boolean(codePolicyReady && commandExists(codexCommand)),
+        command: codexCommand,
+        reason: codePolicyReady
+          ? commandExists(codexCommand) ? 'Codex command is available' : 'Codex command is missing'
+          : 'local execution or code-agent policy is disabled',
+      },
+      claude: {
+        ready: Boolean(codePolicyReady && commandExists(claudeCommand)),
+        command: claudeCommand,
+        reason: codePolicyReady
+          ? commandExists(claudeCommand) ? 'Claude command is available' : 'Claude command is missing'
+          : 'local execution or code-agent policy is disabled',
+      },
+      background: {
+        ready: cloudReady,
+        command: models.background,
+        reason: cloudReady ? 'background model lane can spend through the guarded path' : 'background cloud lane is locked or lacks callable key',
+      },
+      quick: {
+        ready: cloudReady,
+        command: models.quick,
+        reason: cloudReady ? 'quick model lane can spend through the guarded path' : 'quick cloud lane is locked or lacks callable key',
+      },
+    },
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      startsWorkers: false,
+      opensTerminal: false,
+      mutatesFiles: false,
+      createsRoutingRecords: false,
+    },
+  };
+}
+
+function parallelLaneForPreflightItem(item = {}) {
+  if (item.command || item.mode === 'cli') return 'local';
+  const localCommand = localCommandDecision(item.task || item.title || '');
+  if (localCommand) return 'local';
+  if (item.mode) return normalizeRoutingLane(item.mode);
+  const decision = routeTaskDecision(item.task || item.title || '', { execute: false, mode: item.mode || item.lane });
+  return normalizeRoutingLane(decision.lane || 'background');
+}
+
+function parallelItemReadiness(item = {}, workers = parallelWorkerReadinessSnapshot()) {
+  const lane = parallelLaneForPreflightItem(item);
+  const laneReady = workers.lanes[lane]?.ready === true;
+  const laneReason = workers.lanes[lane]?.reason || 'unknown lane readiness';
+  const serialized = item.ownership?.serialized === true;
+  const status = serialized
+    ? 'serial_required'
+    : laneReady
+      ? 'ready_parallel'
+      : 'blocked';
+  const reason = serialized
+    ? item.ownership.reason || 'ownership guard requires serialization'
+    : laneReady
+      ? `${lane} lane ready`
+      : laneReason;
+  return {
+    lane,
+    status,
+    workerReady: laneReady,
+    reason: compactRecordText(reason, 260),
+  };
+}
+
+function sliceIntoBatches(items = [], size = 1) {
+  const batchSize = Math.max(1, Number(size || 1));
+  const batches = [];
+  for (let index = 0; index < items.length; index += batchSize) {
+    batches.push(items.slice(index, index + batchSize));
+  }
+  return batches;
+}
+
+function parallelWorkbenchPreflightSnapshot(options = {}) {
+  const rawTasks = Array.isArray(options.tasks)
+    ? options.tasks
+    : Array.isArray(options.items)
+      ? options.items
+      : [];
+  const normalized = rawTasks
+    .slice(0, MAX_PARALLEL_AGENT_REQUESTS)
+    .map((item, index) => normalizeParallelTaskItem(item, index, options))
+    .filter((item) => item.task || item.command);
+  const tasks = applyParallelOwnership(normalized);
+  const workers = parallelWorkerReadinessSnapshot();
+  const requestedAgents = requestedParallelAgentCount(options, Math.max(tasks.length, rawTasks.length));
+  const activeCounts = queueCounts();
+  const items = tasks.map((item, index) => {
+    const readiness = parallelItemReadiness(item, workers);
+    return {
+      index,
+      title: compactRecordText(item.title || item.task || item.command, 160),
+      task: compactRecordText(item.task || '', 260),
+      command: item.command ? redactCommandForLog(item.command) : '',
+      lane: readiness.lane,
+      mode: item.mode || readiness.lane,
+      owner: compactRecordText(item.owner || ownerForRoutingLane(readiness.lane), 100),
+      scope: compactRecordText(item.scope || '', 220),
+      access: item.ownership?.access || inferParallelOwnershipAccess(item),
+      key: compactRecordText(item.ownership?.key || ownershipKeyForParallelTask(item), 220),
+      parallelSafe: item.ownership?.parallelSafe !== false,
+      serialized: item.ownership?.serialized === true,
+      status: readiness.status,
+      workerReady: readiness.workerReady,
+      reason: readiness.reason,
+      conflicts: Array.isArray(item.ownership?.conflicts) ? item.ownership.conflicts.slice(0, 5) : [],
+    };
+  });
+  const readyParallel = items.filter((item) => item.status === 'ready_parallel');
+  const serialized = items.filter((item) => item.status === 'serial_required');
+  const blocked = items.filter((item) => item.status === 'blocked');
+  const safeConcurrency = Math.max(1, Math.min(MAX_PARALLEL_TASKS, requestedAgents, Math.max(1, readyParallel.length || requestedAgents)));
+  const parallelBatches = sliceIntoBatches(readyParallel, safeConcurrency).map((batch, index) => ({
+    index,
+    label: `parallel wave ${index + 1}`,
+    count: batch.length,
+    items: batch.map((item) => ({
+      index: item.index,
+      owner: item.owner,
+      lane: item.lane,
+      scope: item.scope,
+      key: item.key,
+      title: item.title,
+    })),
+  }));
+  const serialQueue = serialized.map((item, index) => ({
+    order: index + 1,
+    index: item.index,
+    owner: item.owner,
+    lane: item.lane,
+    scope: item.scope,
+    key: item.key,
+    reason: item.reason,
+    conflicts: item.conflicts,
+  }));
+  const canExecuteAny = readyParallel.length > 0;
+  const counts = {
+    requestedTasks: rawTasks.length,
+    acceptedTasks: tasks.length,
+    droppedTasks: Math.max(0, rawTasks.length - tasks.length),
+    readyParallel: readyParallel.length,
+    serialRequired: serialized.length,
+    blocked: blocked.length,
+    parallelWaves: parallelBatches.length,
+    activeJobs: activeCounts.running + activeCounts.queued,
+  };
+  const summary = tasks.length
+    ? `Requested ${requestedAgents} agent slot(s); safe concurrency is ${safeConcurrency}. ${readyParallel.length} task(s) can run in ${parallelBatches.length || 0} parallel wave(s), ${serialized.length} require serial ownership, ${blocked.length} blocked by worker/policy readiness.`
+    : `Requested ${requestedAgents} agent slot(s); no tasks supplied yet. Safe concurrency would be ${safeConcurrency} before worker execution.`;
+  return {
+    ok: true,
+    preview: true,
+    requestedAgents,
+    maxRequestedAgents: MAX_PARALLEL_AGENT_REQUESTS,
+    configuredMaxParallelTasks: MAX_PARALLEL_TASKS,
+    safeConcurrency,
+    canExecuteAny,
+    status: blocked.length ? 'limited' : serialized.length ? 'serial_required' : 'ready',
+    summary,
+    counts,
+    workers,
+    items,
+    parallelBatches,
+    serialQueue,
+    blocked,
+    commands: {
+      preflight: 'npm run agents:preflight -- --agents 20',
+      routePreview: 'POST /api/tasks/parallel {"execute":false,"tasks":[...]}',
+      routeExecute: 'POST /api/tasks/parallel {"execute":true,"tasks":[...]}',
+    },
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      startsWorkers: false,
+      opensTerminal: false,
+      mutatesFiles: false,
+      createsRoutingRecords: false,
+      executeRequiresSeparateCall: true,
+    },
+    nextAction: tasks.length
+      ? canExecuteAny
+        ? 'Preview /api/tasks/parallel for the first wave; execute only after confirming scope ownership and worker readiness.'
+        : 'Fix worker readiness or provide read-only/local tasks before starting workers.'
+      : 'Provide task scopes before starting agents; do not spawn frontmost Terminal windows just to create capacity.',
+  };
+}
+
+function compactParallelPreflightSnapshot(preflight = {}) {
+  return {
+    requestedAgents: preflight.requestedAgents,
+    safeConcurrency: preflight.safeConcurrency,
+    status: preflight.status,
+    summary: compactRecordText(preflight.summary || '', 420),
+    counts: preflight.counts,
+    safety: preflight.safety,
+  };
+}
+
 function previewParallelCliTask(item, context = {}) {
   const decision = {
     lane: 'local',
@@ -35134,6 +35441,7 @@ async function routeParallelTasks(options = {}) {
     : Array.isArray(options.items)
       ? options.items
       : [];
+  const preflight = parallelWorkbenchPreflightSnapshot(options);
   const tasks = applyParallelOwnership(rawTasks
     .slice(0, MAX_PARALLEL_TASKS)
     .map((item, index) => normalizeParallelTaskItem(item, index, options))
@@ -35256,6 +35564,7 @@ async function routeParallelTasks(options = {}) {
     maxTasks: MAX_PARALLEL_TASKS,
     elapsedMs: Date.now() - startedAt,
     counts,
+    preflight: compactParallelPreflightSnapshot(preflight),
     ownership: {
       conflicts: ownershipConflicts,
       serialized: results.filter((item) => item.ownership?.serialized).map((item) => ({
@@ -68269,6 +68578,28 @@ function startApiServer() {
       res.json(result);
     } catch (error) {
       jsonError(res, 400, 'Parallel task routing failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/tasks/parallel/preflight', (req, res) => {
+    res.json({
+      preflight: parallelWorkbenchPreflightSnapshot({
+        requestedAgents: req.query.agents || req.query.requestedAgents || req.query.concurrency,
+        source: req.query.source || 'api_parallel_preflight',
+      }),
+    });
+  });
+
+  api.post('/api/tasks/parallel/preflight', express.json({ limit: '1mb' }), (req, res) => {
+    try {
+      res.json({
+        preflight: parallelWorkbenchPreflightSnapshot({
+          ...(req.body || {}),
+          source: req.body?.source || 'api_parallel_preflight',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 400, 'Parallel preflight failed', error instanceof Error ? error.message : String(error));
     }
   });
 
