@@ -28083,9 +28083,11 @@ function formatRealtimeProviderProbeForLocalCommand(control = {}) {
   const probe = control.providerProbe || {};
   const result = control.result || {};
   const confirmation = control.openAiSpendConfirmation || {};
+  const spendGuard = probe.spendGuard || control.spendGuard || {};
   return [
     `Realtime provider probe: ${control.executed ? 'dispatched' : 'preview only'} · status=${probe.status || '-'} · ready=${probe.providerReady ? 'yes' : 'no'}`,
     `Renderer: ${probe.rendererAvailable ? 'ready' : 'missing'} · OpenAI key=${probe.hasOpenAiKey ? 'present' : 'missing'}`,
+    spendGuard.reasons ? `Spend guard: ${spendGuard.allowed ? 'allowed' : 'blocked'} · hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} · remaining=${spendGuard.remaining?.total ?? '-'}${spendGuard.reasons?.length ? ` · ${spendGuard.reasons.slice(0, 4).join(', ')}` : ''}` : '',
     confirmation.required ? `OpenAI spend: ${confirmation.confirmed ? 'confirmed for this request' : 'confirmation required'} · one-request only` : '',
     probe.summary ? `Summary: ${compactRecordText(probe.summary, 260)}` : '',
     result.output ? `Output: ${compactRecordText(result.output, 300)}` : '',
@@ -28225,6 +28227,7 @@ function realtimeProviderProbeControlPayload(result = {}, execute = false) {
       hasOpenAiKey: Boolean(providerProbe.hasOpenAiKey),
       startsMicrophone: Boolean(providerProbe.startsMicrophone),
       requiresMicConfirmation: Boolean(providerProbe.requiresMicConfirmation),
+      spendGuard: providerProbe.spendGuard || null,
       summary: compactRecordText(providerProbe.summary || '', 260),
       next: compactRecordText(providerProbe.next || '', 320),
     },
@@ -40110,22 +40113,69 @@ function classifyRealtimeProviderIssue(details = {}) {
   return null;
 }
 
+function realtimeProviderProbeSpendGuardDecision(source = 'realtime_provider_probe_status') {
+  return evaluateOpenAiSpendGuard({
+    kind: 'realtime_provider_probe',
+    source,
+    model: models.realtime,
+    isProviderProbe: true,
+    reserve: false,
+    recordBlocked: false,
+  });
+}
+
+function compactOpenAiSpendGuardDecision(decision = {}) {
+  const state = decision.state || openAiSpendGuardSnapshot();
+  return {
+    allowed: Boolean(decision.allowed),
+    reasons: Array.isArray(decision.reasons)
+      ? decision.reasons.map((reason) => compactRecordText(reason, 120)).filter(Boolean).slice(0, 12)
+      : [],
+    summary: compactRecordText(decision.summary || '', 260),
+    mode: compactRecordText(state.mode || decision.mode || OPENAI_CLOUD_MODE, 40),
+    hardSpendLock: Boolean(state.hardSpendLock ?? decision.hardSpendLock ?? OPENAI_HARD_SPEND_LOCK),
+    dailyRequestLimit: Number(state.dailyRequestLimit ?? OPENAI_DAILY_REQUEST_LIMIT),
+    unattendedDailyRequestLimit: Number(state.unattendedDailyRequestLimit ?? OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT),
+    remaining: {
+      total: Math.max(0, Number(state.remaining?.total ?? 0)),
+      unattended: Math.max(0, Number(state.remaining?.unattended ?? 0)),
+    },
+    requireSpendConfirmationPhrase: Boolean(state.requireSpendConfirmationPhrase ?? OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE),
+    requireSpendLease: Boolean(state.requireSpendLease ?? OPENAI_REQUIRE_SPEND_LEASE),
+    activeSpendLeases: Math.max(0, Number(state.spendLease?.activeCount ?? 0)),
+    zeroSpendMode: openAiZeroSpendModeActive(),
+  };
+}
+
+function openAiSpendGuardBlocksRealtimeProviderProbe(decision = null) {
+  const guard = decision || realtimeProviderProbeSpendGuardDecision();
+  return Boolean(OPENAI_API_KEY && guard.allowed === false && Array.isArray(guard.reasons) && guard.reasons.length);
+}
+
 function realtimeProviderRetryPolicySnapshot(issue = null, options = {}) {
   const active = Boolean(issue && issue.status !== 'ready');
   const freshness = options.freshness || realtimeProviderProbeFreshness();
+  const spendLocked = issue?.kind === 'spend_locked';
   const state = !active
     ? 'ready'
-    : freshness.running
+    : spendLocked
+      ? 'spend_locked'
+      : freshness.running
       ? 'probe_running'
       : freshness.fresh
         ? 'cooldown'
         : 'probe_due';
+  const spendGuard = spendLocked
+    ? compactOpenAiSpendGuardDecision(issue.spendGuardDecision || realtimeProviderProbeSpendGuardDecision('realtime_provider_retry_policy'))
+    : null;
   return {
     version: 1,
     active,
     state,
-    canProbeNow: Boolean(OPENAI_API_KEY && active && !freshness.running && !freshness.fresh),
+    canProbeNow: Boolean(OPENAI_API_KEY && active && !spendLocked && !freshness.running && !freshness.fresh),
     shouldUseLocalFallback: active,
+    requiresOpenAiSpendUnlock: spendLocked,
+    spendGuard,
     cooldownMs: Math.max(0, Number(freshness.cooldownMs || REALTIME_PROVIDER_PROBE_FRESH_MS)),
     waitMs: Math.max(0, Number(freshness.waitMs || 0)),
     waitLabel: compactRecordText(freshness.waitLabel || '', 40),
@@ -40150,6 +40200,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
   const kind = compactRecordText(issue?.kind || '', 80);
   const status = compactRecordText(issue?.status || 'ready', 80);
   const quotaLike = kind === 'quota_or_rate_limit';
+  const spendLocked = kind === 'spend_locked';
   const active = Boolean(issue && status !== 'ready');
   const billingUrl = 'https://platform.openai.com/settings/organization/billing/overview';
   const limitsUrl = 'https://platform.openai.com/settings/organization/limits';
@@ -40166,7 +40217,28 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     });
   }
 
-  if (quotaLike) {
+  if (spendLocked) {
+    steps.push(
+      {
+        id: 'review_openai_spend_guard',
+        label: 'Review OpenAI spend guard',
+        detail: 'Confirm the local guard is intentionally in zero-spend mode before enabling any provider check.',
+        command: 'npm run openai:spend',
+      },
+      {
+        id: 'unlock_one_provider_probe',
+        label: 'Unlock one provider check',
+        detail: 'Only when you are present, disable the hard lock, set a positive daily limit, restart JAVIS, create a one-request spend lease with the exact phrase, then run the probe.',
+        command: 'npm run config -- --print-openai-spend-guard',
+      },
+      {
+        id: 'run_provider_probe_after_unlock',
+        label: 'Run no-mic provider probe after unlock',
+        detail: 'This command can spend one OpenAI API request only after the guard and one-request lease allow it.',
+        command: 'npm run dogfood:realtime-provider-probe:run',
+      },
+    );
+  } else if (quotaLike) {
     steps.push(
       {
         id: 'open_api_billing',
@@ -40215,7 +40287,7 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     });
   }
 
-  if (active) {
+  if (active && !spendLocked) {
     steps.push({
       id: 'restart_and_probe',
       label: 'Restart and probe again',
@@ -40232,13 +40304,19 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     active,
     kind,
     status,
-    summary: quotaLike
+    summary: spendLocked
+      ? 'OpenAI zero-spend guard is intentionally blocking the paid no-mic Realtime provider probe; local voice fallback remains available.'
+      : quotaLike
       ? 'OpenAI Realtime reached the API, but the API project has no usable quota/billing/rate-limit headroom.'
       : compactRecordText(issue?.summary || 'Realtime provider is ready or has no current recovery issue.', 260),
     next: compactRecordText(issue?.next || (steps[0]?.detail || ''), 320),
     chatGptSubscriptionCoversApi: false,
     subscriptionBoundary: 'ChatGPT app subscriptions and OpenAI API Platform billing are separate; API/Realtime usage needs API billing or credits on the project/org that owns OPENAI_API_KEY.',
     billingLikely: quotaLike,
+    spendLocked,
+    spendGuard: spendLocked
+      ? compactOpenAiSpendGuardDecision(issue.spendGuardDecision || realtimeProviderProbeSpendGuardDecision('realtime_provider_recovery'))
+      : null,
     retryPolicy,
     links: {
       billing: billingUrl,
@@ -40249,11 +40327,13 @@ function realtimeProviderRecoverySnapshot(issue = null, options = {}) {
     steps,
     autoProbe: {
       actionId: 'readiness:realtime_voice_provider',
-      available: Boolean(OPENAI_API_KEY),
+      available: Boolean(OPENAI_API_KEY && !spendLocked),
       autopilotEligible: false,
-      manualOnlyReason: 'Provider probes can consume OpenAI API quota and require explicit user action.',
+      manualOnlyReason: spendLocked
+        ? 'OpenAI zero-spend guard is active; provider probes stay disabled until the user intentionally unlocks one request.'
+        : 'Provider probes can consume OpenAI API quota and require explicit user action.',
       cooldownMs: REALTIME_PROVIDER_PROBE_FRESH_MS,
-      due: Boolean(OPENAI_API_KEY && active && !providerProbeFreshness.fresh),
+      due: Boolean(OPENAI_API_KEY && active && !spendLocked && !providerProbeFreshness.fresh),
       running: Boolean(providerProbeFreshness.running),
       freshness: compactRealtimePreflightFreshness(providerProbeFreshness),
       safety: {
@@ -40289,9 +40369,23 @@ function realtimeProviderUnverifiedIssue() {
   };
 }
 
+function realtimeProviderSpendLockedIssue(decision = null) {
+  const spendGuardDecision = decision || realtimeProviderProbeSpendGuardDecision('realtime_provider_spend_locked_issue');
+  const spendGuard = compactOpenAiSpendGuardDecision(spendGuardDecision);
+  return {
+    kind: 'spend_locked',
+    status: 'warning',
+    summary: 'Realtime provider probe is waiting behind the OpenAI zero-spend guard; no provider request will run until the user explicitly unlocks one check.',
+    next: 'Use local voice fallback now. To verify Realtime later, review npm run openai:spend, disable the hard lock/set a positive daily limit, create a one-request spend lease with the exact phrase, then run npm run dogfood:realtime-provider-probe:run.',
+    spendGuard,
+    spendGuardDecision,
+  };
+}
+
 function realtimeLocalVoiceFallbackSnapshot(issue = null) {
   const blockedByQuota = issue?.kind === 'quota_or_rate_limit';
-  const providerBlocked = Boolean(issue && ['missing_key', 'provider_unverified', 'quota_or_rate_limit', 'auth_or_permission', 'provider_error', 'network'].includes(issue.kind));
+  const spendLocked = issue?.kind === 'spend_locked';
+  const providerBlocked = Boolean(issue && ['missing_key', 'spend_locked', 'provider_unverified', 'quota_or_rate_limit', 'auth_or_permission', 'provider_error', 'network'].includes(issue.kind));
   const blocker = {
     active: Boolean(issue),
     kind: compactRecordText(issue?.kind || '', 80),
@@ -40307,9 +40401,13 @@ function realtimeLocalVoiceFallbackSnapshot(issue = null) {
     dogfoodCommand: 'npm run dogfood:voice-command -- --include-screen --include-accessibility',
     summary: blockedByQuota
       ? 'Realtime quota is blocked, but local voice-command fallback can still route typed or tap transcripts with Mac context and local speech.'
+      : spendLocked
+        ? 'OpenAI zero-spend guard is active, so local voice-command fallback is the default no-cost lane.'
       : 'Local voice-command fallback can route typed or tap transcripts without starting Realtime.',
     next: blockedByQuota
       ? 'Use the local voice-command fallback for task routing now; add API quota later to restore live WebRTC voice.'
+      : spendLocked
+        ? 'Keep using local no-mic intake; unlock exactly one provider check only when you are present and want to spend one API request.'
       : 'Use this fallback when live Realtime is unavailable or when a no-mic preview is safer.',
     blocker,
     safety: {
@@ -40341,12 +40439,17 @@ function realtimeVoiceHealthSnapshot(options = {}) {
   const errorText = parseRealtimeErrorPayload(providerCheck?.error || conversation?.error || '');
   const statusCode = Number(providerCheck?.statusCode || 0);
   const lastSuccess = Boolean(providerCheck?.ok && (!statusCode || (statusCode >= 200 && statusCode < 300)));
+  const spendGuardDecision = OPENAI_API_KEY
+    ? realtimeProviderProbeSpendGuardDecision('realtime_voice_health')
+    : null;
   const issue = OPENAI_API_KEY
     ? classifyRealtimeProviderIssue({
       ok: providerCheck?.ok,
       statusCode,
       error: errorText,
-    }) || (lastSuccess ? null : realtimeProviderUnverifiedIssue())
+    }) || (lastSuccess ? null : (openAiSpendGuardBlocksRealtimeProviderProbe(spendGuardDecision)
+      ? realtimeProviderSpendLockedIssue(spendGuardDecision)
+      : realtimeProviderUnverifiedIssue()))
     : {
       kind: 'missing_key',
       status: 'blocked',
@@ -45874,16 +45977,23 @@ function realtimeProviderProbeSnapshot(options = {}) {
   const providerReady = OPENAI_API_KEY
     ? result?.ok === true && !issue
     : false;
+  const spendGuardDecision = OPENAI_API_KEY
+    ? realtimeProviderProbeSpendGuardDecision('realtime_provider_probe_status')
+    : null;
+  const spendLocked = Boolean(!providerReady && !realtimeProviderProbeState.active && !issue && openAiSpendGuardBlocksRealtimeProviderProbe(spendGuardDecision));
+  const spendGuard = spendGuardDecision ? compactOpenAiSpendGuardDecision(spendGuardDecision) : null;
   const status = !OPENAI_API_KEY
     ? 'blocked'
     : realtimeProviderProbeState.active
       ? realtimeProviderProbeState.status || 'running'
-      : issue?.status || (providerReady ? 'ready' : (result ? 'warning' : 'idle'));
+      : issue?.status || (providerReady ? 'ready' : (spendLocked ? 'spend_locked' : (result ? 'warning' : 'idle')));
   const summary = !OPENAI_API_KEY
     ? 'OPENAI_API_KEY is missing, so the no-mic Realtime provider probe cannot run.'
     : issue?.summary
       || (providerReady
         ? `No-mic Realtime provider probe succeeded${result.statusCode ? ` (HTTP ${result.statusCode})` : ''}.`
+        : spendLocked
+          ? 'No no-mic Realtime provider probe has run because the OpenAI zero-spend guard is locked; no provider request has been sent.'
         : result
           ? `No-mic Realtime provider probe has a non-ready result${result.statusCode ? ` (HTTP ${result.statusCode})` : ''}.`
           : 'No no-mic Realtime provider probe has run yet.');
@@ -45903,6 +46013,7 @@ function realtimeProviderProbeSnapshot(options = {}) {
     manualOnlyReason: 'OpenAI provider probes can consume API quota and require explicit spend confirmation.',
     requiresUserPresence: true,
     requiresOpenAiSpendConfirmation: true,
+    spendGuard,
     openAiSpendConfirmation: openAiSpendConfirmationSnapshot({
       kind: 'realtime_provider_probe',
       source: 'status',
@@ -45913,7 +46024,9 @@ function realtimeProviderProbeSnapshot(options = {}) {
       ? 'Add OPENAI_API_KEY to .env and restart JAVIS.'
       : issue?.next || (providerReady
         ? 'The provider lane is ready; keep OpenAI spend locked unless the user is present and explicitly unlocks a one-request check.'
-        : 'Preview with npm run dogfood:realtime-provider-probe. Do not run a provider check until the hard spend lock is disabled and the exact spend phrase is typed.'),
+        : spendLocked
+          ? 'Use local voice fallback now. To verify Realtime later, review npm run openai:spend, disable the hard lock/set a positive daily limit, create a one-request spend lease with the exact phrase, then run npm run dogfood:realtime-provider-probe:run.'
+          : 'Preview with npm run dogfood:realtime-provider-probe. Do not run a provider check until the hard spend lock is disabled and the exact spend phrase is typed.'),
     result,
     issue,
     createdAt: realtimeProviderProbeState.createdAt,

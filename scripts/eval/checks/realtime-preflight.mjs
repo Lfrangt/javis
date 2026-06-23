@@ -48,7 +48,7 @@ function acceptanceGaps(acceptance = {}) {
 }
 
 function isRecoverableProviderHealth(voiceHealth = {}) {
-  return voiceHealth?.status === 'warning' && ['quota_or_rate_limit', 'provider_unverified'].includes(voiceHealth?.kind);
+  return voiceHealth?.status === 'warning' && ['spend_locked', 'quota_or_rate_limit', 'provider_unverified'].includes(voiceHealth?.kind);
 }
 
 function providerHealthLabel(voiceHealth = {}) {
@@ -116,6 +116,11 @@ export default {
         probe.requiresMicConfirmation === false &&
         probe.safety?.startsMicrophone === false &&
         probe.safety?.capturesAudio === false &&
+        (probe.status !== 'spend_locked' || (
+          probe.spendGuard?.allowed === false &&
+          probe.spendGuard?.hardSpendLock === true &&
+          probe.spendGuard?.zeroSpendMode === true
+        )) &&
         probePreview.executed === false &&
         probePreview.startsMicrophone === false &&
         probePreview.requiresMicConfirmation === false &&

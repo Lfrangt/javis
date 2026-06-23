@@ -298,10 +298,10 @@ export default {
         voiceStandbyInputMode.startsMuted === true &&
         (voiceStandby.provider?.status === 'ready' ||
           (voiceStandbyRetryPolicy.active === true &&
-            ['probe_due', 'cooldown', 'probe_running'].includes(voiceStandbyRetryPolicy.state) &&
+            ['spend_locked', 'probe_due', 'cooldown', 'probe_running'].includes(voiceStandbyRetryPolicy.state) &&
             voiceStandbyRetryPolicy.shouldUseLocalFallback === true &&
             voiceStandbyRetryPolicy.safety?.startsMicrophone === false)) &&
-        (!bundleRealtimeKind || bundleRealtimeKind === 'provider_unverified' || voiceStandby.provider?.kind === bundleRealtimeKind) &&
+        (!bundleRealtimeKind || ['provider_unverified', 'spend_locked'].includes(bundleRealtimeKind) || voiceStandby.provider?.kind === bundleRealtimeKind) &&
         voiceStandby.local?.available === true &&
         voiceStandby.local?.input?.endpoint === '/api/voice/command' &&
         voiceStandby.local?.input?.openLoopEndpoint === '/api/voice/open-local-loop' &&
@@ -1872,7 +1872,7 @@ export default {
         typeof recovery.active === 'boolean' &&
         (recovery.active === false ||
           (retryPolicy.active === true &&
-            ['probe_due', 'cooldown', 'probe_running'].includes(retryPolicy.state) &&
+            ['spend_locked', 'probe_due', 'cooldown', 'probe_running'].includes(retryPolicy.state) &&
             retryPolicy.shouldUseLocalFallback === true &&
             retryPolicy.safety?.startsMicrophone === false &&
             retryPolicy.safety?.storesRawAudio === false)) &&

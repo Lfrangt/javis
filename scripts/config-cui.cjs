@@ -3729,7 +3729,8 @@ function printRealtimeProviderProbe(result) {
   if (probe.spendGuard || result?.spendGuard) {
     const guard = probe.spendGuard || result.spendGuard;
     const state = guard.state || {};
-    console.log(`Spend guard: ${guard.allowed ? 'allowed' : 'blocked'} · mode ${state.mode || guard.mode || '-'} · hard lock ${state.hardSpendLock ? 'on' : 'off'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
+    const hardSpendLock = state.hardSpendLock ?? guard.hardSpendLock;
+    console.log(`Spend guard: ${guard.allowed ? 'allowed' : 'blocked'} · mode ${state.mode || guard.mode || '-'} · hard lock ${hardSpendLock ? 'on' : 'off'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
   }
   const confirmation = result?.openAiSpendConfirmation || probe.openAiSpendConfirmation;
   if (confirmation?.required) {
