@@ -137,6 +137,31 @@ native `AXUIElement` C-API helper (or rooting the walk at `AXWebArea` /
 `AXFocusedUIElement` to skip the browser-chrome nodes entirely). Re-run
 `node scripts/ax-read-budget-scan.mjs` with a stable single-app target to confirm.
 
+### PROVEN FIX: root the walk at `AXWebArea` (`scripts/ax-webarea-poc.js`)
+
+A standalone JXA PoC that descends to the Chromium `AXWebArea` and BFS-walks from
+there, on the same heavy Chrome + contenteditable composer:
+
+```
+{"app":"Google Chrome","webAreaFound":true,"findMs":224,"scanMs":221,
+ "nodesScanned":3,"composer":{"role":"AXTextArea","scanned":3}}
+```
+
+The composer is reached in **3 nodes / ~0.4s total** (224ms to locate the
+`AXWebArea` + 221ms to BFS to the composer), versus **8.6s and never reached** from
+the window root at an 80-node budget. The contenteditable composer sits ~3 levels
+under `AXWebArea`; the window-rooted BFS burns its whole budget on toolbar/tab
+chrome before it ever descends into web content.
+
+**Recommended implementation (Codex, AX read path):** in
+`accessibilityTreeSnapshot`, when the frontmost app `isChromiumApp`, locate the
+`AXWebArea` (shallow descent, cap depth ~12) and use it as the BFS root for web
+targets (optionally union with a small pass over native chrome for back/forward
+etc.). Keep the existing window-root walk for non-Chromium apps. This removes the
+read-timeout wall for the Gemini/contenteditable case entirely and makes the
+retry-on-drift (fix C, already landed) actually reach a target to retry against.
+PoC is `scripts/ax-webarea-poc.js` — run it with Chrome frontmost to reproduce.
+
 Also note: interactive AX testing on this machine is unreliable because
 Chrome/Codex/League keep stealing frontmost between activate and read
 (`no_frontmost_app`). A stable single-app target is needed to get a clean PASS.
