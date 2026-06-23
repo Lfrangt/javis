@@ -243,6 +243,7 @@ const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
 const PARALLEL_PLANS_FILE = path.join(DATA_DIR, 'parallel-plans.json');
 const COLLABORATION_FILE = path.join(DATA_DIR, 'collaboration.json');
 const WINDOW_STATE_FILE = path.join(DATA_DIR, 'window-state.json');
+const VOICE_PROMPT_SETTINGS_FILE = path.join(DATA_DIR, 'voice-prompt-settings.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
 const OPENAI_SPEND_GUARD_FILE = path.join(DATA_DIR, 'openai-spend-guard.json');
 const AUDIT_MAX_BYTES = boundedRuntimeNumber(process.env.JAVIS_AUDIT_MAX_BYTES, 64 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024);
@@ -34126,6 +34127,93 @@ function booleanOption(value) {
   return value === true || String(value || '').toLowerCase() === 'true';
 }
 
+const DEFAULT_VOICE_PROMPT_SETTINGS = {
+  version: 1,
+  showProgressBoardPrompt: true,
+};
+
+function normalizeVoicePromptSettings(value = {}) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    version: 1,
+    showProgressBoardPrompt: source.showProgressBoardPrompt === undefined
+      ? DEFAULT_VOICE_PROMPT_SETTINGS.showProgressBoardPrompt
+      : booleanOption(source.showProgressBoardPrompt),
+  };
+}
+
+function voicePromptSettingsSnapshot() {
+  let raw = {};
+  let loaded = false;
+  let error = '';
+  try {
+    if (fs.existsSync(VOICE_PROMPT_SETTINGS_FILE)) {
+      raw = JSON.parse(fs.readFileSync(VOICE_PROMPT_SETTINGS_FILE, 'utf8'));
+      loaded = true;
+    }
+  } catch (readError) {
+    error = readError instanceof Error ? readError.message : String(readError);
+  }
+  const settings = normalizeVoicePromptSettings(raw);
+  return {
+    ...settings,
+    loaded,
+    file: VOICE_PROMPT_SETTINGS_FILE,
+    error,
+    controls: {
+      update: '/api/voice/prompt-settings',
+      showProgressBoardPrompt: {
+        enable: 'POST /api/voice/prompt-settings {"showProgressBoardPrompt":true}',
+        disable: 'POST /api/voice/prompt-settings {"showProgressBoardPrompt":false}',
+      },
+    },
+    safety: {
+      readOnly: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      startsWorkers: false,
+      executesActions: false,
+    },
+  };
+}
+
+function updateVoicePromptSettings(update = {}, options = {}) {
+  const before = voicePromptSettingsSnapshot();
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(update, 'showProgressBoardPrompt')) {
+    patch.showProgressBoardPrompt = update.showProgressBoardPrompt;
+  }
+  const next = normalizeVoicePromptSettings({
+    ...before,
+    ...patch,
+  });
+  const payload = {
+    ...next,
+    updatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'api_voice_prompt_settings', 80),
+  };
+  writeJsonAtomic(VOICE_PROMPT_SETTINGS_FILE, payload);
+  appendAudit('voice.prompt_settings_updated', {
+    source: payload.source,
+    showProgressBoardPrompt: payload.showProgressBoardPrompt,
+  });
+  return {
+    ok: true,
+    before,
+    settings: voicePromptSettingsSnapshot(),
+    safety: {
+      writesLocalSettings: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      startsWorkers: false,
+      executesActions: false,
+      mutatesUserFiles: false,
+    },
+  };
+}
+
 function voiceLaneSpokenName(route = {}) {
   const lane = route.decision?.lane || route.decision?.mode || 'local';
   if (route.localCommand?.label) return route.localCommand.label;
@@ -34671,10 +34759,14 @@ function localVoicePromptPack(options = {}) {
   const latestCanContinue = Boolean(options.latestCanContinue ?? (latest && latest.executed === false && latest.queued === false && latest.routeId));
   const context = options.context || localVoicePromptContextSnapshot();
   const hasActiveSession = Boolean(context.activeSession?.id);
+  const promptSettings = options.promptSettings || voicePromptSettingsSnapshot();
+  const hasLocalFallbackBlocker = fallbackReady || Boolean(options.blocker?.active);
+  const showProgressBoardPrompt = promptSettings.showProgressBoardPrompt !== false;
   const candidates = fallbackReady
     ? [
         hasActiveSession ? localVoicePromptExample('session_check_in', '会话汇报') : null,
         hasActiveSession ? localVoicePromptExample('session_note', '记到当前会话：下一步要做什么') : null,
+        hasLocalFallbackBlocker && showProgressBoardPrompt ? localVoicePromptExample('progress_board', '打开本地进度看板，告诉我现在卡在哪里') : null,
         latestCanContinue ? localVoicePromptExample('continue', '继续刚才那个') : null,
         (context.activeJobCount || context.activeRouteCount) ? localVoicePromptExample('progress', '后台现在怎么样？') : null,
         context.browserAvailable ? localVoicePromptExample('browser_page', '读一下当前网页。') : null,
@@ -34707,6 +34799,9 @@ function localVoicePromptPack(options = {}) {
     nextUtterance,
     placeholder: nextUtterance,
     examples,
+    settings: {
+      showProgressBoardPrompt,
+    },
     safety: {
       startsMicrophone: !fallbackReady,
       usesRealtime: !fallbackReady,
@@ -34794,13 +34889,13 @@ function localVoiceStatusSnapshot(options = {}) {
       fallbackReady
         ? `${zeroSpendLocked ? 'OpenAI spend is zero-locked; ' : ''}Realtime voice is not ready; local typed intake can still route work without microphone, Realtime, Terminal, or provider spend.`
         : 'Local typed intake is ready for no-mic preview or fallback use.',
-      slim ? 80 : 120,
+      slim ? 56 : 120,
     ),
     next: compactRecordText(
       fallbackReady
         ? fallback.next || 'Use the compact pet input or npm run voice with a quoted request while Realtime is unavailable.'
         : 'Use the compact pet input or npm run voice when you want no-mic intake, or start Realtime when provider health is ready.',
-      slim ? 90 : 140,
+      slim ? 64 : 140,
     ),
     spendGuard: spendGuardStatus,
     blocker: {
@@ -42701,7 +42796,6 @@ function petWakeSnapshot(wake = wakeStatusSnapshot()) {
         ? {
             version: Number(handoff.promptPack.version || 1),
             nextUtterance: compactRecordText(handoff.promptPack.nextUtterance || '', 80),
-            placeholder: compactRecordText(handoff.promptPack.placeholder || handoff.promptPack.nextUtterance || '', 80),
           }
         : null,
       localVoiceMode: compactRecordText(handoff.localVoiceMode || '', 80),
@@ -42747,7 +42841,7 @@ function petScreenPrivacySnapshot(privacy = screenPrivacySnapshot()) {
     jpegQuality: Number(privacy.jpegQuality || 0),
     realtimeAllowed: privacy.realtimeAllowed !== false,
     ruleCounts: privacy.ruleCounts || { total: 0, enabled: 0 },
-    rulesSummary: compactRecordText(privacy.rulesSummary || '', 180),
+    rulesSummary: compactRecordText(privacy.rulesSummary || '', 90),
     enforcement: {
       regionRuleCount: Number(enforcement.regionRuleCount || 0),
       regionRendererMask: enforcement.regionRendererMask === true,
@@ -42782,7 +42876,7 @@ function petPresenceStatusSnapshot(presence = {}) {
     generatedAt: presence.generatedAt || new Date().toISOString(),
     mode: presence.mode || 'standby',
     label: presence.label || 'Standby',
-    summary: compactRecordText(presence.summary || '', 220),
+    summary: compactRecordText(presence.summary || '', 90),
     intervention: {
       passiveByDefault: presence.intervention?.passiveByDefault !== false,
       requiresUserIntent: presence.intervention?.requiresUserIntent !== false,
@@ -42790,7 +42884,7 @@ function petPresenceStatusSnapshot(presence = {}) {
       trustedLocalMode: Boolean(presence.intervention?.trustedLocalMode),
       maxAutoRiskLevel: Number(presence.intervention?.maxAutoRiskLevel || 0),
       requireApprovalAtRiskLevel: Number(presence.intervention?.requireApprovalAtRiskLevel || 0),
-      next: compactRecordText(presence.intervention?.next || '', 150),
+      next: compactRecordText(presence.intervention?.next || '', 70),
       attentionLevel: compactRecordText(presence.intervention?.attentionLevel || '', 40),
       shouldNotify: Boolean(presence.intervention?.shouldNotify),
     },
@@ -43054,8 +43148,8 @@ function petStatusSnapshot() {
       ],
       mode: presence.mode,
       label: presence.label,
-      summary: compactRecordText(presence.summary || '', 90),
-      next: compactRecordText(presence.intervention?.next || '', 80),
+      summary: compactRecordText(presence.summary || '', 60),
+      next: compactRecordText(presence.intervention?.next || '', 48),
       color: trafficLight.color,
       trafficLight,
     },
@@ -67517,6 +67611,23 @@ function startApiServer() {
     const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
     const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
     res.json({ standby: voiceStandbySnapshot({ conversation, voiceHealth, localVoice }) });
+  });
+
+  api.get('/api/voice/prompt-settings', (_req, res) => {
+    res.json({ settings: voicePromptSettingsSnapshot() });
+  });
+
+  api.post('/api/voice/prompt-settings', (req, res) => {
+    try {
+      const result = updateVoicePromptSettings({
+        showProgressBoardPrompt: req.body?.showProgressBoardPrompt,
+      }, {
+        source: req.body?.source || 'api_voice_prompt_settings',
+      });
+      res.json(result);
+    } catch (error) {
+      jsonError(res, 500, 'Voice prompt settings update failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.get('/api/voice/setup', (_req, res) => {

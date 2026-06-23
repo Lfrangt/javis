@@ -393,6 +393,9 @@ export default {
         voiceStandbyPromptPack.nextUtterance.length > 0 &&
         Array.isArray(voiceStandbyPromptPack.examples) &&
         voiceStandbyPromptPack.examples.length >= 3 &&
+        (voiceStandby.mode !== 'local_fallback_ready' ||
+          voiceStandbyPromptPack.settings?.showProgressBoardPrompt === false ||
+          voiceStandbyPromptPack.examples.some((example) => String(example.utterance || '').includes('进度看板'))) &&
         voiceStandbyPromptPack.safety?.opensTerminal === false &&
         (voiceStandby.mode === 'local_fallback_ready'
           ? voiceStandbyPromptPack.safety?.startsMicrophone === false &&
@@ -417,6 +420,73 @@ export default {
           cui: voiceStandbyCui.stdout,
           cuiError: voiceStandbyCui.stderr,
           cuiStatus: voiceStandbyCui.status,
+        }),
+    );
+
+    const promptSettingsBeforeResponse = await ctx.api('/api/voice/prompt-settings');
+    const originalProgressBoardPrompt = promptSettingsBeforeResponse.data?.settings?.showProgressBoardPrompt !== false;
+    const disablePromptResponse = await ctx.api('/api/voice/prompt-settings', {
+      method: 'POST',
+      body: {
+        source: 'eval_resident_disable_progress_board_prompt',
+        showProgressBoardPrompt: false,
+      },
+    });
+    const disabledStandbyResponse = await ctx.api('/api/voice/standby');
+    const disabledPromptPack = disabledStandbyResponse.data?.standby?.promptPack || {};
+    const enablePromptResponse = await ctx.api('/api/voice/prompt-settings', {
+      method: 'POST',
+      body: {
+        source: 'eval_resident_enable_progress_board_prompt',
+        showProgressBoardPrompt: true,
+      },
+    });
+    const enabledStandbyResponse = await ctx.api('/api/voice/standby');
+    const enabledStandby = enabledStandbyResponse.data?.standby || {};
+    const enabledPromptPack = enabledStandby.promptPack || {};
+    await ctx.api('/api/voice/prompt-settings', {
+      method: 'POST',
+      body: {
+        source: 'eval_resident_restore_progress_board_prompt',
+        showProgressBoardPrompt: originalProgressBoardPrompt,
+      },
+    });
+    const disabledExamples = Array.isArray(disabledPromptPack.examples) ? disabledPromptPack.examples : [];
+    const enabledExamples = Array.isArray(enabledPromptPack.examples) ? enabledPromptPack.examples : [];
+    const configSourceForPromptSettings = fs.readFileSync('scripts/config-cui.cjs', 'utf8');
+    const mainSourceForPromptSettings = fs.readFileSync('electron/main.cjs', 'utf8');
+    const packageJsonForPromptSettings = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+    const promptSettingsCuiReady =
+      mainSourceForPromptSettings.includes("api.get('/api/voice/prompt-settings'") &&
+      mainSourceForPromptSettings.includes("api.post('/api/voice/prompt-settings'") &&
+      configSourceForPromptSettings.includes('--print-voice-prompt-settings') &&
+      configSourceForPromptSettings.includes('--enable-progress-board-prompt') &&
+      configSourceForPromptSettings.includes('--disable-progress-board-prompt') &&
+      packageJsonForPromptSettings.scripts?.['voice:prompts'] &&
+      packageJsonForPromptSettings.scripts?.['voice:prompt-board:on'] &&
+      packageJsonForPromptSettings.scripts?.['voice:prompt-board:off'];
+    out.push(
+      promptSettingsBeforeResponse.ok &&
+        disablePromptResponse.ok &&
+        disablePromptResponse.data?.settings?.showProgressBoardPrompt === false &&
+        disabledStandbyResponse.ok &&
+        disabledPromptPack.settings?.showProgressBoardPrompt === false &&
+        disabledExamples.every((example) => !String(example.utterance || '').includes('进度看板')) &&
+        enablePromptResponse.ok &&
+        enablePromptResponse.data?.settings?.showProgressBoardPrompt === true &&
+        enabledStandbyResponse.ok &&
+        enabledPromptPack.settings?.showProgressBoardPrompt === true &&
+        (enabledStandby.mode !== 'local_fallback_ready' ||
+          enabledExamples.some((example) => String(example.utterance || '').includes('进度看板'))) &&
+        promptSettingsCuiReady
+        ? ok('resident.voice_prompt_settings_toggle', 'Voice prompt settings toggle', 'progress-board standby prompt can be disabled/enabled through local API and CUI commands without mic, Realtime, cloud, worker, or action side effects')
+        : fail('resident.voice_prompt_settings_toggle', 'Voice prompt settings toggle', 'expected progress-board prompt setting to disable/enable standby prompt examples and expose API/CUI controls', {
+          before: promptSettingsBeforeResponse.data,
+          disable: disablePromptResponse.data,
+          disabledStandby: disabledStandbyResponse.data,
+          enable: enablePromptResponse.data,
+          enabledStandby: enabledStandbyResponse.data,
+          promptSettingsCuiReady,
         }),
     );
 
@@ -1869,6 +1939,7 @@ export default {
       mainSource.includes('browserActivitySnapshot({ limit: 3 })') &&
       mainSource.includes('appUiCacheStateSnapshot()') &&
       mainSource.includes('activeRoutingSnapshot(8)') &&
+      mainSource.includes("localVoicePromptExample('progress_board', '打开本地进度看板，告诉我现在卡在哪里')") &&
       mainSource.includes("localVoicePromptExample('continue', '继续刚才那个')") &&
       mainSource.includes("localVoicePromptExample('browser_dom', '当前网页有哪些按钮？')") &&
       mainSource.includes("localVoicePromptExample('app_ui', '这个界面能点什么？')");

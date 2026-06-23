@@ -488,6 +488,9 @@ async function printStatus() {
   console.log('6H. Hide desktop pet for class/presentation');
   console.log('6S. Show desktop pet');
   console.log('6X. Close desktop pet layer');
+  console.log('VP. Show voice prompt settings');
+  console.log('VPON. Enable progress-board standby prompt');
+  console.log('VPOFF. Disable progress-board standby prompt');
   console.log('7. Restart JAVIS resident');
   console.log('8. Toggle local execution');
   console.log('9. Toggle Level 3 auto-run');
@@ -1386,6 +1389,40 @@ function printVoiceStandby(result) {
   console.log('- provider probe: npm run dogfood:realtime-provider-probe');
   console.log('\nSafety');
   console.log(`- read-only=${safety.readOnly ? 'yes' : 'no'} starts mic=${safety.startsMicrophone ? 'yes' : 'no'} uses Realtime=${safety.usesRealtime ? 'yes' : 'no'} stores raw audio=${safety.storesRawAudio ? 'yes' : 'no'}`);
+}
+
+function printVoicePromptSettings(result = {}) {
+  const settings = result.settings || result;
+  console.log('\nJAVIS Voice Prompt Settings');
+  console.log('===========================');
+  console.log(`Progress board prompt: ${settings.showProgressBoardPrompt === false ? 'off' : 'on'}`);
+  console.log(`Loaded from runtime file: ${settings.loaded ? 'yes' : 'default'}`);
+  if (settings.error) console.log(`Note: ${compact(settings.error, 220)}`);
+  console.log('\nCommands');
+  console.log('- show: npm run voice:prompts');
+  console.log('- enable: npm run voice:prompt-board:on');
+  console.log('- disable: npm run voice:prompt-board:off');
+  console.log('- raw show: npm run config -- --print-voice-prompt-settings');
+  console.log('\nSafety');
+  console.log('- This only changes local prompt suggestions. It does not call OpenAI, start microphone/Realtime/workers, open Terminal, or execute actions.');
+}
+
+async function showVoicePromptSettings() {
+  const result = await request('/api/voice/prompt-settings');
+  printVoicePromptSettings(result);
+  return result;
+}
+
+async function setVoiceProgressBoardPrompt(enabled, source = 'cui_cli_voice_prompt_settings') {
+  const result = await request('/api/voice/prompt-settings', {
+    method: 'POST',
+    body: {
+      source,
+      showProgressBoardPrompt: Boolean(enabled),
+    },
+  });
+  printVoicePromptSettings(result.settings || result);
+  return result;
 }
 
 async function showVoiceStandby() {
@@ -5259,6 +5296,21 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-voice-prompt-settings') || process.argv.includes('--voice-prompt-settings')) {
+    await showVoicePromptSettings();
+    return;
+  }
+
+  if (process.argv.includes('--enable-progress-board-prompt')) {
+    await setVoiceProgressBoardPrompt(true, 'cui_cli_enable_progress_board_prompt');
+    return;
+  }
+
+  if (process.argv.includes('--disable-progress-board-prompt')) {
+    await setVoiceProgressBoardPrompt(false, 'cui_cli_disable_progress_board_prompt');
+    return;
+  }
+
   if (process.argv.includes('--start-overnight') || process.argv.includes('--prepare-overnight')) {
     await prepareOvernightFromCui({
       execute: process.argv.includes('--execute') || process.argv.includes('--run') || process.argv.includes('--start-overnight'),
@@ -5774,6 +5826,12 @@ async function main() {
         await runWindowVisibilityAction('show', { source: 'cui_interactive_show_pet' });
       } else if (answer === '6x' || answer === 'close pet' || answer === 'close window' || answer === 'close desktop pet') {
         await runWindowVisibilityAction('close', { source: 'cui_interactive_close_pet' });
+      } else if (answer === 'vp' || answer === 'voice prompt' || answer === 'voice prompt settings') {
+        await showVoicePromptSettings();
+      } else if (answer === 'vpon' || answer === 'enable progress board prompt') {
+        await setVoiceProgressBoardPrompt(true, 'cui_interactive_enable_progress_board_prompt');
+      } else if (answer === 'vpoff' || answer === 'disable progress board prompt') {
+        await setVoiceProgressBoardPrompt(false, 'cui_interactive_disable_progress_board_prompt');
       } else if (answer === '7') {
         await restartJavis();
       } else if (answer === '8') {

@@ -1216,6 +1216,8 @@ export default {
         typeof naturalPromptPack.nextUtterance === 'string' &&
         naturalPromptPack.nextUtterance.length > 0 &&
         Array.isArray(naturalPromptPack.examples) &&
+        (naturalPromptPack.settings?.showProgressBoardPrompt === false ||
+          naturalPromptPack.examples.some((example) => String(example.utterance || '').includes('进度看板'))) &&
         naturalPromptSuggestionsData.route?.data?.standby?.version === 1 &&
         naturalPromptInputMode.mode === 'typed_local_intake' &&
         naturalPromptInputMode.micDefault === 'off' &&
