@@ -1,4 +1,4 @@
-import { ok, fail } from '../_client.mjs';
+import { ok, fail, skip } from '../_client.mjs';
 
 // Local work-session lifecycle (README: "Local work sessions for focus goals,
 // session notes, resume-from-history handoff … and deterministic
@@ -15,12 +15,24 @@ export default {
     let id = '';
     let resumedId = ''; // resume forks a NEW session id — must be cleaned too.
 
+    const before = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+    const existingActive = before.data?.sessions?.active || null;
+    if (existingActive) {
+      out.push(skip('sl.active_guard', 'Active session guard', `left existing active session untouched: ${existingActive.title || existingActive.id}`));
+      return out;
+    }
+
     const start = await ctx.api('/api/sessions/start', {
       method: 'POST',
       body: { title: tag, goal: 'eval session lifecycle probe', source: 'eval' },
     });
     id = start.data?.session?.id || start.data?.id || '';
     if (!start.ok || !id) {
+      const detail = String(start.data?.details || start.error || start.data?.error || '');
+      if (/already active/i.test(detail)) {
+        out.push(skip('sl.active_guard', 'Active session guard', `start skipped because a session became active: ${detail}`));
+        return out;
+      }
       out.push(fail('sl.start', 'Start session', `POST /api/sessions/start ${start.status} ${start.error || start.data?.error || ''}`));
       return out;
     }
