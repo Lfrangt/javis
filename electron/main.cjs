@@ -17559,6 +17559,10 @@ async function controlCurrentApp(options = {}) {
   const action = normalizeAccessibilityControlAction(options.action, content);
   const requestedApp = String(options.app || options.application || '').trim().slice(0, 120);
   if (action === 'ax_set_value' && !content) throw new Error('Missing content for set_value UI action.');
+  // Guards a single retry when the AX tree drifts between the plan snapshot and
+  // the execute re-walk (common for contenteditable/web composers — see
+  // docs/issues/2026-06-22-ax-execute-index-drift.md).
+  const driftRetry = options._driftRetry === true;
 
   const treePolicy = actionPolicy.allow?.read_accessibility_tree || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree;
   const maxNodes = options.maxNodes || treePolicy.maxNodes || DEFAULT_ACTION_POLICY.allow.read_accessibility_tree.maxNodes;
@@ -17577,6 +17581,18 @@ async function controlCurrentApp(options = {}) {
 
   if (!plan.ok || !target) {
     const output = plan.recommended?.summary || plan.tree?.error || 'No usable UI target found.';
+    // When executing, a no_target is often a non-deterministic/shallow AX read
+    // (the web composer wasn't exposed this pass). Re-snapshot once before
+    // giving up. On preview, no_target is a legitimate answer — don't retry.
+    if ((options.execute !== false) && !driftRetry) {
+      appendAudit('accessibility_control.no_target_retry', {
+        instruction: compactRecordText(instruction, 180),
+        app: plan.app,
+        error: plan.tree?.error || '',
+      });
+      await waitMs(220);
+      return controlCurrentApp({ ...options, _driftRetry: true });
+    }
     appendAudit('accessibility_control.no_target', {
       instruction: compactRecordText(instruction, 180),
       app: plan.app,
@@ -17690,6 +17706,23 @@ async function controlCurrentApp(options = {}) {
     }
 
     const message = error instanceof Error ? error.message : String(error);
+
+    // Retry-on-drift: the index-addressed node moved between the plan snapshot
+    // and the execute re-walk. Re-snapshot once and resolve the target fresh,
+    // which usually succeeds after the tree settles. Bounded to one retry.
+    const isDrift = /^accessibility_(role_changed|label_changed|node_not_found)/.test(message);
+    if (isDrift && !driftRetry) {
+      appendAudit('accessibility_control.drift_retry', {
+        instruction: compactRecordText(instruction, 180),
+        app: plan.app,
+        nodeId: target.nodeId,
+        role: target.role,
+        reason: message,
+      });
+      await waitMs(220);
+      return controlCurrentApp({ ...options, _driftRetry: true });
+    }
+
     if (recordWorkflow) {
       createWorkflowRecord({
         kind: 'accessibility',
@@ -24759,18 +24792,43 @@ function normalizeBrowserTaskAction(value) {
     open: 'open_url',
     google: 'search',
     refresh: 'reload',
+    reload_page: 'reload',
+    newtab: 'new_tab',
+    close: 'close_tab',
+    close_current_tab: 'close_tab',
+    address: 'focus_address',
+    focus_url: 'focus_address',
     pause: 'wait',
     sleep: 'wait',
   };
   return aliases[raw] || raw;
 }
 
+const BROWSER_TASK_CONTROL_ACTIONS = new Set([
+  'reload',
+  'back',
+  'forward',
+  'new_tab',
+  'close_tab',
+  'focus_address',
+]);
+
+const BROWSER_TASK_ALLOWED_ACTIONS = new Set([
+  'click',
+  'fill',
+  'select',
+  'wait',
+  'open_url',
+  'search',
+  ...BROWSER_TASK_CONTROL_ACTIONS,
+]);
+
 function normalizeBrowserTaskPlan(value = {}, maxSteps = 5) {
   const rawSteps = Array.isArray(value) ? value : Array.isArray(value.steps) ? value.steps : [];
   const steps = rawSteps
     .map((step, index) => {
       const action = normalizeBrowserTaskAction(step?.action || step?.type || step?.domAction || step?.browserAction);
-      if (!['click', 'fill', 'select', 'wait', 'open_url', 'search', 'reload', 'back', 'forward'].includes(action)) return null;
+      if (!BROWSER_TASK_ALLOWED_ACTIONS.has(action)) return null;
       return {
         index,
         action,
@@ -24817,7 +24875,7 @@ function browserTaskPrompt(page, dom, instruction, maxSteps) {
     '- fill: requires selector or query and value',
     '- select: requires selector or query and value',
     '- wait: requires ms',
-    '- reload/back/forward: no target required',
+    '- reload/back/forward/new_tab/close_tab/focus_address: no target required',
     '',
     'Rules:',
     '- Do not submit forms, send messages, purchase, pay, delete, log in, sign up, publish, trade, or make account changes.',
@@ -24992,6 +25050,50 @@ function parseBrowserTaskSearch(segment = '') {
   return { query };
 }
 
+function parseBrowserTaskControl(segment = '') {
+  const text = String(segment || '').trim();
+  if (!text) return null;
+  const compact = text.replace(/\s+/g, '');
+  const compactPlain = compact.replace(/[？?。.!！,，:：]/g, '');
+  const direct = normalizeBrowserControlAction(text);
+  if (direct && BROWSER_TASK_CONTROL_ACTIONS.has(direct)) return { action: direct };
+
+  const tests = [
+    {
+      action: 'back',
+      english: /\b(?:go\s+back|back(?:\s+(?:page|tab))?|previous\s+page)\b/i,
+      chinese: /(?:浏览器|网页|页面|标签页)?(?:后退|返回上一页|回上一页)/i,
+    },
+    {
+      action: 'forward',
+      english: /\b(?:go\s+forward|forward(?:\s+(?:page|tab))?|next\s+page)\b/i,
+      chinese: /(?:浏览器|网页|页面|标签页)?(?:前进|去下一页)/i,
+    },
+    {
+      action: 'reload',
+      english: /\b(?:reload|refresh)(?:\s+(?:current|this))?(?:\s+(?:page|tab|browser))?\b/i,
+      chinese: /(?:刷新|重新加载)(?:当前|这个)?(?:网页|页面|浏览器|标签页)?/i,
+    },
+    {
+      action: 'new_tab',
+      english: /\b(?:new\s+tab|open\s+(?:a\s+)?new\s+tab|create\s+(?:a\s+)?new\s+tab)\b/i,
+      chinese: /(?:(?:新建|打开|创建|开一个)(?:新)?标签页|新标签页|新标签)/i,
+    },
+    {
+      action: 'close_tab',
+      english: /\b(?:close|shut)\s+(?:the\s+)?(?:current\s+)?tab\b/i,
+      chinese: /(?:关闭|关掉|关了)(?:当前|这个)?(?:标签页|标签)/i,
+    },
+    {
+      action: 'focus_address',
+      english: /\b(?:(?:focus|select|open)\s+(?:the\s+)?(?:address|url|location)\s+bar|(?:address|url|location)\s+bar)\b/i,
+      chinese: /(?:(?:聚焦|选中|打开|切到)(?:地址栏|网址栏)|(?:地址栏|网址栏)(?:聚焦|选中|打开|切到)?)/i,
+    },
+  ];
+  const match = tests.find((item) => item.english.test(text) || item.chinese.test(compactPlain));
+  return match ? { action: match.action } : null;
+}
+
 function parseBrowserTaskClick(segment = '') {
   const text = String(segment || '').trim();
   const english = text.match(/\b(?:click|press|tap)\s+(?:the\s+)?(.+?)$/i);
@@ -25039,6 +25141,15 @@ function fallbackBrowserTaskPlan(instruction = '', dom = {}, maxSteps = 5, plann
         action: 'search',
         query: search.query,
         reason: 'Local fallback recognized a safe browser search request.',
+      });
+      continue;
+    }
+
+    const control = parseBrowserTaskControl(segment);
+    if (control?.action) {
+      steps.push({
+        action: control.action,
+        reason: 'Local fallback recognized a safe browser chrome control request.',
       });
       continue;
     }
@@ -25172,7 +25283,7 @@ function browserTaskStepLabel(step) {
   if (step.action === 'wait') return `Wait ${step.ms}ms`;
   if (step.action === 'open_url') return `Open ${step.url || step.value}`;
   if (step.action === 'search') return `Search ${step.query || step.value}`;
-  if (['reload', 'back', 'forward'].includes(step.action)) return `Browser ${step.action}`;
+  if (BROWSER_TASK_CONTROL_ACTIONS.has(step.action)) return `Browser ${step.action}`;
   return `${step.action} ${step.selector || step.query}`;
 }
 
@@ -28757,14 +28868,30 @@ function naturalBrowserActLocalCommand(text) {
   const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
   const open = parseBrowserTaskOpenUrl(raw);
   const search = parseBrowserTaskSearch(raw);
-  if (!open?.url && !search?.query) return null;
+  const control = parseBrowserTaskControl(raw);
+  if (!open?.url && !search?.query && !control?.action) return null;
 
   const browserOrWebSignal = /\b(browser|chrome|safari|arc|brave|edge|web|webpage|web page|url|website|site|google|search engine)\b/i.test(raw)
-    || /(浏览器|Chrome|chrome|Safari|safari|Arc|arc|Brave|brave|Edge|edge|网页|网站|网址|Google|google|谷歌|百度|网上|查网页|搜索网页)/i.test(compactTextNoSpace);
+    || /\b(?:tab|page|address bar|url bar|location bar)\b/i.test(raw)
+    || /(浏览器|Chrome|chrome|Safari|safari|Arc|arc|Brave|brave|Edge|edge|网页|页面|标签页|网站|网址|地址栏|网址栏|Google|google|谷歌|百度|网上|查网页|搜索网页)/i.test(compactTextNoSpace);
+  if (control?.action && !browserOrWebSignal) return null;
   if (!open?.url && !browserOrWebSignal) return null;
 
   const analysisSignal = /\b(summari[sz]e|summary|research|compare|review|read|extract|answer|ask|explain|analy[sz]e|report)\b/i.test(raw)
     || /(总结|概括|调研|研究|比较|对比|复盘|阅读|读一下|提取|回答|解释|分析|报告|资料|结果)/i.test(compactPlain);
+  if (control?.action) {
+    return {
+      intent: 'browser_workflow',
+      label: 'Browser local control',
+      requiresLocalExecution: true,
+      args: {
+        intent: 'act',
+        instruction: raw,
+        mode: 'quick',
+        maxSteps: 3,
+      },
+    };
+  }
   if (open?.url && !analysisSignal) {
     return { intent: 'open_url', label: 'Open URL', args: { url: open.url } };
   }
@@ -32259,9 +32386,24 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'browser_control') {
-      const result = await executeBrowserControl(command.args || {});
+      const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      let result;
+      if (execute) {
+        result = await executeBrowserControl(command.args || {});
+      } else {
+        const plan = buildBrowserControlPlan(command.args || {});
+        const evaluation = evaluateMacActionPlan(plan, { preview: true });
+        result = {
+          ok: !evaluation.blocked,
+          executed: false,
+          output: `Browser control: preview only\nPrepared ${plan.summary}${evaluation.needsApproval ? ` (${evaluation.reason})` : ''}.`,
+          plan,
+          evaluation,
+        };
+      }
       return {
         ok: result.ok,
+        executed: Boolean(result.executed),
         localCommand: command,
         output: result.output,
         data: { result },
