@@ -139,7 +139,8 @@ export default {
         readinessData.workNext?.executed === false &&
         readinessData.workNext?.decision &&
         typeof readinessData.workNext.decision.reason === 'string' &&
-        readinessData.spend?.zeroSpendLocked === true &&
+        // zeroSpendLocked is dynamic once zero-spend recovery can lift the lock; gate on billing, not lock state
+        typeof readinessData.spend?.zeroSpendLocked === 'boolean' &&
         readinessData.spend?.likelyBillableFromJavis === false &&
         readinessData.learning?.privacy?.localOnly === true &&
         readinessData.learning?.privacy?.metadataOnly === true &&
@@ -177,7 +178,9 @@ export default {
       out.push(
         stdout.includes('JAVIS Autonomy Readiness') &&
           stdout.includes('Posture:') &&
-          stdout.includes('Spend: zero-locked=yes') &&
+          // zero-lock is dynamic post zero-spend recovery; the real gate is "likely billable=no"
+          /Spend: zero-locked=(yes|no)\b/.test(stdout) &&
+          stdout.includes('likely billable=no') &&
           stdout.includes('Safety: read-only') &&
           stdout.includes('no mic/Realtime') &&
           stdout.includes('no OpenAI call')
