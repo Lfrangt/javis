@@ -345,6 +345,8 @@ curl http://127.0.0.1:3417/api/progress-board
 
 `docs/javis-status-board.html` refreshes every few seconds and shows the current product nodes in plain Chinese: desktop pet, Realtime voice, local input fallback, browser control, OpenAI spend safety, background work, and overnight readiness. The backing `/api/progress-board` endpoint is intentionally public but sanitized: it does not return the local API token, OpenAI key, screen images, clipboard text, browser page text, raw Accessibility nodes, or raw logs, and it does not call OpenAI, start the microphone, use Realtime, or execute computer actions.
 
+The board also embeds the same read-only Realtime go-live checklist exposed by `npm run voice:setup`: microphone permission, no-mic provider probe preview, one-request manual provider probe, and final mic-confirmed live start. This is the preferred local visual surface when voice is stuck, because it explains the blocker without opening Realtime, creating a spend lease, calling OpenAI, or starting microphone capture.
+
 Multi-agent capacity starts with a no-spend preflight instead of opening worker windows:
 
 ```bash

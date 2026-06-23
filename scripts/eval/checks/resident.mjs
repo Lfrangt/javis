@@ -465,6 +465,47 @@ export default {
         }),
     );
 
+    const progressBoardResponse = await ctx.api('/api/progress-board');
+    const progressBoard = progressBoardResponse.data?.board || {};
+    const boardVoiceSetup = progressBoard.voiceSetup || {};
+    const boardChecklist = Array.isArray(boardVoiceSetup.goLiveChecklist) ? boardVoiceSetup.goLiveChecklist : [];
+    const boardHtml = fs.readFileSync('docs/javis-status-board.html', 'utf8');
+    out.push(
+      progressBoardResponse.ok &&
+        progressBoard.version === 1 &&
+        ['ready', 'running', 'warning', 'blocked'].includes(progressBoard.status) &&
+        boardVoiceSetup.version === 1 &&
+        ['ready', 'warning', 'blocked'].includes(boardVoiceSetup.status) &&
+        boardVoiceSetup.microphone &&
+        typeof boardVoiceSetup.microphone.status === 'string' &&
+        typeof boardVoiceSetup.microphone.ready === 'boolean' &&
+        boardVoiceSetup.provider?.status &&
+        boardVoiceSetup.spendGuard?.mode &&
+        boardVoiceSetup.localFallback?.endpoint === '/api/voice/command' &&
+        boardChecklist.some((item) => item.id === 'microphone_permission' && item.startsMicrophone === false && item.callsOpenAI === false) &&
+        boardChecklist.some((item) => item.id === 'provider_probe_preview' && item.status === 'ready' && item.startsMicrophone === false && item.callsOpenAI === false) &&
+        boardChecklist.some((item) => item.id === 'provider_probe_execute' && item.startsMicrophone === false && item.manualOnly === true) &&
+        boardChecklist.some((item) => item.id === 'live_renderer_voice' && item.startsMicrophone === true && item.manualOnly === true) &&
+        boardVoiceSetup.safety?.readOnly === true &&
+        boardVoiceSetup.safety?.callsOpenAI === false &&
+        boardVoiceSetup.safety?.createsSpendLease === false &&
+        boardVoiceSetup.safety?.startsMicrophone === false &&
+        boardVoiceSetup.safety?.usesRealtime === false &&
+        progressBoard.safety?.callsOpenAi === false &&
+        progressBoard.safety?.startsMicrophone === false &&
+        progressBoard.safety?.usesRealtime === false &&
+        progressBoard.safety?.executesActions === false &&
+        boardHtml.includes('id="voice-panel"') &&
+        boardHtml.includes('renderVoiceSetup') &&
+        boardHtml.includes('goLiveChecklist')
+        ? ok('resident.progress_board_voice_setup', 'Progress board voice setup panel', `${boardVoiceSetup.rawStatus || boardVoiceSetup.status} · checklist=${boardChecklist.length} · safety=no mic/no spend`)
+        : fail('resident.progress_board_voice_setup', 'Progress board voice setup panel', 'expected public progress board and HTML to embed sanitized read-only voice setup/go-live evidence without OpenAI, mic, Realtime, or actions', {
+          status: progressBoardResponse.status,
+          board: progressBoard,
+          htmlHasVoicePanel: boardHtml.includes('id="voice-panel"'),
+        }),
+    );
+
     const sessionPromptGoal = `eval voice standby session prompt ${Date.now()}`;
     let cleanupSessionPromptId = '';
     try {

@@ -105,6 +105,105 @@
       letter-spacing: .08em;
     }
 
+    .voice-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 16px;
+      display: grid;
+      gap: 14px;
+    }
+
+    .voice-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .voice-title {
+      display: flex;
+      gap: 9px;
+      align-items: center;
+      margin: 0 0 6px;
+      font-size: 19px;
+      line-height: 1.25;
+    }
+
+    .voice-title .dot {
+      width: 12px;
+      height: 12px;
+    }
+
+    .voice-panel p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .voice-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
+    .voice-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+    }
+
+    .voice-metric {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel-2);
+      padding: 12px;
+      min-height: 94px;
+    }
+
+    .metric-label {
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+
+    .metric-value {
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.35;
+    }
+
+    .checks {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(150px, 1fr));
+      gap: 10px;
+    }
+
+    .check {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f151d;
+      padding: 12px;
+      min-height: 130px;
+      display: grid;
+      gap: 7px;
+      align-content: start;
+    }
+
+    .check h3 {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .check p {
+      font-size: 12px;
+    }
+
+    .check.ready { border-color: color-mix(in srgb, var(--ready), var(--line) 60%); }
+    .check.warning { border-color: color-mix(in srgb, var(--warning), var(--line) 60%); }
+    .check.blocked { border-color: color-mix(in srgb, var(--blocked), var(--line) 60%); }
+
     .nodes {
       display: grid;
       grid-template-columns: repeat(7, minmax(118px, 1fr));
@@ -242,14 +341,17 @@
     @media (max-width: 980px) {
       .nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .voice-grid, .checks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .footer-grid { grid-template-columns: 1fr; }
       header { grid-template-columns: 1fr; }
+      .voice-head { grid-template-columns: 1fr; }
+      .voice-meta { justify-content: flex-start; }
       .meta { text-align: left; }
     }
 
     @media (max-width: 560px) {
       .shell { width: min(100vw - 20px, 1180px); padding-top: 18px; }
-      .nodes, .timeline { grid-template-columns: 1fr; }
+      .nodes, .timeline, .voice-grid, .checks { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -268,6 +370,8 @@
     </header>
 
     <main>
+      <section class="voice-panel" id="voice-panel"></section>
+
       <section>
         <p class="section-title">节点状态</p>
         <div class="nodes" id="nodes"></div>
@@ -316,7 +420,12 @@
     }
 
     function statusClass(status) {
-      return ["ready", "running", "warning", "blocked"].includes(status) ? status : "unknown";
+      const value = String(status || "").toLowerCase();
+      if (["ready", "ok", "done", "realtime_ready"].includes(value)) return "ready";
+      if (["running", "active", "in_progress"].includes(value)) return "running";
+      if (["blocked", "failed", "error", "unsafe_cloud"].includes(value)) return "blocked";
+      if (["warning", "degraded", "attention", "zero_spend_locked", "realtime_blocked", "needs_provider_probe", "manual_required", "needs_user"].includes(value)) return "warning";
+      return "unknown";
     }
 
     function renderNode(item) {
@@ -340,6 +449,69 @@
       card.append(el("h3", {}, item.title || item.id || "工作节点"));
       card.append(el("p", {}, item.body || ""));
       return card;
+    }
+
+    function renderMetric(label, value) {
+      const card = el("div", { class: "voice-metric" });
+      card.append(el("div", { class: "metric-label" }, label));
+      card.append(el("div", { class: "metric-value" }, value || "暂无"));
+      return card;
+    }
+
+    function renderCheck(item) {
+      const status = statusClass(item.status || item.rawStatus);
+      const card = el("article", { class: `check ${status}` });
+      card.append(el("span", { class: "status " + status }, statusText[status] || status));
+      card.querySelector(".status").prepend(el("span", { class: "dot" }));
+      card.append(el("h3", {}, item.label || item.id || "检查项"));
+      card.append(el("p", {}, item.detail || ""));
+      if (item.command) card.append(el("code", {}, item.command));
+      return card;
+    }
+
+    function spendLabel(spend = {}) {
+      const base = `cloud=${spend.mode || "-"} · ${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · remaining=${spend.remainingTotal ?? 0}`;
+      const gates = [
+        spend.requireSpendLease ? "一次性 lease" : "",
+        spend.requireSpendConfirmationPhrase ? "确认短语" : ""
+      ].filter(Boolean).join(" + ");
+      return gates ? `${base} · ${gates}` : base;
+    }
+
+    function renderVoiceSetup(setup = {}) {
+      const panel = document.getElementById("voice-panel");
+      panel.innerHTML = "";
+      const status = statusClass(setup.status || setup.rawStatus);
+
+      const head = el("div", { class: "voice-head" });
+      const copy = el("div");
+      const title = el("h2", { class: `voice-title ${status}` });
+      title.append(el("span", { class: "dot" }));
+      title.append(el("span", {}, setup.label || "实时语音上线检查"));
+      copy.append(title);
+      copy.append(el("p", {}, setup.summary || "正在读取实时语音状态。"));
+      if (setup.nextAction) copy.append(el("p", {}, `下一步：${setup.nextAction}`));
+
+      const meta = el("div", { class: "voice-meta" });
+      meta.append(el("span", { class: `status ${status}` }, statusText[status] || status));
+      meta.querySelector(".status").prepend(el("span", { class: "dot" }));
+      meta.append(el("span", { class: "pill" }, setup.localFallback?.available ? "本地兜底可用" : "本地兜底未知"));
+      meta.append(el("span", { class: "pill" }, setup.forensics?.likelyBillableFromJavis ? "今日疑似花费" : "今日未见 JAVIS 花费"));
+      head.append(copy);
+      head.append(meta);
+      panel.append(head);
+
+      const grid = el("div", { class: "voice-grid" });
+      grid.append(renderMetric("麦克风", `${setup.microphone?.ready ? "ready" : "needs user"} · ${setup.microphone?.status || "-"}`));
+      grid.append(renderMetric("Provider", `${setup.provider?.ready ? "ready" : setup.provider?.status || "-"} · ${setup.provider?.kind || "-"}`));
+      grid.append(renderMetric("费用保护", spendLabel(setup.spendGuard || {})));
+      grid.append(renderMetric("本地兜底", `${setup.localFallback?.endpoint || "/api/voice/command"} · ${setup.localFallback?.command || "npm run voice:chat"}`));
+      panel.append(grid);
+
+      const checks = el("div", { class: "checks" });
+      for (const item of setup.goLiveChecklist || []) checks.append(renderCheck(item));
+      if (!checks.children.length) checks.append(el("p", {}, "暂无上线检查项。"));
+      panel.append(checks);
     }
 
     function renderList(target, items) {
@@ -380,6 +552,8 @@
         document.getElementById("summary").textContent = board.summary || "";
         document.getElementById("updated").textContent = board.generatedAt ? `更新：${new Date(board.generatedAt).toLocaleString()}` : "已更新";
         document.getElementById("refresh").textContent = `${Math.round(refreshMs / 1000)}s`;
+
+        renderVoiceSetup(board.voiceSetup || {});
 
         const nodes = document.getElementById("nodes");
         nodes.innerHTML = "";

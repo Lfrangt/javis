@@ -16071,10 +16071,21 @@ async function prepareOvernight(options = {}) {
 
 function boardStatus(value = '') {
   const status = String(value || '').trim().toLowerCase();
-  if (['ready', 'ok', 'healthy', 'done', 'safe', 'local_fallback_ready', 'fallback_ready'].includes(status)) return 'ready';
+  if (['ready', 'ok', 'healthy', 'done', 'safe', 'local_fallback_ready', 'fallback_ready', 'realtime_ready'].includes(status)) return 'ready';
   if (['running', 'active', 'in_progress', 'working'].includes(status)) return 'running';
   if (['blocked', 'failed', 'error', 'unsafe_cloud'].includes(status)) return 'blocked';
-  if (['warning', 'degraded', 'needs_attention', 'needs_keep_awake', 'attention'].includes(status)) return 'warning';
+  if ([
+    'warning',
+    'degraded',
+    'needs_attention',
+    'needs_keep_awake',
+    'attention',
+    'zero_spend_locked',
+    'realtime_blocked',
+    'needs_provider_probe',
+    'manual_required',
+    'needs_user',
+  ].includes(status)) return 'warning';
   return status || 'unknown';
 }
 
@@ -16089,6 +16100,94 @@ function boardNode(id, label, status, summary, next = '', details = {}) {
   };
 }
 
+function compactVoiceSetupForBoard(guide = {}) {
+  const checklist = Array.isArray(guide.goLiveChecklist) ? guide.goLiveChecklist : [];
+  const blockers = Array.isArray(guide.blockers) ? guide.blockers : [];
+  const nextStep = checklist.find((item) => item && item.status !== 'ready') || null;
+  return {
+    version: Number(guide.version || 1),
+    generatedAt: guide.generatedAt || '',
+    status: boardStatus(guide.status),
+    rawStatus: compactRecordText(guide.status || '', 80),
+    label: compactRecordText(guide.label || '', 120),
+    summary: compactRecordText(guide.summary || guide.meaning || '', 420),
+    meaning: compactRecordText(guide.meaning || '', 420),
+    nextAction: compactRecordText(
+      nextStep
+        ? `${nextStep.label || nextStep.id || 'Next'}: ${nextStep.detail || nextStep.next || ''}`
+        : 'Realtime voice checklist is ready for an explicit live start.',
+      320,
+    ),
+    provider: {
+      status: compactRecordText(guide.provider?.status || '', 80),
+      kind: compactRecordText(guide.provider?.kind || '', 80),
+      ready: Boolean(guide.provider?.ready),
+      summary: compactRecordText(guide.provider?.summary || '', 260),
+      next: compactRecordText(guide.provider?.next || '', 260),
+    },
+    microphone: {
+      status: compactRecordText(guide.microphone?.status || '', 80),
+      ready: Boolean(guide.microphone?.ready),
+      label: compactRecordText(guide.microphone?.label || '', 120),
+      next: compactRecordText(guide.microphone?.next || '', 220),
+      command: compactRecordText(guide.microphone?.command || '', 120),
+    },
+    spendGuard: {
+      mode: compactRecordText(guide.spendGuard?.mode || '', 40),
+      hardSpendLock: Boolean(guide.spendGuard?.hardSpendLock),
+      paranoidZeroSpend: Boolean(guide.spendGuard?.paranoidZeroSpend),
+      emergencyZeroSpendLock: Boolean(guide.spendGuard?.emergencyZeroSpendLock),
+      dailyRequestLimit: boundedCount(guide.spendGuard?.dailyRequestLimit, 1000000),
+      remainingTotal: boundedCount(guide.spendGuard?.remainingTotal, 1000000),
+      allowedToday: boundedCount(guide.spendGuard?.allowedToday, 1000000),
+      requireSpendLease: Boolean(guide.spendGuard?.requireSpendLease),
+      activeSpendLeases: boundedCount(guide.spendGuard?.activeSpendLeases, 100000),
+      requireSpendConfirmationPhrase: Boolean(guide.spendGuard?.requireSpendConfirmationPhrase),
+    },
+    forensics: {
+      likelyBillableFromJavis: Boolean(guide.forensics?.likelyBillableFromJavis),
+      zeroLocked: Boolean(guide.forensics?.zeroLocked),
+      summary: compactRecordText(guide.forensics?.summary || '', 260),
+    },
+    blockers: blockers.slice(0, 5).map((item) => ({
+      id: compactRecordText(item.id || '', 80),
+      label: compactRecordText(item.label || item.id || '', 140),
+      detail: compactRecordText(item.detail || '', 260),
+    })),
+    goLiveChecklist: checklist.slice(0, 6).map((item) => ({
+      id: compactRecordText(item.id || '', 100),
+      label: compactRecordText(item.label || item.id || '', 140),
+      status: boardStatus(item.status || ''),
+      rawStatus: compactRecordText(item.status || '', 80),
+      detail: compactRecordText(item.detail || item.next || '', 260),
+      command: compactRecordText(item.command || item.action || item.endpoint || '', 180),
+      startsMicrophone: Boolean(item.startsMicrophone),
+      callsOpenAI: Boolean(item.callsOpenAI),
+      createsSpendLease: Boolean(item.createsSpendLease),
+      manualOnly: Boolean(item.manualOnly),
+    })),
+    localFallback: {
+      available: Boolean(guide.localFallback?.available),
+      label: compactRecordText(guide.localFallback?.label || '', 120),
+      endpoint: compactRecordText(guide.localFallback?.endpoint || '/api/voice/command', 140),
+      command: compactRecordText(guide.localFallback?.command || 'npm run voice:chat', 140),
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+    },
+    safety: {
+      readOnly: guide.safety?.readOnly !== false,
+      callsOpenAI: Boolean(guide.safety?.callsOpenAI),
+      createsSpendLease: Boolean(guide.safety?.createsSpendLease),
+      startsMicrophone: Boolean(guide.safety?.startsMicrophone),
+      usesRealtime: Boolean(guide.safety?.usesRealtime),
+      capturesScreen: Boolean(guide.safety?.capturesScreen),
+      startsWorkers: Boolean(guide.safety?.startsWorkers),
+      mutatesUserFiles: Boolean(guide.safety?.mutatesUserFiles),
+    },
+  };
+}
+
 async function progressBoardSnapshot(options = {}) {
   const source = compactRecordText(options.source || 'progress_board', 80);
   const health = healthSnapshot();
@@ -16098,6 +16197,15 @@ async function progressBoardSnapshot(options = {}) {
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: false });
   const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
   const standby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
+  const voiceSetupGuide = realtimeRecoveryGuideSnapshot({
+    source,
+    conversation,
+    voiceHealth,
+    localVoice,
+    standby,
+  });
+  const voiceSetup = compactVoiceSetupForBoard(voiceSetupGuide);
+  const voiceNextStep = voiceSetup.goLiveChecklist.find((item) => item.status !== 'ready') || null;
   const progress = workProgressCheckIn({
     jobLimit: options.jobLimit || 5,
     workflowLimit: options.workflowLimit || 5,
@@ -16129,7 +16237,15 @@ async function progressBoardSnapshot(options = {}) {
       Number(spendGuard.dailyRequestLimit || 0) === 0 &&
       Number(spendGuard.unattendedDailyRequestLimit || 0) === 0,
   );
-  const voiceSpendLocked = voiceHealth.kind === 'spend_locked' || spendLocked;
+  const manualSpendGuarded = Boolean(
+    spendGuard.mode === 'manual' &&
+      spendGuard.hardSpendLock === false &&
+      Number(spendGuard.dailyRequestLimit || 0) > 0 &&
+      spendGuard.requireSpendLease === true &&
+      spendGuard.requireSpendConfirmationPhrase === true &&
+      openAiEgressGuardSnapshot().safety?.blocksUnscopedOpenAiFetch === true,
+  );
+  const spendPostureSafe = Boolean(spendLocked || manualSpendGuarded);
   const activeJobs = Number(progress.counts?.running || 0) + Number(progress.counts?.queued || 0);
   const blockerCount = Number(blockers.counts?.total || blockers.count || 0);
   const keepAwake = overnight.keepAwake || {};
@@ -16150,16 +16266,16 @@ async function progressBoardSnapshot(options = {}) {
     boardNode(
       'realtime_voice',
       '实时语音',
-      voiceSpendLocked ? 'blocked' : voiceHealth.status,
-      voiceSpendLocked
-        ? 'Realtime 语音现在被零花费锁挡住；这就是它不能像之前一样直接说话的主因。'
-        : compactRecordText(voiceHealth.summary || 'Realtime voice status is available.', 360),
-      voiceSpendLocked
-        ? '你在场并明确允许后，才做一次性 provider 探针；睡觉期间不自动花钱。'
-        : compactRecordText(voiceHealth.next || '继续 Realtime dogfood 验收。', 240),
+      voiceSetup.status,
+      voiceSetup.summary || 'Realtime voice setup status is available.',
+      voiceNextStep
+        ? `${voiceNextStep.label}: ${voiceNextStep.detail}`
+        : '你明确确认后才启动 live Realtime voice。',
       {
-        providerStatus: voiceHealth.status || '',
-        blockerKind: voiceHealth.kind || '',
+        providerStatus: voiceSetup.provider.status || '',
+        blockerKind: voiceSetup.provider.kind || '',
+        microphoneStatus: voiceSetup.microphone.status || '',
+        checklist: voiceSetup.goLiveChecklist.length,
         startsMicrophoneNow: false,
       },
     ),
@@ -16189,13 +16305,17 @@ async function progressBoardSnapshot(options = {}) {
     boardNode(
       'openai_spend',
       '费用安全',
-      spendLocked ? 'ready' : 'warning',
+      spendPostureSafe ? 'ready' : 'warning',
       spendLocked
         ? 'OpenAI 云调用已锁死：cloud=off、daily=0、hard lock=on。当前 JAVIS 没有允许花费记录。'
-        : 'OpenAI 花费保护不是最严格状态，需要先锁住再无人值守。',
+        : manualSpendGuarded
+          ? `OpenAI 是手动模式：daily=${spendGuard.dailyRequestLimit || 0}，remaining=${spendGuard.remaining?.total || 0}，必须短期一次性 lease + 确认短语才会出站。`
+          : 'OpenAI 花费保护不是最严格状态；无人值守前需要恢复锁定或确认手动 guard。',
       spendLocked
         ? '睡觉期间保持零花费；不会自动解锁新 key。'
-        : '运行 npm run openai:lockdown 恢复零花费锁。',
+        : manualSpendGuarded
+          ? '可手动跑一次 provider probe；不会自动跑。'
+          : '运行 npm run openai:lockdown 恢复零花费锁。',
       {
         mode: spendGuard.mode,
         hardLock: Boolean(spendGuard.hardSpendLock),
@@ -16237,15 +16357,21 @@ async function progressBoardSnapshot(options = {}) {
     },
     {
       id: 'voice_blocker',
-      status: voiceSpendLocked ? 'blocked' : 'running',
+      status: voiceSetup.status,
       title: '实时语音卡点',
-      body: voiceSpendLocked ? '当前不是 UI 坏，而是 Realtime 被零花费锁挡住。' : 'Realtime 链路可继续做 live dogfood。',
+      body: voiceNextStep
+        ? `${voiceNextStep.label}: ${voiceNextStep.detail}`
+        : 'Realtime 链路可继续做 live dogfood。',
     },
     {
       id: 'spend_forensics',
-      status: spendLocked ? 'done' : 'warning',
+      status: spendPostureSafe ? 'done' : 'warning',
       title: '费用取证',
-      body: spendLocked ? '本地 JAVIS 没有允许 OpenAI 花费记录；当前进程拿不到可调用 key。' : '费用保护需要恢复到 zero-spend。',
+      body: spendLocked
+        ? '本地 JAVIS 没有允许 OpenAI 花费记录；当前进程拿不到可调用 key。'
+        : manualSpendGuarded
+          ? '当前不是无端扣费模式；任何 paid probe 都需要手动确认和一次性 lease。'
+          : '费用保护需要恢复到 zero-spend 或手动 guard。',
     },
     {
       id: 'browser_controls',
@@ -16275,9 +16401,9 @@ async function progressBoardSnapshot(options = {}) {
     refreshMs: 5000,
     status,
     headline: 'JAVIS 本地进度看板',
-    summary: voiceSpendLocked
-      ? '当前重点：保持零花费安全，同时用本地输入和浏览器控制继续推进；Realtime 需要用户在场时再解锁一次性探针。'
-      : '当前重点：继续 Realtime 验收、本地浏览器控制和后台工作流。',
+    summary: voiceSetup.status === 'ready'
+      ? '当前重点：继续 Realtime 验收、本地浏览器控制和后台工作流。'
+      : '当前重点：把 Realtime 上线拆成可见检查步骤；在你确认前只用本地兜底，不开麦、不跑 paid probe。',
     health: {
       status: health.status,
       pid: health.pid,
@@ -16297,8 +16423,11 @@ async function progressBoardSnapshot(options = {}) {
           }))
         : [],
     },
+    voiceSetup,
     nextActions: [
-      voiceSpendLocked ? '睡觉期间不要自动解锁 OpenAI；5 小时后先继续本地开发。' : '继续 Realtime live dogfood。',
+      voiceNextStep
+        ? `语音上线下一步：${voiceNextStep.label}。`
+        : '继续 Realtime live dogfood。',
       '完成并复跑浏览器控制本地评测。',
       '让本看板成为后续长任务的默认汇报界面。',
     ],
