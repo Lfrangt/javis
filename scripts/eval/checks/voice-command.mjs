@@ -2468,6 +2468,29 @@ export default {
     }
 
     try {
+      const workNextAfterLoop = await ctx.api('/api/work/next?workflowLimit=8&jobLimit=8&compact=true', { timeoutMs: 30000 });
+      const nextPayload = workNextAfterLoop.data?.next || {};
+      const visibleNextPayload = {
+        action: nextPayload.action || null,
+        nextActions: Array.isArray(nextPayload.briefing?.nextActions) ? nextPayload.briefing.nextActions : [],
+        output: nextPayload.output || '',
+      };
+      const visibleNextText = JSON.stringify(visibleNextPayload);
+      const leakedLoopPreview = /local_voice_loop:browser|local_voice_loop_browser_workflow_preview|提取当前网页行动项，先预览。/.test(visibleNextText);
+      out.push(
+        workNextAfterLoop.ok &&
+          !leakedLoopPreview
+          ? ok('voice_command.local_loop_browser_preview_hidden_from_work_next', 'Local loop browser preview work-next isolation', 'local /browse preview failures stay in audit history instead of becoming the global next action')
+          : fail('voice_command.local_loop_browser_preview_hidden_from_work_next', 'Local loop browser preview work-next isolation', 'local /browse preview failure leaked into work-next visible actions', {
+              status: workNextAfterLoop.status,
+              visibleNextPayload,
+            }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.local_loop_browser_preview_hidden_from_work_next', 'Local loop browser preview work-next isolation', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
       const { stdout } = await execFileAsync('/bin/sh', [
         '-lc',
         "printf '/delegate codex scope docs/ROADMAP.md access read Read-only inspect docs/ROADMAP.md and return two bullets. Do not write files.\\n/exit\\n' | JAVIS_LOCAL_VOICE_CLI=true node scripts/local-voice-command-dogfood.mjs --chat --json --run --no-speech --no-session --no-screen --no-ui --request-timeout-ms 20000",

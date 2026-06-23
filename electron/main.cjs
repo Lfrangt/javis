@@ -53170,7 +53170,7 @@ function workflowHasActionableRecovery(workflow) {
 }
 
 function isTransientBrowserPreviewFailureText(value) {
-  return /frontmost_app_is_not_supported_browser|frontmost app is not a supported browser|no supported browser|browser context unavailable|browser target unavailable/i
+  return /frontmost_app_is_not_supported_browser|frontmost app is not a supported browser|no readable supported browser|no supported browser|browser_window_unavailable|browser context unavailable|browser_context_unavailable|browser target unavailable|browser_target_unavailable/i
     .test(String(value || ''));
 }
 
@@ -54024,6 +54024,8 @@ function routingWorkNextActionForRecord(record, options = {}) {
 
 function browserUnavailableRouteBlocker(record, entry = routingLedgerEntry(record)) {
   if (!record || !entry) return false;
+  const status = String(record.status || entry.status || '').toLowerCase();
+  if (!['blocked', 'failed', 'needs_attention'].includes(status)) return false;
   const text = [
     entry.blocker,
     entry.nextAction,
