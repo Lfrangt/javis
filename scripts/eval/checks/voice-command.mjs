@@ -2,7 +2,7 @@ import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import { promisify } from 'node:util';
 
-import { ok, fail } from '../_client.mjs';
+import { ok, skip, fail } from '../_client.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -218,6 +218,50 @@ export default {
         heldData.speech?.dryRun === true
         ? ok('voice_command.quick_hold', 'Quick lane cloud hold', 'unhandled quick execute is held locally instead of spending cloud quota')
         : fail('voice_command.quick_hold', 'Quick lane cloud hold', `expected held quick lane, got ${quickHeld.status}`, quickHeld.data),
+    );
+
+    const residentHealthCommand = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '你还活着吗，自恢复 watchdog 开着吗？',
+        execute: false,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_resident_health',
+      },
+      timeoutMs: 30000,
+    });
+    const residentHealthData = residentHealthCommand.data || {};
+    const residentHealthRoute = residentHealthData.route || {};
+    const residentHealth = residentHealthRoute.data?.residentHealth || {};
+    out.push(
+      residentHealthCommand.ok &&
+        residentHealthData.ok === true &&
+        residentHealthData.executed === false &&
+        residentHealthRoute.decision?.localCommand === 'resident_health' &&
+        residentHealthRoute.localCommand?.intent === 'resident_health' &&
+        residentHealth.version === 1 &&
+        residentHealth.resident?.loaded === true &&
+        residentHealth.watchdog?.installed === true &&
+        residentHealth.safety?.readOnly === true &&
+        residentHealth.safety?.callsOpenAI === false &&
+        residentHealth.safety?.createsSpendLease === false &&
+        residentHealth.safety?.startsMicrophone === false &&
+        residentHealth.safety?.usesRealtime === false &&
+        residentHealth.safety?.capturesScreen === false &&
+        residentHealth.safety?.startsWorkers === false &&
+        typeof residentHealthRoute.output === 'string' &&
+        residentHealthRoute.output.includes('Resident health:') &&
+        residentHealthRoute.output.includes('Watchdog:') &&
+        residentHealthRoute.contextPlan?.needs?.residentState === true &&
+        residentHealthRoute.contextPlan?.needs?.screen === false &&
+        residentHealthRoute.contextPlan?.needs?.accessibility === false &&
+        residentHealthData.safety?.skippedPreRouteContext === true &&
+        residentHealthData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.resident_health', 'Natural resident health voice command', 'resident/watchdog health question reads local launchd state without cloud, mic, Realtime, screen, worker, or file side effects')
+        : fail('voice_command.resident_health', 'Natural resident health voice command', 'resident/watchdog health question did not use the local resident health fast path safely', residentHealthCommand.data),
     );
 
     const spendGuardBeforeVoice = await ctx.api('/api/openai/spend-guard');
@@ -1511,69 +1555,78 @@ export default {
         : fail('voice_command.natural_browser_act_search', 'Natural browser act-search voice command', 'natural browser search did not use local act fallback safely', naturalBrowserActSearch.data),
     );
 
-    const spendGuardBeforeBrowserExecuteResponse = await ctx.api('/api/openai/spend-guard');
-    const spendGuardBeforeBrowserExecute = spendGuardBeforeBrowserExecuteResponse.data?.spendGuard || {};
-    const naturalBrowserActSearchExecute = await ctx.api('/api/voice/command', {
-      method: 'POST',
-      body: {
-        transcript: '帮我在浏览器搜索 JAVIS spend guard',
-        execute: true,
-        includeScreen: false,
-        useMemory: false,
-        speak: false,
-        source: 'eval_voice_command_natural_browser_act_search_execute',
-      },
-      timeoutMs: 60000,
-    });
-    const naturalBrowserActSearchExecuteData = naturalBrowserActSearchExecute.data || {};
-    const naturalBrowserActSearchExecuteRoute = naturalBrowserActSearchExecuteData.route || {};
-    const naturalBrowserActSearchExecutePayload = naturalBrowserActSearchExecuteRoute.data?.browserWorkflow || {};
-    const naturalBrowserActSearchExecuteResult = naturalBrowserActSearchExecuteRoute.data?.result || {};
-    const naturalBrowserActSearchExecuteStep = naturalBrowserActSearchExecuteResult.results?.[0] || {};
-    const naturalBrowserActSearchExecuteAction = naturalBrowserActSearchExecuteData.actionExecution || {};
-    const spendGuardAfterBrowserExecuteResponse = await ctx.api('/api/openai/spend-guard');
-    const spendGuardAfterBrowserExecute = spendGuardAfterBrowserExecuteResponse.data?.spendGuard || {};
-    out.push(
-      spendGuardBeforeBrowserExecuteResponse.ok &&
-        naturalBrowserActSearchExecute.ok &&
-        naturalBrowserActSearchExecuteData.ok === true &&
-        naturalBrowserActSearchExecuteData.requestedExecute === true &&
-        naturalBrowserActSearchExecuteData.executed === true &&
-        naturalBrowserActSearchExecuteRoute.decision?.localCommand === 'browser_workflow' &&
-        naturalBrowserActSearchExecuteRoute.localCommand?.intent === 'browser_workflow' &&
-        naturalBrowserActSearchExecuteRoute.localCommand?.args?.intent === 'act' &&
-        naturalBrowserActSearchExecutePayload.requestedExecute === true &&
-        naturalBrowserActSearchExecutePayload.executed === true &&
-        naturalBrowserActSearchExecutePayload.intent === 'act' &&
-        naturalBrowserActSearchExecutePayload.safety?.previewOnly === false &&
-        naturalBrowserActSearchExecutePayload.safety?.executesBrowserWorkflow === true &&
-        naturalBrowserActSearchExecutePayload.safety?.executesBrowserAction === true &&
-        naturalBrowserActSearchExecuteResult.intent === 'act' &&
-        naturalBrowserActSearchExecuteResult.requestedExecute === true &&
-        naturalBrowserActSearchExecuteResult.executed === true &&
-        naturalBrowserActSearchExecuteResult.plan?.source === 'local_fallback' &&
-        naturalBrowserActSearchExecuteResult.plan?.plannerError === '' &&
-        naturalBrowserActSearchExecuteResult.plan?.steps?.[0]?.action === 'search' &&
-        naturalBrowserActSearchExecuteResult.plan?.steps?.[0]?.query === 'JAVIS spend guard' &&
-        naturalBrowserActSearchExecuteStep.status === 'executed' &&
-        naturalBrowserActSearchExecuteStep.action === 'search' &&
-        String(naturalBrowserActSearchExecuteStep.output || '').includes('Searched in') &&
-        naturalBrowserActSearchExecuteAction.executed === true &&
-        naturalBrowserActSearchExecuteAction.kind === 'browser_workflow' &&
-        naturalBrowserActSearchExecuteAction.action === 'act' &&
-        naturalBrowserActSearchExecuteData.safety?.startsMicrophone === false &&
-        naturalBrowserActSearchExecuteData.safety?.usesRealtime === false &&
-        naturalBrowserActSearchExecuteData.safety?.callsOpenAIImmediately === false &&
-        spendGuardAfterBrowserExecuteResponse.ok &&
-        Number(spendGuardAfterBrowserExecute.counts?.total || 0) === Number(spendGuardBeforeBrowserExecute.counts?.total || 0) &&
-        Number(spendGuardAfterBrowserExecute.counts?.blocked || 0) === Number(spendGuardBeforeBrowserExecute.counts?.blocked || 0)
-        ? ok('voice_command.natural_browser_act_search_execute', 'Natural browser act-search execute voice command', '浏览器搜索 execute runs the local browser action without OpenAI spend, mic, Realtime, or window picking')
-        : fail('voice_command.natural_browser_act_search_execute', 'Natural browser act-search execute voice command', 'natural browser search execute did not run as a local browser action or changed OpenAI spend guard counts', {
-          before: spendGuardBeforeBrowserExecuteResponse.data,
-          command: naturalBrowserActSearchExecute.data,
-          after: spendGuardAfterBrowserExecuteResponse.data,
-        }),
-    );
+    const liveBrowserActions = ['1', 'true', 'yes', 'on'].includes(String(process.env.JAVIS_EVAL_LIVE_BROWSER_ACTIONS || '').toLowerCase());
+    if (liveBrowserActions) {
+      const spendGuardBeforeBrowserExecuteResponse = await ctx.api('/api/openai/spend-guard');
+      const spendGuardBeforeBrowserExecute = spendGuardBeforeBrowserExecuteResponse.data?.spendGuard || {};
+      const naturalBrowserActSearchExecute = await ctx.api('/api/voice/command', {
+        method: 'POST',
+        body: {
+          transcript: '帮我在浏览器搜索 JAVIS spend guard',
+          execute: true,
+          includeScreen: false,
+          useMemory: false,
+          speak: false,
+          source: 'eval_voice_command_natural_browser_act_search_execute',
+        },
+        timeoutMs: 60000,
+      });
+      const naturalBrowserActSearchExecuteData = naturalBrowserActSearchExecute.data || {};
+      const naturalBrowserActSearchExecuteRoute = naturalBrowserActSearchExecuteData.route || {};
+      const naturalBrowserActSearchExecutePayload = naturalBrowserActSearchExecuteRoute.data?.browserWorkflow || {};
+      const naturalBrowserActSearchExecuteResult = naturalBrowserActSearchExecuteRoute.data?.result || {};
+      const naturalBrowserActSearchExecuteStep = naturalBrowserActSearchExecuteResult.results?.[0] || {};
+      const naturalBrowserActSearchExecuteAction = naturalBrowserActSearchExecuteData.actionExecution || {};
+      const spendGuardAfterBrowserExecuteResponse = await ctx.api('/api/openai/spend-guard');
+      const spendGuardAfterBrowserExecute = spendGuardAfterBrowserExecuteResponse.data?.spendGuard || {};
+      out.push(
+        spendGuardBeforeBrowserExecuteResponse.ok &&
+          naturalBrowserActSearchExecute.ok &&
+          naturalBrowserActSearchExecuteData.ok === true &&
+          naturalBrowserActSearchExecuteData.requestedExecute === true &&
+          naturalBrowserActSearchExecuteData.executed === true &&
+          naturalBrowserActSearchExecuteRoute.decision?.localCommand === 'browser_workflow' &&
+          naturalBrowserActSearchExecuteRoute.localCommand?.intent === 'browser_workflow' &&
+          naturalBrowserActSearchExecuteRoute.localCommand?.args?.intent === 'act' &&
+          naturalBrowserActSearchExecutePayload.requestedExecute === true &&
+          naturalBrowserActSearchExecutePayload.executed === true &&
+          naturalBrowserActSearchExecutePayload.intent === 'act' &&
+          naturalBrowserActSearchExecutePayload.safety?.previewOnly === false &&
+          naturalBrowserActSearchExecutePayload.safety?.executesBrowserWorkflow === true &&
+          naturalBrowserActSearchExecutePayload.safety?.executesBrowserAction === true &&
+          naturalBrowserActSearchExecuteResult.intent === 'act' &&
+          naturalBrowserActSearchExecuteResult.requestedExecute === true &&
+          naturalBrowserActSearchExecuteResult.executed === true &&
+          naturalBrowserActSearchExecuteResult.plan?.source === 'local_fallback' &&
+          naturalBrowserActSearchExecuteResult.plan?.plannerError === '' &&
+          naturalBrowserActSearchExecuteResult.plan?.steps?.[0]?.action === 'search' &&
+          naturalBrowserActSearchExecuteResult.plan?.steps?.[0]?.query === 'JAVIS spend guard' &&
+          naturalBrowserActSearchExecuteStep.status === 'executed' &&
+          naturalBrowserActSearchExecuteStep.action === 'search' &&
+          String(naturalBrowserActSearchExecuteStep.output || '').includes('Searched in') &&
+          naturalBrowserActSearchExecuteAction.executed === true &&
+          naturalBrowserActSearchExecuteAction.kind === 'browser_workflow' &&
+          naturalBrowserActSearchExecuteAction.action === 'act' &&
+          naturalBrowserActSearchExecuteData.safety?.startsMicrophone === false &&
+          naturalBrowserActSearchExecuteData.safety?.usesRealtime === false &&
+          naturalBrowserActSearchExecuteData.safety?.callsOpenAIImmediately === false &&
+          spendGuardAfterBrowserExecuteResponse.ok &&
+          Number(spendGuardAfterBrowserExecute.counts?.total || 0) === Number(spendGuardBeforeBrowserExecute.counts?.total || 0) &&
+          Number(spendGuardAfterBrowserExecute.counts?.blocked || 0) === Number(spendGuardBeforeBrowserExecute.counts?.blocked || 0)
+          ? ok('voice_command.natural_browser_act_search_execute', 'Natural browser act-search execute voice command', 'live browser execute flag is set; browser search ran locally without OpenAI spend, mic, Realtime, or window picking')
+          : fail('voice_command.natural_browser_act_search_execute', 'Natural browser act-search execute voice command', 'natural browser search execute did not run as a local browser action or changed OpenAI spend guard counts', {
+            before: spendGuardBeforeBrowserExecuteResponse.data,
+            command: naturalBrowserActSearchExecute.data,
+            after: spendGuardAfterBrowserExecuteResponse.data,
+          }),
+      );
+    } else {
+      out.push(skip(
+        'voice_command.natural_browser_act_search_execute',
+        'Natural browser act-search execute voice command',
+        'skipped by default; set JAVIS_EVAL_LIVE_BROWSER_ACTIONS=true only for attended live-browser dogfood so evals do not open tabs on the user desktop',
+      ));
+    }
 
     const naturalBrowserWorkflow = await ctx.api('/api/voice/command', {
       method: 'POST',

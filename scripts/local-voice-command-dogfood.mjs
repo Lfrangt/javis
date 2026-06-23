@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /resident, /watchdog, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -499,6 +499,8 @@ function loopHelpText() {
     '  /spend    Read OpenAI spend guard, local block count, lease, and egress firewall state.',
     '  /see      Read screen/privacy/ambient perception status without capturing a new frame.',
     '  /status   Fast-read pet readiness, Realtime blocker, and local fallback state.',
+    '  /resident Read LaunchAgent resident and watchdog/self-heal health.',
+    '  /watchdog Alias for /resident.',
     '  /session  Read, start, resume, note, or end a local work session.',
     '  /note     Add a local note to the active work session.',
     '  /app      Fast-read recent Mac app and screen metadata; add --full-app for live UI outline.',
@@ -1218,6 +1220,25 @@ function formatLoopStatus(data = {}) {
   return lines.join('\n');
 }
 
+function formatLoopResidentHealth(data = {}) {
+  const resident = data.resident || data || {};
+  const watchdog = resident.watchdog || {};
+  const stateFile = watchdog.stateFile || {};
+  const lastCheck = stateFile.lastHealth?.checkedAt || stateFile.lastOkAt || stateFile.lastFailureAt || stateFile.lastStatus || '';
+  const ready = Boolean(resident.loaded && resident.matchesProject && resident.pid);
+  const watchdogReady = Boolean(watchdog.ready);
+  const lines = [
+    `Resident: ${ready ? 'alive' : 'attention'} · loaded=${resident.loaded ? 'yes' : 'no'} · pid=${resident.pid || '-'} · project=${resident.matchesProject ? 'yes' : 'no'}`,
+    `Watchdog: ${watchdogReady ? 'ready' : 'attention'} · loaded=${watchdog.loaded ? 'yes' : 'no'} · interval=${watchdog.runIntervalSeconds || '-'}s · healthy=${watchdog.healthy ? 'yes' : 'unknown'}`,
+  ];
+  if (lastCheck) lines.push(`Last check: ${compactText(lastCheck, 180)}`);
+  if (watchdog.launchctlError) lines.push(`Watchdog note: ${compactText(watchdog.launchctlError, 220)}`);
+  if (resident.launchctlError) lines.push(`Resident note: ${compactText(resident.launchctlError, 220)}`);
+  lines.push(`Self-heal: ${watchdog.installed ? 'installed' : 'missing'} · ${watchdog.commands?.check || 'npm run resident:watchdog:check'}`);
+  lines.push('Safety: read-only resident/watchdog state; no OpenAI, microphone, Realtime, screen capture, worker, Terminal, or file mutation.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopVoiceStatus(data = {}) {
   const standby = data.standby || {};
   const provider = standby.provider || {};
@@ -1779,6 +1800,15 @@ async function runLoopCommand(transcript) {
       return loopCommandResult(base, response, formatLoopStatus(response.data || {}), {
         endpoint,
         detailLevel: full ? 'full' : 'fast',
+      });
+    }
+    if (command === 'resident' || command === 'health' || command === 'watchdog' || command === 'alive') {
+      const endpoint = '/api/resident/status';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopResidentHealth(response.data || {}), {
+        command: 'resident',
+        endpoint,
+        detailLevel: 'fast',
       });
     }
     if (command === 'voice' || command === 'voice-status' || command === 'mic' || command === 'realtime') {

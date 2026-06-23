@@ -128,9 +128,37 @@ export default {
         : fail('browser.work_next_recovery_wiring', 'Browser work-next recovery wiring', 'expected work-next to expose and execute cooldown-guarded browser_window_unavailable recovery through local action policy'),
     );
 
+    const hasProbeExecutionGuard =
+      mainSource.includes('function browserProbeExecutionGuard') &&
+      mainSource.includes('browserProbeSourceWouldTouchRealBrowser') &&
+      mainSource.includes('JAVIS_EVAL_LIVE_BROWSER_ACTIONS=true') &&
+      mainSource.includes('probe_browser_execution_requires_live_flag') &&
+      mainSource.includes('executionBlocked: Boolean(executionGuard)');
+    out.push(
+      hasProbeExecutionGuard
+        ? ok('browser.probe_execution_guard', 'Browser probe execution guard', 'eval/manual browser probes default to preview-only unless the attended live-browser flag is set')
+        : fail('browser.probe_execution_guard', 'Browser probe execution guard', 'expected eval/manual browser action probes to be blocked from touching the real desktop by default'),
+    );
+
     const progress = await ctx.api('/api/work/progress?jobLimit=8&workflowLimit=8');
-    const progressText = JSON.stringify(progress.data || {});
-    const hasBrowserUnavailableBlocker = progressText.includes('browser_window_unavailable');
+    const progressPayloadForRecovery = progress.data?.progress || {};
+    const activeBrowserUnavailableRoutes = Array.isArray(progressPayloadForRecovery.routingLedger)
+      ? progressPayloadForRecovery.routingLedger.filter((route) => /browser_window_unavailable|browser_context_unavailable|browser target unavailable|browser context unavailable|no supported browser/i.test([
+          route.status,
+          route.resultSummary,
+          route.nextAction,
+          route.taskTitle,
+        ].filter(Boolean).join('\n')))
+      : [];
+    const activeBrowserUnavailableWorkflows = Array.isArray(progressPayloadForRecovery.blockedWorkflows)
+      ? progressPayloadForRecovery.blockedWorkflows.filter((workflow) => /browser_window_unavailable|browser_context_unavailable|browser target unavailable|browser context unavailable|no supported browser/i.test([
+          workflow.result,
+          workflow.request,
+          workflow.title,
+          workflow.target?.error,
+        ].filter(Boolean).join('\n')))
+      : [];
+    const hasBrowserUnavailableBlocker = activeBrowserUnavailableRoutes.length > 0 || activeBrowserUnavailableWorkflows.length > 0;
     const workNext = await ctx.api('/api/work/next?workflowLimit=8&jobLimit=8');
     const workNextActions = Array.isArray(workNext.data?.next?.briefing?.nextActions)
       ? workNext.data.next.briefing.nextActions

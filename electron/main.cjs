@@ -5993,11 +5993,22 @@ function normalizeBrowserFillDraftTarget(value = {}) {
   };
 }
 
+const BROWSER_PROBE_GUARD_RESULT_TEXT = 'Browser execution blocked: eval/manual probes default to preview-only.';
+
+function isBrowserProbeGuardedResult(...values) {
+  return values.some((value) => String(value || '').includes(BROWSER_PROBE_GUARD_RESULT_TEXT));
+}
+
+function normalizeBrowserProbeGuardedStatus(status, ...values) {
+  return status === 'blocked' && isBrowserProbeGuardedResult(...values) ? 'done' : status;
+}
+
 function normalizePersistedWorkflow(workflow, fromDisk = false) {
   if (!workflow || typeof workflow !== 'object' || !workflow.id) return null;
-  const status = ['queued', 'running', 'done', 'failed', 'cancelled', 'blocked'].includes(workflow.status)
+  const rawStatus = ['queued', 'running', 'done', 'failed', 'cancelled', 'blocked'].includes(workflow.status)
     ? workflow.status
     : 'failed';
+  const status = normalizeBrowserProbeGuardedStatus(rawStatus, workflow.result, workflow.title, workflow.request);
   const interrupted = fromDisk && (status === 'queued' || status === 'running');
   const target = workflow.target && typeof workflow.target === 'object' ? workflow.target : {};
   return {
@@ -6040,7 +6051,9 @@ function normalizePersistedWorkflow(workflow, fromDisk = false) {
     continuation: normalizeWorkflowContinuation(workflow.continuation),
     createdAt: Number(workflow.createdAt || Date.now()),
     updatedAt: interrupted ? Date.now() : Number(workflow.updatedAt || Date.now()),
-    completedAt: interrupted ? Date.now() : Number(workflow.completedAt || 0),
+    completedAt: interrupted ? Date.now() : status === 'done' && rawStatus === 'blocked'
+      ? Number(workflow.completedAt || workflow.updatedAt || Date.now())
+      : Number(workflow.completedAt || 0),
   };
 }
 
@@ -6486,7 +6499,8 @@ function markShortcutUsed(shortcut, source = 'router') {
 function normalizePersistedRoutingRecord(record) {
   if (!record || typeof record !== 'object' || !record.id) return null;
   const lane = normalizeRoutingLane(record.lane);
-  const status = normalizeRoutingStatus(record.status);
+  const rawStatus = normalizeRoutingStatus(record.status);
+  const status = normalizeBrowserProbeGuardedStatus(rawStatus, record.resultSummary, record.taskTitle, record.taskPrompt);
   const completedAt = ['done', 'failed', 'cancelled', 'blocked'].includes(status)
     ? Number(record.completedAt || Date.now())
     : Number(record.completedAt || 0);
@@ -24809,6 +24823,31 @@ function browserTaskStepLabel(step) {
   return `${step.action} ${step.selector || step.query}`;
 }
 
+function browserLiveProbeExecutionAllowed() {
+  return booleanOption(process.env.JAVIS_EVAL_LIVE_BROWSER_ACTIONS) ||
+    booleanOption(process.env.JAVIS_EVAL_BROWSER_LIVE_ACTIONS);
+}
+
+function browserProbeSourceWouldTouchRealBrowser(source = '') {
+  const normalized = String(source || '').trim().toLowerCase();
+  if (!normalized) return false;
+  return /(^|[_:-])eval([_:-]|$)/.test(normalized) ||
+    /(^|[_:-])manual_probe([_:-]|$)/.test(normalized);
+}
+
+function browserProbeExecutionGuard(source = '', requestedExecute = false) {
+  if (!requestedExecute) return null;
+  if (!browserProbeSourceWouldTouchRealBrowser(source)) return null;
+  if (browserLiveProbeExecutionAllowed()) return null;
+  return {
+    blocked: true,
+    source: compactRecordText(source, 120),
+    reason: 'probe_browser_execution_requires_live_flag',
+    requiredEnv: 'JAVIS_EVAL_LIVE_BROWSER_ACTIONS=true',
+    output: 'Browser execution blocked: eval/manual probes default to preview-only. Set JAVIS_EVAL_LIVE_BROWSER_ACTIONS=true only for an attended live-browser dogfood run.',
+  };
+}
+
 async function runBrowserTaskStep(step, execute, options = {}) {
   if (step.action === 'wait') {
     if (execute) await waitMs(step.ms);
@@ -25594,8 +25633,10 @@ async function runBrowserTaskWorkflow(options = {}) {
   const fixturePage = normalizeBrowserFillDraftFixturePage(options.page || options.fixturePage);
   const fixtureDom = normalizeBrowserFillDraftFixtureDom(options.dom || options.fixtureDom);
   const fixture = Boolean(fixturePage || fixtureDom);
+  const source = String(options.source || 'browser_task').slice(0, 80);
   const requestedExecute = options.execute !== false;
-  const execute = requestedExecute && !fixture;
+  const executionGuard = !fixture ? browserProbeExecutionGuard(source, requestedExecute) : null;
+  const execute = requestedExecute && !fixture && !executionGuard;
   const maxSteps = Math.max(1, Math.min(5, Number(options.maxSteps || 5)));
   const maxChars = normalizeBrowserMaxChars(options.maxChars || 12000);
   const page = fixturePage || await browserPageSnapshot({ app: options.app, maxChars });
@@ -25644,10 +25685,14 @@ async function runBrowserTaskWorkflow(options = {}) {
   });
 
   appendAudit('browser_task.requested', {
+    source,
     app: planningPage.app,
     title: planningPage.title,
     url: planningPage.url,
+    requestedExecute,
     execute,
+    executionBlocked: Boolean(executionGuard),
+    executionBlockReason: executionGuard?.reason || '',
     pageAvailable: Boolean(page.available),
     domCount: dom.elements?.length || 0,
     maxSteps,
@@ -25705,6 +25750,7 @@ async function runBrowserTaskWorkflow(options = {}) {
     plan.plannerError ? `Planner note: ${compactRecordText(plan.plannerError, 260)}` : '',
     plan.successCheck ? `Check: ${plan.successCheck}` : '',
     results.length ? formatBrowserTaskResults(results) : 'No safe executable browser steps were planned.',
+    executionGuard ? executionGuard.output : '',
     afterPage?.available ? `After: ${afterPage.title || ''} ${afterPage.url || ''}` : `After: ${afterPage?.error || 'unavailable'}`,
   ].filter(Boolean).join('\n');
   const finalWorkflow = setWorkflow(workflow.id, {
@@ -25722,7 +25768,10 @@ async function runBrowserTaskWorkflow(options = {}) {
     status: finalWorkflow?.status,
     steps: plan.steps.length,
     results: results.length,
+    requestedExecute,
     execute,
+    executionBlocked: Boolean(executionGuard),
+    executionBlockReason: executionGuard?.reason || '',
     blocked,
     noSafeSteps,
     planner: plan.source,
@@ -25745,6 +25794,7 @@ async function runBrowserTaskWorkflow(options = {}) {
     queued: false,
     fixture,
     requestedExecute,
+    executionGuard,
     workflow: finalWorkflow,
     routing,
     page: browserWorkflowPageSummary(afterPage?.available ? afterPage : page),
@@ -28567,6 +28617,27 @@ function naturalKeepAwakeLocalCommand(text) {
   return null;
 }
 
+function naturalResidentHealthLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const english = /\b(javis|jarvis|resident|launchagent|launchd|watchdog|self[- ]?heal|health check|daemon|server)\b.*\b(alive|running|healthy|health|status|ready|loaded|recover|recovery|restart|watching|on|off)\b/i.test(raw)
+    || /\b(are you alive|still alive|resident status|watchdog status|self[- ]?heal(?:ing)? status|is javis running|is jarvis running)\b/i.test(raw);
+  const chinese = /(?:你|JAVIS|javis|贾维斯|常驻|服务|服务器|resident|LaunchAgent|launchd|watchdog|看门狗|自恢复|自愈|健康检查).*(?:活着|还在|在跑|运行|健康|状态|就绪|加载|开着|开了吗|有没有|会不会恢复|会不会重启|能不能恢复)/i.test(compactPlain)
+    || /(?:活着吗|还活着吗|你还在吗|你还跑着吗|常驻状态|服务状态|服务器状态|看门狗状态|自恢复开了吗|自愈开了吗|watchdog开了吗|会不会自己恢复)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'resident_health',
+    label: 'Resident health',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function localCommandDecision(task) {
   const raw = String(task || '').trim();
   const text = raw.replace(/\s+/g, ' ').trim();
@@ -28702,6 +28773,9 @@ function localCommandDecision(task) {
 
   const keepAwakeCommand = naturalKeepAwakeLocalCommand(text);
   if (keepAwakeCommand) return keepAwakeCommand;
+
+  const residentHealthCommand = naturalResidentHealthLocalCommand(text);
+  if (residentHealthCommand) return residentHealthCommand;
 
   if (/^(status|doctor|brief|briefing|what'?s up|what now|next actions?)$/i.test(text)
     || /^(状态|当前状态|系统状态|下一步|有什么待办|现在该做什么|简报)$/.test(text)) {
@@ -29170,7 +29244,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
+  if (statusSignal || ['status', 'resident_health', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -29192,7 +29266,7 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
-    } else if (['voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
+    } else if (['resident_health', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -29806,6 +29880,29 @@ function formatVoiceStatusForLocalCommand(status = {}) {
     standby.next || provider.next || local.next ? `Next: ${compactRecordText(standby.next || provider.next || local.next, 320)}` : '',
     recoveryLine ? `Recovery:\n${recoveryLine}` : '',
     '边界: 这里只读语音/Realtime 状态；不启动麦克风，不创建 Realtime session，不开 Terminal，不读取屏幕。',
+  ].filter(Boolean).join('\n');
+}
+
+function formatResidentHealthForLocalCommand(status = {}) {
+  const resident = status.resident || {};
+  const health = status.health || {};
+  const watchdog = status.watchdog || resident.watchdog || {};
+  const stateFile = watchdog.stateFile || {};
+  const launchReady = Boolean(resident.loaded && resident.matchesProject && resident.pid);
+  const watchdogReady = Boolean(watchdog.ready);
+  const residentState = launchReady ? 'running' : resident.loaded ? 'loaded_attention' : 'not_loaded';
+  const watchdogState = watchdogReady ? 'ready' : watchdog.loaded ? 'loaded_attention' : 'not_loaded';
+  const lastCheck = stateFile.lastHealth?.checkedAt || stateFile.lastOkAt || stateFile.lastFailureAt || stateFile.lastStatus || '';
+  return [
+    `Resident health: ${launchReady ? 'alive' : 'attention'} · state=${residentState} · pid=${resident.pid || health.pid || '-'}`,
+    `Uptime: ${health.uptimeSeconds ?? '-'}s · API=${health.api?.baseUrl || API_BASE} · status=${health.status || '-'}`,
+    `LaunchAgent: installed=${resident.installed ? 'yes' : 'no'} · loaded=${resident.loaded ? 'yes' : 'no'} · project=${resident.matchesProject ? 'yes' : 'no'}`,
+    `Watchdog: ${watchdogState} · loaded=${watchdog.loaded ? 'yes' : 'no'} · interval=${watchdog.runIntervalSeconds || '-'}s · healthy=${watchdog.healthy ? 'yes' : 'unknown'}`,
+    lastCheck ? `Last watchdog check: ${compactRecordText(lastCheck, 160)}` : '',
+    watchdog.launchctlError ? `Watchdog note: ${compactRecordText(watchdog.launchctlError, 220)}` : '',
+    resident.launchctlError ? `Resident note: ${compactRecordText(resident.launchctlError, 220)}` : '',
+    `Self-heal: ${watchdog.installed ? 'installed' : 'missing'} · command=${watchdog.commands?.check || 'npm run resident:watchdog:check'}`,
+    '边界: 这里只读本地 resident / launchd / watchdog 健康状态；不调用 OpenAI，不创建 spend lease，不启动麦克风或 Realtime，不截屏，不启动 worker，不改文件。',
   ].filter(Boolean).join('\n');
 }
 
@@ -30664,6 +30761,39 @@ async function runLocalCommand(command, options = {}) {
       };
     }
 
+    if (command.intent === 'resident_health') {
+      const [resident, health] = await Promise.all([
+        residentStatusSnapshot(),
+        Promise.resolve(healthSnapshot()),
+      ]);
+      const residentHealth = {
+        version: 1,
+        status: resident.loaded && resident.matchesProject ? 'ready' : 'attention',
+        resident,
+        health,
+        watchdog: resident.watchdog || health.resident?.watchdog || residentWatchdogStatusSnapshot({ includeLaunchctl: true }),
+        safety: {
+          readOnly: true,
+          localHealthOnly: true,
+          callsOpenAI: false,
+          createsSpendLease: false,
+          startsMicrophone: false,
+          usesRealtime: false,
+          capturesScreen: false,
+          startsWorkers: false,
+          opensTerminal: false,
+          mutatesUserFiles: false,
+          mutatesProjectFiles: false,
+        },
+      };
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatResidentHealthForLocalCommand(residentHealth),
+        data: { residentHealth, resident, watchdog: residentHealth.watchdog },
+      };
+    }
+
     if (command.intent === 'work_progress') {
       const progress = workProgressCheckIn({ source: 'local_command' });
       return {
@@ -31448,10 +31578,11 @@ async function runLocalCommand(command, options = {}) {
 
     if (command.intent === 'browser_workflow') {
       const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+      const source = String(options.source || (execute ? 'local_command_browser_workflow_execute' : 'local_command_browser_workflow_preview')).slice(0, 80);
       const result = await runBrowserWorkflow({
         ...(command.args || {}),
         execute,
-        source: execute ? 'local_command_browser_workflow_execute' : 'local_command_browser_workflow_preview',
+        source,
         scope: `browser:${command.args?.intent || 'workflow'}`,
       });
       return {
@@ -33210,6 +33341,7 @@ const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
   'open_app',
   'open_url',
   'openai_spend_status',
+  'resident_health',
   'perception_status',
   'process_next_inbox',
   'prompt_suggestions',
@@ -33973,8 +34105,8 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
-        const result = await runLocalCommand(localCommand, { execute: false });
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+        const result = await runLocalCommand(localCommand, { execute: false, source: routingContext.source });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
           executed: false,
@@ -34001,7 +34133,7 @@ async function routeTask(options = {}) {
         output: `Local: ${localCommand.label}`,
       }, { ...routingContext, decision, localCommand, learningEvidence: learningEvidenceForLocalCommand(localCommand.intent), contextPlan: decision.contextPlan });
     }
-    const result = await runLocalCommand(localCommand, { execute: true });
+    const result = await runLocalCommand(localCommand, { execute: true, source: routingContext.source });
     appendAudit('local_command.completed', {
       intent: localCommand.intent,
       ok: result.ok,

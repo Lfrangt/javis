@@ -506,6 +506,50 @@ export default {
         }),
     );
 
+    const residentHealthCommandResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: 'JAVIS 你还活着吗，常驻服务和 watchdog 自恢复状态怎么样？',
+        execute: false,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_health_local_command',
+      },
+      timeoutMs: 10000,
+    });
+    const residentHealthCommand = residentHealthCommandResponse.data || {};
+    const residentHealthRoute = residentHealthCommand.route || {};
+    const residentHealth = residentHealthRoute.data?.residentHealth || {};
+    out.push(
+      residentHealthCommandResponse.ok &&
+        residentHealthCommand.ok === true &&
+        residentHealthCommand.executed === false &&
+        residentHealthRoute.localCommand?.intent === 'resident_health' &&
+        residentHealthRoute.decision?.localCommand === 'resident_health' &&
+        String(residentHealthRoute.output || '').includes('Resident health:') &&
+        String(residentHealthRoute.output || '').includes('Self-heal:') &&
+        residentHealth.version === 1 &&
+        residentHealth.resident?.loaded === true &&
+        residentHealth.resident?.matchesProject === true &&
+        residentHealth.watchdog?.installed === true &&
+        residentHealth.safety?.readOnly === true &&
+        residentHealth.safety?.callsOpenAI === false &&
+        residentHealth.safety?.startsMicrophone === false &&
+        residentHealth.safety?.usesRealtime === false &&
+        residentHealth.safety?.capturesScreen === false &&
+        residentHealth.safety?.startsWorkers === false &&
+        residentHealthRoute.contextPlan?.needs?.residentState === true &&
+        residentHealthRoute.contextPlan?.needs?.screen === false &&
+        residentHealthRoute.contextPlan?.needs?.accessibility === false
+        ? ok('resident.health_local_command', 'Resident health local command', `resident=${residentHealth.status || '-'} · watchdog=${residentHealth.watchdog?.ready ? 'ready' : 'attention'}`)
+        : fail('resident.health_local_command', 'Resident health local command', 'expected resident/watchdog health question to route to a read-only resident_health fast path', {
+          status: residentHealthCommandResponse.status,
+          body: residentHealthCommand,
+        }),
+    );
+
     const perceptionStatusCommandResponse = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
