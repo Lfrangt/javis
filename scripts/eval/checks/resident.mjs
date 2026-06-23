@@ -476,6 +476,11 @@ export default {
       progressBoardResponse.ok &&
         progressBoard.version === 1 &&
         ['ready', 'running', 'warning', 'blocked'].includes(progressBoard.status) &&
+        Number.isFinite(Number(progressBoard.performance?.durationMs)) &&
+        progressBoard.performance?.parallelReads === true &&
+        progressBoard.performance?.skippedDuplicateBrowserReadiness === true &&
+        Number(progressBoard.performance?.sectionTimeoutMs || 0) >= 500 &&
+        Number(progressBoard.performance?.targetMs || 0) >= 500 &&
         progressBoard.timelineSource?.kind === 'local_audit_tail' &&
         progressBoard.timelineSource?.rawLogsReturned === false &&
         progressBoard.timelineSource?.returnsUserText === false &&
@@ -527,6 +532,7 @@ export default {
         boardHtml.includes('renderRecovery') &&
         boardHtml.includes('goLiveChecklist') &&
         boardHtml.includes('下一步恢复') &&
+        boardHtml.includes('接口耗时') &&
         boardHtml.includes('不返回原始日志')
         ? ok('resident.progress_board_voice_setup', 'Progress board voice setup panel', `${boardVoiceSetup.rawStatus || boardVoiceSetup.status} · recovery=${boardRecovery.actionId || boardRecovery.label} · checklist=${boardChecklist.length} · timeline=${boardTimeline.length} · safety=no mic/no spend`)
         : fail('resident.progress_board_voice_setup', 'Progress board voice setup panel', 'expected public progress board and HTML to embed sanitized read-only voice setup/go-live/recovery evidence without OpenAI, mic, Realtime, workers, or actions', {

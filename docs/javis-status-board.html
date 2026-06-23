@@ -424,6 +424,7 @@
         <div class="status unknown" id="overall"><span class="dot"></span><span>连接中</span></div>
         <div id="updated">尚未更新</div>
         <div>自动刷新：<span id="refresh">5s</span></div>
+        <div>接口耗时：<span id="perf">-</span></div>
       </div>
     </header>
 
@@ -663,6 +664,7 @@
         document.getElementById("summary").textContent = board.summary || "";
         document.getElementById("updated").textContent = board.generatedAt ? `更新：${new Date(board.generatedAt).toLocaleString()}` : "已更新";
         document.getElementById("refresh").textContent = `${Math.round(refreshMs / 1000)}s`;
+        document.getElementById("perf").textContent = Number.isFinite(Number(board.performance?.durationMs)) ? `${Math.round(Number(board.performance.durationMs))}ms` : "-";
 
         renderVoiceSetup(board.voiceSetup || {});
         renderRecovery(board.recovery || {});

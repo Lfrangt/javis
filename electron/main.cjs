@@ -16044,12 +16044,14 @@ async function overnightStatusSnapshot(options = {}) {
   const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
   const voiceStandby = voiceStandbySnapshot({ conversation, voiceHealth, localVoice });
   const spendGuard = openAiSpendGuardSnapshot();
-  await browserReadinessSnapshot({ source: `${source}_browser_readiness_refresh` }).catch((error) => {
-    appendAudit('browser_readiness.refresh_failed', {
-      source,
-      error: error instanceof Error ? error.message : String(error),
+  if (options.skipBrowserReadinessRefresh !== true) {
+    await browserReadinessSnapshot({ source: `${source}_browser_readiness_refresh` }).catch((error) => {
+      appendAudit('browser_readiness.refresh_failed', {
+        source,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
-  });
+  }
   const progress = workProgressCheckIn({
     jobLimit: options.jobLimit || 5,
     workflowLimit: options.workflowLimit || 5,
@@ -16499,6 +16501,25 @@ function compactWorkNextRecoveryForBoard(preview = {}) {
   };
 }
 
+function progressBoardTimedSection(label, promise, timeoutMs, fallbackFactory) {
+  const section = compactRecordText(label || 'section', 80);
+  const timeout = Math.max(250, Math.min(2500, Number(timeoutMs || 900)));
+  let timer = null;
+  const fallback = () => {
+    appendAudit('progress_board.section_timeout', {
+      section,
+      timeoutMs: timeout,
+    });
+    return typeof fallbackFactory === 'function' ? fallbackFactory() : fallbackFactory;
+  };
+  const timeoutPromise = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback()), timeout);
+  });
+  return Promise.race([promise, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 function progressBoardEventStatus(type = '', data = {}) {
   const raw = `${type} ${data.status || ''} ${data.error ? 'error' : ''}`.toLowerCase();
   if (/failed|failure|error|blocked|rejected|denied/.test(raw)) return 'blocked';
@@ -16574,6 +16595,7 @@ function progressBoardRecentTimeline(options = {}) {
 }
 
 async function progressBoardSnapshot(options = {}) {
+  const startedAtMs = Date.now();
   const source = compactRecordText(options.source || 'progress_board', 80);
   const health = healthSnapshot();
   const pet = petStatusSnapshot();
@@ -16591,45 +16613,34 @@ async function progressBoardSnapshot(options = {}) {
   });
   const voiceSetup = compactVoiceSetupForBoard(voiceSetupGuide);
   const voiceNextStep = voiceSetup.goLiveChecklist.find((item) => item.status !== 'ready') || null;
-  const workNextPreview = await workNextAction({
+  const workNextPreviewPromise = workNextAction({
     execute: false,
     source,
     workflowLimit: options.workflowLimit || 5,
     jobLimit: options.jobLimit || 5,
     includeRecordReplayTeachingPacket: false,
     includeProductivityDogfoodArchive: false,
+    skipBrowserReadinessRefresh: true,
   }).catch((error) => ({
     ok: false,
     executed: false,
     action: null,
     output: `Work-next preview failed: ${error instanceof Error ? error.message : String(error)}`,
   }));
-  const recovery = compactWorkNextRecoveryForBoard(workNextPreview);
-  const progress = workProgressCheckIn({
-    jobLimit: options.jobLimit || 5,
-    workflowLimit: options.workflowLimit || 5,
-    includeInternal: false,
-    source,
-  });
-  const blockers = blockerStatusSnapshot({
-    jobLimit: options.jobLimit || 5,
-    workflowLimit: options.workflowLimit || 5,
-    approvalLimit: options.approvalLimit || 5,
-    includeAutopilot: true,
-    source,
-  });
-  const overnight = await overnightStatusSnapshot({
+  const boardSectionTimeoutMs = Math.max(500, Math.min(2000, Number(options.sectionTimeoutMs || 900)));
+  const overnightPromise = overnightStatusSnapshot({
     jobLimit: options.jobLimit || 5,
     workflowLimit: options.workflowLimit || 5,
     approvalLimit: options.approvalLimit || 5,
     source,
+    skipBrowserReadinessRefresh: true,
   }).catch((error) => ({
     status: 'warning',
     summary: `Overnight snapshot failed: ${error instanceof Error ? error.message : String(error)}`,
     issues: [],
     keepAwake: null,
   }));
-  const browserControl = await browserControlStatusSnapshot({
+  const browserControlPromise = browserControlStatusSnapshot({
     source,
   }).catch((error) => ({
     status: 'warning',
@@ -16643,6 +16654,46 @@ async function progressBoardSnapshot(options = {}) {
       callsOpenAi: false,
     },
   }));
+  const progress = workProgressCheckIn({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    includeInternal: false,
+    source,
+  });
+  const blockers = blockerStatusSnapshot({
+    jobLimit: options.jobLimit || 5,
+    workflowLimit: options.workflowLimit || 5,
+    approvalLimit: options.approvalLimit || 5,
+    includeAutopilot: true,
+    source,
+  });
+  const [workNextPreview, overnight, browserControl] = await Promise.all([
+    progressBoardTimedSection('work_next', workNextPreviewPromise, boardSectionTimeoutMs, () => ({
+      ok: false,
+      executed: false,
+      action: null,
+      output: 'Work-next preview timed out for this board refresh; try the next refresh or run npm run work:next.',
+    })),
+    progressBoardTimedSection('overnight', overnightPromise, boardSectionTimeoutMs, () => ({
+      status: 'warning',
+      summary: 'Overnight snapshot timed out for this board refresh.',
+      issues: [],
+      keepAwake: null,
+    })),
+    progressBoardTimedSection('browser_control', browserControlPromise, boardSectionTimeoutMs, () => ({
+      status: 'warning',
+      summary: 'Browser control status timed out for this board refresh.',
+      counts: {},
+      actions: [],
+      safety: {
+        readOnly: true,
+        startsBrowser: false,
+        executesBrowserActions: false,
+        callsOpenAi: false,
+      },
+    })),
+  ]);
+  const recovery = compactWorkNextRecoveryForBoard(workNextPreview);
 
   const spendLocked = Boolean(
     spendGuard.hardSpendLock &&
@@ -16799,6 +16850,13 @@ async function progressBoardSnapshot(options = {}) {
       status: health.status,
       pid: health.pid,
       uptimeSeconds: health.uptimeSeconds,
+    },
+    performance: {
+      durationMs: Math.max(0, Date.now() - startedAtMs),
+      parallelReads: true,
+      skippedDuplicateBrowserReadiness: true,
+      sectionTimeoutMs: boardSectionTimeoutMs,
+      targetMs: 1000,
     },
     nodes,
     timeline,
@@ -58770,13 +58828,15 @@ async function workNextAction(options = {}) {
       String(options.includeProductivityDogfoodArchive || '').toLowerCase() !== 'false'
     ) ||
     String(options.includeProductivityDogfoodArchive || '').toLowerCase() === 'true';
-  await browserReadinessSnapshot({ source: `${options.source || 'work_next'}_browser_readiness_refresh` }).catch((error) => {
-    appendAudit('browser_readiness.refresh_failed', {
-      source: options.source || 'work_next',
-      actionId: requestedActionId,
-      error: error instanceof Error ? error.message : String(error),
+  if (options.skipBrowserReadinessRefresh !== true) {
+    await browserReadinessSnapshot({ source: `${options.source || 'work_next'}_browser_readiness_refresh` }).catch((error) => {
+      appendAudit('browser_readiness.refresh_failed', {
+        source: options.source || 'work_next',
+        actionId: requestedActionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
     });
-  });
+  }
   const briefing = workflowBriefing({
     workflowLimit: options.workflowLimit || 6,
     jobLimit: options.jobLimit || 6,
