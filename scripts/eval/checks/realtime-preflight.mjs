@@ -121,16 +121,24 @@ export default {
           probe.spendGuard?.hardSpendLock === true &&
           probe.spendGuard?.zeroSpendMode === true
         )) &&
+        (probe.status !== 'manual_required' || (
+          probe.spendGuard?.allowed === false &&
+          probe.spendGuard?.status === 'manual_required' &&
+          probe.spendGuard?.manualRequired === true &&
+          probe.spendGuard?.zeroSpendMode === false
+        )) &&
         probePreview.executed === false &&
         probePreview.startsMicrophone === false &&
         probePreview.requiresMicConfirmation === false &&
         probePreview.requiresOpenAiSpendConfirmation === true &&
-	        probePreview.openAiSpendConfirmation?.required === true &&
-	        probePreview.openAiSpendConfirmation?.confirmed === false &&
-	        probePreview.endpoint?.executeBody?.confirmOpenAiSpend === true &&
-		        probePreview.endpoint?.executeBody?.confirmOpenAiSpendPhrase === '<type spend phrase>' &&
-		        probePreview.endpoint?.executeBody?.openAiSpendLeaseId === '<one-request lease id>' &&
-		        probePreview.detail?.action === 'probe'
+        probePreview.spendGuard?.status === 'manual_required' &&
+        probePreview.spendGuard?.manualRequired === true &&
+        probePreview.openAiSpendConfirmation?.required === true &&
+        probePreview.openAiSpendConfirmation?.confirmed === false &&
+        probePreview.endpoint?.executeBody?.confirmOpenAiSpend === true &&
+        probePreview.endpoint?.executeBody?.confirmOpenAiSpendPhrase === '<type spend phrase>' &&
+        probePreview.endpoint?.executeBody?.openAiSpendLeaseId === '<one-request lease id>' &&
+        probePreview.detail?.action === 'probe'
         ? ok('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `${probe.status || 'idle'} · renderer=${probe.rendererAvailable ? 'ready' : 'missing'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'} · spend confirmation required`)
         : fail('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `GET/POST /api/realtime/provider/probe ${providerProbe.status}/${providerProbePreview.status}`, { probe, preview: probePreview }),
     );

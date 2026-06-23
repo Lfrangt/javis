@@ -2073,7 +2073,11 @@ export default {
         spendForensics.safety?.createsSpendLease === false &&
         (spendGuardZeroLocked
           ? spendForensics.zeroLocked === true && spendForensics.status === 'zero_spend_locked'
-          : spendGuardManualGuarded && spendForensics.zeroLocked === false && spendForensics.status === 'spend_guard_needs_review'),
+          : spendGuardManualGuarded &&
+            spendForensics.zeroLocked === false &&
+            spendForensics.manualGuardedNoSpend === true &&
+            spendForensics.safeNoSpend === true &&
+            spendForensics.status === 'manual_guarded_no_spend'),
     );
     out.push(
       spendGuardResponse.ok &&

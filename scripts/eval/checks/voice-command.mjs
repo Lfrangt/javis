@@ -476,11 +476,15 @@ export default {
     const spendIncident = spendIncidentRoute.data?.spendIncident || {};
     const spendIncidentForensics = spendIncident.forensics || {};
     const spendIncidentZeroLocked = Boolean(spendIncidentForensics.zeroLocked === true);
-    const spendIncidentManualGuarded = Boolean(
-      spendIncidentForensics.zeroLocked === false &&
-        spendIncidentForensics.likelyBillableFromJavis === false &&
-        ['local_guard_not_fully_locked', 'no_local_javis_allowed_spend'].includes(spendIncident.conclusion?.id || ''),
-    );
+	    const spendIncidentManualGuarded = Boolean(
+	      spendIncidentForensics.zeroLocked === false &&
+	        spendIncidentForensics.likelyBillableFromJavis === false &&
+	        [
+	          'manual_guarded_no_local_spend',
+	          'local_guard_not_fully_locked',
+	          'no_local_javis_allowed_spend',
+	        ].includes(spendIncident.conclusion?.id || ''),
+	    );
     const spendGuardAfterIncidentResponse = await ctx.api('/api/openai/spend-guard');
     const spendGuardAfterIncident = spendGuardAfterIncidentResponse.data?.spendGuard || {};
     out.push(
@@ -490,7 +494,11 @@ export default {
         spendIncidentRoute.decision?.localCommand === 'openai_spend_incident' &&
         spendIncidentRoute.localCommand?.intent === 'openai_spend_incident' &&
         spendIncident.version === 1 &&
-        ['no_local_javis_allowed_spend', 'local_guard_not_fully_locked'].includes(spendIncident.conclusion?.id || '') &&
+	        [
+	          'manual_guarded_no_local_spend',
+	          'no_local_javis_allowed_spend',
+	          'local_guard_not_fully_locked',
+	        ].includes(spendIncident.conclusion?.id || '') &&
         spendIncidentForensics.likelyBillableFromJavis === false &&
         (spendIncidentZeroLocked || spendIncidentManualGuarded) &&
         spendIncident.externalBoundary?.dashboardRequiredForBillingTruth === true &&

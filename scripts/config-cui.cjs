@@ -4039,7 +4039,12 @@ function printRealtimeProviderProbe(result) {
     const guard = probe.spendGuard || result.spendGuard;
     const state = guard.state || {};
     const hardSpendLock = state.hardSpendLock ?? guard.hardSpendLock;
-    console.log(`Spend guard: ${guard.allowed ? 'allowed' : 'blocked'} · mode ${state.mode || guard.mode || '-'} · hard lock ${hardSpendLock ? 'on' : 'off'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
+    const guardStatus = guard.allowed
+      ? 'allowed'
+      : guard.manualRequired || guard.status === 'manual_required'
+        ? 'manual confirmation required'
+        : 'blocked';
+    console.log(`Spend guard: ${guardStatus} · mode ${state.mode || guard.mode || '-'} · hard lock ${hardSpendLock ? 'on' : 'off'}${Array.isArray(guard.reasons) && guard.reasons.length ? ` · ${guard.reasons.join(', ')}` : ''}`);
   }
   const confirmation = result?.openAiSpendConfirmation || probe.openAiSpendConfirmation;
   if (confirmation?.required) {
@@ -5311,8 +5316,17 @@ async function main() {
     const confirmed = process.argv.includes('--confirm-openai-spend') || process.argv.includes('--confirm-cloud-spend');
     const confirmOpenAiSpendPhrase = argvValue('--confirm-openai-spend-phrase') || argvValue('--openai-spend-phrase');
     if (!confirmed) {
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          await runRealtimeProviderProbeFromCui(rl);
+        } finally {
+          rl.close();
+        }
+        return;
+      }
       await showRealtimeProviderProbe();
-      console.log('\nNo OpenAI call was made. Re-run interactively and type the spend phrase if you intentionally want one provider-probe request.');
+      console.log('\nNo OpenAI call was made. Run this command from an interactive terminal and type the spend phrase, or pass --confirm-openai-spend --confirm-openai-spend-phrase "<phrase>" if you intentionally want one provider-probe request.');
       return;
     }
     if (!confirmOpenAiSpendPhrase) {

@@ -3262,17 +3262,35 @@ function openAiSpendForensicsSnapshot(options = {}) {
   );
   const localAllowedCount = Number(guard.counts?.total || 0);
   const localUnattendedAllowedCount = Number(guard.counts?.unattended || 0);
+  const manualGuardedNoSpend = Boolean(
+    !zeroLocked &&
+      guard.mode === 'manual' &&
+      guard.hardSpendLock === false &&
+      Number(guard.dailyRequestLimit || 0) > 0 &&
+      Number(guard.remaining?.total || 0) > 0 &&
+      Number(guard.unattendedDailyRequestLimit || 0) === 0 &&
+      guard.allowAutopilotCloud === false &&
+      guard.allowRendererStartupProbe === false &&
+      guard.requireSpendConfirmationPhrase === true &&
+      guard.requireSpendLease === true &&
+      guard.egressGuardEnabled === true &&
+      egress.safety?.blocksUnscopedOpenAiFetch === true
+  );
   const status = localAllowedCount > 0
     ? 'local_allowed_spend_recorded'
     : zeroLocked
       ? 'zero_spend_locked'
-      : 'spend_guard_needs_review';
+      : manualGuardedNoSpend
+        ? 'manual_guarded_no_spend'
+        : 'spend_guard_needs_review';
   const likelyBillableFromJavis = localAllowedCount > 0;
   const summary = likelyBillableFromJavis
     ? `JAVIS has ${localAllowedCount} local allowed OpenAI request record(s) today; inspect latest allowed event before leaving it unattended.`
     : zeroLocked
       ? 'JAVIS has no local allowed OpenAI spend records today; recent OpenAI events were blocked locally before confirmed spend.'
-      : 'JAVIS has no local allowed OpenAI spend records today, but the guard is not fully zero-locked; review before unattended use.';
+      : manualGuardedNoSpend
+        ? 'JAVIS has no local allowed OpenAI spend records today. Manual OpenAI checks are gated behind the spend phrase plus a one-request lease, and unattended/API-startup cloud calls are blocked.'
+        : 'JAVIS has no local allowed OpenAI spend records today, but the guard is not fully zero-locked; review before unattended use.';
   return {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -3281,6 +3299,8 @@ function openAiSpendForensicsSnapshot(options = {}) {
     summary,
     likelyBillableFromJavis,
     zeroLocked,
+    manualGuardedNoSpend,
+    safeNoSpend: Boolean(!likelyBillableFromJavis && (zeroLocked || manualGuardedNoSpend)),
     counts: {
       allowed: localAllowedCount,
       manualAllowed: Number(guard.counts?.manual || 0),
@@ -3314,7 +3334,8 @@ function openAiSpendForensicsSnapshot(options = {}) {
     allowedBySource: countBy(allowed, 'source'),
     allowedByKind: countBy(allowed, 'kind'),
     recommendations: [
-      zeroLocked ? '' : 'Run npm run openai:lockdown before unattended use.',
+      zeroLocked || manualGuardedNoSpend ? '' : 'Run npm run openai:lockdown before unattended use.',
+      manualGuardedNoSpend ? 'Manual mode is safe for idle use: keep the spend phrase and one-request lease gate before provider checks.' : '',
       localAllowedCount > 0 ? 'Inspect the latest allowed event and OpenAI dashboard usage for billing reconciliation.' : '',
       localUnattendedAllowedCount > 0 ? 'Disable autopilot cloud and set JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT=0 before leaving JAVIS running.' : '',
       !egress.safety?.blocksUnscopedOpenAiFetch ? 'Enable JAVIS_OPENAI_EGRESS_GUARD=true so direct OpenAI egress is scoped through the spend guard.' : '',
@@ -3393,6 +3414,14 @@ function openAiSpendIncidentConclusion(forensics = {}) {
       summary: 'This running JAVIS instance has no local allowed OpenAI request records today; recent OpenAI-related events were blocked locally before a request could leave JAVIS.',
     };
   }
+  if (forensics.manualGuardedNoSpend) {
+    return {
+      id: 'manual_guarded_no_local_spend',
+      severity: 'safe',
+      label: 'No local JAVIS allowed spend today',
+      summary: 'This running JAVIS instance has no local allowed OpenAI request records today. Manual cloud checks still require the exact spend phrase and a fresh one-request lease.',
+    };
+  }
   return {
     id: 'local_guard_not_fully_locked',
     severity: 'attention',
@@ -3425,7 +3454,11 @@ function openAiSpendIncidentReportSnapshot(options = {}) {
         'Blocked events in this report are local guard stops; they are not confirmed billable JAVIS requests.',
       ];
   const recommendations = [
-    forensics.zeroLocked ? 'Keep zero-spend lockdown on for unattended work.' : 'Run npm run openai:lockdown before unattended work.',
+    forensics.zeroLocked
+      ? 'Keep zero-spend lockdown on for unattended work.'
+      : forensics.manualGuardedNoSpend
+        ? 'Keep manual guard mode for user-present checks; use npm run openai:lockdown only when you want full zero-spend storage.'
+        : 'Run npm run openai:lockdown before unattended work.',
     !forensics.likelyBillableFromJavis ? 'If external usage continues, rotate the OpenAI key or move JAVIS to a dedicated project-scoped key.' : '',
     'Compare OpenAI dashboard usage by project/key/time with this report; this endpoint only proves local JAVIS guard state.',
     childEnv.safety?.mcpConfiguredEnvCredentialsBlocked ? '' : 'Enable child env guard so MCP/worker child processes do not inherit OpenAI credentials.',
@@ -31255,10 +31288,15 @@ function formatRealtimeProviderProbeForLocalCommand(control = {}) {
   const result = control.result || {};
   const confirmation = control.openAiSpendConfirmation || {};
   const spendGuard = probe.spendGuard || control.spendGuard || {};
+  const spendGuardStatus = spendGuard.allowed
+    ? 'allowed'
+    : spendGuard.manualRequired || spendGuard.status === 'manual_required'
+      ? 'manual confirmation required'
+      : 'blocked';
   return [
     `Realtime provider probe: ${control.executed ? 'dispatched' : 'preview only'} · status=${probe.status || '-'} · ready=${probe.providerReady ? 'yes' : 'no'}`,
     `Renderer: ${probe.rendererAvailable ? 'ready' : 'missing'} · OpenAI key=${probe.hasOpenAiKey ? 'present' : 'missing'}`,
-    spendGuard.reasons ? `Spend guard: ${spendGuard.allowed ? 'allowed' : 'blocked'} · hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} · remaining=${spendGuard.remaining?.total ?? '-'}${spendGuard.reasons?.length ? ` · ${spendGuard.reasons.slice(0, 4).join(', ')}` : ''}` : '',
+    spendGuard.reasons ? `Spend guard: ${spendGuardStatus} · hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} · remaining=${spendGuard.remaining?.total ?? '-'}${spendGuard.reasons?.length ? ` · ${spendGuard.reasons.slice(0, 4).join(', ')}` : ''}` : '',
     confirmation.required ? `OpenAI spend: ${confirmation.confirmed ? 'confirmed for this request' : 'confirmation required'} · one-request only` : '',
     probe.summary ? `Summary: ${compactRecordText(probe.summary, 260)}` : '',
     result.output ? `Output: ${compactRecordText(result.output, 300)}` : '',
@@ -34582,9 +34620,7 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
   } else if (Number(spendGuard.remaining?.total || 0) <= 0) {
     pushBlocker('daily_limit_exhausted', 'Daily OpenAI limit is exhausted', 'The local spend guard has no remaining manual request budget for today.');
   }
-  if (spendGuard.requireSpendLease && Number(lease.activeCount || 0) <= 0) {
-    pushBlocker('missing_one_request_lease', 'No one-request spend lease', 'Even after unlocking the guard, a real provider probe still needs a fresh phrase-confirmed one-request lease.');
-  }
+  const spendLeaseMissing = Boolean(spendGuard.requireSpendLease && Number(lease.activeCount || 0) <= 0);
   if (voiceHealth.kind && voiceHealth.kind !== 'spend_locked' && voiceHealth.status !== 'ready') {
     pushBlocker(`provider_${voiceHealth.kind}`, `Provider issue: ${voiceHealth.kind}`, voiceHealth.summary || voiceHealth.next || 'Realtime provider is not ready yet.');
   }
@@ -34758,6 +34794,7 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
       allowedToday: Number(spendGuard.counts?.total || 0),
       requireSpendLease: Boolean(spendGuard.requireSpendLease),
       activeSpendLeases: Number(lease.activeCount || 0),
+      missingSpendLease: spendLeaseMissing,
       leaseTtlSeconds: Math.round(Number(spendGuard.spendLeaseTtlMs || lease.ttlMs || 0) / 1000),
       requireSpendConfirmationPhrase: Boolean(spendGuard.requireSpendConfirmationPhrase),
     },
@@ -44626,11 +44663,14 @@ function classifyRealtimeProviderIssue(details = {}) {
 }
 
 function realtimeProviderProbeSpendGuardDecision(source = 'realtime_provider_probe_status') {
+  const providerProbeSource = String(source || '');
+  const rendererStartupSource = /^renderer(_|$)|renderer_startup/.test(providerProbeSource.toLowerCase());
   return evaluateOpenAiSpendGuard({
     kind: 'realtime_provider_probe',
-    source,
+    source: providerProbeSource,
     model: models.realtime,
     isProviderProbe: true,
+    userInitiated: !rendererStartupSource,
     reserve: false,
     recordBlocked: false,
   });
@@ -44638,12 +44678,29 @@ function realtimeProviderProbeSpendGuardDecision(source = 'realtime_provider_pro
 
 function compactOpenAiSpendGuardDecision(decision = {}) {
   const state = decision.state || openAiSpendGuardSnapshot();
+  const reasons = Array.isArray(decision.reasons)
+    ? decision.reasons.map((reason) => compactRecordText(reason, 120)).filter(Boolean).slice(0, 12)
+    : [];
+  const zeroSpendMode = openAiZeroSpendModeActive();
+  const manualOnlyReasons = new Set([
+    'explicit_spend_confirmation_required',
+    'spend_lease_required',
+    'spend_lease_missing',
+    'spend_lease_expired',
+    'spend_lease_already_used',
+  ]);
+  const manualRequired = Boolean(
+    decision.allowed === false &&
+      !zeroSpendMode &&
+      reasons.length > 0 &&
+      reasons.every((reason) => manualOnlyReasons.has(reason))
+  );
   return {
     allowed: Boolean(decision.allowed),
-    reasons: Array.isArray(decision.reasons)
-      ? decision.reasons.map((reason) => compactRecordText(reason, 120)).filter(Boolean).slice(0, 12)
-      : [],
+    reasons,
     summary: compactRecordText(decision.summary || '', 260),
+    status: decision.allowed ? 'allowed' : manualRequired ? 'manual_required' : 'blocked',
+    manualRequired,
     mode: compactRecordText(state.mode || decision.mode || OPENAI_CLOUD_MODE, 40),
     hardSpendLock: Boolean(state.hardSpendLock ?? decision.hardSpendLock ?? OPENAI_HARD_SPEND_LOCK),
     dailyRequestLimit: Number(state.dailyRequestLimit ?? OPENAI_DAILY_REQUEST_LIMIT),
@@ -44655,7 +44712,7 @@ function compactOpenAiSpendGuardDecision(decision = {}) {
     requireSpendConfirmationPhrase: Boolean(state.requireSpendConfirmationPhrase ?? OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE),
     requireSpendLease: Boolean(state.requireSpendLease ?? OPENAI_REQUIRE_SPEND_LEASE),
     activeSpendLeases: Math.max(0, Number(state.spendLease?.activeCount ?? 0)),
-    zeroSpendMode: openAiZeroSpendModeActive(),
+    zeroSpendMode,
   };
 }
 
@@ -50623,6 +50680,7 @@ async function startRealtimeProviderProbe(options = {}) {
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const runId = String(options.runId || crypto.randomUUID()).slice(0, 120);
   const source = String(options.source || 'api').slice(0, 80);
+  const rendererStartupSource = /^renderer(_|$)|renderer_startup/.test(source.toLowerCase());
   const rendererAvailable = Boolean(mainWindow && !mainWindow.isDestroyed());
   const spendConfirmation = openAiSpendConfirmationSnapshot({
     kind: 'realtime_provider_probe',
@@ -50641,6 +50699,7 @@ async function startRealtimeProviderProbe(options = {}) {
     source,
     model: models.realtime,
     isProviderProbe: true,
+    userInitiated: !rendererStartupSource,
     confirmOpenAiSpend: options.confirmOpenAiSpend,
     confirmCloud: options.confirmCloud,
     confirmOpenAiSpendPhrase: options.confirmOpenAiSpendPhrase,
@@ -50665,7 +50724,8 @@ async function startRealtimeProviderProbe(options = {}) {
     openAiKeyAvailableForCalls: openAiKeyAvailable,
     requiresOpenAiSpendConfirmation: spendConfirmation.required,
     openAiSpendConfirmation: spendConfirmation,
-    spendGuard: spendPreview,
+    spendGuard: compactOpenAiSpendGuardDecision(spendPreview),
+    spendGuardDecision: spendPreview,
     providerProbe: realtimeProviderProbeSnapshot(),
     endpoint: {
       method: 'POST',
@@ -50684,7 +50744,7 @@ async function startRealtimeProviderProbe(options = {}) {
       'No OpenAI request is made in preview. If explicitly confirmed, JAVIS will create a renderer WebRTC offer without getUserMedia, then call the Realtime provider session endpoint with probe=true.',
       `Renderer: ${rendererAvailable ? 'ready' : 'missing'}.`,
       `OpenAI API key: ${openAiKeyConfigured ? (openAiKeyAvailable ? 'saved and callable' : 'saved locally, locked by zero-spend protection') : 'missing'}.`,
-      `Cloud spend guard: ${spendPreview.allowed ? 'allowed' : `blocked (${spendPreview.reasons.join(', ')})`}.`,
+      `Cloud spend guard: ${spendPreview.allowed ? 'allowed' : compactOpenAiSpendGuardDecision(spendPreview).manualRequired ? `manual confirmation required (${spendPreview.reasons.join(', ')})` : `blocked (${spendPreview.reasons.join(', ')})`}.`,
       spendConfirmation.required ? `OpenAI spend confirmation: ${spendConfirmation.confirmed ? 'confirmed for this request' : 'required before execution'}.` : '',
       OPENAI_REQUIRE_SPEND_LEASE ? `OpenAI spend lease: ${spendConfirmation.lease?.ok ? 'valid for one request' : `required (${spendConfirmation.lease?.reason || 'missing'})`}.` : '',
     ].join('\n'),
