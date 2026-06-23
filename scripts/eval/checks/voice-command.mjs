@@ -2328,7 +2328,277 @@ export default {
       out.push(fail('voice_command.wake_only_cli', 'Wake-only CLI prompt pack', error instanceof Error ? error.message : String(error)));
     }
 
-	    const sessionTranscript = '状态';
+    const lifecycleGoal = `eval natural session lifecycle ${Date.now()}`;
+    let lifecycleEndedId = '';
+    let lifecycleResumedId = '';
+    try {
+      const sessionsBeforeLifecycle = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+      const activeBeforeLifecycle = sessionsBeforeLifecycle.data?.sessions?.active || null;
+      if (activeBeforeLifecycle?.id) {
+        const protectedPreview = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: `开始工作会话：${lifecycleGoal}`,
+            execute: false,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_preview_existing',
+          },
+          timeoutMs: 20000,
+        });
+        const previewRoute = protectedPreview.data?.route || {};
+        const previewData = previewRoute.data || {};
+        const sessionsAfterProtectedPreview = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+        out.push(
+          protectedPreview.ok &&
+            protectedPreview.data?.ok === true &&
+            previewRoute.localCommand?.intent === 'start_session' &&
+            previewData.preview?.action === 'start_session' &&
+            previewData.preview?.canExecute === false &&
+            previewData.preview?.active?.id === activeBeforeLifecycle.id &&
+            previewData.safety?.readOnly === true &&
+            previewData.safety?.mutatesLocalSession === false &&
+            sessionsAfterProtectedPreview.data?.sessions?.active?.id === activeBeforeLifecycle.id
+            ? ok('voice_command.natural_session_lifecycle', 'Natural session lifecycle voice command', `existing active session preserved: ${activeBeforeLifecycle.title}`)
+            : fail('voice_command.natural_session_lifecycle', 'Natural session lifecycle voice command', 'start-session preview should not replace an existing active session', {
+                activeBeforeLifecycle,
+                protectedPreview: protectedPreview.data,
+                sessionsAfterProtectedPreview: sessionsAfterProtectedPreview.data,
+              }),
+        );
+      } else {
+        const startPreview = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: `开始工作会话：${lifecycleGoal}`,
+            execute: false,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_start_preview',
+          },
+          timeoutMs: 20000,
+        });
+        const startPreviewRoute = startPreview.data?.route || {};
+        const startPreviewData = startPreviewRoute.data || {};
+        const sessionsAfterStartPreview = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+
+        const startExecute = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: `开始工作会话：${lifecycleGoal}`,
+            execute: true,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_start_execute',
+          },
+          timeoutMs: 20000,
+        });
+        const startExecuteRoute = startExecute.data?.route || {};
+        const startedSession = startExecuteRoute.data?.session || null;
+
+        const statusCheck = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: '当前会话',
+            execute: false,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_status',
+          },
+          timeoutMs: 20000,
+        });
+        const statusRoute = statusCheck.data?.route || {};
+        const statusData = statusRoute.data || {};
+
+        const checkIn = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: '会话汇报',
+            execute: false,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_check_in',
+          },
+          timeoutMs: 20000,
+        });
+        const checkInRoute = checkIn.data?.route || {};
+        const checkInData = checkInRoute.data || {};
+
+        const endPreview = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: '结束工作会话',
+            execute: false,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_end_preview',
+          },
+          timeoutMs: 20000,
+        });
+        const endPreviewRoute = endPreview.data?.route || {};
+        const endPreviewData = endPreviewRoute.data || {};
+        const sessionsAfterEndPreview = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+
+        const endExecute = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: '结束工作会话',
+            execute: true,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_end_execute',
+          },
+          timeoutMs: 20000,
+        });
+        const endExecuteRoute = endExecute.data?.route || {};
+        const endedSession = endExecuteRoute.data?.session || null;
+        lifecycleEndedId = endedSession?.id || startedSession?.id || '';
+
+        const resumePreview = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: '继续上次会话',
+            execute: false,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_resume_preview',
+          },
+          timeoutMs: 20000,
+        });
+        const resumePreviewRoute = resumePreview.data?.route || {};
+        const resumePreviewData = resumePreviewRoute.data || {};
+        const sessionsAfterResumePreview = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+
+        const resumeExecute = await ctx.api('/api/voice/command', {
+          method: 'POST',
+          body: {
+            transcript: '继续上次会话',
+            execute: true,
+            includeScreen: true,
+            includeAccessibility: true,
+            useMemory: false,
+            speak: false,
+            source: 'eval_voice_command_session_lifecycle_resume_execute',
+          },
+          timeoutMs: 20000,
+        });
+        const resumeExecuteRoute = resumeExecute.data?.route || {};
+        const resumedSession = resumeExecuteRoute.data?.result?.session || null;
+        lifecycleResumedId = resumedSession?.id || '';
+
+        out.push(
+          startPreview.ok &&
+            startPreview.data?.ok === true &&
+            startPreview.data?.executed === false &&
+            startPreviewRoute.localCommand?.intent === 'start_session' &&
+            startPreviewRoute.output.includes('预览') &&
+            startPreviewData.preview?.action === 'start_session' &&
+            startPreviewData.preview?.canExecute === true &&
+            startPreviewData.preview?.goal === lifecycleGoal &&
+            startPreviewData.safety?.readOnly === true &&
+            startPreviewData.safety?.mutatesLocalSession === false &&
+            startPreviewRoute.contextPlan?.needs?.screen === false &&
+            startPreviewRoute.contextPlan?.needs?.accessibility === false &&
+            !sessionsAfterStartPreview.data?.sessions?.active &&
+            startExecute.ok &&
+            startExecute.data?.ok === true &&
+            startExecute.data?.executed === true &&
+            startExecuteRoute.localCommand?.intent === 'start_session' &&
+            startedSession?.goal === lifecycleGoal &&
+            startExecuteRoute.data?.safety?.mutatesLocalSession === true &&
+            startExecuteRoute.data?.safety?.startsMicrophone === false &&
+            startExecuteRoute.data?.safety?.usesRealtime === false &&
+            statusCheck.ok &&
+            statusRoute.localCommand?.intent === 'session_status' &&
+            String(statusRoute.output || '').includes(lifecycleGoal) &&
+            statusData.safety?.readOnly === true &&
+            checkIn.ok &&
+            checkInRoute.localCommand?.intent === 'session_check_in' &&
+            String(checkInRoute.output || '').includes('当前会话') &&
+            checkInData.safety?.readOnly === true &&
+            endPreview.ok &&
+            endPreview.data?.executed === false &&
+            endPreviewRoute.localCommand?.intent === 'end_session' &&
+            endPreviewData.preview?.action === 'end_session' &&
+            endPreviewData.preview?.canExecute === true &&
+            endPreviewData.safety?.mutatesLocalSession === false &&
+            sessionsAfterEndPreview.data?.sessions?.active?.id === startedSession?.id &&
+            endExecute.ok &&
+            endExecute.data?.executed === true &&
+            endExecuteRoute.localCommand?.intent === 'end_session' &&
+            endedSession?.status === 'done' &&
+            resumePreview.ok &&
+            resumePreview.data?.executed === false &&
+            resumePreviewRoute.localCommand?.intent === 'resume_session' &&
+            resumePreviewData.preview?.action === 'resume_session' &&
+            resumePreviewData.preview?.canExecute === true &&
+            resumePreviewData.preview?.previous?.id === endedSession?.id &&
+            resumePreviewData.safety?.mutatesLocalSession === false &&
+            !sessionsAfterResumePreview.data?.sessions?.active &&
+            resumeExecute.ok &&
+            resumeExecute.data?.executed === true &&
+            resumeExecuteRoute.localCommand?.intent === 'resume_session' &&
+            resumedSession?.status === 'active' &&
+            resumedSession?.goal === lifecycleGoal &&
+            resumeExecuteRoute.data?.safety?.mutatesLocalSession === true
+            ? ok('voice_command.natural_session_lifecycle', 'Natural session lifecycle voice command', `${lifecycleGoal} preview/start/status/check-in/end/resume verified`)
+            : fail('voice_command.natural_session_lifecycle', 'Natural session lifecycle voice command', 'natural session lifecycle did not preserve preview/execute boundaries or session state', {
+                startPreview: startPreview.data,
+                sessionsAfterStartPreview: sessionsAfterStartPreview.data,
+                startExecute: startExecute.data,
+                statusCheck: statusCheck.data,
+                checkIn: checkIn.data,
+                endPreview: endPreview.data,
+                sessionsAfterEndPreview: sessionsAfterEndPreview.data,
+                endExecute: endExecute.data,
+                resumePreview: resumePreview.data,
+                sessionsAfterResumePreview: sessionsAfterResumePreview.data,
+                resumeExecute: resumeExecute.data,
+              }),
+        );
+      }
+    } catch (error) {
+      out.push(fail('voice_command.natural_session_lifecycle', 'Natural session lifecycle voice command', error instanceof Error ? error.message : String(error)));
+    } finally {
+      if (lifecycleResumedId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(lifecycleResumedId)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_voice_command_session_lifecycle_cleanup',
+            note: 'Cleaning up resumed eval lifecycle session.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(lifecycleResumedId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+      if (lifecycleEndedId && lifecycleEndedId !== lifecycleResumedId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(lifecycleEndedId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+    }
+
+    const sessionTranscript = '状态';
     let cleanupSessionId = '';
     try {
       const sessionsBefore = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });

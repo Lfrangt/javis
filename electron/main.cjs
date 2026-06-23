@@ -28378,6 +28378,58 @@ function sessionLocalCommandSafety(mutatesLocalSession = false) {
   };
 }
 
+function sessionLocalCommandExecuteRequested(options = {}) {
+  return options.execute === true || String(options.execute || '').toLowerCase() === 'true';
+}
+
+function sessionLocalCommandPreview(action, options = {}) {
+  const active = activeSessionSnapshot();
+  const previous = action === 'resume_session' ? findSessionForResume(options.sessionId || options.id) : null;
+  const goal = compactRecordText(options.goal || '', 180);
+  const text = compactRecordText(options.text || '', 280);
+  const target = action === 'resume_session' ? previous : active;
+  const safety = sessionLocalCommandSafety(false);
+  const startSessionOutput = active
+    ? `预览: 当前已有 active session: ${active.title}，不会自动覆盖。`
+    : goal
+      ? `预览: 将开始工作会话: ${goal}`
+      : '预览: 缺少工作会话目标。';
+  const outputs = {
+    start_session: startSessionOutput,
+    resume_session: active
+      ? `预览: 当前已有 active session: ${active.title}，不会自动覆盖。`
+      : previous
+        ? `预览: 将继续上次工作会话: ${previous.title}`
+        : '预览: 没有可恢复的已结束工作会话。',
+    session_note: active
+      ? `预览: 将写入当前会话: ${text || '-'}`
+      : '预览: 当前没有 active session，执行会失败。',
+    end_session: active
+      ? `预览: 将结束工作会话: ${active.title}`
+      : '预览: 当前没有 active session。',
+  };
+  const canExecute = action === 'start_session'
+    ? Boolean(goal && !active)
+    : action === 'resume_session'
+      ? Boolean(previous && !active)
+      : Boolean(active);
+  return {
+    ok: true,
+    canExecute,
+    executed: false,
+    previewOnly: true,
+    action,
+    output: outputs[action] || `预览: ${action}`,
+    active,
+    previous,
+    target,
+    goal,
+    text,
+    counts: sessionCounts(),
+    safety,
+  };
+}
+
 function formatWorkNextForLocalCommand(next = {}, requestedExecute = false) {
   const action = next.action || null;
   const actionText = action
@@ -29591,6 +29643,18 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'start_session') {
+      if (!sessionLocalCommandExecuteRequested(options)) {
+        const preview = sessionLocalCommandPreview('start_session', {
+          goal: command.args.goal,
+        });
+        return {
+          ok: preview.ok,
+          executed: false,
+          localCommand: command,
+          output: preview.output,
+          data: { preview, safety: preview.safety },
+        };
+      }
       const session = startWorkSession({ goal: command.args.goal, source: 'local_command' });
       const safety = sessionLocalCommandSafety(true);
       return {
@@ -29602,6 +29666,16 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'resume_session') {
+      if (!sessionLocalCommandExecuteRequested(options)) {
+        const preview = sessionLocalCommandPreview('resume_session', command.args || {});
+        return {
+          ok: preview.ok,
+          executed: false,
+          localCommand: command,
+          output: preview.output,
+          data: { preview, safety: preview.safety },
+        };
+      }
       const result = resumeWorkSession({ source: 'local_command' });
       const safety = sessionLocalCommandSafety(true);
       return {
@@ -29613,6 +29687,18 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'session_note') {
+      if (!sessionLocalCommandExecuteRequested(options)) {
+        const preview = sessionLocalCommandPreview('session_note', {
+          text: command.args.text,
+        });
+        return {
+          ok: preview.ok,
+          executed: false,
+          localCommand: command,
+          output: preview.output,
+          data: { preview, safety: preview.safety },
+        };
+      }
       const result = addWorkSessionEvent('', { text: command.args.text, type: 'note', source: 'local_command' });
       const safety = sessionLocalCommandSafety(true);
       return {
@@ -29624,6 +29710,16 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'end_session') {
+      if (!sessionLocalCommandExecuteRequested(options)) {
+        const preview = sessionLocalCommandPreview('end_session', command.args || {});
+        return {
+          ok: preview.ok,
+          executed: false,
+          localCommand: command,
+          output: preview.output,
+          data: { preview, safety: preview.safety },
+        };
+      }
       const session = endWorkSession('', { source: 'local_command' });
       const safety = sessionLocalCommandSafety(true);
       return {
@@ -31774,7 +31870,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
