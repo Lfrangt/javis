@@ -15189,9 +15189,10 @@ function auditEventCategory(type = '') {
   if (value.startsWith('realtime.') || value.startsWith('conversation.')) return 'realtime';
   if (value.startsWith('window.') || value.startsWith('menubar.')) return 'desktop';
   if (value.startsWith('resident.') || value.startsWith('launch_agent') || value.startsWith('api.')) return 'resident';
-  if (value.startsWith('autopilot.') || value.startsWith('work_next.') || value.startsWith('routing.') || value.startsWith('task.')) return 'work';
+  if (value.startsWith('autopilot.') || value.startsWith('work_next.') || value.startsWith('work_progress.') || value.startsWith('routing.') || value.startsWith('task.')) return 'work';
   if (value.startsWith('approval.')) return 'approval';
-  if (value.startsWith('screen.') || value.startsWith('ambient.') || value.startsWith('browser.')) return 'perception';
+  if (value.startsWith('learning.')) return 'learning';
+  if (value.startsWith('screen.') || value.startsWith('ambient.') || value.startsWith('browser.') || value.startsWith('browser_context.') || value.startsWith('accessibility_tree.')) return 'perception';
   return 'other';
 }
 
@@ -16337,6 +16338,80 @@ function compactVoiceSetupForBoard(guide = {}) {
   };
 }
 
+function progressBoardEventStatus(type = '', data = {}) {
+  const raw = `${type} ${data.status || ''} ${data.error ? 'error' : ''}`.toLowerCase();
+  if (/failed|failure|error|blocked|rejected|denied/.test(raw)) return 'blocked';
+  if (/started|running|opened|triggered|requested|connecting|active/.test(raw)) return 'running';
+  if (/warning|attention|suppressed|skipped|unavailable/.test(raw)) return 'warning';
+  return 'done';
+}
+
+function progressBoardEventLabel(type = '') {
+  const value = String(type || '');
+  if (value.startsWith('inbox.')) return 'Inbox';
+  if (value.startsWith('session.')) return '工作会话';
+  if (value.startsWith('routing.')) return '任务路由';
+  if (value.startsWith('workflow') || value.startsWith('work_next.')) return '工作流';
+  if (value.startsWith('work_progress.')) return '工作进展';
+  if (value.startsWith('task.') || value.startsWith('jobs.')) return '后台任务';
+  if (value.startsWith('notification.')) return '通知';
+  if (value.startsWith('openai.')) return '费用保护';
+  if (value.startsWith('realtime.') || value.startsWith('conversation.')) return '实时语音';
+  if (value.startsWith('local_voice_') || value.startsWith('voice_command.')) return '本地语音入口';
+  if (value.startsWith('window.') || value.startsWith('summon.') || value.startsWith('menubar.')) return '桌面宠物';
+  if (value.startsWith('browser') || value.startsWith('ambient.') || value.startsWith('screen.') || value.startsWith('accessibility_tree.')) return '感知/浏览器';
+  if (value.startsWith('collaboration.')) return '多 Agent 协作';
+  if (value.startsWith('approval.')) return '审批队列';
+  if (value.startsWith('demonstration.') || value.startsWith('record_replay.')) return 'Record & Replay';
+  if (value.startsWith('learning.')) return '本地学习';
+  if (value.startsWith('keep_awake.') || value.startsWith('overnight.')) return '睡觉期间';
+  if (value.startsWith('resident.') || value.startsWith('renderer.')) return '常驻运行';
+  return '本地事件';
+}
+
+function progressBoardEventBody(event = {}) {
+  const data = event.data || {};
+  const type = String(event.type || 'unknown').slice(0, 120);
+  const timestampMs = auditEventTimestampMs(event);
+  const age = timestampMs ? autopilotWaitDurationLabel(Math.max(0, Date.now() - timestampMs)) : '刚刚';
+  const category = auditEventCategory(type);
+  const details = [
+    data.source ? `来源 ${compactRecordText(data.source, 64)}` : '',
+    data.status ? `状态 ${compactRecordText(data.status, 64)}` : '',
+    data.mode ? `模式 ${compactRecordText(data.mode, 64)}` : '',
+    data.action ? `动作 ${compactRecordText(data.action, 64)}` : '',
+    data.riskLevel !== undefined ? `风险 L${boundedCount(data.riskLevel, 10)}` : '',
+  ].filter(Boolean);
+  return `${age}前 · ${compactRecordText(type, 90)} · ${category}${details.length ? ` · ${details.join(' · ')}` : ''}`;
+}
+
+function progressBoardRecentTimeline(options = {}) {
+  const limit = Math.max(1, Math.min(12, Number(options.limit || 5)));
+  const auditLimit = Math.max(40, Math.min(300, Number(options.auditLimit || 180)));
+  const ignored = /(^process\.start$|\.loaded$|\.load_failed$|hotkey\.register|menubar\.ready|openai\.spend_sentinel_checked|api\.auth_rejected)/;
+  const selected = [];
+  const seen = new Set();
+  for (const event of readRecentAudit(auditLimit).reverse()) {
+    const type = String(event?.type || '').slice(0, 120);
+    if (!type || ignored.test(type)) continue;
+    const data = event.data || {};
+    const key = `${type}:${String(data.source || data.status || data.action || '').slice(0, 80)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    selected.push({
+      id: `audit:${selected.length}:${type}`,
+      status: progressBoardEventStatus(type, data),
+      title: progressBoardEventLabel(type),
+      body: progressBoardEventBody(event),
+      type,
+      category: auditEventCategory(type),
+      ageMs: auditEventTimestampMs(event) ? Math.max(0, Date.now() - auditEventTimestampMs(event)) : null,
+    });
+    if (selected.length >= limit) break;
+  }
+  return selected;
+}
+
 async function progressBoardSnapshot(options = {}) {
   const source = compactRecordText(options.source || 'progress_board', 80);
   const health = healthSnapshot();
@@ -16515,44 +16590,18 @@ async function progressBoardSnapshot(options = {}) {
     ),
   ];
 
-  const timeline = [
-    {
-      id: 'quiet_pet',
-      status: 'done',
-      title: '桌面层降噪',
-      body: '把复杂按钮/诊断从宠物上拿走，方向改成小胶囊、灵动岛、课堂隐藏。',
-    },
-    {
-      id: 'voice_blocker',
-      status: voiceSetup.status,
-      title: '实时语音卡点',
-      body: voiceNextStep
-        ? `${voiceNextStep.label}: ${voiceNextStep.detail}`
-        : 'Realtime 链路可继续做 live dogfood。',
-    },
-    {
-      id: 'spend_forensics',
-      status: spendPostureSafe ? 'done' : 'warning',
-      title: '费用取证',
-      body: spendLocked
-        ? '本地 JAVIS 没有允许 OpenAI 花费记录；当前进程拿不到可调用 key。'
-        : manualSpendGuarded
-          ? '当前不是无端扣费模式；任何 paid probe 都需要手动确认和一次性 lease。'
-          : '费用保护需要恢复到 zero-spend 或手动 guard。',
-    },
-    {
-      id: 'browser_controls',
-      status: browserControl.status || 'warning',
-      title: '浏览器本地控制',
-      body: browserControl.summary || '浏览器控制状态暂不可用。',
-    },
-    {
-      id: 'visual_board',
-      status: 'running',
-      title: '可视化进度',
-      body: '本页面会替代聊天里的长工程日志，显示节点、卡点和下一步。',
-    },
-  ];
+  const timeline = progressBoardRecentTimeline({
+    limit: options.timelineLimit || 5,
+    auditLimit: options.auditLimit || 180,
+  });
+  if (!timeline.length) {
+    timeline.push({
+      id: 'visual_board_empty',
+      status: 'warning',
+      title: '最近工作',
+      body: '本地审计尾部暂时没有可展示事件；后续 worker、路由、语音和 Inbox 事件会出现在这里。',
+    });
+  }
 
   const status = nodes.some((node) => node.status === 'blocked')
     ? 'blocked'
@@ -16590,6 +16639,12 @@ async function progressBoardSnapshot(options = {}) {
           }))
         : [],
     },
+    timelineSource: {
+      kind: 'local_audit_tail',
+      count: timeline.length,
+      rawLogsReturned: false,
+      returnsUserText: false,
+    },
     voiceSetup,
     nextActions: [
       voiceNextStep
@@ -16607,6 +16662,7 @@ async function progressBoardSnapshot(options = {}) {
       returnsScreenImage: false,
       returnsClipboardText: false,
       returnsBrowserPageText: false,
+      returnsRawLogs: false,
       callsOpenAi: false,
       startsMicrophone: false,
       usesRealtime: false,
@@ -67111,6 +67167,8 @@ function startApiServer() {
           jobLimit: req.query.jobLimit,
           workflowLimit: req.query.workflowLimit,
           approvalLimit: req.query.approvalLimit,
+          timelineLimit: req.query.timelineLimit,
+          auditLimit: req.query.auditLimit,
           source: 'api_progress_board',
         }),
       });

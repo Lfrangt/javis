@@ -469,11 +469,17 @@ export default {
     const progressBoard = progressBoardResponse.data?.board || {};
     const boardVoiceSetup = progressBoard.voiceSetup || {};
     const boardChecklist = Array.isArray(boardVoiceSetup.goLiveChecklist) ? boardVoiceSetup.goLiveChecklist : [];
+    const boardTimeline = Array.isArray(progressBoard.timeline) ? progressBoard.timeline : [];
     const boardHtml = fs.readFileSync('docs/javis-status-board.html', 'utf8');
     out.push(
       progressBoardResponse.ok &&
         progressBoard.version === 1 &&
         ['ready', 'running', 'warning', 'blocked'].includes(progressBoard.status) &&
+        progressBoard.timelineSource?.kind === 'local_audit_tail' &&
+        progressBoard.timelineSource?.rawLogsReturned === false &&
+        progressBoard.timelineSource?.returnsUserText === false &&
+        boardTimeline.length > 0 &&
+        boardTimeline.every((item) => typeof item.title === 'string' && typeof item.body === 'string' && !('data' in item) && !('raw' in item)) &&
         boardVoiceSetup.version === 1 &&
         ['ready', 'warning', 'blocked'].includes(boardVoiceSetup.status) &&
         boardVoiceSetup.microphone &&
@@ -495,10 +501,12 @@ export default {
         progressBoard.safety?.startsMicrophone === false &&
         progressBoard.safety?.usesRealtime === false &&
         progressBoard.safety?.executesActions === false &&
+        progressBoard.safety?.returnsRawLogs === false &&
         boardHtml.includes('id="voice-panel"') &&
         boardHtml.includes('renderVoiceSetup') &&
-        boardHtml.includes('goLiveChecklist')
-        ? ok('resident.progress_board_voice_setup', 'Progress board voice setup panel', `${boardVoiceSetup.rawStatus || boardVoiceSetup.status} · checklist=${boardChecklist.length} · safety=no mic/no spend`)
+        boardHtml.includes('goLiveChecklist') &&
+        boardHtml.includes('不返回原始日志')
+        ? ok('resident.progress_board_voice_setup', 'Progress board voice setup panel', `${boardVoiceSetup.rawStatus || boardVoiceSetup.status} · checklist=${boardChecklist.length} · timeline=${boardTimeline.length} · safety=no mic/no spend`)
         : fail('resident.progress_board_voice_setup', 'Progress board voice setup panel', 'expected public progress board and HTML to embed sanitized read-only voice setup/go-live evidence without OpenAI, mic, Realtime, or actions', {
           status: progressBoardResponse.status,
           board: progressBoard,
