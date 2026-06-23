@@ -70508,12 +70508,17 @@ function startApiServer() {
   });
 
   api.post('/api/notifications/test', (req, res) => {
-    const delivered = notifyResident(
-      'JAVIS test notification',
-      req.body?.body || 'Resident notifications are working.',
-      { type: 'test', source: 'api' },
-    );
-    res.json({ ok: delivered, notifications: notificationSnapshot() });
+    const title = 'JAVIS test notification';
+    const body = req.body?.body || 'Resident notifications are working.';
+    // dryRun/preview validates the notification path without firing a real
+    // system notification, so readiness can be checked without spamming.
+    const dryRun = req.body?.dryRun === true || req.body?.preview === true || req.body?.execute === false;
+    if (dryRun) {
+      res.json({ ok: true, dryRun: true, wouldSend: { title, body }, notifications: notificationSnapshot() });
+      return;
+    }
+    const delivered = notifyResident(title, body, { type: 'test', source: 'api' });
+    res.json({ ok: delivered, dryRun: false, notifications: notificationSnapshot() });
   });
 
   api.post('/api/window/mode', express.json({ limit: '64kb' }), (req, res) => {
