@@ -2149,8 +2149,8 @@ export default {
         spendSentinel.guard?.guardedCallsHaveApiKey === false,
     );
     const spendSentinelManualGuarded = Boolean(
-      spendSentinel.status === 'breach' &&
-        spendSentinel.clear === false &&
+      spendSentinel.status === 'clear' &&
+        spendSentinel.clear === true &&
         spendSentinel.forensics?.likelyBillableFromJavis === false &&
         spendSentinel.forensics?.zeroLocked === false &&
         spendSentinel.guard?.hardSpendLock === false &&
@@ -2164,8 +2164,8 @@ export default {
         spendSentinelCheck.forensics?.zeroLocked === true,
     );
     const spendSentinelCheckManualGuarded = Boolean(
-      spendSentinelCheck.status === 'breach' &&
-        spendSentinelCheck.clear === false &&
+      spendSentinelCheck.status === 'clear' &&
+        spendSentinelCheck.clear === true &&
         spendSentinelCheck.forensics?.likelyBillableFromJavis === false &&
         spendSentinelCheck.forensics?.zeroLocked === false &&
         spendSentinelCheck.guard?.mode === 'manual',
@@ -2196,10 +2196,10 @@ export default {
         Number(spendGuardAfterSentinel.spendLease?.activeCount || 0) === 0 &&
         sentinelCui.status === 0 &&
         sentinelCuiOutput.includes('JAVIS OpenAI Spend Sentinel') &&
-        (sentinelCuiOutput.includes('Status: clear') || sentinelCuiOutput.includes('Status: breach')) &&
+        sentinelCuiOutput.includes('Status: clear') &&
         sentinelCuiOutput.includes('Safety: local guard state only')
         ? ok('resident.openai_spend_sentinel', 'OpenAI spend sentinel', `${spendSentinelCheck.status || spendSentinel.status} · checks=${spendSentinelCheck.watcher?.checkCount ?? spendSentinel.watcher?.checkCount ?? 0} · allowed=${spendSentinel.counts?.allowedToday || 0} · leases=${spendSentinel.counts?.activeLeases || 0}`)
-        : fail('resident.openai_spend_sentinel', 'OpenAI spend sentinel', 'expected resident/CUI spend sentinel to report clear zero-lock or breach manual-guarded state without OpenAI calls, leases, mic, Realtime, or worker side effects', {
+        : fail('resident.openai_spend_sentinel', 'OpenAI spend sentinel', 'expected resident/CUI spend sentinel to report clear zero-lock or clear manual-guarded state without OpenAI calls, leases, mic, Realtime, or worker side effects', {
           status: spendSentinelResponse.status,
           sentinel: spendSentinelResponse.data,
           check: spendSentinelCheckResponse.data,
@@ -2451,6 +2451,49 @@ export default {
 	        }),
 	    );
 
+	    const zeroReleaseResponse = await ctx.api('/api/openai/zero-spend-release', {
+	      method: 'POST',
+	      body: {
+	        source: 'eval_resident_zero_spend_release',
+	        reason: 'eval cleanup after verifying emergency zero-spend lock',
+	      },
+	      timeoutMs: 10000,
+	    });
+	    const zeroRelease = zeroReleaseResponse.data || {};
+	    const spendGuardAfterZeroRelease = zeroRelease.after || {};
+	    const zeroReleaseForensics = zeroRelease.forensics || {};
+	    const zeroReleaseManualGuarded = Boolean(
+	      spendGuardManualGuarded &&
+	        zeroReleaseForensics.zeroLocked === false &&
+	        zeroReleaseForensics.manualGuardedNoSpend === true &&
+	        zeroReleaseForensics.status === 'manual_guarded_no_spend' &&
+	        spendGuardAfterZeroRelease.runtimeKeyIsolation?.availableForGuardedCalls === true,
+	    );
+	    const zeroReleaseStillZeroLocked = Boolean(
+	      spendGuardZeroLocked &&
+	        zeroReleaseForensics.zeroLocked === true &&
+	        spendGuardAfterZeroRelease.runtimeKeyIsolation?.availableForGuardedCalls === false,
+	    );
+	    out.push(
+	      zeroReleaseResponse.ok &&
+	        zeroRelease.ok === true &&
+	        zeroRelease.safety?.callsOpenAI === false &&
+	        zeroRelease.safety?.createsSpendLease === false &&
+	        zeroRelease.safety?.startsMicrophone === false &&
+	        zeroRelease.safety?.usesRealtime === false &&
+	        zeroRelease.safety?.startsRealtimeSession === false &&
+	        zeroRelease.safety?.startsWorkers === false &&
+	        spendGuardAfterZeroRelease.emergencyZeroSpendLock === false &&
+	        Number(spendGuardAfterZeroRelease.counts?.total || 0) === spendGuardTotalBefore &&
+	        Number(spendGuardAfterZeroRelease.spendLease?.activeCount || 0) === 0 &&
+	        (zeroReleaseManualGuarded || zeroReleaseStillZeroLocked)
+	        ? ok('resident.openai_zero_spend_release', 'OpenAI zero-spend emergency release', `status=${zeroReleaseForensics.status || '-'} · restored=${zeroRelease.restoredKeyToMemory ? 'yes' : 'no'} · leases=${zeroRelease.clearedSpendLeases || 0}`)
+	        : fail('resident.openai_zero_spend_release', 'OpenAI zero-spend emergency release', 'expected eval cleanup to release the temporary emergency lock without OpenAI calls, leases, mic, Realtime, workers, or spend-count changes', {
+	          status: zeroReleaseResponse.status,
+	          release: zeroReleaseResponse.data,
+	        }),
+	    );
+
 	    const envExampleSource = fs.readFileSync('.env.example', 'utf8');
 	    const configCuiSource = fs.readFileSync('scripts/config-cui.cjs', 'utf8');
 	    const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
@@ -2490,8 +2533,10 @@ export default {
 			      mainSource.includes("env: guardedChildProcessEnv({ source: 'local_speech' })") &&
 			      mainSource.includes('function openAiSpendForensicsSnapshot') &&
 			      mainSource.includes('function openAiSpendIncidentReportSnapshot') &&
+			      mainSource.includes('function releaseOpenAiEmergencyZeroSpendLock') &&
 			      mainSource.includes('naturalOpenAiSpendIncidentLocalCommand') &&
 			      mainSource.includes("api.get('/api/openai/spend-incident-report'") &&
+			      mainSource.includes("api.post('/api/openai/zero-spend-release'") &&
 			      mainSource.includes("'openai_spend_status', 'openai_spend_incident'") &&
 		      mainSource.includes('likelyBillableFromJavis') &&
 		      mainSource.includes('blockedBySource') &&
@@ -2529,11 +2574,13 @@ export default {
 			      configCuiSource.includes('SI. Show OpenAI spend incident report') &&
 			      configCuiSource.includes('MCP key env=') &&
 			      configCuiSource.includes('Latest allowed: none in local guard records') &&
+			      configCuiSource.includes('releaseOpenAiEmergencyLock') &&
       packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
       packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
       packageSource.includes('"openai:incident": "node scripts/config-cui.cjs --print-openai-spend-incident"') &&
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&
       packageSource.includes('"openai:zero": "node scripts/config-cui.cjs --lock-openai-spend"') &&
+      packageSource.includes('"openai:recover": "node scripts/config-cui.cjs --recover-openai-spend"') &&
       envExampleSource.includes('JAVIS_OPENAI_HARD_SPEND_LOCK=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE=SPEND OPENAI') &&

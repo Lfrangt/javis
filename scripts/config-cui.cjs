@@ -477,6 +477,7 @@ async function printStatus() {
   console.log('SS. Show OpenAI spend sentinel');
   console.log('SI. Show OpenAI spend incident report');
   console.log('SL. Lock OpenAI spend to zero');
+  console.log('SR. Release mistaken OpenAI emergency lock');
   console.log('2. Open .env');
   console.log('M. Open Microphone settings');
   console.log('3. Open Screen Recording settings');
@@ -4260,6 +4261,34 @@ async function showOpenAiSpendIncident() {
   return result;
 }
 
+function printOpenAiSpendRelease(result) {
+  const release = result?.release || result || {};
+  const after = release.after || {};
+  const forensics = release.forensics || {};
+  const safety = release.safety || {};
+  const runtimeKeyIsolation = after.runtimeKeyIsolation || {};
+  console.log('JAVIS OpenAI Emergency Lock Release');
+  console.log('===================================');
+  console.log(`Released: ${release.released ? 'yes' : 'already off'} · runtime manual guarded=${release.runtimeAllowsGuardedCalls ? 'yes' : 'no'} · leases cleared=${release.clearedSpendLeases ?? 0}`);
+  console.log(`Emergency lock: ${after.emergencyZeroSpendLock ? 'active' : 'off'} · mode=${after.mode || '-'} · hard lock=${after.hardSpendLock ? 'on' : 'off'} · daily=${after.counts?.total || 0}/${after.dailyRequestLimit ?? 0}`);
+  console.log(`Forensics: ${forensics.status || '-'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'} · manual guarded=${forensics.manualGuardedNoSpend ? 'yes' : 'no'} · likely billable=${forensics.likelyBillableFromJavis ? 'yes' : 'no'}`);
+  console.log(`Runtime key: env=${runtimeKeyIsolation.openAiApiKeyInProcessEnv ? 'visible' : 'isolated'} · callable=${runtimeKeyIsolation.availableForGuardedCalls ? 'yes' : 'no'} · restored=${release.restoredKeyToMemory ? 'yes' : 'no'}`);
+  if (release.output) console.log(`\n${compact(release.output, 520)}`);
+  console.log(`Safety: OpenAI call=${safety.callsOpenAI ? 'yes' : 'no'} · creates lease=${safety.createsSpendLease ? 'yes' : 'no'} · mic=${safety.startsMicrophone ? 'yes' : 'no'} · Realtime=${safety.usesRealtime ? 'yes' : 'no'} · env file preserved=${safety.preservesEnvFile ? 'yes' : 'unknown'}`);
+}
+
+async function releaseOpenAiEmergencyLock() {
+  const result = await request('/api/openai/zero-spend-release', {
+    method: 'POST',
+    body: {
+      source: 'cui_openai_zero_spend_release',
+      reason: 'CUI release after operator confirmed no unexpected JAVIS OpenAI spend',
+    },
+  });
+  printOpenAiSpendRelease(result);
+  return result;
+}
+
 async function createOpenAiSpendLease(options = {}) {
   let result;
   try {
@@ -5703,6 +5732,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--release-openai-spend-lock') || process.argv.includes('--recover-openai-spend') || process.argv.includes('--openai-recover')) {
+    await releaseOpenAiEmergencyLock();
+    return;
+  }
+
   if (!process.stdin.isTTY) {
     await printStatus();
     return;
@@ -5719,6 +5753,7 @@ async function main() {
       else if (answer === 'ss' || answer === 'spend sentinel' || answer === 'openai sentinel' || answer === 'openai spend sentinel') await showOpenAiSpendSentinel({ checkNow: true });
       else if (answer === 'si' || answer === 'spend incident' || answer === 'openai incident' || answer === 'openai spend incident') await showOpenAiSpendIncident();
       else if (answer === 'sl' || answer === 'lockdown' || answer === 'openai lockdown' || answer === 'lock openai' || answer === 'zero spend') await lockOpenAiSpendInteractive(rl);
+      else if (answer === 'sr' || answer === 'recover openai' || answer === 'release openai' || answer === 'release zero spend' || answer === 'unlock openai') await releaseOpenAiEmergencyLock();
       else if (answer === '2') await setupAction('prepare_env_file');
       else if (answer === 'm' || answer === 'mic' || answer === 'microphone') await setupAction('open_microphone_settings');
       else if (answer === '3') await setupAction('open_screen_settings');

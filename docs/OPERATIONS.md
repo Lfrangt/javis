@@ -169,6 +169,7 @@ npm run openai:sentinel
 npm run openai:incident
 npm run openai:lockdown
 npm run openai:zero
+npm run openai:recover
 curl http://127.0.0.1:3417/api/openai/spend-sentinel
 curl -X POST http://127.0.0.1:3417/api/openai/spend-sentinel/check \
   -H 'Content-Type: application/json' \
@@ -176,6 +177,9 @@ curl -X POST http://127.0.0.1:3417/api/openai/spend-sentinel/check \
 curl -X POST http://127.0.0.1:3417/api/openai/zero-spend-lockdown \
   -H 'Content-Type: application/json' \
   -d '{"source":"manual","reason":"unexpected API usage"}'
+curl -X POST http://127.0.0.1:3417/api/openai/zero-spend-release \
+  -H 'Content-Type: application/json' \
+  -d '{"source":"manual","reason":"false alarm; no unexpected JAVIS usage"}'
 npm run config -- --run-realtime-provider-probe
 npm run config -- --run-realtime-provider-probe --confirm-openai-spend --confirm-openai-spend-phrase "SPEND OPENAI"
 npm run dogfood:realtime-provider-probe
@@ -187,6 +191,8 @@ curl -X POST http://127.0.0.1:3417/api/realtime/provider/probe \
   -H 'Content-Type: application/json' \
   -d '{"execute":true,"confirmOpenAiSpend":true,"confirmOpenAiSpendPhrase":"SPEND OPENAI","openAiSpendLeaseId":"<one-request lease id>"}'
 ```
+
+Use `npm run openai:lockdown` before unattended work or sleep: it rewrites the environment to full zero-spend mode, stops any current Realtime renderer session, clears one-request leases, and vaults the OpenAI key from callable memory after restart. Use `npm run openai:recover` only after a false alarm or test residue: it releases the current-process emergency lock, clears any stale leases, and returns to `manual_guarded_no_spend` when `.env` is already in manual mode. Recovery does not call OpenAI, create a lease, start the microphone, start Realtime, open Terminal, or change the `.env` file.
 
 The default `npm run dogfood:realtime-provider-probe` is a preview and makes no OpenAI call. The `:run` script is also safe by default because it does not include the spend phrase or a spend lease. A real provider request requires all of these: `JAVIS_OPENAI_PARANOID_ZERO_SPEND=false`, `JAVIS_OPENAI_HARD_SPEND_LOCK=false`, `JAVIS_OPENAI_CLOUD_MODE=manual`, `JAVIS_OPENAI_DAILY_REQUEST_LIMIT` above 0, a resident restart, one explicit phrase-confirmed spend lease, and the matching lease id on the execution request. The probe never starts microphone capture, screen capture, raw audio storage, or the live dogfood session. A successful probe proves the key/project/model/voice/provider path is ready; it does not count as a live voice session. The live run still requires `npm run dogfood:realtime-renderer -- --execute --confirm-mic` while the user is present. Separately, `/api/openai/child-env-guard/probe` verifies that background worker child processes would not inherit OpenAI credentials and that inline key-env assignment is blocked, without starting a process. `/api/openai/egress-guard/probe` is also zero-side-effect by default: it returns the local decision that an unscoped `/v1/models` fetch would be blocked, but it does not attempt a fetch and does not add a blocked spend-guard event. A deliberate local firewall exercise requires `{"execute":true,"confirmLocalFirewallProbe":true}`; even then the expected result is a local guard stop before any OpenAI request leaves JAVIS.
 

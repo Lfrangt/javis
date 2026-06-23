@@ -3343,6 +3343,15 @@ function openAiZeroSpendModeActive() {
   );
 }
 
+function openAiRuntimeAllowsManualGuardedCalls() {
+  return Boolean(
+    !OPENAI_PARANOID_ZERO_SPEND &&
+      OPENAI_HARD_SPEND_LOCK === false &&
+      OPENAI_CLOUD_MODE !== 'off' &&
+      Number(OPENAI_DAILY_REQUEST_LIMIT || 0) > 0
+  );
+}
+
 function openAiSpendForensicsSnapshot(options = {}) {
   const guard = options.guard || openAiSpendGuardSnapshot();
   const egress = options.egress || openAiEgressGuardSnapshot();
@@ -3652,8 +3661,10 @@ function openAiSpendSentinelSnapshot(options = {}) {
   const allowed = Number(guard.counts?.total || 0);
   const unattendedAllowed = Number(guard.counts?.unattended || 0);
   const activeLeases = Number(guard.spendLease?.activeCount || 0);
+  const manualGuardedNoSpend = forensics.manualGuardedNoSpend === true;
+  const zeroSpendLocked = forensics.zeroLocked === true;
 
-  if (guard.paranoidZeroSpend?.enabled !== true) {
+  if (guard.paranoidZeroSpend?.enabled !== true && !manualGuardedNoSpend) {
     issues.push(openAiSpendSentinelIssue(
       'paranoid_zero_spend_disabled',
       'high',
@@ -3680,7 +3691,7 @@ function openAiSpendSentinelSnapshot(options = {}) {
       { count: allowed },
     ));
   }
-  if (!forensics.zeroLocked) {
+  if (!zeroSpendLocked && !manualGuardedNoSpend) {
     issues.push(openAiSpendSentinelIssue(
       'zero_spend_not_locked',
       'high',
@@ -3713,7 +3724,7 @@ function openAiSpendSentinelSnapshot(options = {}) {
       'Renderer startup provider probes are allowed and may consume OpenAI quota.',
     ));
   }
-  if (Number(guard.dailyRequestLimit || 0) > 0) {
+  if (Number(guard.dailyRequestLimit || 0) > 0 && !manualGuardedNoSpend) {
     issues.push(openAiSpendSentinelIssue(
       'positive_openai_daily_budget',
       'medium',
@@ -3783,7 +3794,9 @@ function openAiSpendSentinelSnapshot(options = {}) {
       ? 'warning'
       : 'clear';
   const summary = status === 'clear'
-    ? 'OpenAI spend sentinel is clear: zero-spend lock is active, no local allowed spend is recorded, and no active spend lease exists.'
+    ? manualGuardedNoSpend
+      ? 'OpenAI spend sentinel is clear for supervised use: no local allowed spend is recorded, unattended cloud calls are blocked, and manual calls still require the spend phrase plus one-request lease.'
+      : 'OpenAI spend sentinel is clear: zero-spend lock is active, no local allowed spend is recorded, and no active spend lease exists.'
     : `${top.label}: ${top.summary}`;
   const alertKey = issues.map((item) => `${item.id}:${item.count || 0}`).join('|');
   return {
@@ -3849,7 +3862,9 @@ function openAiSpendSentinelSnapshot(options = {}) {
       lastError: openAiSpendSentinelState.lastError || '',
     },
     next: status === 'clear'
-      ? 'Keep zero-spend lockdown on for unattended work.'
+      ? manualGuardedNoSpend
+        ? 'Manual guarded mode is safe for daytime use. Run npm run openai:lockdown before leaving JAVIS unattended.'
+        : 'Keep zero-spend lockdown on for unattended work.'
       : top?.next || 'Run npm run openai:lockdown, then inspect npm run openai:incident.',
     endpoints: {
       status: '/api/openai/spend-sentinel',
@@ -4616,6 +4631,86 @@ async function openAiZeroSpendLockdownRuntime(options = {}) {
       capturesScreen: false,
       readsClipboardText: false,
       mutatesUserFiles: false,
+    },
+  };
+}
+
+function releaseOpenAiEmergencyZeroSpendLock(options = {}) {
+  const source = compactRecordText(options.source || 'openai_zero_spend_release_api', 80);
+  const reason = compactRecordText(options.reason || 'operator confirmed no unexpected JAVIS spend; release temporary emergency lock', 180);
+  const before = openAiSpendGuardSnapshot();
+  const wasActive = openAiEmergencyZeroSpendLock === true;
+  const runtimeAllowsGuardedCalls = openAiRuntimeAllowsManualGuardedCalls();
+  const leases = clearOpenAiSpendLeases(source);
+  const previousVaultReason = openAiApiKeyVaultReason;
+
+  openAiEmergencyZeroSpendLock = false;
+  openAiEmergencyZeroSpendAt = 0;
+  openAiEmergencyZeroSpendSource = '';
+  openAiEmergencyZeroSpendReason = '';
+
+  let restoredKeyToMemory = false;
+  let keptKeyVaulted = false;
+  if (runtimeAllowsGuardedCalls && OPENAI_API_KEY_FROM_ENV && !OPENAI_API_KEY) {
+    OPENAI_API_KEY = OPENAI_API_KEY_FROM_ENV;
+    openAiApiKeyVaultedFromMemory = false;
+    openAiApiKeyVaultReason = '';
+    restoredKeyToMemory = true;
+  } else if (!runtimeAllowsGuardedCalls && OPENAI_MEMORY_KEY_VAULT) {
+    keptKeyVaulted = vaultOpenAiApiKeyFromMemory('zero_spend_release_runtime_still_locked');
+  }
+
+  const after = openAiSpendGuardSnapshot();
+  const egressGuard = openAiEgressGuardSnapshot();
+  const forensics = openAiSpendForensicsSnapshot({ guard: after, egress: egressGuard });
+  appendAudit('openai.emergency_zero_spend_lock_released', {
+    source,
+    reason,
+    wasActive,
+    runtimeAllowsGuardedCalls,
+    restoredKeyToMemory,
+    keptKeyVaulted,
+    previousVaultReason,
+    clearedSpendLeases: leases.cleared,
+    status: forensics.status,
+    zeroLocked: forensics.zeroLocked,
+    manualGuardedNoSpend: forensics.manualGuardedNoSpend,
+  });
+
+  return {
+    ok: true,
+    version: 1,
+    source,
+    reason,
+    wasActive,
+    released: wasActive,
+    runtimeAllowsGuardedCalls,
+    restoredKeyToMemory,
+    keptKeyVaulted,
+    previousVaultReason: compactRecordText(previousVaultReason || '', 120),
+    clearedSpendLeases: leases.cleared,
+    output: runtimeAllowsGuardedCalls
+      ? 'Released the temporary OpenAI emergency zero-spend lock. Manual guarded OpenAI calls can proceed only with the spend phrase plus a fresh one-request lease; unattended cloud calls remain blocked.'
+      : 'Released the temporary emergency flag, but the runtime is still configured for zero-spend lock/off/budget-0, so OpenAI calls remain blocked until env settings are changed and JAVIS is restarted.',
+    before,
+    after,
+    egressGuard,
+    forensics,
+    safety: {
+      callsOpenAI: false,
+      createsSpendLease: false,
+      clearsSpendLeases: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      startsRealtimeSession: false,
+      startsWorkers: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      readsClipboardText: false,
+      mutatesUserFiles: false,
+      exposesApiKey: false,
+      preservesEnvFile: true,
+      unattendedCloudStillBlocked: OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT === 0 && !OPENAI_ALLOW_AUTOPILOT,
     },
   };
 }
@@ -68006,6 +68101,18 @@ function startApiServer() {
       }));
     } catch (error) {
       jsonError(res, 500, 'OpenAI zero-spend lockdown failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.post('/api/openai/zero-spend-release', express.json({ limit: '64kb' }), (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      res.json(releaseOpenAiEmergencyZeroSpendLock({
+        source: body.source || 'api_zero_spend_release',
+        reason: body.reason || 'operator confirmed no unexpected JAVIS spend',
+      }));
+    } catch (error) {
+      jsonError(res, 500, 'OpenAI zero-spend release failed', error instanceof Error ? error.message : String(error));
     }
   });
 
