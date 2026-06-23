@@ -30,6 +30,7 @@ export default {
     });
     const loop = preview.data?.autonomy || {};
     const ids = stepIds(loop);
+    const previewPrimary = loop.agencyPlan?.primary || {};
     out.push(
       preview.ok &&
         loop.ok === true &&
@@ -50,6 +51,11 @@ export default {
         loop.route?.lane &&
         loop.route?.contextPlan?.mode &&
         loop.workNext &&
+        (!loop.workNext.action?.executable ||
+          (previewPrimary.source === 'work_next' &&
+            previewPrimary.id === loop.workNext.action.id &&
+            previewPrimary.executable === true &&
+            loop.agencyPlan.nextActions?.[0]?.source === 'work_next')) &&
         loop.progress &&
         loop.recovery?.snapshot?.counts &&
         loop.agencyPlan?.version === 1 &&
@@ -268,6 +274,7 @@ export default {
       voiceOutput = JSON.parse(voiceTool.data?.output || '{}');
     } catch {}
     const voiceIds = stepIds(voiceOutput || {});
+    const voicePrimary = voiceOutput?.agencyPlan?.primary || {};
     out.push(
       voiceTool.ok &&
         voiceTool.data?.ok === true &&
@@ -278,6 +285,10 @@ export default {
         voiceIds.has('work_next_preview') &&
         voiceIds.has('recovery_scan') &&
         voiceOutput?.agencyPlan?.version === 1 &&
+        (!voiceOutput?.workNext?.action?.executable ||
+          (voicePrimary.source === 'work_next' &&
+            voicePrimary.id === voiceOutput.workNext.action.id &&
+            voiceOutput.agencyPlan.nextActions?.[0]?.source === 'work_next')) &&
         Array.isArray(voiceOutput.agencyPlan.nextActions) &&
         voiceOutput.agencyPlan.nextActions.length >= 1 &&
         voiceOutput.agencyPlan.boundaries?.some((item) => /approval|policy/i.test(item)) &&

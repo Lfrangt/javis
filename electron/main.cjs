@@ -48819,6 +48819,29 @@ function autonomyAgencyAction({ id, label, source, summary = '', tool = '', exec
   };
 }
 
+function autonomyAgencyActionRank(action = {}) {
+  if (action.executable && !action.requiresUser) return 0;
+  if (action.executable) return 1;
+  if (action.source === 'worker_recovery') return 2;
+  if (action.source === 'work_next') return 3;
+  if (action.source === 'collaboration') return 4;
+  if (action.source === 'route_preview') return 5;
+  if (action.source === 'persistence') return 6;
+  if (action.source === 'context_plan') return 7;
+  return 8;
+}
+
+function orderedAutonomyAgencyActions(actions = []) {
+  return actions
+    .map((action, index) => ({ action, index }))
+    .sort((left, right) =>
+      autonomyAgencyActionRank(left.action) - autonomyAgencyActionRank(right.action) ||
+      Number(left.action.riskLevel || 0) - Number(right.action.riskLevel || 0) ||
+      left.index - right.index
+    )
+    .map((item) => item.action);
+}
+
 function buildAutonomyAgencyPlan(context = {}) {
   const task = compactRecordText(context.task || '', 420);
   const route = context.routeSummary || {};
@@ -48946,10 +48969,12 @@ function buildAutonomyAgencyPlan(context = {}) {
     evidence.push('collaboration:scoped-agent-handoff');
   }
 
-  const hasAutonomousCandidate = primary.some((action) => action.executable && !action.requiresUser)
-    || fallbacks.some((action) => action.executable && !action.requiresUser);
+  const primaryCandidates = primary;
+  const fallbackCandidates = fallbacks;
+  const allActions = orderedAutonomyAgencyActions([...primaryCandidates, ...fallbackCandidates]);
+  const hasAutonomousCandidate = allActions.some((action) => action.executable && !action.requiresUser);
   if (!hasAutonomousCandidate) {
-    fallbacks.push(autonomyAgencyAction({
+    fallbackCandidates.push(autonomyAgencyAction({
       id: 'inspect_search_retry_alternates',
       label: 'Inspect, search, and try an alternate lane',
       source: 'persistence',
@@ -48961,6 +48986,9 @@ function buildAutonomyAgencyPlan(context = {}) {
     }));
     evidence.push('persistence:ask-last');
   }
+  const sortedActions = orderedAutonomyAgencyActions([...primaryCandidates, ...fallbackCandidates]);
+  const selectedPrimary = sortedActions[0] || null;
+  const selectedFallbacks = sortedActions.slice(1, 5);
 
   const activeJobs = Number(progress?.counts?.activeJobs || 0);
   const activeRoutes = Number(progress?.counts?.activeRoutes || 0);
@@ -48972,9 +49000,9 @@ function buildAutonomyAgencyPlan(context = {}) {
       ? 'recovering'
       : activeJobs || activeRoutes
         ? 'waiting'
-        : primary.some((action) => action.executable && !action.requiresUser)
+        : sortedActions.some((action) => action.executable && !action.requiresUser)
           ? 'can_execute'
-          : primary.length || fallbacks.length
+          : sortedActions.length
             ? 'can_continue'
             : 'needs_user';
   const askUserOnlyFor = [
@@ -48991,7 +49019,7 @@ function buildAutonomyAgencyPlan(context = {}) {
     'Keep local inferred learning as soft context only; it never grants permission.',
     'Preserve approval gates for Level 4, private, irreversible, account, send, delete, purchase, install, and export actions.',
   ];
-  const ordered = [...primary, ...fallbacks].slice(0, 6);
+  const ordered = sortedActions.slice(0, 6);
   const selfRecoveryPlan = {
     version: 1,
     posture: 'ask_last',
@@ -49026,6 +49054,7 @@ function buildAutonomyAgencyPlan(context = {}) {
     hardBlockers: hardBlockers.map((blocker) => blocker.id),
     canDelegate: repoOrCodeTask,
     hasRecoverableWorker: Boolean(recoveryCandidate?.action || recoverable),
+    selectedPrimarySource: selectedPrimary?.source || '',
   };
   const spokenSummary = ordered[0]
     ? `${ordered[0].label}: ${ordered[0].summary || ordered[0].reason || '继续下一步'}`
@@ -49037,15 +49066,15 @@ function buildAutonomyAgencyPlan(context = {}) {
     version: 1,
     status,
     objective: task,
-    primary: primary[0] || null,
+    primary: selectedPrimary,
     nextActions: ordered,
-    fallbacks: fallbacks.slice(0, 4),
+    fallbacks: selectedFallbacks,
     blockers,
     evidence,
     selfRecoveryPlan,
     counts: {
-      primary: primary.length,
-      fallbacks: fallbacks.length,
+      primary: primaryCandidates.length,
+      fallbacks: fallbackCandidates.length,
       blockers: blockers.length,
       hardBlockers: hardBlockers.length,
       activeJobs,
