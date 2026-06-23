@@ -30756,18 +30756,24 @@ function formatVoiceStatusForLocalCommand(status = {}) {
 
 function formatRealtimeRecoveryGuideForLocalCommand(guide = {}) {
   const provider = guide.provider || {};
+  const microphone = guide.microphone || {};
   const spend = guide.spendGuard || {};
   const egress = guide.egressGuard || {};
   const forensics = guide.forensics || {};
   const local = guide.localFallback || {};
   const blockers = Array.isArray(guide.blockers) ? guide.blockers.slice(0, 6) : [];
   const safeNow = Array.isArray(guide.safeNow) ? guide.safeNow.slice(0, 3) : [];
+  const goLiveChecklist = Array.isArray(guide.goLiveChecklist) ? guide.goLiveChecklist.slice(0, 6) : [];
   const unlock = guide.unlockLater || {};
   const recoverySteps = Array.isArray(unlock.recoverySteps) ? unlock.recoverySteps.slice(0, 4) : [];
   const blockerLines = blockers.map((item) => `- ${item.label || item.id || '-'}: ${compactRecordText(item.detail || '', 220)}`);
   const safeLines = safeNow.map((item) => {
     const target = item.command || item.endpoint || '';
     return `- ${item.label || item.id || '-'}: ${compactRecordText(item.detail || '', 180)}${target ? ` · ${target}` : ''}`;
+  });
+  const checklistLines = goLiveChecklist.map((item) => {
+    const target = item.command || item.action || item.endpoint || '';
+    return `- ${item.status || '-'} ${item.label || item.id || '-'}: ${compactRecordText(item.detail || item.next || '', 180)}${target ? ` · ${target}` : ''}`;
   });
   const recoveryLines = recoverySteps.map((item) => `- ${item.label || item.id || '-'}: ${compactRecordText(item.detail || item.command || item.url || '', 220)}`);
   const keyLine = provider.callableOpenAiKey
@@ -30776,15 +30782,17 @@ function formatRealtimeRecoveryGuideForLocalCommand(guide = {}) {
       ? 'saved locally, locked by zero-spend protection'
       : 'missing';
   return [
-    `Realtime recovery: ${guide.label || guide.status || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
+    `Realtime recovery: ${guide.label || guide.status || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ready=${provider.ready ? 'yes' : 'no'}`,
     guide.meaning ? `意思: ${compactRecordText(guide.meaning, 420)}` : '',
     provider.summary ? `Provider: ${compactRecordText(provider.summary, 260)}` : '',
+    `Microphone: ${microphone.ready ? 'ready' : 'needs user'} · macOS=${microphone.status || '-'}${microphone.next ? ` · ${compactRecordText(microphone.next, 180)}` : ''}`,
     `OpenAI API key: ${keyLine}`,
     `Spend guard: cloud=${spend.mode || '-'} · paranoid=${spend.paranoidZeroSpend ? 'on' : 'off'} · hard=${spend.hardSpendLock ? 'on' : 'off'} · emergency=${spend.emergencyZeroSpendLock ? 'on' : 'off'} · daily=${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · remaining=${spend.remainingTotal ?? 0}`,
     `Lease: required=${spend.requireSpendLease ? 'yes' : 'no'} · active=${spend.activeSpendLeases ?? 0} · ttl=${spend.leaseTtlSeconds ?? 0}s · phrase=${spend.requireSpendConfirmationPhrase ? 'required' : 'off'}`,
     `Egress: ${egress.mode || '-'} · unscoped OpenAI fetch=${egress.blocksUnscopedOpenAiFetch ? 'blocked' : 'unknown'}`,
     `Forensics: likely billable from JAVIS today=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'}`,
     blockerLines.length ? `Blockers:\n${blockerLines.join('\n')}` : 'Blockers: none from local guard/provider state.',
+    checklistLines.length ? `Go-live checklist:\n${checklistLines.join('\n')}` : '',
     `No-cost now: ${local.available ? 'available' : 'unknown'} · ${local.endpoint || '/api/voice/command'} · command=${local.command || 'npm run voice:chat'}`,
     safeLines.length ? `Safe actions:\n${safeLines.join('\n')}` : '',
     unlock.summary ? `Unlock later: ${compactRecordText(unlock.summary, 260)}` : '',
@@ -34210,6 +34218,8 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
   const egressGuard = openAiEgressGuardSnapshot();
   const forensics = openAiSpendForensicsSnapshot({ guard: spendGuard, egress: egressGuard });
   const recovery = voiceHealth.recovery || realtimeProviderRecoverySnapshot(null, { source: options.source || 'realtime_recovery_guide' });
+  const microphoneStatus = mediaAccessStatus('microphone');
+  const microphoneReady = microphoneStatus === 'granted' || microphoneStatus === 'unknown';
   const lease = spendGuard.spendLease || {};
   const blockers = [];
   const pushBlocker = (id, label, detail) => {
@@ -34251,6 +34261,11 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
   }
   if (voiceHealth.kind && voiceHealth.kind !== 'spend_locked' && voiceHealth.status !== 'ready') {
     pushBlocker(`provider_${voiceHealth.kind}`, `Provider issue: ${voiceHealth.kind}`, voiceHealth.summary || voiceHealth.next || 'Realtime provider is not ready yet.');
+  }
+  if (microphoneStatus === 'denied' || microphoneStatus === 'restricted') {
+    pushBlocker('microphone_permission_blocked', 'Microphone permission blocked', 'macOS microphone permission is denied or restricted. Open Microphone settings and allow JAVIS/Electron before a live voice session.');
+  } else if (microphoneStatus === 'not-determined') {
+    pushBlocker('microphone_permission_not_determined', 'Microphone permission not granted yet', 'macOS has not granted microphone access yet. The live voice path must prompt while the user is present, or you can open Microphone settings first.');
   }
 
   const realtimeReady = voiceHealth.status === 'ready' && voiceHealth.ok === true;
@@ -34314,6 +34329,63 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
       usesRealtime: false,
     },
   ];
+  const providerReady = voiceHealth.status === 'ready' && voiceHealth.ok === true;
+  const providerProbeNeedsManual = !providerReady;
+  const goLiveChecklist = [
+    {
+      id: 'microphone_permission',
+      label: 'Microphone permission',
+      status: microphoneReady ? 'ready' : 'needs_user',
+      detail: microphoneReady
+        ? `macOS microphone status is ${microphoneStatus}.`
+        : 'Open Microphone settings or start the live path once while present, then approve the macOS prompt.',
+      action: microphoneReady ? '' : 'open_microphone_settings',
+      command: microphoneReady ? '' : 'npm run config -> M',
+      endpoint: '/api/setup/next',
+      startsMicrophone: false,
+      callsOpenAI: false,
+      createsSpendLease: false,
+    },
+    {
+      id: 'provider_probe_preview',
+      label: 'Preview no-mic provider probe',
+      status: 'ready',
+      detail: 'Preview prints the gated provider plan and does not call OpenAI or start the microphone.',
+      command: 'npm run dogfood:realtime-provider-probe',
+      endpoint: '/api/realtime/provider/probe',
+      startsMicrophone: false,
+      callsOpenAI: false,
+      createsSpendLease: false,
+    },
+    {
+      id: 'provider_probe_execute',
+      label: 'Run one no-mic provider probe',
+      status: providerReady ? 'ready' : providerProbeNeedsManual ? 'manual_required' : 'blocked',
+      detail: providerReady
+        ? 'A recent provider check is ready.'
+        : 'Requires exact spend phrase plus a short-lived one-request lease; this can spend one OpenAI API request but never starts the microphone.',
+      command: providerReady ? '' : 'npm run dogfood:realtime-provider-probe:run',
+      endpoint: '/api/realtime/provider/probe',
+      startsMicrophone: false,
+      callsOpenAI: !providerReady,
+      createsSpendLease: !providerReady,
+      manualOnly: true,
+    },
+    {
+      id: 'live_renderer_voice',
+      label: 'Start live Realtime voice',
+      status: providerReady && microphoneReady ? 'ready' : 'blocked',
+      detail: providerReady && microphoneReady
+        ? 'Live voice can be started only by an explicit mic-confirmed command.'
+        : 'Wait until microphone permission and provider evidence are both ready.',
+      command: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
+      endpoint: '/api/realtime/dogfood/renderer/start',
+      startsMicrophone: true,
+      callsOpenAI: true,
+      createsSpendLease: false,
+      manualOnly: true,
+    },
+  ];
   return {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -34330,11 +34402,24 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
       status: compactRecordText(voiceHealth.status || '', 80),
       kind: compactRecordText(voiceHealth.kind || '', 80),
       ok: Boolean(voiceHealth.ok),
+      ready: Boolean(voiceHealth.status === 'ready'),
       hasOpenAiKey: Boolean(voiceHealth.hasOpenAiKey || configuredKey),
       callableOpenAiKey: Boolean(callableKey),
       summary: compactRecordText(voiceHealth.summary || '', 280),
       next: compactRecordText(voiceHealth.next || '', 320),
       retryPolicy: recovery.retryPolicy || null,
+    },
+    microphone: {
+      status: microphoneStatus,
+      ready: microphoneReady,
+      label: microphoneReady ? 'Microphone ready' : 'Microphone needs user approval',
+      next: microphoneReady
+        ? ''
+        : microphoneStatus === 'not-determined'
+          ? 'Start the live voice path once while present or open Microphone settings, then approve the macOS prompt.'
+          : 'Open macOS Microphone settings and allow JAVIS/Electron.',
+      action: microphoneReady ? '' : 'open_microphone_settings',
+      command: microphoneReady ? '' : 'npm run config -> M',
     },
     spendGuard: {
       mode: spendGuard.mode,
@@ -34375,6 +34460,7 @@ function realtimeRecoveryGuideSnapshot(options = {}) {
       callsOpenAI: false,
     },
     safeNow,
+    goLiveChecklist,
     unlockLater: {
       summary: 'Only unlock later when you are present and willing to spend one API request for a no-mic provider check.',
       requirements: [
@@ -66555,6 +66641,20 @@ function startApiServer() {
     const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
     const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
     res.json({ standby: voiceStandbySnapshot({ conversation, voiceHealth, localVoice }) });
+  });
+
+  api.get('/api/voice/setup', (_req, res) => {
+    try {
+      const guide = realtimeRecoveryGuideSnapshot({ source: 'api_voice_setup' });
+      res.json({
+        setup: guide,
+        guide,
+        output: formatRealtimeRecoveryGuideForLocalCommand(guide),
+        safety: guide.safety,
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Voice setup guide failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.post('/api/voice/standby', (req, res) => {

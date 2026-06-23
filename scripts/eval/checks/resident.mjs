@@ -420,6 +420,51 @@ export default {
         }),
     );
 
+    const voiceSetupResponse = await ctx.api('/api/voice/setup');
+    const voiceSetup = voiceSetupResponse.data?.setup || voiceSetupResponse.data?.guide || {};
+    const voiceSetupChecklist = Array.isArray(voiceSetup.goLiveChecklist) ? voiceSetup.goLiveChecklist : [];
+    const voiceSetupCui = spawnSync('npm', ['run', 'voice:setup'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 15000,
+      env: {
+        ...process.env,
+        ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+      },
+    });
+    out.push(
+      voiceSetupResponse.ok &&
+        voiceSetup.version === 1 &&
+        voiceSetup.microphone &&
+        typeof voiceSetup.microphone.status === 'string' &&
+        typeof voiceSetup.microphone.ready === 'boolean' &&
+        voiceSetup.provider?.status &&
+        voiceSetup.spendGuard?.mode &&
+        voiceSetup.localFallback?.endpoint === '/api/voice/command' &&
+        voiceSetup.safety?.readOnly === true &&
+        voiceSetup.safety?.callsOpenAI === false &&
+        voiceSetup.safety?.createsSpendLease === false &&
+        voiceSetup.safety?.startsMicrophone === false &&
+        voiceSetup.safety?.usesRealtime === false &&
+        voiceSetupChecklist.some((item) => item.id === 'microphone_permission' && item.startsMicrophone === false && item.callsOpenAI === false) &&
+        voiceSetupChecklist.some((item) => item.id === 'provider_probe_preview' && item.status === 'ready' && item.startsMicrophone === false && item.callsOpenAI === false) &&
+        voiceSetupChecklist.some((item) => item.id === 'provider_probe_execute' && item.startsMicrophone === false && item.manualOnly === true) &&
+        voiceSetupChecklist.some((item) => item.id === 'live_renderer_voice' && item.startsMicrophone === true && item.manualOnly === true) &&
+        voiceSetupCui.status === 0 &&
+        voiceSetupCui.stdout.includes('Realtime recovery:') &&
+        voiceSetupCui.stdout.includes('Microphone:') &&
+        voiceSetupCui.stdout.includes('Go-live checklist:') &&
+        voiceSetupCui.stdout.includes('No-cost now:')
+        ? ok('resident.voice_setup_checklist', 'Voice setup checklist', `${voiceSetup.status || '-'} · mic=${voiceSetup.microphone.status} · checklist=${voiceSetupChecklist.length}`)
+        : fail('resident.voice_setup_checklist', 'Voice setup checklist', 'expected read-only voice setup packet with microphone, provider, spend guard, local fallback, and go-live checklist', {
+          status: voiceSetupResponse.status,
+          setup: voiceSetupResponse.data,
+          cui: voiceSetupCui.stdout,
+          cuiError: voiceSetupCui.stderr,
+          cuiStatus: voiceSetupCui.status,
+        }),
+    );
+
     const sessionPromptGoal = `eval voice standby session prompt ${Date.now()}`;
     let cleanupSessionPromptId = '';
     try {

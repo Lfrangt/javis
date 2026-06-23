@@ -334,6 +334,22 @@ export default {
     const naturalSpendStatusRoute = naturalSpendStatusData.route || {};
     const spendStatus = naturalSpendStatusRoute.data?.spendStatus || {};
     const spendForensics = spendStatus.forensics || naturalSpendStatusRoute.data?.forensics || {};
+    const spendStatusGuard = spendStatus.spendGuard || {};
+    const spendStatusZeroLocked = Boolean(
+      spendForensics.zeroLocked === true ||
+        (spendStatusGuard.mode === 'off' &&
+          spendStatusGuard.hardSpendLock === true &&
+          Number(spendStatusGuard.dailyRequestLimit || 0) === 0),
+    );
+    const spendStatusManualGuarded = Boolean(
+      spendForensics.zeroLocked === false &&
+        spendStatusGuard.mode === 'manual' &&
+        spendStatusGuard.hardSpendLock === false &&
+        Number(spendStatusGuard.dailyRequestLimit || 0) > 0 &&
+        Number(spendStatusGuard.unattendedDailyRequestLimit || 0) === 0 &&
+        spendStatusGuard.allowAutopilotCloud === false &&
+        spendStatusGuard.allowRendererStartupProbe === false,
+    );
     const spendGuardAfterVoice = await ctx.api('/api/openai/spend-guard');
     const spendGuardAfter = spendGuardAfterVoice.data?.spendGuard || {};
     out.push(
@@ -345,13 +361,10 @@ export default {
         naturalSpendStatusRoute.localCommand?.intent === 'openai_spend_status' &&
         spendStatus.safety?.callsOpenAI === false &&
         spendStatus.safety?.createsSpendLease === false &&
-        spendStatus.spendGuard?.mode === 'off' &&
-        spendStatus.spendGuard?.hardSpendLock === true &&
-        spendStatus.spendGuard?.dailyRequestLimit === 0 &&
+        (spendStatusZeroLocked || spendStatusManualGuarded) &&
         spendStatus.egressGuard?.mode === 'scoped_allow_only' &&
         spendForensics.version === 1 &&
         spendForensics.likelyBillableFromJavis === false &&
-        spendForensics.zeroLocked === true &&
         spendForensics.safety?.callsOpenAI === false &&
         spendForensics.safety?.createsSpendLease === false &&
         typeof naturalSpendStatusRoute.output === 'string' &&
@@ -411,9 +424,17 @@ export default {
         realtimeRecoveryGuide.localFallback?.usesRealtime === false &&
         realtimeRecoveryGuide.localFallback?.callsOpenAI === false &&
         Array.isArray(realtimeRecoveryGuide.blockers) &&
-        realtimeRecoveryGuide.blockers.some((item) => item.id === 'paranoid_zero_spend' || item.id === 'hard_spend_lock' || item.id === 'daily_limit_zero') &&
+        realtimeRecoveryGuide.blockers.some((item) => [
+          'paranoid_zero_spend',
+          'hard_spend_lock',
+          'daily_limit_zero',
+          'missing_one_request_lease',
+          'provider_provider_unverified',
+          'microphone_permission_not_determined',
+        ].includes(item.id)) &&
         typeof realtimeRecoveryRoute.output === 'string' &&
         realtimeRecoveryRoute.output.includes('Realtime recovery:') &&
+        realtimeRecoveryRoute.output.includes('Go-live checklist:') &&
         realtimeRecoveryRoute.output.includes('No-cost now:') &&
         realtimeRecoveryRoute.output.includes('不调用 OpenAI') &&
         realtimeRecoveryRoute.contextPlan?.needs?.residentState === true &&
@@ -454,6 +475,12 @@ export default {
     const spendIncidentRoute = naturalSpendIncidentData.route || {};
     const spendIncident = spendIncidentRoute.data?.spendIncident || {};
     const spendIncidentForensics = spendIncident.forensics || {};
+    const spendIncidentZeroLocked = Boolean(spendIncidentForensics.zeroLocked === true);
+    const spendIncidentManualGuarded = Boolean(
+      spendIncidentForensics.zeroLocked === false &&
+        spendIncidentForensics.likelyBillableFromJavis === false &&
+        ['local_guard_not_fully_locked', 'no_local_javis_allowed_spend'].includes(spendIncident.conclusion?.id || ''),
+    );
     const spendGuardAfterIncidentResponse = await ctx.api('/api/openai/spend-guard');
     const spendGuardAfterIncident = spendGuardAfterIncidentResponse.data?.spendGuard || {};
     out.push(
@@ -463,9 +490,9 @@ export default {
         spendIncidentRoute.decision?.localCommand === 'openai_spend_incident' &&
         spendIncidentRoute.localCommand?.intent === 'openai_spend_incident' &&
         spendIncident.version === 1 &&
-        spendIncident.conclusion?.id === 'no_local_javis_allowed_spend' &&
+        ['no_local_javis_allowed_spend', 'local_guard_not_fully_locked'].includes(spendIncident.conclusion?.id || '') &&
         spendIncidentForensics.likelyBillableFromJavis === false &&
-        spendIncidentForensics.zeroLocked === true &&
+        (spendIncidentZeroLocked || spendIncidentManualGuarded) &&
         spendIncident.externalBoundary?.dashboardRequiredForBillingTruth === true &&
         spendIncident.safety?.callsOpenAI === false &&
         spendIncident.safety?.createsSpendLease === false &&

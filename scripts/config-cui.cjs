@@ -513,6 +513,7 @@ async function printStatus() {
   console.log('P. Copy next Realtime dogfood prompt');
   console.log('T. Track Realtime dogfood session');
   console.log('H. Show spoken work handoff');
+  console.log('VU. Show voice setup checklist');
   console.log('VH. Show local voice command history');
   console.log('VL. Show local voice latency');
   console.log('IR. Show incident report');
@@ -1481,6 +1482,12 @@ async function showVoiceDoctor() {
     },
   };
   printVoiceDoctor(result);
+  return result;
+}
+
+async function showVoiceSetup() {
+  const result = await request('/api/voice/setup');
+  console.log(result.output || 'Voice setup guide unavailable.');
   return result;
 }
 
@@ -5447,6 +5454,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-voice-setup') || process.argv.includes('--voice-setup') || process.argv.includes('--voice-go-live')) {
+    await showVoiceSetup();
+    return;
+  }
+
   if (process.argv.includes('--print-voice-standby') || process.argv.includes('--voice-standby') || process.argv.includes('--standby')) {
     await showVoiceStandby();
     return;
@@ -5723,6 +5735,8 @@ async function main() {
         await manageRealtimeDogfoodSession(rl);
       } else if (answer === 'h' || answer === 'handoff' || answer === 'work handoff') {
         await showWorkHandoff();
+      } else if (answer === 'vu' || answer === 'voice setup' || answer === 'voice go live' || answer === 'go live') {
+        await showVoiceSetup();
       } else if (answer === 'vh' || answer === 'voice history' || answer === 'local voice history') {
         await showVoiceHistory();
       } else if (answer === 'vl' || answer === 'voice latency' || answer === 'latency' || answer === 'speed') {
