@@ -2863,6 +2863,145 @@ function openAiSpendForensicsSnapshot(options = {}) {
   };
 }
 
+function openAiSpendAuditEventRelevant(event = {}) {
+  const type = String(event.type || '');
+  const data = event.data || {};
+  const source = String(data.source || '');
+  const kind = String(data.kind || '');
+  return type.startsWith('openai.') ||
+    type.includes('spend_guard') ||
+    source.toLowerCase().includes('openai') ||
+    kind.toLowerCase().includes('openai') ||
+    kind.toLowerCase().includes('realtime') ||
+    type === 'realtime.provider_probe.completed' ||
+    type === 'realtime.provider_probe.failed' ||
+    type === 'realtime.renderer_control_event';
+}
+
+function compactOpenAiSpendAuditEvent(event = {}) {
+  const data = event.data || {};
+  const timestampMs = auditEventTimestampMs(event);
+  const reasons = Array.isArray(data.reasons)
+    ? data.reasons.map((reason) => compactRecordText(reason, 120)).filter(Boolean).slice(0, 8)
+    : [];
+  const allowed = data.allowed === true ? true : data.allowed === false ? false : null;
+  const source = compactRecordText(data.source || data.requestSource || data.auditSource || '', 100);
+  const kind = compactRecordText(data.kind || data.type || '', 100);
+  const detail = [
+    allowed === true ? 'allowed' : allowed === false ? 'blocked' : '',
+    kind ? `kind=${kind}` : '',
+    source ? `source=${source}` : '',
+    data.status ? `status=${compactRecordText(data.status, 80)}` : '',
+    reasons.length ? `reasons=${reasons.slice(0, 3).join(',')}` : '',
+  ].filter(Boolean).join(' · ');
+  return {
+    type: compactRecordText(event.type || 'unknown', 120),
+    ts: event.ts || data.at || '',
+    ageMs: timestampMs ? Math.max(0, Date.now() - timestampMs) : null,
+    allowed,
+    kind,
+    source,
+    reasons,
+    summary: compactRecordText(detail || JSON.stringify(data || {}), 260),
+  };
+}
+
+function openAiSpendIncidentConclusion(forensics = {}) {
+  if (forensics.likelyBillableFromJavis) {
+    return {
+      id: 'local_javis_allowed_spend_recorded',
+      severity: 'review',
+      label: 'JAVIS has a local allowed OpenAI record',
+      summary: `JAVIS recorded ${forensics.counts?.allowed || 0} allowed OpenAI request(s) today. Reconcile the latest allowed event with the OpenAI dashboard before leaving it unattended.`,
+    };
+  }
+  if (forensics.zeroLocked) {
+    return {
+      id: 'no_local_javis_allowed_spend',
+      severity: 'safe',
+      label: 'No local JAVIS allowed spend today',
+      summary: 'This running JAVIS instance has no local allowed OpenAI request records today; recent OpenAI-related events were blocked locally before a request could leave JAVIS.',
+    };
+  }
+  return {
+    id: 'local_guard_not_fully_locked',
+    severity: 'attention',
+    label: 'Spend guard needs review',
+    summary: 'JAVIS has no local allowed spend record today, but the zero-spend guard is not fully locked; run openai:lockdown before unattended use.',
+  };
+}
+
+function openAiSpendIncidentReportSnapshot(options = {}) {
+  const guard = openAiSpendGuardSnapshot();
+  const egress = openAiEgressGuardSnapshot();
+  const forensics = openAiSpendForensicsSnapshot({ guard, egress });
+  const childEnv = openAiChildEnvGuardSnapshot();
+  const auditLimit = Math.max(20, Math.min(300, Number(options.auditLimit || 160)));
+  const eventLimit = Math.max(1, Math.min(20, Number(options.limit || 8)));
+  const audit = readRecentAudit(auditLimit);
+  const auditEvents = audit
+    .filter(openAiSpendAuditEventRelevant)
+    .map(compactOpenAiSpendAuditEvent)
+    .sort((a, b) => (b.ts || '').localeCompare(a.ts || ''))
+    .slice(0, eventLimit);
+  const conclusion = openAiSpendIncidentConclusion(forensics);
+  const hypotheses = forensics.likelyBillableFromJavis
+    ? [
+        'A JAVIS cloud request was locally allowed; inspect latestAllowed and the matching OpenAI dashboard usage window.',
+      ]
+    : [
+        'If the OpenAI dashboard still moved, the usage is likely from another app, CLI, browser test page, old process, or another machine using the same API key.',
+        'OpenAI dashboard usage can also lag or aggregate requests from before the current local guard day.',
+        'Blocked events in this report are local guard stops; they are not confirmed billable JAVIS requests.',
+      ];
+  const recommendations = [
+    forensics.zeroLocked ? 'Keep zero-spend lockdown on for unattended work.' : 'Run npm run openai:lockdown before unattended work.',
+    !forensics.likelyBillableFromJavis ? 'If external usage continues, rotate the OpenAI key or move JAVIS to a dedicated project-scoped key.' : '',
+    'Compare OpenAI dashboard usage by project/key/time with this report; this endpoint only proves local JAVIS guard state.',
+    childEnv.safety?.mcpConfiguredEnvCredentialsBlocked ? '' : 'Enable child env guard so MCP/worker child processes do not inherit OpenAI credentials.',
+  ].filter(Boolean);
+  return {
+    ok: true,
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    query: compactRecordText(options.query || options.q || '', 240),
+    conclusion,
+    summary: conclusion.summary,
+    spendGuard: guard,
+    egressGuard: egress,
+    forensics,
+    childEnvGuard: childEnv,
+    hypotheses,
+    recommendations,
+    audit: {
+      file: AUDIT_FILE,
+      scanned: audit.length,
+      returned: auditEvents.length,
+      events: auditEvents,
+    },
+    externalBoundary: {
+      dashboardRequiredForBillingTruth: true,
+      localRecordsOnly: true,
+      canProveJavisAllowedSpend: forensics.likelyBillableFromJavis,
+      cannotProveOtherAppsOrKeys: true,
+    },
+    safety: {
+      readOnly: true,
+      localGuardStateOnly: true,
+      usesLocalAuditOnly: true,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      startsWorkers: false,
+      capturesScreen: false,
+      readsClipboardText: false,
+      opensTerminal: false,
+      executesActions: false,
+    },
+  };
+}
+
 function evaluateOpenAiSpendGuard(options = {}) {
   const kind = compactRecordText(options.kind || 'openai', 80);
   const source = compactRecordText(options.source || 'unspecified', 80);
@@ -14280,6 +14419,7 @@ async function overnightStatusSnapshot(options = {}) {
       keepAwakeStatus: 'npm run keepawake',
       keepAwakeStart: 'npm run keepawake:start',
       openAiSpend: 'npm run openai:spend',
+      openAiIncident: 'npm run openai:incident',
       openAiLockdown: 'npm run openai:lockdown',
       autopilot: 'npm run autonomy',
       workNext: 'npm run work:next',
@@ -14290,6 +14430,7 @@ async function overnightStatusSnapshot(options = {}) {
       prepare: '/api/overnight/prepare',
       keepAwake: '/api/keep-awake/status',
       openAiSpendGuard: '/api/openai/spend-guard',
+      openAiSpendIncident: '/api/openai/spend-incident-report',
       blockers: '/api/blockers',
       workProgress: '/api/work/progress',
     },
@@ -26388,6 +26529,31 @@ function naturalOpenAiSpendStatusLocalCommand(text) {
   };
 }
 
+function naturalOpenAiSpendIncidentLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsSpend = /\b(openai|api|api key|quota|billing|bill|spend|spent|usage|cost|charge|charged|credit|credits|budget|egress|cloud spend|cloud call)\b/i.test(raw)
+    || /(OpenAI|openai|API|api|额度|账单|计费|收费|扣费|花钱|费用|花费|消耗|余额|预算|云模型|云端|调用模型|消费|密钥|令牌|充值)/i.test(compactTextNoSpace);
+  if (!mentionsSpend) return null;
+
+  const incidentSignal = /\b(why|who|what caused|where did|how did|unexpected|unprompted|without testing|didn'?t test|did not test|wasn'?t using|leak|forensic|incident|root cause|dashboard)\b/i.test(raw)
+    || /(为什么|怎么就|谁|谁用|谁扣|谁花|谁调用|谁消耗|没测|没有测|没用|没跑|没打开|无端|莫名|偷偷|偷跑|异常|事故|复盘|根因|来源|哪里来的|哪来的|怎么来的|外部账单|dashboard|控制台)/i.test(compactPlain);
+  if (!incidentSignal) return null;
+
+  return {
+    intent: 'openai_spend_incident',
+    label: 'OpenAI spend incident report',
+    args: {
+      query: raw,
+      limit: 8,
+      auditLimit: 180,
+    },
+  };
+}
+
 function naturalVoiceLatencyLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -27059,6 +27225,9 @@ function localCommandDecision(task) {
 
   const browserActCommand = naturalBrowserActLocalCommand(text);
   if (browserActCommand) return browserActCommand;
+
+  const openAiSpendIncidentCommand = naturalOpenAiSpendIncidentLocalCommand(text);
+  if (openAiSpendIncidentCommand) return openAiSpendIncidentCommand;
 
   const openAiSpendStatusCommand = naturalOpenAiSpendStatusLocalCommand(text);
   if (openAiSpendStatusCommand) return openAiSpendStatusCommand;
@@ -28294,6 +28463,38 @@ function formatOpenAiSpendStatusForLocalCommand(status = {}) {
   ].filter(Boolean).join('\n');
 }
 
+function formatOpenAiSpendIncidentForLocalCommand(report = {}) {
+  const guard = report.spendGuard || {};
+  const forensics = report.forensics || {};
+  const conclusion = report.conclusion || {};
+  const counts = guard.counts || {};
+  const childEnv = report.childEnvGuard || {};
+  const auditEvents = Array.isArray(report.audit?.events) ? report.audit.events : [];
+  const hypotheses = Array.isArray(report.hypotheses) ? report.hypotheses.slice(0, 3) : [];
+  const recommendations = Array.isArray(report.recommendations) ? report.recommendations.slice(0, 4) : [];
+  const eventLines = auditEvents.slice(0, 5).map((event) => {
+    const age = event.ageMs === null || event.ageMs === undefined
+      ? '-'
+      : event.ageMs < 60000
+        ? `${Math.round(event.ageMs / 1000)}s ago`
+        : `${Math.round(event.ageMs / 60000)}m ago`;
+    return `- ${age} · ${event.type}: ${compactRecordText(event.summary || '', 220)}`;
+  });
+  return [
+    `OpenAI spend incident: ${conclusion.label || forensics.status || 'local guard report'} · severity=${conclusion.severity || '-'}`,
+    report.summary ? `Conclusion: ${compactRecordText(report.summary, 420)}` : '',
+    `Local JAVIS allowed today: ${counts.total ?? 0}/${guard.dailyRequestLimit ?? 0} · likely billable from JAVIS=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'}`,
+    `Guards: cloud=${guard.mode || '-'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · egress=${report.egressGuard?.mode || guard.egressGuardMode || '-'} · child env=${childEnv.defaultChildProcessEnv || '-'} · MCP key env=${childEnv.safety?.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'unknown'}`,
+    forensics.latestAllowed ? `Latest allowed: ${forensics.latestAllowed.at || '-'} · ${forensics.latestAllowed.kind || '-'} · ${forensics.latestAllowed.source || '-'}` : 'Latest allowed: none in local guard records.',
+    `Blocked locally: ${counts.blocked ?? 0} · blocked events are local stops, not confirmed billable JAVIS requests.`,
+    hypotheses.length ? `Possible if dashboard still moved:\n${hypotheses.map((item) => `- ${compactRecordText(item, 220)}`).join('\n')}` : '',
+    recommendations.length ? `Next:\n${recommendations.map((item) => `- ${compactRecordText(item, 220)}`).join('\n')}` : '',
+    eventLines.length ? `Local OpenAI audit:\n${eventLines.join('\n')}` : 'Local OpenAI audit: no relevant event in the scanned local tail.',
+    `Audit: scanned ${report.audit?.scanned ?? 0}, returned ${report.audit?.returned ?? 0}`,
+    '边界: 这是本地 JAVIS 证据，不查询 OpenAI dashboard；不创建 spend lease，不调用 OpenAI，不启动麦克风或 Realtime，不启动 worker，不截屏，不开 Terminal。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatRealtimeProviderProbeForLocalCommand(control = {}) {
   const probe = control.providerProbe || {};
   const result = control.result || {};
@@ -29201,6 +29402,20 @@ async function runLocalCommand(command, options = {}) {
           spendGuard: spendStatus.spendGuard,
           egressGuard: spendStatus.egressGuard,
           forensics: spendStatus.forensics,
+        },
+      };
+    }
+
+    if (command.intent === 'openai_spend_incident') {
+      const spendIncident = openAiSpendIncidentReportSnapshot(command.args || {});
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatOpenAiSpendIncidentForLocalCommand(spendIncident),
+        data: {
+          spendIncident,
+          incident: spendIncident,
+          forensics: spendIncident.forensics,
         },
       };
     }
@@ -32241,7 +32456,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -63182,6 +63397,16 @@ function startApiServer() {
       spendGuard,
       egressGuard,
       forensics: openAiSpendForensicsSnapshot({ guard: spendGuard, egress: egressGuard }),
+    });
+  });
+
+  api.get('/api/openai/spend-incident-report', (req, res) => {
+    res.json({
+      incident: openAiSpendIncidentReportSnapshot({
+        query: req.query.query || req.query.q || '',
+        limit: req.query.limit,
+        auditLimit: req.query.auditLimit,
+      }),
     });
   });
 

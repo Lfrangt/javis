@@ -60,6 +60,7 @@
     "browser:ready": "node scripts/config-cui.cjs --print-browser-readiness",
     "browser:prepare": "node scripts/config-cui.cjs --prepare-browser",
     "openai:spend": "node scripts/config-cui.cjs --print-openai-spend-guard",
+    "openai:incident": "node scripts/config-cui.cjs --print-openai-spend-incident",
     "openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend",
     "autonomy": "node scripts/config-cui.cjs --print-autonomy",
     "autonomy:run": "node scripts/config-cui.cjs --run-autonomy",

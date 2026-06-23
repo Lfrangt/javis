@@ -225,7 +225,7 @@ export default {
     const naturalSpendStatus = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
-        transcript: '我昨天都没测怎么就消耗了我的 API 额度？现在会不会继续花钱？',
+        transcript: '查一下 OpenAI spend guard 状态，现在会不会继续花钱？',
         execute: false,
         includeScreen: false,
         useMemory: false,
@@ -274,6 +274,60 @@ export default {
           before: spendGuardBeforeVoice.data,
           command: naturalSpendStatus.data,
           after: spendGuardAfterVoice.data,
+        }),
+    );
+
+    const naturalSpendIncident = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '我昨天都没测怎么就消耗了我的 API 额度？是谁在花钱？',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_openai_spend_incident',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalSpendIncidentData = naturalSpendIncident.data || {};
+    const spendIncidentRoute = naturalSpendIncidentData.route || {};
+    const spendIncident = spendIncidentRoute.data?.spendIncident || {};
+    const spendIncidentForensics = spendIncident.forensics || {};
+    const spendGuardAfterIncidentResponse = await ctx.api('/api/openai/spend-guard');
+    const spendGuardAfterIncident = spendGuardAfterIncidentResponse.data?.spendGuard || {};
+    out.push(
+      naturalSpendIncident.ok &&
+        naturalSpendIncidentData.ok === true &&
+        naturalSpendIncidentData.executed === false &&
+        spendIncidentRoute.decision?.localCommand === 'openai_spend_incident' &&
+        spendIncidentRoute.localCommand?.intent === 'openai_spend_incident' &&
+        spendIncident.version === 1 &&
+        spendIncident.conclusion?.id === 'no_local_javis_allowed_spend' &&
+        spendIncidentForensics.likelyBillableFromJavis === false &&
+        spendIncidentForensics.zeroLocked === true &&
+        spendIncident.externalBoundary?.dashboardRequiredForBillingTruth === true &&
+        spendIncident.safety?.callsOpenAI === false &&
+        spendIncident.safety?.createsSpendLease === false &&
+        spendIncident.safety?.startsMicrophone === false &&
+        spendIncident.safety?.usesRealtime === false &&
+        spendIncident.safety?.startsWorkers === false &&
+        spendIncident.safety?.capturesScreen === false &&
+        spendIncident.safety?.opensTerminal === false &&
+        typeof spendIncidentRoute.output === 'string' &&
+        spendIncidentRoute.output.includes('OpenAI spend incident:') &&
+        spendIncidentRoute.output.includes('Latest allowed: none in local guard records') &&
+        spendIncidentRoute.output.includes('Possible if dashboard still moved:') &&
+        naturalSpendIncidentData.safety?.startsMicrophone === false &&
+        naturalSpendIncidentData.safety?.usesRealtime === false &&
+        naturalSpendIncidentData.safety?.callsOpenAIImmediately === false &&
+        spendGuardAfterIncidentResponse.ok &&
+        Number(spendGuardAfterIncident.counts?.total || 0) === Number(spendGuardBefore.counts?.total || 0) &&
+        Number(spendGuardAfterIncident.counts?.blocked || 0) === Number(spendGuardBefore.counts?.blocked || 0)
+        ? ok('voice_command.openai_spend_incident', 'Natural OpenAI spend incident voice command', 'unexpected API quota questions route to a local incident report without cloud, lease, mic, Realtime, worker, screen, or Terminal side effects')
+        : fail('voice_command.openai_spend_incident', 'Natural OpenAI spend incident voice command', 'unexpected API spend question did not use the local incident report safely', {
+          before: spendGuardBeforeVoice.data,
+          command: naturalSpendIncident.data,
+          after: spendGuardAfterIncidentResponse.data,
         }),
     );
 

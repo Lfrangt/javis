@@ -182,7 +182,9 @@ export default {
         overnight.commands?.status === 'npm run overnight' &&
         overnight.commands?.prepare === 'npm run overnight:start' &&
         overnight.commands?.openAiSpend === 'npm run openai:spend' &&
+        overnight.commands?.openAiIncident === 'npm run openai:incident' &&
         overnight.commands?.openAiLockdown === 'npm run openai:lockdown' &&
+        overnight.endpoints?.openAiSpendIncident === '/api/openai/spend-incident-report' &&
 	        typeof overnight.resident?.loaded === 'boolean' &&
 	        typeof overnight.keepAwake?.active === 'boolean' &&
 	        overnight.openAiSpendGuard?.hardSpendLock === true &&
@@ -1673,6 +1675,28 @@ export default {
 	          body: spendGuardResponse.data,
 	        }),
 	    );
+	    const spendIncidentResponse = await ctx.api('/api/openai/spend-incident-report');
+	    const spendIncident = spendIncidentResponse.data?.incident || {};
+	    out.push(
+	      spendIncidentResponse.ok &&
+	        spendIncident.version === 1 &&
+	        spendIncident.conclusion?.id === 'no_local_javis_allowed_spend' &&
+	        spendIncident.forensics?.likelyBillableFromJavis === false &&
+	        spendIncident.forensics?.zeroLocked === true &&
+	        spendIncident.externalBoundary?.dashboardRequiredForBillingTruth === true &&
+	        spendIncident.safety?.callsOpenAI === false &&
+	        spendIncident.safety?.createsSpendLease === false &&
+	        spendIncident.safety?.startsMicrophone === false &&
+	        spendIncident.safety?.usesRealtime === false &&
+	        spendIncident.safety?.startsWorkers === false &&
+	        spendIncident.safety?.capturesScreen === false &&
+	        spendIncident.safety?.opensTerminal === false
+	        ? ok('resident.openai_spend_incident_runtime', 'OpenAI spend incident runtime', `${spendIncident.conclusion?.label || 'incident'} · localAllowed=${spendIncident.spendGuard?.counts?.total || 0}/${spendIncident.spendGuard?.dailyRequestLimit ?? 0} · zeroLocked=${spendIncident.forensics?.zeroLocked ? 'yes' : 'no'}`)
+	        : fail('resident.openai_spend_incident_runtime', 'OpenAI spend incident runtime', 'expected local-only spend incident report with no OpenAI call, spend lease, mic, Realtime, worker, screen, or Terminal side effects', {
+	          status: spendIncidentResponse.status,
+	          body: spendIncidentResponse.data,
+	        }),
+	    );
 	    const egressProbeResponse = await ctx.api('/api/openai/egress-guard/probe', {
 	      method: 'POST',
 	      body: { source: 'eval_unscoped_openai_egress_probe' },
@@ -1862,6 +1886,10 @@ export default {
 			      mainSource.includes("source: 'wake_engine'") &&
 			      mainSource.includes("env: guardedChildProcessEnv({ source: 'local_speech' })") &&
 			      mainSource.includes('function openAiSpendForensicsSnapshot') &&
+			      mainSource.includes('function openAiSpendIncidentReportSnapshot') &&
+			      mainSource.includes('naturalOpenAiSpendIncidentLocalCommand') &&
+			      mainSource.includes("api.get('/api/openai/spend-incident-report'") &&
+			      mainSource.includes("'openai_spend_status', 'openai_spend_incident'") &&
 		      mainSource.includes('likelyBillableFromJavis') &&
 		      mainSource.includes('blockedBySource') &&
 		      mainSource.includes('Allowed sources: none in local guard records.') &&
@@ -1891,10 +1919,13 @@ export default {
 			      configCuiSource.includes('stopScreen: true') &&
 			      configCuiSource.includes('Realtime voice stop:') &&
 			      configCuiSource.includes('Forensics: likely billable from JAVIS=') &&
+			      configCuiSource.includes('printOpenAiSpendIncident') &&
+			      configCuiSource.includes('SI. Show OpenAI spend incident report') &&
 			      configCuiSource.includes('MCP key env=') &&
 			      configCuiSource.includes('Latest allowed: none in local guard records') &&
       packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
       packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
+      packageSource.includes('"openai:incident": "node scripts/config-cui.cjs --print-openai-spend-incident"') &&
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&
       envExampleSource.includes('JAVIS_OPENAI_HARD_SPEND_LOCK=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE=true') &&

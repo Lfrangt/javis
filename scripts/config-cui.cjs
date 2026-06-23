@@ -448,6 +448,7 @@ async function printStatus() {
   console.log('1. Set / replace OpenAI API key');
   console.log('1B. Show OpenAI API billing/quota recovery');
   console.log('SG. Show OpenAI spend guard');
+  console.log('SI. Show OpenAI spend incident report');
   console.log('SL. Lock OpenAI spend to zero');
   console.log('2. Open .env');
   console.log('M. Open Microphone settings');
@@ -3849,9 +3850,55 @@ function printOpenAiSpendGuard(result) {
   }
 }
 
+function printOpenAiSpendIncident(result) {
+  const incident = result?.incident || result || {};
+  const guard = incident.spendGuard || {};
+  const forensics = incident.forensics || {};
+  const conclusion = incident.conclusion || {};
+  const counts = guard.counts || {};
+  const childEnvGuard = incident.childEnvGuard || {};
+  const childEnvSafety = childEnvGuard.safety || {};
+  const hypotheses = Array.isArray(incident.hypotheses) ? incident.hypotheses : [];
+  const recommendations = Array.isArray(incident.recommendations) ? incident.recommendations : [];
+  const events = Array.isArray(incident.audit?.events) ? incident.audit.events : [];
+  console.log('JAVIS OpenAI Spend Incident');
+  console.log('===========================');
+  console.log(`Conclusion: ${conclusion.label || forensics.status || '-'} · severity=${conclusion.severity || '-'}`);
+  if (incident.summary) console.log(`Summary: ${compact(incident.summary, 260)}`);
+  console.log(`Local allowed today: ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · likely billable from JAVIS=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'}`);
+  console.log(`Guards: cloud=${guard.mode || '-'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · egress=${incident.egressGuard?.mode || guard.egressGuardMode || '-'} · child env=${childEnvGuard.defaultChildProcessEnv || '-'} · MCP key env=${childEnvSafety.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'unknown'}`);
+  if (forensics.latestAllowed) console.log(`Latest allowed: ${forensics.latestAllowed.at || '-'} · ${forensics.latestAllowed.kind || '-'} · ${forensics.latestAllowed.source || '-'}`);
+  else console.log('Latest allowed: none in local guard records');
+  console.log(`Blocked locally: ${counts.blocked || 0} · local guard stops, not confirmed billable JAVIS requests`);
+  if (hypotheses.length) {
+    console.log('\nPossible if OpenAI dashboard still moved:');
+    for (const item of hypotheses.slice(0, 4)) console.log(`- ${compact(item, 220)}`);
+  }
+  if (recommendations.length) {
+    console.log('\nNext:');
+    for (const item of recommendations.slice(0, 5)) console.log(`- ${compact(item, 220)}`);
+  }
+  if (events.length) {
+    console.log('\nLocal OpenAI audit:');
+    for (const event of events.slice(0, 6)) {
+      console.log(`- ${event.ts || '-'} · ${event.type || '-'} · ${compact(event.summary || '', 220)}`);
+    }
+  } else {
+    console.log('\nLocal OpenAI audit: no relevant event in the scanned local tail.');
+  }
+  console.log(`Audit: scanned ${incident.audit?.scanned ?? 0}, returned ${incident.audit?.returned ?? 0}`);
+  console.log('Boundary: local JAVIS evidence only; this does not call OpenAI or query the billing dashboard.');
+}
+
 async function showOpenAiSpendGuard() {
   const result = await request('/api/openai/spend-guard');
   printOpenAiSpendGuard(result);
+  return result;
+}
+
+async function showOpenAiSpendIncident() {
+  const result = await request('/api/openai/spend-incident-report');
+  printOpenAiSpendIncident(result);
   return result;
 }
 
@@ -5147,6 +5194,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-openai-spend-incident') || process.argv.includes('--openai-spend-incident')) {
+    await showOpenAiSpendIncident();
+    return;
+  }
+
   if (process.argv.includes('--lock-openai-spend') || process.argv.includes('--openai-lockdown')) {
     await lockOpenAiSpendDown({ restart: !process.argv.includes('--no-restart') });
     return;
@@ -5165,6 +5217,7 @@ async function main() {
       if (answer === '1') await setOpenAiKey(rl);
       else if (answer === '1b' || answer === 'billing' || answer === 'quota' || answer === 'realtime recovery') await showRealtimeProviderRecoveryFromCui(rl);
       else if (answer === 'sg' || answer === 'spend' || answer === 'spend guard' || answer === 'openai spend') await showOpenAiSpendGuard();
+      else if (answer === 'si' || answer === 'spend incident' || answer === 'openai incident' || answer === 'openai spend incident') await showOpenAiSpendIncident();
       else if (answer === 'sl' || answer === 'lockdown' || answer === 'openai lockdown' || answer === 'lock openai' || answer === 'zero spend') await lockOpenAiSpendInteractive(rl);
       else if (answer === '2') await setupAction('prepare_env_file');
       else if (answer === 'm' || answer === 'mic' || answer === 'microphone') await setupAction('open_microphone_settings');
