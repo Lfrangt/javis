@@ -27714,6 +27714,38 @@ function naturalDelegateCommand(text) {
   };
 }
 
+function naturalRealtimeRecoveryGuideLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const mentionsRealtime = /\b(realtime|real[- ]?time|webrtc|live voice|voice|speech|mic|microphone|audio)\b/i.test(raw)
+    || /(实时语音|实时对话|实时|Realtime|realtime|WebRTC|webrtc|语音|说话|对话|麦克风|麦|收音|音频|OpenAI|API|额度|账单|充值|付费)/i.test(compactPlain);
+  if (!mentionsRealtime) return null;
+
+  const explainOrRecover = /\b(not connect(?:ed|ing)?|won'?t connect|can'?t connect|cannot connect|connection failed|blocked|lock(?:ed)?|unlock|recover|recovery|safe(?:ly)? unlock)\b/i.test(raw)
+    || /\b(why|what does.*mean|what.*meaning|meaning|fix|setup|enable|turn on|how to)\b.*\b(realtime|real[- ]?time|webrtc|live voice|voice provider|mic(?:rophone)?|connection|connect|blocked|locked|unlock|recover)\b/i.test(raw)
+    || /(?:连不上|没连上|连接不上|接不上|接不通|没通|不能连|不能说话|说不了话|打不开|开不了|卡住|阻塞|被挡住|锁住|解锁|怎么解锁|怎么打开|怎么开启|怎么恢复|怎么修|怎么接|接进去|安全解锁|先别花钱|不要花钱)/i.test(compactPlain)
+    || /(?:为什么|什么意思|啥意思|怎么回事).*(?:实时语音|实时对话|Realtime|realtime|WebRTC|webrtc|real-time|语音连接|语音连|连不上|接不上|不能连|不能说话|说不了话|开不了|卡住|阻塞|锁住|解锁|恢复)/i.test(compactPlain);
+  if (!explainOrRecover) return null;
+
+  const explicitProbeOnly = /\b(probe|provider probe|run probe|retry|recheck|check again|test again|verify|reverify)\b/i.test(raw)
+    || /(?:providerprobe|探测|跑一下|重试|再试|重新试|重新检查|重新检测|检测一下|检查一下|验证|重新验证)/i.test(compactPlain);
+  const explanationSignal = /\b(meaning|what does.*mean|unlock|recover|safe|how to|blocked|lock|not connect|connection failed)\b/i.test(raw)
+    || /(?:什么意思|啥意思|解锁|恢复|安全|怎么|连不上|接不上|阻塞|锁|不能连|说不了话)/i.test(compactPlain);
+  if (explicitProbeOnly && !explanationSignal) return null;
+
+  return {
+    intent: 'realtime_recovery_guide',
+    label: 'Realtime recovery guide',
+    args: {
+      query: raw,
+      source: 'local_voice_realtime_recovery_guide',
+    },
+  };
+}
+
 function naturalRealtimeProviderProbeLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -28648,6 +28680,9 @@ function localCommandDecision(task) {
   const delegateCommand = naturalDelegateCommand(text);
   if (delegateCommand) return delegateCommand;
 
+  const realtimeRecoveryGuideCommand = naturalRealtimeRecoveryGuideLocalCommand(text);
+  if (realtimeRecoveryGuideCommand) return realtimeRecoveryGuideCommand;
+
   const realtimeProviderProbeCommand = naturalRealtimeProviderProbeLocalCommand(text);
   if (realtimeProviderProbeCommand) return realtimeProviderProbeCommand;
 
@@ -29244,7 +29279,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'resident_health', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
+  if (statusSignal || ['status', 'resident_health', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_recovery_guide', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -29266,7 +29301,7 @@ function buildContextPlan(message, options = {}) {
     if (['capability_status'].includes(localCommand)) {
       needs.perceptionStatus = true;
       needs.residentState = true;
-    } else if (['resident_health', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe'].includes(localCommand)) {
+    } else if (['resident_health', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_recovery_guide', 'realtime_provider_probe'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -29880,6 +29915,42 @@ function formatVoiceStatusForLocalCommand(status = {}) {
     standby.next || provider.next || local.next ? `Next: ${compactRecordText(standby.next || provider.next || local.next, 320)}` : '',
     recoveryLine ? `Recovery:\n${recoveryLine}` : '',
     '边界: 这里只读语音/Realtime 状态；不启动麦克风，不创建 Realtime session，不开 Terminal，不读取屏幕。',
+  ].filter(Boolean).join('\n');
+}
+
+function formatRealtimeRecoveryGuideForLocalCommand(guide = {}) {
+  const provider = guide.provider || {};
+  const spend = guide.spendGuard || {};
+  const egress = guide.egressGuard || {};
+  const forensics = guide.forensics || {};
+  const local = guide.localFallback || {};
+  const blockers = Array.isArray(guide.blockers) ? guide.blockers.slice(0, 6) : [];
+  const safeNow = Array.isArray(guide.safeNow) ? guide.safeNow.slice(0, 3) : [];
+  const unlock = guide.unlockLater || {};
+  const recoverySteps = Array.isArray(unlock.recoverySteps) ? unlock.recoverySteps.slice(0, 4) : [];
+  const blockerLines = blockers.map((item) => `- ${item.label || item.id || '-'}: ${compactRecordText(item.detail || '', 220)}`);
+  const safeLines = safeNow.map((item) => {
+    const target = item.command || item.endpoint || '';
+    return `- ${item.label || item.id || '-'}: ${compactRecordText(item.detail || '', 180)}${target ? ` · ${target}` : ''}`;
+  });
+  const recoveryLines = recoverySteps.map((item) => `- ${item.label || item.id || '-'}: ${compactRecordText(item.detail || item.command || item.url || '', 220)}`);
+  return [
+    `Realtime recovery: ${guide.label || guide.status || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
+    guide.meaning ? `意思: ${compactRecordText(guide.meaning, 420)}` : '',
+    provider.summary ? `Provider: ${compactRecordText(provider.summary, 260)}` : '',
+    `OpenAI key: configured=${provider.hasOpenAiKey ? 'yes' : 'no'} · callable=${provider.callableOpenAiKey ? 'yes' : 'no'}`,
+    `Spend guard: cloud=${spend.mode || '-'} · paranoid=${spend.paranoidZeroSpend ? 'on' : 'off'} · hard=${spend.hardSpendLock ? 'on' : 'off'} · emergency=${spend.emergencyZeroSpendLock ? 'on' : 'off'} · daily=${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · remaining=${spend.remainingTotal ?? 0}`,
+    `Lease: required=${spend.requireSpendLease ? 'yes' : 'no'} · active=${spend.activeSpendLeases ?? 0} · ttl=${spend.leaseTtlSeconds ?? 0}s · phrase=${spend.requireSpendConfirmationPhrase ? 'required' : 'off'}`,
+    `Egress: ${egress.mode || '-'} · unscoped OpenAI fetch=${egress.blocksUnscopedOpenAiFetch ? 'blocked' : 'unknown'}`,
+    `Forensics: likely billable from JAVIS today=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'}`,
+    blockerLines.length ? `Blockers:\n${blockerLines.join('\n')}` : 'Blockers: none from local guard/provider state.',
+    `No-cost now: ${local.available ? 'available' : 'unknown'} · ${local.endpoint || '/api/voice/command'} · command=${local.command || 'npm run voice:chat'}`,
+    safeLines.length ? `Safe actions:\n${safeLines.join('\n')}` : '',
+    unlock.summary ? `Unlock later: ${compactRecordText(unlock.summary, 260)}` : '',
+    unlock.previewCommand || unlock.spendStatusCommand ? `Before spend: ${[unlock.previewCommand, unlock.spendStatusCommand, unlock.sentinelCommand].filter(Boolean).join(' · ')}` : '',
+    unlock.runCommandAfterUnlock ? `After unlock: ${unlock.runCommandAfterUnlock}` : '',
+    recoveryLines.length ? `Recovery steps:\n${recoveryLines.join('\n')}` : '',
+    '边界: 这里只读 Realtime/OpenAI guard 状态；不调用 OpenAI，不创建 spend lease，不启动麦克风，不创建 Realtime session，不开浏览器，不开 Terminal，不截屏。',
   ].filter(Boolean).join('\n');
 }
 
@@ -30915,6 +30986,23 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatVoiceStatusForLocalCommand(voiceStatus),
         data: { voiceStatus },
+      };
+    }
+
+    if (command.intent === 'realtime_recovery_guide') {
+      const realtimeRecoveryGuide = realtimeRecoveryGuideSnapshot({
+        source: command.args?.source || 'local_command_realtime_recovery_guide',
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatRealtimeRecoveryGuideForLocalCommand(realtimeRecoveryGuide),
+        data: {
+          realtimeRecoveryGuide,
+          spendGuard: realtimeRecoveryGuide.spendGuard,
+          provider: realtimeRecoveryGuide.provider,
+          forensics: realtimeRecoveryGuide.forensics,
+        },
       };
     }
 
@@ -32280,6 +32368,9 @@ function voiceCommandAck(route = {}, options = {}) {
   if (route.localCommand?.intent === 'prompt_suggestions' && output) {
     return output;
   }
+  if (route.localCommand?.intent === 'realtime_recovery_guide' && output) {
+    return output;
+  }
   if (route.localCommand?.intent === 'voice_latency' && output) {
     return output;
   }
@@ -33161,6 +33252,223 @@ function voiceStandbySnapshot(options = {}) {
   };
 }
 
+function realtimeRecoveryGuideSnapshot(options = {}) {
+  const conversation = options.conversation || conversationStateSnapshot();
+  const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const localVoice = options.localVoice || localVoiceStatusSnapshot({ conversation, voiceHealth });
+  const wake = options.wake || wakeHandoffSnapshot({ conversation, voiceHealth, localVoice });
+  const standby = options.standby || voiceStandbySnapshot({ conversation, voiceHealth, localVoice, wake });
+  const spendGuard = openAiSpendGuardSnapshot();
+  const egressGuard = openAiEgressGuardSnapshot();
+  const forensics = openAiSpendForensicsSnapshot({ guard: spendGuard, egress: egressGuard });
+  const recovery = voiceHealth.recovery || realtimeProviderRecoverySnapshot(null, { source: options.source || 'realtime_recovery_guide' });
+  const lease = spendGuard.spendLease || {};
+  const blockers = [];
+  const pushBlocker = (id, label, detail) => {
+    const safeId = compactRecordText(id, 80);
+    if (!safeId || blockers.some((item) => item.id === safeId)) return;
+    blockers.push({
+      id: safeId,
+      label: compactRecordText(label, 140),
+      detail: compactRecordText(detail, 320),
+    });
+  };
+
+  const configuredKey = openAiApiKeyConfigured();
+  const callableKey = openAiApiKeyAvailableForCalls();
+  if (!configuredKey) {
+    pushBlocker('missing_openai_key', 'Missing OpenAI API key', 'OPENAI_API_KEY is not configured in the local environment.');
+  } else if (!callableKey) {
+    pushBlocker('openai_key_not_callable', 'API key is present but not callable', 'The key can exist in .env while zero-spend/runtime key isolation prevents current-process OpenAI calls.');
+  }
+  if (spendGuard.paranoidZeroSpend?.enabled) {
+    pushBlocker('paranoid_zero_spend', 'Paranoid zero-spend is on', `${spendGuard.paranoidZeroSpend.env}=true forces cloud off, zero daily budget, hard lock, one-request lease, and key isolation.`);
+  }
+  if (spendGuard.emergencyZeroSpendLock) {
+    pushBlocker('emergency_zero_spend_lock', 'Emergency zero-spend lock is active', spendGuard.emergencyLock?.reason || 'The runtime emergency lock blocks current-process OpenAI calls immediately.');
+  }
+  if (spendGuard.hardSpendLock) {
+    pushBlocker('hard_spend_lock', 'Hard spend lock is on', 'JAVIS will not allow an OpenAI request until the hard lock is intentionally disabled and the resident is restarted.');
+  }
+  if (spendGuard.mode === 'off') {
+    pushBlocker('cloud_mode_off', 'OpenAI cloud mode is off', 'JAVIS is configured to avoid cloud model/provider calls.');
+  }
+  if (Number(spendGuard.dailyRequestLimit || 0) <= 0) {
+    pushBlocker('daily_limit_zero', 'Daily OpenAI limit is 0', 'Realtime provider checks need a positive manual daily limit before any paid request can pass the guard.');
+  } else if (Number(spendGuard.remaining?.total || 0) <= 0) {
+    pushBlocker('daily_limit_exhausted', 'Daily OpenAI limit is exhausted', 'The local spend guard has no remaining manual request budget for today.');
+  }
+  if (spendGuard.requireSpendLease && Number(lease.activeCount || 0) <= 0) {
+    pushBlocker('missing_one_request_lease', 'No one-request spend lease', 'Even after unlocking the guard, a real provider probe still needs a fresh phrase-confirmed one-request lease.');
+  }
+  if (voiceHealth.kind && voiceHealth.kind !== 'spend_locked' && voiceHealth.status !== 'ready') {
+    pushBlocker(`provider_${voiceHealth.kind}`, `Provider issue: ${voiceHealth.kind}`, voiceHealth.summary || voiceHealth.next || 'Realtime provider is not ready yet.');
+  }
+
+  const realtimeReady = voiceHealth.status === 'ready' && voiceHealth.ok === true;
+  const zeroLocked = Boolean(forensics.zeroLocked || blockers.some((item) => [
+    'paranoid_zero_spend',
+    'emergency_zero_spend_lock',
+    'hard_spend_lock',
+    'cloud_mode_off',
+    'daily_limit_zero',
+    'daily_limit_exhausted',
+  ].includes(item.id)));
+  const status = realtimeReady
+    ? 'realtime_ready'
+    : zeroLocked
+      ? 'zero_spend_locked'
+      : blockers.length
+        ? 'realtime_blocked'
+        : 'needs_provider_probe';
+  const label = realtimeReady
+    ? 'Realtime ready'
+    : zeroLocked
+      ? 'Realtime intentionally locked'
+      : blockers.length
+        ? 'Realtime blocked'
+        : 'Realtime unverified';
+  const meaning = realtimeReady
+    ? 'Realtime provider evidence currently looks ready; starting a live microphone session still requires explicit user action.'
+    : zeroLocked
+      ? 'It means JAVIS is deliberately refusing to spend OpenAI API quota. This is expected after the anti-surprise-spend guard was enabled.'
+      : 'It means the live WebRTC voice path does not have fresh provider evidence yet. Use the no-cost local input now, then run a gated provider check later.';
+  const recoverySteps = Array.isArray(recovery.steps) ? recovery.steps.slice(0, 5) : [];
+  const safeNow = [
+    {
+      id: 'local_pet_input',
+      label: 'Use local pet input',
+      detail: 'Click/tap the pet or call /api/voice/standby to open the compact local typed intake.',
+      command: '',
+      endpoint: '/api/voice/standby',
+      spendsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+    },
+    {
+      id: 'local_terminal_loop',
+      label: 'Use local terminal loop',
+      detail: 'Run the no-mic command loop only if you intentionally want a terminal CUI.',
+      command: 'npm run voice:chat',
+      endpoint: '/api/voice/command',
+      spendsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+    },
+    {
+      id: 'provider_probe_preview',
+      label: 'Preview provider probe',
+      detail: 'Previewing the provider probe prints the gated plan and does not call OpenAI.',
+      command: 'npm run dogfood:realtime-provider-probe',
+      endpoint: '/api/realtime/provider/probe',
+      spendsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+    },
+  ];
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    status,
+    label,
+    meaning: compactRecordText(meaning, 420),
+    summary: compactRecordText(
+      realtimeReady
+        ? 'Realtime is ready, but live microphone startup remains explicit.'
+        : `${blockers.length ? blockers[0].detail : 'Realtime is not yet verified.'} Local no-cost intake remains available.`,
+      420,
+    ),
+    provider: {
+      status: compactRecordText(voiceHealth.status || '', 80),
+      kind: compactRecordText(voiceHealth.kind || '', 80),
+      ok: Boolean(voiceHealth.ok),
+      hasOpenAiKey: Boolean(voiceHealth.hasOpenAiKey || configuredKey),
+      callableOpenAiKey: Boolean(callableKey),
+      summary: compactRecordText(voiceHealth.summary || '', 280),
+      next: compactRecordText(voiceHealth.next || '', 320),
+      retryPolicy: recovery.retryPolicy || null,
+    },
+    spendGuard: {
+      mode: spendGuard.mode,
+      hardSpendLock: Boolean(spendGuard.hardSpendLock),
+      paranoidZeroSpend: Boolean(spendGuard.paranoidZeroSpend?.enabled),
+      emergencyZeroSpendLock: Boolean(spendGuard.emergencyZeroSpendLock),
+      dailyRequestLimit: Number(spendGuard.dailyRequestLimit || 0),
+      remainingTotal: Number(spendGuard.remaining?.total || 0),
+      blockedCount: Number(spendGuard.counts?.blocked || 0),
+      allowedToday: Number(spendGuard.counts?.total || 0),
+      requireSpendLease: Boolean(spendGuard.requireSpendLease),
+      activeSpendLeases: Number(lease.activeCount || 0),
+      leaseTtlSeconds: Math.round(Number(spendGuard.spendLeaseTtlMs || lease.ttlMs || 0) / 1000),
+      requireSpendConfirmationPhrase: Boolean(spendGuard.requireSpendConfirmationPhrase),
+    },
+    egressGuard: {
+      mode: egressGuard.mode || spendGuard.egressGuardMode || '',
+      blocksUnscopedOpenAiFetch: Boolean(egressGuard.safety?.blocksUnscopedOpenAiFetch),
+    },
+    forensics: {
+      status: forensics.status || '',
+      likelyBillableFromJavis: Boolean(forensics.likelyBillableFromJavis),
+      zeroLocked: Boolean(forensics.zeroLocked),
+      summary: compactRecordText(forensics.summary || '', 320),
+    },
+    blockers,
+    localFallback: {
+      available: Boolean(standby.local?.available),
+      label: standby.local?.label || standby.label || '',
+      summary: compactRecordText(standby.local?.summary || standby.summary || '', 260),
+      endpoint: standby.local?.input?.endpoint || '/api/voice/command',
+      openLoopEndpoint: standby.local?.input?.openLoopEndpoint || '/api/voice/open-local-loop',
+      command: 'npm run voice:chat',
+      oneShotCommand: 'npm run voice -- "..."',
+      opensTerminal: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+    },
+    safeNow,
+    unlockLater: {
+      summary: 'Only unlock later when you are present and willing to spend one API request for a no-mic provider check.',
+      requirements: [
+        'Set JAVIS_OPENAI_PARANOID_ZERO_SPEND=false.',
+        'Set JAVIS_OPENAI_HARD_SPEND_LOCK=false.',
+        'Set JAVIS_OPENAI_CLOUD_MODE=manual and JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0.',
+        'Restart JAVIS so the new guard settings are intentional.',
+        'Create a phrase-confirmed one-request spend lease.',
+        'Run the no-mic provider probe with the matching lease id before any live microphone session.',
+      ],
+      previewCommand: 'npm run dogfood:realtime-provider-probe',
+      spendStatusCommand: 'npm run openai:spend',
+      sentinelCommand: 'npm run openai:sentinel',
+      runCommandAfterUnlock: 'npm run dogfood:realtime-provider-probe:run',
+      liveMicCommandAfterProviderReady: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic',
+      recoverySteps: recoverySteps.map((step) => ({
+        id: compactRecordText(step.id || '', 80),
+        label: compactRecordText(step.label || step.id || '', 140),
+        detail: compactRecordText(step.detail || '', 280),
+        command: compactRecordText(step.command || '', 220),
+        url: compactRecordText(step.url || '', 260),
+      })),
+    },
+    safety: {
+      readOnly: true,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      storesRawAudio: false,
+      opensBrowser: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      readsClipboardText: false,
+      startsWorkers: false,
+      mutatesUserFiles: false,
+      mutatesProjectFiles: false,
+    },
+    source: compactRecordText(options.source || 'realtime_recovery_guide', 80),
+  };
+}
+
 function voiceStandbyWorkNextAction(options = {}) {
   const standby = options.standby || voiceStandbySnapshot();
   const primaryAction = standby.primaryAction || {};
@@ -33350,6 +33658,7 @@ const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
   'realtime_dogfood_prompt_copy',
   'realtime_dogfood_script_copy',
   'realtime_dogfood_status',
+  'realtime_recovery_guide',
   'realtime_provider_probe',
   'recent_activity',
   'session_check_in',
@@ -34105,7 +34414,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'observe_now', 'realtime_recovery_guide', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false, source: routingContext.source });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -65622,6 +65931,19 @@ function startApiServer() {
       });
     } catch (error) {
       jsonError(res, 500, 'Realtime provider recovery failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/realtime/recovery-guide', (_req, res) => {
+    try {
+      const realtimeRecoveryGuide = realtimeRecoveryGuideSnapshot({ source: 'api_realtime_recovery_guide' });
+      res.json({
+        guide: realtimeRecoveryGuide,
+        realtimeRecoveryGuide,
+        output: formatRealtimeRecoveryGuideForLocalCommand(realtimeRecoveryGuide),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Realtime recovery guide failed', error instanceof Error ? error.message : String(error));
     }
   });
 

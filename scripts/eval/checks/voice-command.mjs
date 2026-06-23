@@ -321,6 +321,71 @@ export default {
         }),
     );
 
+    const naturalRealtimeRecoveryGuide = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '实时语音为什么一直连不上，real-time 连不上是什么意思？先别花钱。',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_realtime_recovery_guide',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalRealtimeRecoveryData = naturalRealtimeRecoveryGuide.data || {};
+    const realtimeRecoveryRoute = naturalRealtimeRecoveryData.route || {};
+    const realtimeRecoveryGuide = realtimeRecoveryRoute.data?.realtimeRecoveryGuide || {};
+    const directRealtimeRecovery = await ctx.api('/api/realtime/recovery-guide', { timeoutMs: 30000 });
+    const directRealtimeRecoveryGuide = directRealtimeRecovery.data?.guide || directRealtimeRecovery.data?.realtimeRecoveryGuide || {};
+    const spendGuardAfterRealtimeRecoveryResponse = await ctx.api('/api/openai/spend-guard');
+    const spendGuardAfterRealtimeRecovery = spendGuardAfterRealtimeRecoveryResponse.data?.spendGuard || {};
+    out.push(
+      naturalRealtimeRecoveryGuide.ok &&
+        naturalRealtimeRecoveryData.ok === true &&
+        naturalRealtimeRecoveryData.executed === false &&
+        realtimeRecoveryRoute.decision?.localCommand === 'realtime_recovery_guide' &&
+        realtimeRecoveryRoute.localCommand?.intent === 'realtime_recovery_guide' &&
+        realtimeRecoveryGuide.version === 1 &&
+        realtimeRecoveryGuide.safety?.readOnly === true &&
+        realtimeRecoveryGuide.safety?.callsOpenAI === false &&
+        realtimeRecoveryGuide.safety?.createsSpendLease === false &&
+        realtimeRecoveryGuide.safety?.startsMicrophone === false &&
+        realtimeRecoveryGuide.safety?.usesRealtime === false &&
+        realtimeRecoveryGuide.safety?.opensBrowser === false &&
+        realtimeRecoveryGuide.safety?.opensTerminal === false &&
+        realtimeRecoveryGuide.safety?.capturesScreen === false &&
+        realtimeRecoveryGuide.localFallback?.startsMicrophone === false &&
+        realtimeRecoveryGuide.localFallback?.usesRealtime === false &&
+        realtimeRecoveryGuide.localFallback?.callsOpenAI === false &&
+        Array.isArray(realtimeRecoveryGuide.blockers) &&
+        realtimeRecoveryGuide.blockers.some((item) => item.id === 'paranoid_zero_spend' || item.id === 'hard_spend_lock' || item.id === 'daily_limit_zero') &&
+        typeof realtimeRecoveryRoute.output === 'string' &&
+        realtimeRecoveryRoute.output.includes('Realtime recovery:') &&
+        realtimeRecoveryRoute.output.includes('No-cost now:') &&
+        realtimeRecoveryRoute.output.includes('不调用 OpenAI') &&
+        realtimeRecoveryRoute.contextPlan?.needs?.residentState === true &&
+        realtimeRecoveryRoute.contextPlan?.needs?.screen === false &&
+        realtimeRecoveryRoute.contextPlan?.needs?.accessibility === false &&
+        naturalRealtimeRecoveryData.safety?.startsMicrophone === false &&
+        naturalRealtimeRecoveryData.safety?.usesRealtime === false &&
+        naturalRealtimeRecoveryData.safety?.callsOpenAIImmediately === false &&
+        directRealtimeRecovery.ok &&
+        directRealtimeRecoveryGuide.version === 1 &&
+        typeof directRealtimeRecovery.data?.output === 'string' &&
+        directRealtimeRecovery.data.output.includes('Realtime recovery:') &&
+        spendGuardAfterRealtimeRecoveryResponse.ok &&
+        Number(spendGuardAfterRealtimeRecovery.counts?.total || 0) === Number(spendGuardBefore.counts?.total || 0) &&
+        Number(spendGuardAfterRealtimeRecovery.counts?.blocked || 0) === Number(spendGuardBefore.counts?.blocked || 0)
+        ? ok('voice_command.realtime_recovery_guide', 'Natural Realtime recovery-guide voice command', 'Realtime connection questions read local guard/provider state and no-cost fallback without cloud, lease, mic, Realtime, browser, Terminal, screen, or spend-count changes')
+        : fail('voice_command.realtime_recovery_guide', 'Natural Realtime recovery-guide voice command', 'Realtime connection question did not use the no-cost recovery guide safely', {
+          before: spendGuardBeforeVoice.data,
+          command: naturalRealtimeRecoveryGuide.data,
+          direct: directRealtimeRecovery.data,
+          after: spendGuardAfterRealtimeRecoveryResponse.data,
+        }),
+    );
+
     const naturalSpendIncident = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {

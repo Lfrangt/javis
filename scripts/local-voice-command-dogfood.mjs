@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /resident, /watchdog, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /resident, /watchdog, /voice, /realtime, /unlock, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -494,7 +494,9 @@ function loopHelpText() {
   return [
     'Loop commands:',
     '  /try      Show context-ranked things to say next without microphone, Realtime, Terminal, or model calls.',
-    '  /voice    Read Realtime/live voice blocker, local fallback, and next recovery step.',
+    '  /voice    Read live voice standby, local fallback, and current blocker.',
+    '  /realtime Read why live Realtime is not connected and the no-cost recovery guide.',
+    '  /unlock   Alias for /realtime; prints gated steps without creating a spend lease.',
     '  /latency  Read local voice-command latency metrics and likely bottleneck.',
     '  /spend    Read OpenAI spend guard, local block count, lease, and egress firewall state.',
     '  /see      Read screen/privacy/ambient perception status without capturing a new frame.',
@@ -1239,6 +1241,26 @@ function formatLoopResidentHealth(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopRealtimeRecoveryGuide(data = {}) {
+  if (data.output) return String(data.output);
+  const guide = data.guide || data.realtimeRecoveryGuide || {};
+  const provider = guide.provider || {};
+  const spend = guide.spendGuard || {};
+  const local = guide.localFallback || {};
+  const blockers = Array.isArray(guide.blockers) ? guide.blockers : [];
+  const lines = [
+    `Realtime recovery: ${guide.label || guide.status || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
+    guide.meaning ? `Meaning: ${compactText(guide.meaning, 360)}` : '',
+    `OpenAI key: configured=${provider.hasOpenAiKey ? 'yes' : 'no'} · callable=${provider.callableOpenAiKey ? 'yes' : 'no'}`,
+    `Spend guard: cloud=${spend.mode || '-'} · paranoid=${spend.paranoidZeroSpend ? 'on' : 'off'} · hard=${spend.hardSpendLock ? 'on' : 'off'} · daily=${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · lease active=${spend.activeSpendLeases ?? 0}`,
+    blockers.length ? `Blockers:\n${blockers.slice(0, 5).map((item) => `- ${item.label || item.id || '-'}: ${compactText(item.detail || '', 180)}`).join('\n')}` : 'Blockers: none from local guard/provider state.',
+    `No-cost now: ${local.available ? 'available' : 'unknown'} · ${local.endpoint || '/api/voice/command'} · ${local.command || 'npm run voice:chat'}`,
+    `Before spend: ${guide.unlockLater?.previewCommand || 'npm run dogfood:realtime-provider-probe'} · ${guide.unlockLater?.spendStatusCommand || 'npm run openai:spend'}`,
+    'Safety: read-only; no OpenAI call, no spend lease, no microphone, no Realtime session, no browser, no Terminal, no screen capture.',
+  ];
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopVoiceStatus(data = {}) {
   const standby = data.standby || {};
   const provider = standby.provider || {};
@@ -1811,7 +1833,16 @@ async function runLoopCommand(transcript) {
         detailLevel: 'fast',
       });
     }
-    if (command === 'voice' || command === 'voice-status' || command === 'mic' || command === 'realtime') {
+    if (command === 'realtime' || command === 'rt' || command === 'unlock' || command === 'realtime-recovery' || command === 'realtime-guide') {
+      const endpoint = '/api/realtime/recovery-guide';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopRealtimeRecoveryGuide(response.data || {}), {
+        command: 'realtime',
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'voice' || command === 'voice-status' || command === 'mic') {
       const endpoint = '/api/voice/standby';
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopVoiceStatus(response.data || {}), {
