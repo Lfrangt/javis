@@ -420,6 +420,47 @@ export default {
         : fail('voice_command.latency_skip_redundant_context', 'Latency command skips redundant pre-route context', 'voice_latency did not skip redundant screen/UI pre-route context safely', latencyWithRedundantContext.data),
     );
 
+    const openUrlFastContext = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: 'open https://example.com',
+        execute: false,
+        includeScreen: true,
+        includeAccessibility: true,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_open_url_fast_context',
+      },
+      timeoutMs: 30000,
+    });
+    const openUrlFastContextData = openUrlFastContext.data || {};
+    const openUrlSkippedContext = openUrlFastContextData.context || {};
+    out.push(
+      openUrlFastContext.ok &&
+        openUrlFastContextData.ok === true &&
+        openUrlFastContextData.executed === false &&
+        openUrlFastContextData.route?.decision?.localCommand === 'open_url' &&
+        openUrlFastContextData.route?.localCommand?.intent === 'open_url' &&
+        openUrlFastContextData.route?.contextPlan?.needs?.screen === false &&
+        openUrlFastContextData.route?.contextPlan?.needs?.accessibility === false &&
+        openUrlSkippedContext.skippedPreRouteContext === true &&
+        openUrlSkippedContext.skipReason === 'deterministic_local_command_owns_context' &&
+        openUrlSkippedContext.localCommand === 'open_url' &&
+        openUrlSkippedContext.includeScreenRequested === true &&
+        openUrlSkippedContext.includeAccessibilityRequested === true &&
+        openUrlSkippedContext.includesScreenImage === false &&
+        openUrlSkippedContext.includesAccessibilityNodes === false &&
+        openUrlSkippedContext.screen?.available === false &&
+        openUrlSkippedContext.accessibility?.requested === false &&
+        Number(openUrlFastContextData.timing?.contextMs || 0) <= 50 &&
+        openUrlFastContextData.safety?.skippedPreRouteContext === true &&
+        openUrlFastContextData.safety?.startsMicrophone === false &&
+        openUrlFastContextData.safety?.usesRealtime === false &&
+        openUrlFastContextData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.open_url_fast_context', 'Open URL skips redundant pre-route context', `open_url context ${openUrlFastContextData.timing?.contextMs || 0}ms with no screen/UI capture`)
+        : fail('voice_command.open_url_fast_context', 'Open URL skips redundant pre-route context', 'open_url did not bypass redundant screen/UI pre-route context safely', openUrlFastContext.data),
+    );
+
     const directVoiceLatency = await ctx.api('/api/voice/latency?limit=20&auditLimit=500', {
       timeoutMs: 30000,
     });

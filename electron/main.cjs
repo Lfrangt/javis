@@ -26540,6 +26540,9 @@ function naturalBrowserActLocalCommand(text) {
 
   const analysisSignal = /\b(summari[sz]e|summary|research|compare|review|read|extract|answer|ask|explain|analy[sz]e|report)\b/i.test(raw)
     || /(总结|概括|调研|研究|比较|对比|复盘|阅读|读一下|提取|回答|解释|分析|报告|资料|结果)/i.test(compactPlain);
+  if (open?.url && !analysisSignal) {
+    return { intent: 'open_url', label: 'Open URL', args: { url: open.url } };
+  }
   if (search?.query && analysisSignal) return null;
 
   return {
@@ -27517,6 +27520,10 @@ function buildContextPlan(message, options = {}) {
     } else if (['browser_control', 'web_search', 'open_url'].includes(localCommand)) {
       needs.browserContext = true;
       needs.localExecution = true;
+      needs.macContext = false;
+      needs.screen = false;
+      needs.accessibility = false;
+      needs.vision = false;
     } else if (['app_workflow', 'creative_workflow', 'open_app'].includes(localCommand)) {
       needs.macContext = true;
       needs.accessibility = localCommand !== 'open_app';
@@ -31234,6 +31241,7 @@ const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
   'autopilot_status',
   'blocker_status',
   'browser_activity',
+  'browser_control',
   'browser_dom',
   'browser_page',
   'browser_readiness',
@@ -31241,15 +31249,23 @@ const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
   'browser_workflow',
   'capability_status',
   'capture_clipboard',
+  'capture_screen',
   'capture_text',
+  'cli_command',
   'continue_last_voice_route',
   'creative_workflow',
   'delegate_task',
   'incident_report',
   'keep_awake',
+  'knowledge_search',
   'learning_distillation',
+  'list_inbox',
   'observe_now',
+  'open_app',
+  'open_url',
+  'openai_spend_status',
   'perception_status',
+  'process_next_inbox',
   'prompt_suggestions',
   'realtime_dogfood_archive',
   'realtime_dogfood_pack',
@@ -31263,10 +31279,14 @@ const VOICE_LOCAL_COMMAND_OWNS_CONTEXT_INTENTS = new Set([
   'session_status',
   'start_session',
   'resume_session',
+  'setup_guide',
+  'setup_next',
+  'triage_inbox',
   'end_session',
   'unblock_preview',
   'voice_latency',
   'voice_status',
+  'web_search',
   'window_control',
   'work_next',
   'work_progress',
