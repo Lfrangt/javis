@@ -325,7 +325,12 @@ async function printStatus() {
     ]);
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
-    console.log(`OpenAI key: ${status.api?.hasOpenAiKey ? 'configured' : 'missing'} · callable=${status.api?.openAiKeyAvailableForCalls ? 'yes' : 'no'}`);
+    const openAiKeyState = status.api?.openAiKeyAvailableForCalls
+      ? 'saved and allowed for explicit paid calls'
+      : status.api?.hasOpenAiKey
+        ? 'saved locally, locked by zero-spend protection'
+        : 'missing';
+    console.log(`OpenAI API key: ${openAiKeyState}`);
     if (status.api?.openAiSpendGuard) {
       const guard = status.api.openAiSpendGuard;
       const counts = guard.counts || {};
@@ -1698,11 +1703,11 @@ async function showControlReadiness() {
         { status: status.api?.openAiKeyAvailableForCalls ? 'ready' : status.api?.hasOpenAiKey ? 'warning' : 'blocked' },
         { status: item('microphone_permission')?.status || 'unknown' },
       ]),
-      summary: `OpenAI key ${status.api?.hasOpenAiKey ? (status.api?.openAiKeyAvailableForCalls ? 'configured/callable' : 'configured/vaulted') : 'missing'}; microphone ${item('microphone_permission')?.status || 'unknown'}.`,
+      summary: `OpenAI API key ${status.api?.hasOpenAiKey ? (status.api?.openAiKeyAvailableForCalls ? 'saved and callable' : 'saved but spend-locked') : 'missing'}; microphone ${item('microphone_permission')?.status || 'unknown'}.`,
       next: status.api?.openAiKeyAvailableForCalls
         ? item('microphone_permission')?.next || ''
         : status.api?.hasOpenAiKey
-          ? 'OpenAI spend is locked; use local no-mic fallback or intentionally unlock one paid check later.'
+          ? 'This is cost protection, not API setup. Use local no-mic fallback now, or intentionally unlock one paid check later.'
           : 'Add OPENAI_API_KEY from CUI option 1, then restart JAVIS.',
     },
     {

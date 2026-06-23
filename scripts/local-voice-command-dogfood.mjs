@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /resident, /watchdog, /voice, /realtime, /unlock, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /resident, /watchdog, /wake, /voice, /realtime, /unlock, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -495,6 +495,7 @@ function loopHelpText() {
     'Loop commands:',
     '  /try      Show context-ranked things to say next without microphone, Realtime, Terminal, or model calls.',
     '  /voice    Read live voice standby, local fallback, and current blocker.',
+    '  /wake     Read wake words, trigger state, external wake engine status, and handoff mode.',
     '  /realtime Read why live Realtime is not connected and the no-cost recovery guide.',
     '  /unlock   Alias for /realtime; prints gated steps without creating a spend lease.',
     '  /latency  Read local voice-command latency metrics and likely bottleneck.',
@@ -1241,6 +1242,33 @@ function formatLoopResidentHealth(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopWakeStatus(data = {}) {
+  const wake = data.wake || data.wakeStatus || data || {};
+  const engine = wake.engine || {};
+  const handoff = wake.handoff || {};
+  const blocker = handoff.blocker || {};
+  const input = handoff.input || {};
+  const age = wake.ageMs === null || wake.ageMs === undefined
+    ? '-'
+    : wake.ageMs < 60000
+      ? `${Math.round(wake.ageMs / 1000)}s`
+      : `${Math.round(wake.ageMs / 60000)}m`;
+  const lines = [
+    `Wake: ${wake.softWakeOnly ? 'soft trigger only' : engine.running ? 'engine running' : 'engine stopped'} · pending=${wake.pending ? 'yes' : 'no'} · triggers=${wake.triggerCount ?? 0}`,
+    `Words: ${Array.isArray(wake.words) && wake.words.length ? wake.words.join(', ') : '-'}`,
+    `Engine: configured=${engine.configured ? 'yes' : 'no'} · running=${engine.running ? 'yes' : 'no'}${engine.pid ? ` · pid=${engine.pid}` : ''}`,
+    engine.command ? `Command: ${compactText(engine.command, 220)}` : 'Command: none; use tap/hotkey/CLI wake or configure JAVIS_WAKE_ENGINE_CMD for an external local wake listener.',
+    wake.lastTriggerAt ? `Last trigger: ${age} ago · ${wake.lastSource || '-'} · ${compactText(wake.lastPhrase || '', 120)}` : 'Last trigger: none since resident start',
+    `Handoff: ${handoff.mode || '-'} · ${handoff.label || '-'} · local=${input.endpoint || '/api/voice/command'}`,
+  ];
+  if (engine.lastLine) lines.push(`Last engine line: ${compactText(engine.lastLine, 220)}`);
+  if (engine.lastError) lines.push(`Engine note: ${compactText(engine.lastError, 220)}`);
+  if (blocker.active) lines.push(`Voice blocker: ${blocker.kind || '-'} · ${compactText(blocker.summary || '', 180)}`);
+  if (handoff.next) lines.push(`Next: ${compactText(handoff.next, 220)}`);
+  lines.push('Safety: read-only; does not start wake engine, microphone, Realtime, OpenAI, Terminal, screen capture, worker, or actions.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopRealtimeRecoveryGuide(data = {}) {
   if (data.output) return String(data.output);
   const guide = data.guide || data.realtimeRecoveryGuide || {};
@@ -1248,10 +1276,15 @@ function formatLoopRealtimeRecoveryGuide(data = {}) {
   const spend = guide.spendGuard || {};
   const local = guide.localFallback || {};
   const blockers = Array.isArray(guide.blockers) ? guide.blockers : [];
+  const keyLine = provider.callableOpenAiKey
+    ? 'saved and callable'
+    : provider.hasOpenAiKey
+      ? 'saved locally, locked by zero-spend protection'
+      : 'missing';
   const lines = [
     `Realtime recovery: ${guide.label || guide.status || 'unknown'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · ok=${provider.ok ? 'yes' : 'no'}`,
     guide.meaning ? `Meaning: ${compactText(guide.meaning, 360)}` : '',
-    `OpenAI key: configured=${provider.hasOpenAiKey ? 'yes' : 'no'} · callable=${provider.callableOpenAiKey ? 'yes' : 'no'}`,
+    `OpenAI API key: ${keyLine}`,
     `Spend guard: cloud=${spend.mode || '-'} · paranoid=${spend.paranoidZeroSpend ? 'on' : 'off'} · hard=${spend.hardSpendLock ? 'on' : 'off'} · daily=${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · lease active=${spend.activeSpendLeases ?? 0}`,
     blockers.length ? `Blockers:\n${blockers.slice(0, 5).map((item) => `- ${item.label || item.id || '-'}: ${compactText(item.detail || '', 180)}`).join('\n')}` : 'Blockers: none from local guard/provider state.',
     `No-cost now: ${local.available ? 'available' : 'unknown'} · ${local.endpoint || '/api/voice/command'} · ${local.command || 'npm run voice:chat'}`,
@@ -1829,6 +1862,15 @@ async function runLoopCommand(transcript) {
       const response = await request(endpoint);
       return loopCommandResult(base, response, formatLoopResidentHealth(response.data || {}), {
         command: 'resident',
+        endpoint,
+        detailLevel: 'fast',
+      });
+    }
+    if (command === 'wake' || command === 'wake-status' || command === 'summon' || command === 'hey') {
+      const endpoint = '/api/wake/status';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopWakeStatus(response.data || {}), {
+        command: 'wake',
         endpoint,
         detailLevel: 'fast',
       });

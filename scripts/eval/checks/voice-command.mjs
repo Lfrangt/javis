@@ -264,6 +264,54 @@ export default {
         : fail('voice_command.resident_health', 'Natural resident health voice command', 'resident/watchdog health question did not use the local resident health fast path safely', residentHealthCommand.data),
     );
 
+    const naturalWakeStatus = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '我喊贾维斯为什么没反应？唤醒词和 wake engine 状态怎么样？',
+        execute: false,
+        includeScreen: true,
+        includeAccessibility: true,
+        useMemory: false,
+        speak: false,
+        source: 'eval_voice_command_wake_status',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalWakeStatusData = naturalWakeStatus.data || {};
+    const wakeStatusRoute = naturalWakeStatusData.route || {};
+    const wakeStatus = wakeStatusRoute.data?.wakeStatus || {};
+    out.push(
+      naturalWakeStatus.ok &&
+        naturalWakeStatusData.ok === true &&
+        naturalWakeStatusData.executed === false &&
+        wakeStatusRoute.decision?.localCommand === 'wake_status' &&
+        wakeStatusRoute.localCommand?.intent === 'wake_status' &&
+        wakeStatus.safety?.readOnly === true &&
+        wakeStatus.safety?.startsWakeEngine === false &&
+        wakeStatus.safety?.startsMicrophone === false &&
+        wakeStatus.safety?.usesRealtime === false &&
+        wakeStatus.safety?.callsOpenAI === false &&
+        wakeStatus.safety?.opensTerminal === false &&
+        wakeStatus.safety?.capturesScreen === false &&
+        Array.isArray(wakeStatus.words) &&
+        wakeStatus.handoff?.ready === true &&
+        wakeStatus.handoff?.safety?.startsMicrophone === false &&
+        wakeStatus.handoff?.safety?.usesRealtime === false &&
+        typeof wakeStatusRoute.output === 'string' &&
+        wakeStatusRoute.output.includes('Wake:') &&
+        wakeStatusRoute.output.includes('Engine:') &&
+        wakeStatusRoute.output.includes('边界:') &&
+        wakeStatusRoute.contextPlan?.needs?.residentState === true &&
+        wakeStatusRoute.contextPlan?.needs?.screen === false &&
+        wakeStatusRoute.contextPlan?.needs?.accessibility === false &&
+        naturalWakeStatusData.safety?.skippedPreRouteContext === true &&
+        naturalWakeStatusData.safety?.startsMicrophone === false &&
+        naturalWakeStatusData.safety?.usesRealtime === false &&
+        naturalWakeStatusData.safety?.callsOpenAIImmediately === false
+        ? ok('voice_command.wake_status', 'Natural wake-status voice command', 'wake-word questions read local trigger/engine/handoff state without starting wake engine, mic, Realtime, screen, Terminal, actions, or cloud')
+        : fail('voice_command.wake_status', 'Natural wake-status voice command', 'wake-word question did not use the local wake-status fast path safely', naturalWakeStatus.data),
+    );
+
     const spendGuardBeforeVoice = await ctx.api('/api/openai/spend-guard');
     const spendGuardBefore = spendGuardBeforeVoice.data?.spendGuard || {};
     const naturalSpendStatus = await ctx.api('/api/voice/command', {

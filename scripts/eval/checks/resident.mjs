@@ -1519,6 +1519,17 @@ export default {
         : fail('resident.local_voice_loop_voice_status', 'Local voice loop voice-status command', 'expected /voice slash command to read /api/voice/standby with read-only safety copy'),
     );
 
+    const hasWakeStatusLoop =
+      loopSource.includes("command === 'wake'") &&
+      loopSource.includes('/api/wake/status') &&
+      loopSource.includes('formatLoopWakeStatus') &&
+      loopSource.includes('does not start wake engine, microphone, Realtime');
+    out.push(
+      hasWakeStatusLoop
+        ? ok('resident.local_voice_loop_wake_status', 'Local voice loop wake-status command', '/wake reads trigger/engine/handoff state without starting wake engine, microphone, Realtime, or actions')
+        : fail('resident.local_voice_loop_wake_status', 'Local voice loop wake-status command', 'expected /wake slash command to read /api/wake/status with read-only safety copy'),
+    );
+
     const hasPromptSuggestionsFastPath =
       mainSource.includes('function naturalPromptSuggestionsLocalCommand') &&
       mainSource.includes("intent: 'prompt_suggestions'") &&
