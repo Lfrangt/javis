@@ -159,6 +159,17 @@ chrome before it ever descends into web content.
 targets (optionally union with a small pass over native chrome for back/forward
 etc.). Keep the existing window-root walk for non-Chromium apps.
 
+> **CRITICAL — do NOT root at AXWebArea alone; browser chrome must stay
+> reachable.** Back/forward, the address bar, tabs, reload — every browser
+> *navigation* target lives in the native browser chrome, NOT under `AXWebArea`.
+> If you replace the window root with the web area, `ax_press` on those targets
+> and all browser-control AX paths go blind. So AXWebArea-rooting must be
+> *additive/conditional*: walk the web area FIRST (so web composers fit the
+> budget) and still include a bounded pass over the browser chrome — or pick the
+> root by target type (web-content instruction → web area; navigation
+> instruction → window). The PoC proves the web-area read is fast; it does not
+> mean the chrome should be dropped.
+>
 > **CRITICAL — apply identically to BOTH walk sites.** The `nodeId` is the BFS
 > index, and `runAccessibilityNodeAction`'s execute re-walk re-resolves the
 > target by that index, so its root-selection + BFS seeding MUST match
