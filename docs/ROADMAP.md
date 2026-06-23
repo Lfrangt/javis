@@ -24,7 +24,7 @@
 - Renderer self-recovery for resident mode, so load failures and renderer crashes schedule bounded reloads while keeping the pet parked and minimal, with `/api/renderer/status` and `/api/health` exposing current load/recovery state without renderer URL or token leakage.
 - macOS menu bar resident controls.
 - Global pet hotkey.
-- Global tap-to-summon hotkey that wakes JAVIS and parks it at the notch, opening the compact compose input immediately when Realtime is blocked or unverified.
+- Global tap-to-summon hotkey that parks JAVIS at the notch and opens the compact local compose input by default, with direct Realtime wake kept behind an explicit opt-in and the normal spend unlock gates.
 - Wake handoff status that tells the pet/CUI whether the next invited turn should try Realtime or use local no-mic voice-command fallback, without starting the microphone from the status read.
 - Wake-command intake that combines wake plus local no-mic voice-command routing through `npm run wake -- "..."` and `/api/wake/command`.
 - Pet startup recovery gate: when provider health is warning/blocked and `OPENAI_API_KEY` is loaded, the pet previews the no-mic Realtime provider probe and keeps local voice-command fallback active; it never spends OpenAI quota from startup without explicit confirmation.

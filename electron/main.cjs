@@ -65,6 +65,23 @@ try {
 
 dotenv.config({ path: path.join(APP_ROOT, '.env') });
 
+function appendStartupTrace(event, data = {}) {
+  try {
+    const file = path.join(APP_ROOT, 'logs', 'startup-trace.log');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.appendFileSync(file, `${JSON.stringify({
+      at: new Date().toISOString(),
+      event,
+      pid: process.pid,
+      cwd: safeCurrentWorkingDirectory(),
+      appRoot: APP_ROOT,
+      ...data,
+    })}\n`);
+  } catch {}
+}
+
+appendStartupTrace('module_loaded');
+
 function parseJsonBodyLimit(limit = '1mb') {
   if (typeof limit === 'number') return Math.max(1, limit);
   const text = String(limit || '1mb').trim().toLowerCase();
@@ -245,6 +262,7 @@ const KEEP_AWAKE_FLAGS = normalizeKeepAwakeFlags(process.env.JAVIS_KEEP_AWAKE_FL
 const TOGGLE_HOTKEY = process.env.JAVIS_TOGGLE_HOTKEY || 'Control+Shift+Space';
 const SUMMON_HOTKEY_DISABLED = process.env.JAVIS_SUMMON_HOTKEY === 'false' || process.env.JAVIS_TAP_HOTKEY === 'false';
 const SUMMON_HOTKEY = SUMMON_HOTKEY_DISABLED ? '' : (process.env.JAVIS_SUMMON_HOTKEY || process.env.JAVIS_TAP_HOTKEY || 'Alt+Space');
+const TAP_TO_REALTIME_ENABLED = process.env.JAVIS_TAP_TO_REALTIME === 'true' || process.env.JAVIS_SUMMON_REALTIME === 'true';
 const CAPTURE_HOTKEY = process.env.JAVIS_CAPTURE_HOTKEY === 'false' ? '' : (process.env.JAVIS_CAPTURE_HOTKEY || 'Control+Shift+I');
 const WINDOW_PARK_CORNER = parseParkCorner(process.env.JAVIS_WINDOW_PARK_CORNER || 'notch');
 const WINDOW_PARK_DISPLAY = process.env.JAVIS_WINDOW_PARK_DISPLAY === 'current' ? 'current' : 'primary';
@@ -344,6 +362,7 @@ const HAS_SINGLE_INSTANCE_LOCK = app.requestSingleInstanceLock({
   projectRoot: process.cwd(),
   apiPort: API_PORT,
 });
+appendStartupTrace('single_instance_lock', { hasLock: HAS_SINGLE_INSTANCE_LOCK });
 const MAX_BROWSER_SEARCH_QUERIES = Math.max(1, Math.min(6, Number(process.env.JAVIS_MAX_BROWSER_SEARCH_QUERIES || 4)));
 const MAX_BROWSER_PAGE_LINKS = Math.max(5, Math.min(120, Number(process.env.JAVIS_MAX_BROWSER_PAGE_LINKS || 40)));
 const MAX_RECOVERY_JOB_ATTEMPTS = Math.max(0, Math.min(5, Number(process.env.JAVIS_MAX_RECOVERY_JOB_ATTEMPTS || 2)));
@@ -1418,9 +1437,13 @@ function moveWindow(source = 'api', options = {}) {
 
 function tapToSummonSnapshot(options = {}) {
   const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
-  const fallbackReady = voiceHealth.status !== 'ready';
+  const realtimeProviderReady = voiceHealth.status === 'ready';
+  const zeroSpendLocked = openAiZeroSpendModeActive();
+  const realtimeTapAllowed = Boolean(TAP_TO_REALTIME_ENABLED && realtimeProviderReady && !zeroSpendLocked);
+  const fallbackReady = !realtimeProviderReady;
+  const localInputDefault = !realtimeTapAllowed;
   const hotkey = SUMMON_HOTKEY;
-  const currentAction = fallbackReady
+  const currentAction = localInputDefault
     ? {
         id: 'open_compact_local_input',
         label: 'Open local input',
@@ -1447,11 +1470,16 @@ function tapToSummonSnapshot(options = {}) {
     sourceEnv: 'JAVIS_SUMMON_HOTKEY or JAVIS_TAP_HOTKEY',
     parksAt: currentParkCorner,
     fallbackReady,
+    localInputDefault,
+    realtimeProviderReady,
+    realtimeTapEnabled: TAP_TO_REALTIME_ENABLED,
+    realtimeTapAllowed,
+    zeroSpendLocked,
     currentAction,
     summary: hotkey
-      ? fallbackReady
+      ? localInputDefault
         ? `${hotkey} opens the compact local input at the notch without microphone, Realtime, Terminal, or provider spend.`
-        : `${hotkey} wakes JAVIS through the renderer voice path; microphone startup stays in the renderer voice contract.`
+        : `${hotkey} wakes JAVIS through the renderer voice path because realtime tap is explicitly enabled and spend is unlocked.`
       : 'Tap-to-summon is disabled.',
     safety: {
       residentStartsMicrophone: false,
@@ -1462,7 +1490,8 @@ function tapToSummonSnapshot(options = {}) {
       fallbackStartsMicrophone: false,
       fallbackUsesRealtime: false,
       fallbackCallsOpenAi: false,
-      realtimeReadyMayStartRendererVoice: !fallbackReady,
+      realtimeReadyMayStartRendererVoice: realtimeTapAllowed,
+      realtimeTapRequiresExplicitEnv: true,
     },
   };
 }
@@ -1471,15 +1500,14 @@ function compactTapToSummonSnapshot(tap = tapToSummonSnapshot()) {
   return {
     version: tap.version,
     enabled: Boolean(tap.enabled),
-    hotkey: tap.hotkey || '',
     registered: Boolean(tap.registered),
     endpoint: tap.endpoint || '/api/window/summon',
-    fallbackReady: Boolean(tap.fallbackReady),
+    localInputDefault: tap.localInputDefault !== false,
+    realtimeTapAllowed: Boolean(tap.realtimeTapAllowed),
     currentAction: tap.currentAction
       ? {
           id: tap.currentAction.id || '',
           mode: tap.currentAction.mode || '',
-          endpoint: tap.currentAction.endpoint || '',
           startsMicrophone: Boolean(tap.currentAction.startsMicrophone),
           usesRealtime: Boolean(tap.currentAction.usesRealtime),
         }
@@ -1488,9 +1516,9 @@ function compactTapToSummonSnapshot(tap = tapToSummonSnapshot()) {
       residentStartsMicrophone: Boolean(tap.safety?.residentStartsMicrophone),
       residentUsesRealtime: Boolean(tap.safety?.residentUsesRealtime),
       opensTerminal: Boolean(tap.safety?.opensTerminal),
-      fallbackStartsMicrophone: Boolean(tap.safety?.fallbackStartsMicrophone),
-      fallbackUsesRealtime: Boolean(tap.safety?.fallbackUsesRealtime),
       fallbackCallsOpenAi: Boolean(tap.safety?.fallbackCallsOpenAi),
+      realtimeReadyMayStartRendererVoice: Boolean(tap.safety?.realtimeReadyMayStartRendererVoice),
+      realtimeTapRequiresExplicitEnv: tap.safety?.realtimeTapRequiresExplicitEnv !== false,
     },
   };
 }
@@ -2139,15 +2167,15 @@ function toggleWindowMode(source = 'hotkey') {
 
 function summonJavis(source = 'hotkey', options = {}) {
   const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
-  const fallbackReady = voiceHealth.status !== 'ready';
   const tapToSummon = tapToSummonSnapshot({ voiceHealth });
-  const windowState = applyWindowMode(fallbackReady ? 'compose' : 'pet', {
+  const opensLocalInput = tapToSummon.currentAction?.id === 'open_compact_local_input';
+  const windowState = applyWindowMode(opensLocalInput ? 'compose' : 'pet', {
     source,
-    focus: fallbackReady,
+    focus: opensLocalInput,
     park: true,
     corner: currentParkCorner,
   });
-  const wakeTriggered = options.wake !== false;
+  const wakeTriggered = options.wake !== false && !opensLocalInput;
   const wake = wakeTriggered
     ? triggerWake({
         source,
@@ -2158,20 +2186,25 @@ function summonJavis(source = 'hotkey', options = {}) {
     source,
     hotkey: SUMMON_HOTKEY,
     mode: windowState.mode,
-    fallbackReady,
+    fallbackReady: tapToSummon.fallbackReady,
+    localInputDefault: tapToSummon.localInputDefault,
+    realtimeTapAllowed: tapToSummon.realtimeTapAllowed,
     currentAction: tapToSummon.currentAction?.id || '',
     wakeTriggered,
+    wakeSuppressedReason: !wakeTriggered && opensLocalInput ? 'local_input_default' : '',
     wakePending: wake.pending,
     triggerCount: wake.triggerCount,
   });
   return {
     ok: true,
-    output: fallbackReady ? 'JAVIS local input opened.' : 'JAVIS summoned.',
+    output: opensLocalInput ? 'JAVIS local input opened.' : 'JAVIS summoned.',
     window: windowState,
     wake,
     hotkey: SUMMON_HOTKEY,
     tapToSummon,
-    fallbackReady,
+    fallbackReady: tapToSummon.fallbackReady,
+    localInputDefault: tapToSummon.localInputDefault,
+    realtimeTapAllowed: tapToSummon.realtimeTapAllowed,
   };
 }
 
@@ -66647,10 +66680,12 @@ function handleSecondInstance(_event, argv = [], workingDirectory = '', addition
 }
 
 function startJavisApp() {
+  appendStartupTrace('start_javis_app');
   installOpenAiEgressGuard();
   app.on('second-instance', handleSecondInstance);
 
   app.whenReady().then(async () => {
+    appendStartupTrace('app_when_ready');
     if (process.platform === 'darwin') {
       app.dock?.hide();
     }
@@ -66665,9 +66700,17 @@ function startJavisApp() {
     );
 
     try {
+      appendStartupTrace('start_api_begin');
       await startApiServer();
+      appendStartupTrace('start_api_done', { apiBase: API_BASE });
       createWindow();
+      appendStartupTrace('create_window_done');
       registerGlobalHotkeys();
+      appendStartupTrace('hotkeys_done', {
+        toggleHotkeyRegistered,
+        summonHotkeyRegistered,
+        captureHotkeyRegistered,
+      });
       createMenuBarTray();
       startAmbientMonitor();
       startLearningMonitor();
@@ -66676,6 +66719,7 @@ function startJavisApp() {
       startWakeEngine();
       scheduleStartupAttentionCheck();
     } catch (error) {
+      appendStartupTrace('startup_error', { message: error instanceof Error ? error.message : String(error) });
       handleStartupError(error);
     }
 
@@ -66729,6 +66773,7 @@ function startJavisApp() {
 if (HAS_SINGLE_INSTANCE_LOCK) {
   startJavisApp();
 } else {
+  appendStartupTrace('single_instance_lock_unavailable');
   app.quit();
 }
 

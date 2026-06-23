@@ -120,9 +120,17 @@ export default {
         bundleLocalVoice.safety?.storesRawAudio === false &&
         bundleTapToSummon.version === 1 &&
         bundleTapToSummon.endpoint === '/api/window/summon' &&
+        bundleTapToSummon.localInputDefault === true &&
+        bundleTapToSummon.realtimeTapAllowed === false &&
+        bundleTapToSummon.currentAction?.id === 'open_compact_local_input' &&
+        bundleTapToSummon.currentAction?.mode === 'compose' &&
+        bundleTapToSummon.currentAction?.startsMicrophone === false &&
+        bundleTapToSummon.currentAction?.usesRealtime === false &&
         bundleTapToSummon.safety?.residentStartsMicrophone === false &&
         bundleTapToSummon.safety?.residentUsesRealtime === false &&
         bundleTapToSummon.safety?.opensTerminal === false &&
+        bundleTapToSummon.safety?.realtimeReadyMayStartRendererVoice === false &&
+        bundleTapToSummon.safety?.realtimeTapRequiresExplicitEnv === true &&
         ['realtime_ready', 'local_fallback_ready'].includes(bundleVoiceStandby.mode) &&
         bundleVoiceStandby.primaryAction?.id &&
         bundleVoiceStandby.local?.input?.endpoint === '/api/voice/command' &&
@@ -928,19 +936,22 @@ export default {
         }),
     );
 
-    if (voiceStandby.mode === 'local_fallback_ready') {
+    {
+      const wakeBeforeSummonResponse = await ctx.api('/api/wake/status', { timeoutMs: 10000 });
+      const wakeBeforeSummonCount = Number(wakeBeforeSummonResponse.data?.wake?.triggerCount || 0);
       const summonWindowResponse = await ctx.api('/api/window/summon', {
         method: 'POST',
         body: {
           source: 'eval_resident_summon_compose',
-          wake: false,
+          wake: true,
         },
         timeoutMs: 10000,
       });
       const summonWindow = summonWindowResponse.data?.window || {};
-      const summonFallbackReady = summonWindowResponse.data?.fallbackReady === true;
-      const summonRecoveredBeforeOpen = summonWindowResponse.data?.fallbackReady === false;
+      const summonLocalInputDefault = summonWindowResponse.data?.localInputDefault === true;
+      const summonRealtimeTapAllowed = summonWindowResponse.data?.realtimeTapAllowed === true;
       const summonTap = summonWindowResponse.data?.tapToSummon || summonWindow.tapToSummon || {};
+      const wakeAfterSummonCount = Number(summonWindowResponse.data?.wake?.triggerCount || 0);
       const summonRestoreResponse = await ctx.api('/api/window/mode', {
         method: 'POST',
         body: {
@@ -950,28 +961,34 @@ export default {
         timeoutMs: 10000,
       });
       out.push(
-        summonWindowResponse.ok &&
-          ((summonFallbackReady && summonWindow.mode === 'compose') ||
-            (summonRecoveredBeforeOpen && summonWindow.mode === 'pet')) &&
+        wakeBeforeSummonResponse.ok &&
+          summonWindowResponse.ok &&
+          summonLocalInputDefault === true &&
+          summonRealtimeTapAllowed === false &&
+          summonWindow.mode === 'compose' &&
           summonTap.version === 1 &&
           summonTap.enabled === true &&
           summonTap.registered === true &&
           summonTap.endpoint === '/api/window/summon' &&
-          summonTap.currentAction?.id === (summonFallbackReady ? 'open_compact_local_input' : 'wake_realtime_voice') &&
-          (!summonFallbackReady ||
-            (summonTap.currentAction?.mode === 'compose' &&
-              summonTap.currentAction?.startsMicrophone === false &&
-              summonTap.currentAction?.usesRealtime === false &&
-              summonTap.safety?.residentStartsMicrophone === false &&
-              summonTap.safety?.residentUsesRealtime === false &&
-              summonTap.safety?.opensTerminal === false &&
-              summonTap.safety?.fallbackStartsMicrophone === false &&
-              summonTap.safety?.fallbackUsesRealtime === false &&
-              summonTap.safety?.fallbackCallsOpenAi === false)) &&
+          summonTap.localInputDefault === true &&
+          summonTap.realtimeTapAllowed === false &&
+          summonTap.currentAction?.id === 'open_compact_local_input' &&
+          summonTap.currentAction?.mode === 'compose' &&
+          summonTap.currentAction?.startsMicrophone === false &&
+          summonTap.currentAction?.usesRealtime === false &&
+          summonTap.safety?.residentStartsMicrophone === false &&
+          summonTap.safety?.residentUsesRealtime === false &&
+          summonTap.safety?.opensTerminal === false &&
+          summonTap.safety?.fallbackStartsMicrophone === false &&
+          summonTap.safety?.fallbackUsesRealtime === false &&
+          summonTap.safety?.fallbackCallsOpenAi === false &&
+          summonTap.safety?.realtimeReadyMayStartRendererVoice === false &&
+          wakeAfterSummonCount === wakeBeforeSummonCount &&
           summonRestoreResponse.ok &&
           summonRestoreResponse.data?.window?.mode === 'pet'
-          ? ok('resident.summon_compose', 'Summon opens compose in fallback mode', `${summonWindow.width}x${summonWindow.height} · fallback=${summonFallbackReady} · action=${summonTap.currentAction?.id || '-'} · wake=${summonWindowResponse.data?.wake?.triggerCount || 0}`)
-          : fail('resident.summon_compose', 'Summon opens compose in fallback mode', 'expected summon to open compose while Realtime is blocked, or stay pet if provider recovered before summon', {
+          ? ok('resident.summon_compose', 'Summon opens local input by default', `${summonWindow.width}x${summonWindow.height} · action=${summonTap.currentAction?.id || '-'} · wakeDelta=${wakeAfterSummonCount - wakeBeforeSummonCount}`)
+          : fail('resident.summon_compose', 'Summon opens local input by default', 'expected summon/tap path to open compose and suppress wake/realtime unless explicitly enabled', {
+            wakeBefore: wakeBeforeSummonResponse.data,
             status: summonWindowResponse.status,
             body: summonWindowResponse.data,
             summonTap,
@@ -979,16 +996,17 @@ export default {
             restoreBody: summonRestoreResponse.data,
           }),
       );
-    } else {
-      const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
-      out.push(
-        mainSource.includes("applyWindowMode(fallbackReady ? 'compose' : 'pet'") &&
-          mainSource.includes('fallbackReady = voiceHealth.status !==') &&
-          mainSource.includes('JAVIS local input opened')
-          ? ok('resident.summon_compose_static', 'Summon compose fallback wiring', 'summon is wired to compose mode when voice health is not ready')
-          : fail('resident.summon_compose_static', 'Summon compose fallback wiring', 'expected summonJavis to route fallback-ready state to compose mode'),
-      );
     }
+
+    const summonMainSource = fs.readFileSync('electron/main.cjs', 'utf8');
+    out.push(
+      summonMainSource.includes('const opensLocalInput = tapToSummon.currentAction?.id ===') &&
+        summonMainSource.includes("applyWindowMode(opensLocalInput ? 'compose' : 'pet'") &&
+        summonMainSource.includes('const wakeTriggered = options.wake !== false && !opensLocalInput') &&
+        summonMainSource.includes('TAP_TO_REALTIME_ENABLED')
+        ? ok('resident.summon_compose_static', 'Summon local-input default wiring', 'summon uses compose and suppresses wake unless realtime tap is explicitly allowed')
+        : fail('resident.summon_compose_static', 'Summon local-input default wiring', 'expected summonJavis to default tap-to-summon to local compose input with wake suppressed'),
+    );
 
     const terminalSource = fs.readFileSync('electron/main.cjs', 'utf8');
     out.push(
@@ -1195,13 +1213,17 @@ export default {
         petWakeHandoff.safety?.storesRawAudio === false &&
         p.window?.mode &&
         petTapToSummon.version === 1 &&
-        petTapToSummon.hotkey &&
+        p.window?.summonHotkey &&
         petTapToSummon.registered === true &&
         petTapToSummon.endpoint === '/api/window/summon' &&
-        petTapToSummon.currentAction?.id &&
+        petTapToSummon.localInputDefault === true &&
+        petTapToSummon.realtimeTapAllowed === false &&
+        petTapToSummon.currentAction?.id === 'open_compact_local_input' &&
         petTapToSummon.safety?.residentStartsMicrophone === false &&
         petTapToSummon.safety?.residentUsesRealtime === false &&
         petTapToSummon.safety?.opensTerminal === false &&
+        petTapToSummon.safety?.fallbackCallsOpenAi === false &&
+        petTapToSummon.safety?.realtimeReadyMayStartRendererVoice === false &&
         p.presence?.intervention?.passiveByDefault === true &&
         p.presence?.intervention?.requiresUserIntent === true &&
         !p.screen?.imageDataUrl &&
@@ -1374,12 +1396,11 @@ export default {
 
     const hasResidentLaunchNoTerminalLoop =
       installSource.includes('const launchAgentWorkingDirectory = homeDir') &&
-      installSource.includes('const nodeExecutable = process.execPath') &&
-      installSource.includes("const electronCli = path.join(repoRoot, 'node_modules', 'electron', 'cli.js')") &&
+      installSource.includes("const electronExecutable = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')") &&
       installSource.includes('const electronAppTarget = repoRoot') &&
-      installSource.includes('<string>${xmlEscape(nodeExecutable)}</string>') &&
-      installSource.includes('<string>${xmlEscape(electronCli)}</string>') &&
+      installSource.includes('<string>${xmlEscape(electronExecutable)}</string>') &&
       installSource.includes('<string>${xmlEscape(electronAppTarget)}</string>') &&
+      !installSource.includes("electron', 'cli.js'") &&
       !installSource.includes("const command = 'npm run start:desktop'") &&
       !installSource.includes('<string>-c</string>') &&
       !installSource.includes('<string>-lc</string>') &&
@@ -1582,7 +1603,8 @@ export default {
     const launchAgentWorkingDirectory = launchAgentPlist.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || '';
     const launchAgentUsesSafeWorkingDirectory =
       launchAgentWorkingDirectory === os.homedir() &&
-      launchAgentPlist.includes('/node_modules/electron/cli.js') &&
+      launchAgentPlist.includes('/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron') &&
+      !launchAgentPlist.includes('/node_modules/electron/cli.js') &&
       launchAgentPlist.includes(process.cwd()) &&
       launchAgentPlist.includes('<key>JAVIS_REPO_ROOT</key>') &&
       launchAgentPlist.includes('<key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>') &&
@@ -1664,9 +1686,13 @@ export default {
         }),
     );
     const quietZeroSpendFallback = statusVoiceHealth.kind === 'spend_locked' && statusLocalVoice.mode === 'fallback_ready';
+    const setupAttentionActive =
+      statusPresence.mode === 'setup_blocked' ||
+      ['setup_blocked', 'setup_degraded'].includes(statusAttention.topReason?.id);
     out.push(
       status.ok &&
         (!quietZeroSpendFallback ||
+          setupAttentionActive ||
           (statusPresence.mode === 'fallback_ready' &&
             statusPresence.label === 'Local fallback ready' &&
             statusAttention.topReason?.id !== 'setup_degraded' &&
@@ -1710,9 +1736,12 @@ export default {
           blockerOutput: blockerOutput.slice(0, 1200),
         }),
     );
+    const blockerHasSetupAttention =
+      /Setup needs attention|Screen capture|Accessibility|setup_blocked|setup_degraded/i.test(blockerOutput);
     out.push(
       blockerCui.status === 0 &&
         (!quietZeroSpendFallback ||
+          blockerHasSetupAttention ||
           (blockerOutput.includes('Presence: Local fallback ready') &&
             !blockerOutput.includes('Attention: watching · pet yellow · notify no · Setup needs attention')))
         ? ok('resident.zero_spend_cui_quiet', 'Zero-spend CUI quiet presence', quietZeroSpendFallback ? 'CUI shows local fallback ready without setup attention noise' : 'Realtime is not in zero-spend fallback mode')

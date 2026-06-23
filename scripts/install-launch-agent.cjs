@@ -39,11 +39,10 @@ fs.mkdirSync(path.join(repoRoot, 'logs'), { recursive: true });
 console.log('Building JAVIS renderer...');
 run('npm', ['run', 'resident:prepare'], { stdio: 'inherit' });
 
-const nodeExecutable = process.execPath;
-const electronCli = path.join(repoRoot, 'node_modules', 'electron', 'cli.js');
+const electronExecutable = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron');
 const electronAppTarget = repoRoot;
-if (!fs.existsSync(electronCli)) {
-  throw new Error(`Electron CLI not found: ${electronCli}`);
+if (!fs.existsSync(electronExecutable)) {
+  throw new Error(`Electron executable not found: ${electronExecutable}`);
 }
 const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -53,8 +52,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>${xmlEscape(label)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${xmlEscape(nodeExecutable)}</string>
-    <string>${xmlEscape(electronCli)}</string>
+    <string>${xmlEscape(electronExecutable)}</string>
     <string>${xmlEscape(electronAppTarget)}</string>
   </array>
   <key>WorkingDirectory</key>

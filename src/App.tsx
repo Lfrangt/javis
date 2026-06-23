@@ -268,17 +268,22 @@ type WindowState = {
   tapToSummon?: {
     version: number
     enabled: boolean
-    hotkey: string
+    hotkey?: string
     registered: boolean
     endpoint: string
     label: string
     parksAt: string
-    fallbackReady: boolean
+    fallbackReady?: boolean
+    localInputDefault?: boolean
+    realtimeProviderReady?: boolean
+    realtimeTapEnabled?: boolean
+    realtimeTapAllowed?: boolean
+    zeroSpendLocked?: boolean
     currentAction?: {
       id: string
       label: string
       mode: string
-      endpoint: string
+      endpoint?: string
       startsMicrophone: boolean
       usesRealtime: boolean
     }
@@ -289,10 +294,11 @@ type WindowState = {
       opensTerminal: boolean
       mutatesUserFiles: boolean
       storesRawAudio: boolean
-      fallbackStartsMicrophone: boolean
-      fallbackUsesRealtime: boolean
+      fallbackStartsMicrophone?: boolean
+      fallbackUsesRealtime?: boolean
       fallbackCallsOpenAi: boolean
       realtimeReadyMayStartRendererVoice: boolean
+      realtimeTapRequiresExplicitEnv?: boolean
     }
   }
   captureHotkey: string
