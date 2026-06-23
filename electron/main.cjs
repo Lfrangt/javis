@@ -16433,6 +16433,72 @@ function compactVoiceSetupForBoard(guide = {}) {
   };
 }
 
+function progressBoardWorkNextCommand(action = {}) {
+  const id = String(action.id || '').trim();
+  if (id === 'readiness:realtime_voice_provider') return 'npm run dogfood:realtime-provider-probe';
+  if (id === 'voice:standby_primary') return 'npm run voice:standby';
+  if (id.startsWith('route:')) return `npm run work:run -- --action-id ${id}`;
+  if (id.startsWith('session:')) return `npm run work:run -- --action-id ${id}`;
+  if (id) return `npm run work:run -- --action-id ${id}`;
+  return 'npm run work:next';
+}
+
+function compactWorkNextRecoveryForBoard(preview = {}) {
+  const action = preview && typeof preview === 'object' ? preview.action || null : null;
+  const hasAction = Boolean(action && typeof action === 'object');
+  const manualOnly = Boolean(action?.manualOnly || action?.requiresUserPresence);
+  const wouldStartMicrophone = Boolean(action?.startsMicrophone || action?.requiresMicConfirmation);
+  const wouldStartWorkers = Boolean(action?.startsWorkers);
+  const wouldCallOpenAi = Boolean(action?.callsOpenAI || action?.callsOpenAi || action?.providerProbe);
+  const executable = Boolean(action?.executable);
+  const status = !preview || preview.ok === false
+    ? 'warning'
+    : !hasAction
+      ? 'ready'
+      : manualOnly || wouldStartMicrophone || wouldCallOpenAi
+        ? 'warning'
+        : executable
+          ? 'ready'
+          : 'warning';
+  return {
+    version: 1,
+    status: boardStatus(status),
+    label: hasAction ? compactRecordText(action.label || action.id || '下一步', 140) : '待命',
+    actionId: compactRecordText(action?.id || '', 160),
+    source: compactRecordText(action?.source || '', 80),
+    summary: compactRecordText(action?.summary || preview.output || '当前没有可执行的下一步。', 360),
+    output: compactRecordText(preview.output || '', 520),
+    command: progressBoardWorkNextCommand(action || {}),
+    previewOnly: true,
+    executed: false,
+    canPrepareNow: Boolean(hasAction && executable && !manualOnly && !wouldStartMicrophone && !wouldCallOpenAi),
+    needsUser: Boolean(manualOnly || wouldStartMicrophone || wouldCallOpenAi),
+    riskLevel: boundedCount(action?.riskLevel, 10),
+    gates: {
+      executable,
+      manualOnly,
+      requiresUserPresence: Boolean(action?.requiresUserPresence),
+      startsMicrophone: wouldStartMicrophone,
+      callsOpenAI: wouldCallOpenAi,
+      startsWorkers: wouldStartWorkers,
+      startsApps: Boolean(action?.startsApps),
+      autoEligible: Boolean(action?.autoEligible),
+      autopilotEligible: Boolean(action?.autopilotEligible),
+    },
+    safety: {
+      readOnly: true,
+      callsOpenAi: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      startsWorkers: false,
+      executesActions: false,
+      mutatesUserFiles: false,
+      returnsRawLogs: false,
+    },
+  };
+}
+
 function progressBoardEventStatus(type = '', data = {}) {
   const raw = `${type} ${data.status || ''} ${data.error ? 'error' : ''}`.toLowerCase();
   if (/failed|failure|error|blocked|rejected|denied/.test(raw)) return 'blocked';
@@ -16525,6 +16591,20 @@ async function progressBoardSnapshot(options = {}) {
   });
   const voiceSetup = compactVoiceSetupForBoard(voiceSetupGuide);
   const voiceNextStep = voiceSetup.goLiveChecklist.find((item) => item.status !== 'ready') || null;
+  const workNextPreview = await workNextAction({
+    execute: false,
+    source,
+    workflowLimit: options.workflowLimit || 5,
+    jobLimit: options.jobLimit || 5,
+    includeRecordReplayTeachingPacket: false,
+    includeProductivityDogfoodArchive: false,
+  }).catch((error) => ({
+    ok: false,
+    executed: false,
+    action: null,
+    output: `Work-next preview failed: ${error instanceof Error ? error.message : String(error)}`,
+  }));
+  const recovery = compactWorkNextRecoveryForBoard(workNextPreview);
   const progress = workProgressCheckIn({
     jobLimit: options.jobLimit || 5,
     workflowLimit: options.workflowLimit || 5,
@@ -16741,7 +16821,11 @@ async function progressBoardSnapshot(options = {}) {
       returnsUserText: false,
     },
     voiceSetup,
+    recovery,
     nextActions: [
+      recovery.actionId
+        ? `当前建议：${recovery.label}。${recovery.needsUser ? '这一步需要你确认或在场；看板只预览。' : '这一步可以先安全预览/准备。'}`
+        : '当前没有必须处理的 work-next 动作。',
       voiceNextStep
         ? `语音上线下一步：${voiceNextStep.label}。`
         : '继续 Realtime live dogfood。',
@@ -16761,6 +16845,7 @@ async function progressBoardSnapshot(options = {}) {
       callsOpenAi: false,
       startsMicrophone: false,
       usesRealtime: false,
+      startsWorkers: false,
       executesActions: false,
     },
   };

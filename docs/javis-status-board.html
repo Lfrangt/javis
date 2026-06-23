@@ -204,6 +204,64 @@
     .check.warning { border-color: color-mix(in srgb, var(--warning), var(--line) 60%); }
     .check.blocked { border-color: color-mix(in srgb, var(--blocked), var(--line) 60%); }
 
+    .recovery-panel {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .recovery-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .recovery-head h2 {
+      margin: 0 0 6px;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    .recovery-head p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .recovery-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(160px, 1fr));
+      gap: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--line);
+    }
+
+    .recovery-field {
+      display: grid;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .recovery-field span:first-child {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .recovery-field span:last-child {
+      color: var(--text);
+      font-size: 13px;
+      overflow-wrap: anywhere;
+    }
+
+    .gates {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 7px;
+    }
+
     .nodes {
       display: grid;
       grid-template-columns: repeat(7, minmax(118px, 1fr));
@@ -341,17 +399,17 @@
     @media (max-width: 980px) {
       .nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .voice-grid, .checks { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .voice-grid, .checks, .recovery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .footer-grid { grid-template-columns: 1fr; }
       header { grid-template-columns: 1fr; }
-      .voice-head { grid-template-columns: 1fr; }
+      .voice-head, .recovery-head { grid-template-columns: 1fr; }
       .voice-meta { justify-content: flex-start; }
       .meta { text-align: left; }
     }
 
     @media (max-width: 560px) {
       .shell { width: min(100vw - 20px, 1180px); padding-top: 18px; }
-      .nodes, .timeline, .voice-grid, .checks { grid-template-columns: 1fr; }
+      .nodes, .timeline, .voice-grid, .checks, .recovery-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -371,6 +429,8 @@
 
     <main>
       <section class="voice-panel" id="voice-panel"></section>
+
+      <section class="recovery-panel" id="recovery-panel"></section>
 
       <section>
         <p class="section-title">节点状态</p>
@@ -469,6 +529,13 @@
       return card;
     }
 
+    function renderGate(label, active) {
+      const status = active ? "warning" : "ready";
+      const badge = el("span", { class: `status ${status}` }, label);
+      badge.prepend(el("span", { class: "dot" }));
+      return badge;
+    }
+
     function spendLabel(spend = {}) {
       const base = `cloud=${spend.mode || "-"} · ${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · remaining=${spend.remainingTotal ?? 0}`;
       const gates = [
@@ -514,6 +581,48 @@
       panel.append(checks);
     }
 
+    function renderRecovery(recovery = {}) {
+      const panel = document.getElementById("recovery-panel");
+      panel.innerHTML = "";
+      const status = statusClass(recovery.status);
+      const head = el("div", { class: "recovery-head" });
+      const copy = el("div");
+      copy.append(el("p", { class: "section-title" }, "下一步恢复"));
+      copy.append(el("h2", {}, recovery.label || "待命"));
+      copy.append(el("p", {}, recovery.summary || "当前没有必须处理的恢复动作。"));
+      if (recovery.output) copy.append(el("p", {}, recovery.output));
+      const badge = el("span", { class: `status ${status}` }, statusText[status] || status);
+      badge.prepend(el("span", { class: "dot" }));
+      head.append(copy);
+      head.append(badge);
+      panel.append(head);
+
+      const gates = el("div", { class: "gates" });
+      gates.append(renderGate("需要你在场", recovery.gates?.requiresUserPresence));
+      gates.append(renderGate("会花 API", recovery.gates?.callsOpenAI));
+      gates.append(renderGate("会开麦", recovery.gates?.startsMicrophone));
+      gates.append(renderGate("会启动 worker", recovery.gates?.startsWorkers));
+      gates.append(renderGate("会执行动作", recovery.safety?.executesActions !== false));
+      panel.append(gates);
+
+      const grid = el("div", { class: "recovery-grid" });
+      const fields = [
+        ["动作 ID", recovery.actionId || "无"],
+        ["来源", recovery.source || "本地看板"],
+        ["命令", recovery.command || "npm run work:next"],
+        ["风险", `L${recovery.riskLevel ?? 0}`],
+        ["只预览", recovery.previewOnly ? "是" : "否"],
+        ["当前能准备", recovery.canPrepareNow ? "可以" : recovery.needsUser ? "需要确认" : "暂无"]
+      ];
+      for (const [label, value] of fields) {
+        const field = el("div", { class: "recovery-field" });
+        field.append(el("span", {}, label));
+        field.append(el("span", {}, String(value)));
+        grid.append(field);
+      }
+      panel.append(grid);
+    }
+
     function renderList(target, items) {
       target.innerHTML = "";
       for (const item of items) target.append(el("li", {}, item));
@@ -529,6 +638,7 @@
         ["不返回原始日志", safety.returnsRawLogs === false],
         ["不调用 OpenAI", safety.callsOpenAi === false],
         ["不启动麦克风/Realtime", safety.startsMicrophone === false && safety.usesRealtime === false],
+        ["不启动 worker", safety.startsWorkers === false],
         ["不执行电脑动作", safety.executesActions === false]
       ];
       return rows.map(([label, ok]) => `${ok ? "OK" : "CHECK"} · ${label}`);
@@ -555,6 +665,7 @@
         document.getElementById("refresh").textContent = `${Math.round(refreshMs / 1000)}s`;
 
         renderVoiceSetup(board.voiceSetup || {});
+        renderRecovery(board.recovery || {});
 
         const nodes = document.getElementById("nodes");
         nodes.innerHTML = "";

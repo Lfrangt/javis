@@ -470,6 +470,7 @@ export default {
     const boardVoiceSetup = progressBoard.voiceSetup || {};
     const boardChecklist = Array.isArray(boardVoiceSetup.goLiveChecklist) ? boardVoiceSetup.goLiveChecklist : [];
     const boardTimeline = Array.isArray(progressBoard.timeline) ? progressBoard.timeline : [];
+    const boardRecovery = progressBoard.recovery || {};
     const boardHtml = fs.readFileSync('docs/javis-status-board.html', 'utf8');
     out.push(
       progressBoardResponse.ok &&
@@ -497,20 +498,42 @@ export default {
         boardVoiceSetup.safety?.createsSpendLease === false &&
         boardVoiceSetup.safety?.startsMicrophone === false &&
         boardVoiceSetup.safety?.usesRealtime === false &&
+        boardRecovery.version === 1 &&
+        ['ready', 'warning', 'blocked'].includes(boardRecovery.status) &&
+        typeof boardRecovery.label === 'string' &&
+        typeof boardRecovery.summary === 'string' &&
+        typeof boardRecovery.command === 'string' &&
+        boardRecovery.previewOnly === true &&
+        boardRecovery.executed === false &&
+        typeof boardRecovery.gates?.manualOnly === 'boolean' &&
+        typeof boardRecovery.gates?.callsOpenAI === 'boolean' &&
+        boardRecovery.safety?.readOnly === true &&
+        boardRecovery.safety?.callsOpenAi === false &&
+        boardRecovery.safety?.createsSpendLease === false &&
+        boardRecovery.safety?.startsMicrophone === false &&
+        boardRecovery.safety?.usesRealtime === false &&
+        boardRecovery.safety?.startsWorkers === false &&
+        boardRecovery.safety?.executesActions === false &&
+        boardRecovery.safety?.returnsRawLogs === false &&
         progressBoard.safety?.callsOpenAi === false &&
         progressBoard.safety?.startsMicrophone === false &&
         progressBoard.safety?.usesRealtime === false &&
+        progressBoard.safety?.startsWorkers === false &&
         progressBoard.safety?.executesActions === false &&
         progressBoard.safety?.returnsRawLogs === false &&
         boardHtml.includes('id="voice-panel"') &&
+        boardHtml.includes('id="recovery-panel"') &&
         boardHtml.includes('renderVoiceSetup') &&
+        boardHtml.includes('renderRecovery') &&
         boardHtml.includes('goLiveChecklist') &&
+        boardHtml.includes('下一步恢复') &&
         boardHtml.includes('不返回原始日志')
-        ? ok('resident.progress_board_voice_setup', 'Progress board voice setup panel', `${boardVoiceSetup.rawStatus || boardVoiceSetup.status} · checklist=${boardChecklist.length} · timeline=${boardTimeline.length} · safety=no mic/no spend`)
-        : fail('resident.progress_board_voice_setup', 'Progress board voice setup panel', 'expected public progress board and HTML to embed sanitized read-only voice setup/go-live evidence without OpenAI, mic, Realtime, or actions', {
+        ? ok('resident.progress_board_voice_setup', 'Progress board voice setup panel', `${boardVoiceSetup.rawStatus || boardVoiceSetup.status} · recovery=${boardRecovery.actionId || boardRecovery.label} · checklist=${boardChecklist.length} · timeline=${boardTimeline.length} · safety=no mic/no spend`)
+        : fail('resident.progress_board_voice_setup', 'Progress board voice setup panel', 'expected public progress board and HTML to embed sanitized read-only voice setup/go-live/recovery evidence without OpenAI, mic, Realtime, workers, or actions', {
           status: progressBoardResponse.status,
           board: progressBoard,
           htmlHasVoicePanel: boardHtml.includes('id="voice-panel"'),
+          htmlHasRecoveryPanel: boardHtml.includes('id="recovery-panel"'),
         }),
     );
 
