@@ -58,6 +58,14 @@ export default {
           : fail('demos.replay_plan', 'Replay plan (dry-run)', `replay/plan not a safe dry-run (status ${plan.status}, execute=${plan.data?.execute})`, plan.data),
       );
 
+      // Bare replay/plan (no id) — plans the most-recent completed demonstration (this one).
+      const barePlan = await ctx.api('/api/demonstrations/replay/plan', { method: 'POST', body: { source: 'eval' } });
+      out.push(
+        barePlan.ok && barePlan.data?.ok !== false && barePlan.data?.execute !== true
+          ? ok('demos.replay_plan_bare', 'Replay plan (latest, dry-run)', `latest demo planned · execute=${barePlan.data?.execute}`)
+          : fail('demos.replay_plan_bare', 'Replay plan (latest, dry-run)', `bare replay/plan not a safe dry-run (status ${barePlan.status}, execute=${barePlan.data?.execute})`, barePlan.data),
+      );
+
       const draft = await ctx.api('/api/demonstrations/skill-draft', {
         method: 'POST',
         body: { id, source: 'eval' },
