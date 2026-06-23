@@ -1543,6 +1543,20 @@ export default {
         : fail('resident.context_aware_voice_prompt_pack', 'Context-aware voice prompt pack', 'expected promptPack to use existing work/browser/app/UI context before static examples'),
     );
 
+    const hasMultiSlotAppUiCache =
+      mainSource.includes('const APP_UI_CACHE_MAX_ENTRIES') &&
+      mainSource.includes('const accessibilityTreeCache = new Map()') &&
+      mainSource.includes('function rememberAccessibilityTree') &&
+      mainSource.includes('function findCachedAccessibilityTree') &&
+      mainSource.includes("cacheSlot: 'lru'") &&
+      mainSource.includes('entries: accessibilityTreeCache.size') &&
+      mainSource.includes('slots=${cache.entries ?? 0}/${cache.maxEntries');
+    out.push(
+      hasMultiSlotAppUiCache
+        ? ok('resident.app_ui_multi_slot_cache', 'App UI multi-slot cache', 'Accessibility outline cache keeps bounded app/window slots so ambient prewarm does not evict the previous current-window outline')
+        : fail('resident.app_ui_multi_slot_cache', 'App UI multi-slot cache', 'expected bounded app/window AX outline cache with LRU lookup and CUI slot count'),
+    );
+
     const petStandbyNoTerminal =
       mainSource.includes("id: 'open_local_input'") &&
       mainSource.includes('openLocalVoiceInput') &&

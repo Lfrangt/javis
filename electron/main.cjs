@@ -255,6 +255,7 @@ const CHROME_DEBUG_PORT = Math.max(0, Math.min(65535, Number(process.env.JAVIS_C
 const CHROME_CDP_PROFILE_DIR = process.env.JAVIS_CHROME_CDP_PROFILE_DIR || path.join(DATA_DIR, 'chrome-cdp-profile');
 const AX_TREE_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_TREE_TIMEOUT_MS || 25000)));
 const APP_UI_CACHE_MAX_AGE_MS = Math.max(1000, Math.min(60000, Number(process.env.JAVIS_APP_UI_CACHE_MAX_AGE_MS || 15000)));
+const APP_UI_CACHE_MAX_ENTRIES = Math.max(1, Math.min(20, Number(process.env.JAVIS_APP_UI_CACHE_MAX_ENTRIES || 8)));
 const AX_ACTION_TIMEOUT_MS = Math.max(3000, Math.min(60000, Number(process.env.JAVIS_AX_ACTION_TIMEOUT_MS || 25000)));
 const NOTIFICATIONS_ENABLED = process.env.JAVIS_NOTIFICATIONS !== 'false';
 const ATTENTION_NOTIFICATION_COOLDOWN_MS = Math.max(60000, Math.min(3600000, Number(process.env.JAVIS_ATTENTION_NOTIFICATION_COOLDOWN_MS || 600000)));
@@ -947,6 +948,7 @@ const windowModes = {
 };
 let latestScreen = null;
 let latestAccessibilityTree = null;
+const accessibilityTreeCache = new Map();
 let apiServer;
 let mainWindow;
 let composeAutoParkTimer = null;
@@ -15344,10 +15346,7 @@ if (!processes.length) {
       ...tree,
       outline: accessibilityTreeOutline(tree),
     };
-    latestAccessibilityTree = {
-      tree: result,
-      cachedAt: Date.now(),
-    };
+    rememberAccessibilityTree(result);
     appendAudit('accessibility_tree.read', {
       app: result.app,
       requestedApp,
@@ -15375,12 +15374,94 @@ if (!processes.length) {
         ? 'accessibility_tree_read_timeout'
         : String(error?.stderr || (error instanceof Error ? error.message : error)).split('\n')[0].slice(0, 500),
     };
-    latestAccessibilityTree = {
-      tree: result,
-      cachedAt: Date.now(),
-    };
+    rememberAccessibilityTree(result);
     return result;
   }
+}
+
+function accessibilityCacheText(value = '') {
+  return String(value || '').trim();
+}
+
+function accessibilityCacheApp(value = '') {
+  return accessibilityCacheText(value).toLowerCase();
+}
+
+function accessibilityTreeCacheKey(app = '', windowTitle = '') {
+  return `${accessibilityCacheApp(app)}\n${accessibilityCacheText(windowTitle)}`;
+}
+
+function rememberAccessibilityTree(result = {}) {
+  const cachedAt = Date.now();
+  latestAccessibilityTree = {
+    tree: result,
+    cachedAt,
+  };
+
+  const app = result.app || result.requestedApp || '';
+  const key = accessibilityTreeCacheKey(app, result.windowTitle || '');
+  if (!accessibilityCacheApp(app)) return latestAccessibilityTree;
+
+  accessibilityTreeCache.delete(key);
+  accessibilityTreeCache.set(key, {
+    key,
+    tree: result,
+    cachedAt,
+    app: result.app || app,
+    windowTitle: result.windowTitle || '',
+  });
+
+  while (accessibilityTreeCache.size > APP_UI_CACHE_MAX_ENTRIES) {
+    const oldest = accessibilityTreeCache.keys().next().value;
+    if (!oldest) break;
+    accessibilityTreeCache.delete(oldest);
+  }
+  return latestAccessibilityTree;
+}
+
+function accessibilityTreeCacheEntryMatches(entry = {}, options = {}) {
+  const tree = entry.tree || {};
+  const now = Number(options.now || Date.now());
+  const maxAgeMs = Number(options.maxAgeMs || 0);
+  if (!tree || !entry.cachedAt || now - entry.cachedAt > maxAgeMs) return false;
+  if (Number(tree.maxNodes || 0) < Number(options.maxNodes || 0)) return false;
+  if (Number(tree.maxDepth || 0) < Number(options.maxDepth || 0)) return false;
+
+  const requestedApp = accessibilityCacheApp(options.requestedApp || '');
+  const requestedWindowTitle = accessibilityCacheText(options.requestedWindowTitle || '');
+  if (requestedApp && accessibilityCacheApp(tree.app || entry.app || '') !== requestedApp) return false;
+  if (requestedWindowTitle && accessibilityCacheText(tree.windowTitle || entry.windowTitle || '') !== requestedWindowTitle) return false;
+  return true;
+}
+
+function findCachedAccessibilityTree(options = {}) {
+  if (options.useCache === false) return null;
+  const now = Date.now();
+  const matchOptions = { ...options, now };
+
+  const latestEntry = latestAccessibilityTree
+    ? { ...latestAccessibilityTree, app: latestAccessibilityTree.tree?.app || '', windowTitle: latestAccessibilityTree.tree?.windowTitle || '' }
+    : null;
+  if (latestEntry && accessibilityTreeCacheEntryMatches(latestEntry, matchOptions)) {
+    return {
+      ...latestEntry.tree,
+      cached: true,
+      cacheAgeMs: now - latestEntry.cachedAt,
+      cacheSlot: 'latest',
+    };
+  }
+
+  const entries = Array.from(accessibilityTreeCache.values()).reverse();
+  const entry = entries.find((item) => accessibilityTreeCacheEntryMatches(item, matchOptions));
+  if (!entry) return null;
+  accessibilityTreeCache.delete(entry.key);
+  accessibilityTreeCache.set(entry.key, entry);
+  return {
+    ...entry.tree,
+    cached: true,
+    cacheAgeMs: now - entry.cachedAt,
+    cacheSlot: 'lru',
+  };
 }
 
 function cachedAccessibilityTreeSnapshot(options = {}) {
@@ -15388,30 +15469,37 @@ function cachedAccessibilityTreeSnapshot(options = {}) {
   const maxAgeMs = Math.max(0, Math.min(60000, Number(options.maxAgeMs ?? 6000)));
   const requestedApp = String(options.app || options.application || '').trim();
   const requestedWindowTitle = String(options.windowTitle || '').trim();
-  if (options.useCache !== false && latestAccessibilityTree?.tree && Date.now() - latestAccessibilityTree.cachedAt <= maxAgeMs) {
-    const tree = latestAccessibilityTree.tree;
-    const appMatches = !requestedApp || String(tree.app || '').toLowerCase() === requestedApp.toLowerCase();
-    const windowMatches = !requestedWindowTitle || String(tree.windowTitle || '').trim() === requestedWindowTitle;
-    if (appMatches && windowMatches && Number(tree.maxNodes || 0) >= maxNodes && Number(tree.maxDepth || 0) >= maxDepth) {
-      return Promise.resolve({
-        ...tree,
-        cached: true,
-        cacheAgeMs: Date.now() - latestAccessibilityTree.cachedAt,
-      });
-    }
-  }
+  const cached = findCachedAccessibilityTree({
+    ...options,
+    requestedApp,
+    requestedWindowTitle,
+    maxAgeMs,
+    maxNodes,
+    maxDepth,
+  });
+  if (cached) return Promise.resolve(cached);
   return accessibilityTreeSnapshot({ ...options, maxNodes, maxDepth });
 }
 
 function appUiCacheStateSnapshot() {
   const tree = latestAccessibilityTree?.tree || null;
   const cachedAt = Number(latestAccessibilityTree?.cachedAt || 0);
+  const entries = Array.from(accessibilityTreeCache.values()).reverse();
   return {
     available: Boolean(tree?.available),
     app: tree?.app || '',
     windowTitle: tree?.windowTitle || '',
     source: tree?.source || '',
     ageMs: cachedAt ? Math.max(0, Date.now() - cachedAt) : null,
+    entries: accessibilityTreeCache.size,
+    maxEntries: APP_UI_CACHE_MAX_ENTRIES,
+    recent: entries.slice(0, 4).map((entry) => ({
+      app: entry.app || entry.tree?.app || '',
+      windowTitle: entry.windowTitle || entry.tree?.windowTitle || '',
+      ageMs: Math.max(0, Date.now() - Number(entry.cachedAt || 0)),
+      nodeCount: Number(entry.tree?.nodeCount || 0),
+      available: Boolean(entry.tree?.available),
+    })),
     nodeCount: Number(tree?.nodeCount || 0),
     truncated: Boolean(tree?.truncated),
     maxNodes: Number(tree?.maxNodes || 0),
@@ -28266,7 +28354,7 @@ function formatAppUiStatusForLocalCommand(status = {}) {
     : '-';
   return [
     `UI 预热: ${prewarm.enabled ? 'enabled' : 'disabled'} · status=${prewarm.lastStatus || 'idle'} · running=${prewarm.running ? 'yes' : 'no'}`,
-    `当前缓存: ${cache.available ? 'available' : 'unavailable'} · ${cacheFresh ? 'fresh' : 'stale'} · app=${cache.app || prewarm.lastApp || '-'} · age=${cacheAgeMs === null ? '-' : `${cacheAgeMs}ms`}`,
+    `当前缓存: ${cache.available ? 'available' : 'unavailable'} · ${cacheFresh ? 'fresh' : 'stale'} · app=${cache.app || prewarm.lastApp || '-'} · age=${cacheAgeMs === null ? '-' : `${cacheAgeMs}ms`} · slots=${cache.entries ?? 0}/${cache.maxEntries ?? APP_UI_CACHE_MAX_ENTRIES}`,
     cache.windowTitle ? `窗口: ${compactRecordText(cache.windowTitle, 180)}` : '',
     `节点: ${Number(cache.nodeCount || prewarm.lastNodeCount || 0)} · max=${Number(cache.maxNodes || 0)}/${Number(cache.maxDepth || 0)} · last=${lastCompletedAt}`,
     prewarm.lastError || cache.error ? `提示: ${compactRecordText(prewarm.lastError || cache.error, 220)}` : '',
