@@ -1319,6 +1319,99 @@ async function showVoiceStandby() {
   return result;
 }
 
+function printVoiceDoctor(result = {}) {
+  const standby = result.standby || {};
+  const provider = standby.provider || {};
+  const spend = standby.spendGuard || {};
+  const local = standby.local || {};
+  const primary = standby.primaryAction || {};
+  const inputMode = standby.inputMode || local.inputMode || {};
+  const wake = result.wake || {};
+  const wakeEngine = wake.engine || {};
+  const wakeHandoff = wake.handoff || {};
+  const sentinel = result.sentinel || {};
+  const sentinelGuard = sentinel.guard || {};
+  const sentinelForensics = sentinel.forensics || {};
+  const latencyReport = result.latency || {};
+  const latency = latencyReport.latency || {};
+  const resident = result.resident || {};
+  const residentHealth = resident.health || {};
+  const residentWatchdog = resident.watchdog || {};
+  const keyLine = provider.hasOpenAiKey
+    ? provider.status === 'ready' || !spend.zeroSpendLocked
+      ? 'saved'
+      : 'saved, spend-locked'
+    : 'missing';
+  const voiceReady = provider.status === 'ready' && primary.usesRealtime === true;
+  const localReady = local.available !== false && local.input?.endpoint;
+  const costSafe = sentinel.clear !== false && sentinelForensics.likelyBillableFromJavis !== true;
+
+  console.log('\nJAVIS Voice Doctor');
+  console.log('==================');
+  console.log(`Voice: ${voiceReady ? 'Realtime ready' : localReady ? 'local fallback ready' : 'attention'} · provider=${provider.status || '-'} · kind=${provider.kind || '-'} · key=${keyLine}`);
+  if (standby.summary) console.log(`Summary: ${compact(standby.summary, 320)}`);
+  if (standby.next) console.log(`Next: ${compact(standby.next, 320)}`);
+  console.log(`Entry: ${primary.label || primary.id || '-'}${primary.endpoint ? ` · ${primary.endpoint}` : ''}${primary.command ? ` · ${primary.command}` : ''}`);
+  console.log(`Entry safety: mic=${primary.startsMicrophone ? 'yes' : 'no'} · realtime=${primary.usesRealtime ? 'yes' : 'no'} · terminal=${primary.opensTerminal ? 'yes' : 'no'}`);
+  if (inputMode.mode) {
+    console.log(`Input mode: ${inputMode.label || inputMode.mode} · default=${inputMode.micDefault || '-'}`);
+  }
+
+  console.log('\nWhy live Realtime is not connected');
+  console.log(`Provider: ${provider.summary ? compact(provider.summary, 320) : provider.status || '-'}`);
+  if (provider.next) console.log(`Provider next: ${compact(provider.next, 320)}`);
+  if (provider.subscriptionBoundary) console.log(`Billing/API: ${compact(provider.subscriptionBoundary, 320)}`);
+  console.log(`OpenAI spend: ${spend.zeroSpendLocked ? 'zero-locked' : 'not zero-locked'} · cloud=${spend.mode || sentinelGuard.mode || '-'} · remaining=${spend.remainingTotal ?? sentinelGuard.remainingTotal ?? 0} · blocked=${spend.blockedCount ?? sentinelGuard.blockedCount ?? 0}`);
+  console.log(`Sentinel: ${sentinel.status || '-'} · clear=${sentinel.clear ? 'yes' : 'no'} · likely billable from JAVIS=${sentinelForensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${sentinelForensics.zeroLocked ? 'yes' : 'no'}`);
+
+  console.log('\nWake and local fallback');
+  console.log(`Wake: ${wake.softWakeOnly ? 'soft trigger only' : wakeEngine.running ? 'engine running' : 'engine stopped'} · pending=${wake.pending ? 'yes' : 'no'} · words=${Array.isArray(wake.words) ? wake.words.join(', ') : '-'}`);
+  console.log(`Wake handoff: ${wakeHandoff.mode || '-'} · ${wakeHandoff.label || '-'} · ${wakeHandoff.input?.endpoint || local.input?.endpoint || '/api/voice/command'}`);
+  console.log(`Local intake: ${local.mode || '-'} · ${local.input?.endpoint || '/api/voice/command'} · loop=${local.input?.openLoopCommand || 'npm run voice:chat'}`);
+  if (local.summary) console.log(`Local summary: ${compact(local.summary, 260)}`);
+
+  console.log('\nLatency and resident');
+  console.log(`Local latency: ${latencyReport.label || latencyReport.status || '-'} · avg=${latency.avgMs ?? 0}ms · p90=${latency.p90Ms ?? 0}ms · samples=${latency.count ?? 0}`);
+  console.log(`Resident: ${resident.status || residentHealth.status || '-'} · pid=${resident.pid || residentHealth.pid || '-'} · watchdog=${residentWatchdog.ready ? 'ready' : residentWatchdog.loaded ? 'loaded' : '-'}`);
+
+  console.log('\nCommands');
+  console.log('- npm run voice:doctor');
+  console.log('- npm run voice:chat');
+  console.log('- npm run wake -- "贾维斯"');
+  console.log('- npm run openai:sentinel');
+  console.log('- npm run dogfood:realtime-provider-probe');
+  console.log(`\nSafety: read-only=${result.safety?.readOnly !== false ? 'yes' : 'no'} starts mic=no uses Realtime=no calls OpenAI=no creates spend lease=no captures screen=no opens Terminal=no.`);
+}
+
+async function showVoiceDoctor() {
+  const [standbyResult, wakeResult, sentinelResult, latencyResult, residentResult] = await Promise.all([
+    request('/api/voice/standby').catch((error) => ({ standby: { provider: { status: 'error', summary: error instanceof Error ? error.message : String(error) } } })),
+    request('/api/wake/status').catch(() => ({ wake: null })),
+    request('/api/openai/spend-sentinel').catch(() => ({ sentinel: null })),
+    request('/api/voice/latency?limit=30&auditLimit=500').catch(() => ({ latency: null })),
+    request('/api/resident/status').catch(() => ({ resident: null })),
+  ]);
+  const result = {
+    standby: standbyResult.standby || standbyResult.voiceStandby || standbyResult || {},
+    wake: wakeResult.wake || wakeResult.wakeStatus || {},
+    sentinel: sentinelResult.sentinel || {},
+    latency: latencyResult.latency || {},
+    resident: residentResult.resident || residentResult || {},
+    safety: {
+      readOnly: true,
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      capturesScreen: false,
+      opensTerminal: false,
+      startsWorkers: false,
+    },
+  };
+  printVoiceDoctor(result);
+  return result;
+}
+
 function printVoiceStandbyPrimaryAction(result) {
   const primary = result?.primaryAction || {};
   const action = result?.action || {};
@@ -5167,6 +5260,11 @@ async function main() {
 
   if (process.argv.includes('--print-voice-latency') || process.argv.includes('--voice-latency') || process.argv.includes('--latency')) {
     await showVoiceLatency();
+    return;
+  }
+
+  if (process.argv.includes('--print-voice-doctor') || process.argv.includes('--voice-doctor') || process.argv.includes('--voice-health')) {
+    await showVoiceDoctor();
     return;
   }
 

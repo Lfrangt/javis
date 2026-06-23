@@ -2172,6 +2172,40 @@ export default {
       out.push(fail('voice_command.dogfood_preview', 'Local voice command dogfood', error instanceof Error ? error.message : String(error)));
     }
 
+    try {
+      const { stdout } = await execFileAsync('npm', [
+        'run',
+        'voice:doctor',
+      ], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          JAVIS_API_BASE: ctx.baseUrl,
+          ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+        },
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+      });
+      out.push(
+        stdout.includes('JAVIS Voice Doctor') &&
+          stdout.includes('Voice:') &&
+          stdout.includes('Why live Realtime is not connected') &&
+          stdout.includes('Wake and local fallback') &&
+          stdout.includes('Latency and resident') &&
+          stdout.includes('npm run voice:chat') &&
+          stdout.includes('starts mic=no') &&
+          stdout.includes('uses Realtime=no') &&
+          stdout.includes('calls OpenAI=no') &&
+          stdout.includes('creates spend lease=no') &&
+          stdout.includes('captures screen=no') &&
+          stdout.includes('opens Terminal=no')
+          ? ok('voice_command.voice_doctor_cui', 'Voice doctor CUI', 'single read-only voice diagnosis prints Realtime, wake, spend, latency, resident, and safety state')
+          : fail('voice_command.voice_doctor_cui', 'Voice doctor CUI', 'npm run voice:doctor did not print the read-only voice diagnosis contract', { stdout }),
+      );
+    } catch (error) {
+      out.push(fail('voice_command.voice_doctor_cui', 'Voice doctor CUI', error instanceof Error ? error.message : String(error)));
+    }
+
     const localCliTranscript = '看一下当前窗口，判断下一步应该交给哪个本地通道，先不要执行。';
     try {
       const { stdout } = await execFileAsync('npm', [

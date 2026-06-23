@@ -51,6 +51,7 @@
     "dogfood:productivity-live": "node scripts/productivity-dogfood.mjs",
     "dogfood:workers-live": "JAVIS_EVAL_LIVE_WORKERS=true node scripts/eval/run.mjs --only=workers-live",
     "dogfood:realtime-live": "JAVIS_EVAL_REALTIME_DOGFOOD=true node scripts/eval/run.mjs --only=realtime-live-dogfood",
+    "voice:doctor": "node scripts/config-cui.cjs --print-voice-doctor",
     "voice:standby": "node scripts/config-cui.cjs --print-voice-standby",
     "voice:entry": "node scripts/config-cui.cjs --voice-entry",
     "voice:open": "node scripts/config-cui.cjs --open-voice-entry",

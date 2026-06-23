@@ -150,12 +150,13 @@ In the interactive CUI, option `1B` prints the same plan and can open the OpenAI
 For "why is Realtime not connected" questions, use the no-cost recovery guide instead of immediately trying a provider call:
 
 ```bash
+npm run voice:doctor
 npm run voice:chat
 # then type /realtime or /unlock
 curl http://127.0.0.1:3417/api/realtime/recovery-guide
 ```
 
-Natural local transcripts such as `实时语音为什么连不上，是什么意思？` route to the same recovery guide. It reads Realtime provider health, the OpenAI spend guard, the egress guard, the one-request lease state, and the local fallback entry point, but it does not call OpenAI, create a spend lease, start microphone capture, create a Realtime session, open a browser, open Terminal, or capture the screen.
+`npm run voice:doctor` is the quickest local voice entry diagnosis. It combines voice standby, wake handoff, OpenAI spend sentinel, local voice latency, and resident health in one read-only report, so an operator can see whether the right path is live Realtime, local no-mic fallback, wake/hotkey repair, or explicit paid-provider unlock. Natural local transcripts such as `实时语音为什么连不上，是什么意思？` route to the same recovery guide. These checks read Realtime provider health, the OpenAI spend guard, the egress guard, the one-request lease state, and the local fallback entry point, but they do not call OpenAI, create a spend lease, start microphone capture, create a Realtime session, open a browser, open Terminal, or capture the screen.
 
 Before opening a real microphone session, preview the no-mic provider probe. Preview mode makes no OpenAI request. Confirmed run mode creates a renderer WebRTC offer without `getUserMedia`, calls the same OpenAI Realtime provider path with `probe=true`, records HTTP status/error evidence, and closes immediately, but it is intentionally high friction:
 
