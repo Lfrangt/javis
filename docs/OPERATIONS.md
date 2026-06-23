@@ -344,6 +344,17 @@ curl -H "X-JAVIS-Token: $TOKEN" "http://127.0.0.1:3417/api/tasks/parallel/prefli
 
 The same local path handles natural no-mic phrases such as `开20个Agent先预检一下`. It reports requested slots, safe concurrency, parallel waves, Codex/Claude/local/background readiness, serialized write conflicts, and blocked lanes. It does not start workers, open Terminal, call OpenAI, start microphone capture, create Realtime sessions, write route records, or mutate files.
 
+When tasks are supplied to `/api/tasks/parallel`, large requests are not silently truncated. The router accepts up to the 20-agent request cap, routes only the selected safe wave by default, and returns `executionPlan` with the original task indexes, remaining parallel waves, serialized queue, and blocked lanes:
+
+```bash
+curl -X POST http://127.0.0.1:3417/api/tasks/parallel \
+  -H "X-JAVIS-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"execute":false,"requestedAgents":20,"tasks":[{"task":"Read docs A","mode":"codex","scope":"docs/A.md","access":"read"}]}'
+```
+
+Use `waveIndex` on a later call with the same task payload to route a later wave deliberately. `execute:true` queues only the selected wave; it does not start microphone capture, create a Realtime session, open frontmost Terminal windows, or bypass the worker/action policy.
+
 The evaluation harness is broader than doctor. Doctor checks setup and safety readiness; eval probes product lanes through the live local API with read-only or preview actions, then prints a scorecard:
 
 ```bash

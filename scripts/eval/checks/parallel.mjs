@@ -63,6 +63,76 @@ export default {
         }),
     );
 
+    const waveGroup = `eval-parallel-wave-${Date.now()}`;
+    const wavePreview = await ctx.api('/api/tasks/parallel', {
+      method: 'POST',
+      body: {
+        execute: false,
+        requestedAgents: 20,
+        parallelGroup: waveGroup,
+        source: 'eval_parallel_wave_preview',
+        tasks: preflightTasks,
+      },
+      timeoutMs: 20000,
+    });
+    const waveData = wavePreview.data || {};
+    const wavePlan = waveData.executionPlan || {};
+    const waveResults = Array.isArray(waveData.results) ? waveData.results : [];
+    const expectedSelected = Array.isArray(wavePlan.selectedIndexes) ? wavePlan.selectedIndexes : [];
+    const wavePreviewSafe =
+      wavePreview.ok &&
+      waveData.executed === false &&
+      waveData.preflight?.counts?.acceptedTasks === Math.min(20, preflight.maxRequestedAgents) &&
+      wavePlan.mode === 'wave' &&
+      wavePlan.acceptedTasks === Math.min(20, preflight.maxRequestedAgents) &&
+      wavePlan.selectedCount === waveResults.length &&
+      waveResults.length === Math.min(wavePlan.safeConcurrency, preflightCounts.readyParallel) &&
+      expectedSelected.length === waveResults.length &&
+      waveResults.every((item, index) => item.index === expectedSelected[index]) &&
+      wavePlan.pending === true &&
+      wavePlan.pendingParallelCount > 0 &&
+      Array.isArray(wavePlan.remainingParallelBatches) &&
+      wavePlan.remainingParallelBatches.length >= 1 &&
+      Array.isArray(wavePlan.serialQueue) &&
+      wavePlan.serialQueue.length >= 1 &&
+      waveData.counts?.total === waveResults.length &&
+      waveData.maxAgentRequests >= 20;
+    out.push(
+      wavePreviewSafe
+        ? ok('parallel.route_20_first_wave', '20-task parallel route first wave', `routed=${waveResults.length}/${wavePlan.acceptedTasks} pending=${wavePlan.pendingParallelCount} serial=${wavePlan.serialQueue.length}`)
+        : fail('parallel.route_20_first_wave', '20-task parallel route first wave', 'expected /api/tasks/parallel to route only the safe first wave while retaining pending wave/serial plan', waveData),
+    );
+
+    const waveTwoPreview = await ctx.api('/api/tasks/parallel', {
+      method: 'POST',
+      body: {
+        execute: false,
+        requestedAgents: 20,
+        waveIndex: 1,
+        parallelGroup: `${waveGroup}:wave2`,
+        source: 'eval_parallel_wave_two_preview',
+        tasks: preflightTasks,
+      },
+      timeoutMs: 20000,
+    });
+    const waveTwoData = waveTwoPreview.data || {};
+    const waveTwoPlan = waveTwoData.executionPlan || {};
+    const waveTwoResults = Array.isArray(waveTwoData.results) ? waveTwoData.results : [];
+    const waveTwoSafe =
+      waveTwoPreview.ok &&
+      waveTwoPlan.mode === 'wave' &&
+      waveTwoPlan.waveIndex === 1 &&
+      waveTwoPlan.selectedIndexes?.[0] === 6 &&
+      waveTwoResults[0]?.index === 6 &&
+      waveTwoResults.length === waveTwoPlan.selectedCount &&
+      waveTwoPlan.pending === true &&
+      waveTwoPlan.safety?.preservesOriginalIndexes === true;
+    out.push(
+      waveTwoSafe
+        ? ok('parallel.route_20_second_wave', '20-task parallel route second wave', `indexes=${waveTwoPlan.selectedIndexes.join(',')}`)
+        : fail('parallel.route_20_second_wave', '20-task parallel route second wave', 'expected waveIndex=1 to route the second safe wave with original task indexes preserved', waveTwoData),
+    );
+
     const spendBeforeVoicePreflight = await ctx.api('/api/openai/spend-guard');
     const spendBeforeCount = Number(spendBeforeVoicePreflight.data?.spendGuard?.counts?.total || 0);
     const naturalPreflight = await ctx.api('/api/voice/command', {

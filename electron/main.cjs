@@ -35358,6 +35358,96 @@ function compactParallelPreflightSnapshot(preflight = {}) {
   };
 }
 
+function boundedParallelWaveIndex(value) {
+  const raw = Number(value);
+  if (!Number.isFinite(raw) || raw < 0) return 0;
+  return Math.max(0, Math.floor(raw));
+}
+
+function parallelRouteExecutionPlan(tasks = [], preflight = {}, options = {}) {
+  const waveIndex = boundedParallelWaveIndex(options.waveIndex ?? options.wave ?? options.batch ?? 0);
+  const batches = Array.isArray(preflight.parallelBatches) ? preflight.parallelBatches : [];
+  const selectedBatch = batches[waveIndex] || null;
+  const limitedToWave = tasks.length > MAX_PARALLEL_TASKS || options.waveIndex !== undefined || options.wave !== undefined || options.batch !== undefined;
+  const selectedIndexes = limitedToWave
+    ? new Set((selectedBatch?.items || []).map((item) => Number(item.index)).filter((index) => Number.isInteger(index)))
+    : new Set(tasks.map((_, index) => index));
+  const selectedTasks = tasks
+    .map((item, index) => ({ ...item, parallelOriginalIndex: index }))
+    .filter((_, index) => selectedIndexes.has(index));
+  const routedIndexes = selectedTasks.map((item) => Number(item.parallelOriginalIndex));
+  const remainingParallelBatches = batches
+    .filter((batch) => batch.index !== waveIndex)
+    .map((batch) => ({
+      index: batch.index,
+      label: batch.label,
+      count: batch.count,
+      itemIndexes: (batch.items || []).map((item) => item.index),
+    }));
+  const serialQueue = Array.isArray(preflight.serialQueue) ? preflight.serialQueue : [];
+  const blocked = Array.isArray(preflight.blocked) ? preflight.blocked : [];
+  const acceptedTasks = Number(preflight.counts?.acceptedTasks || tasks.length || 0);
+  const pendingParallelCount = Math.max(0, remainingParallelBatches.reduce((sum, batch) => sum + Number(batch.count || 0), 0));
+  return {
+    mode: limitedToWave ? 'wave' : 'all_tasks',
+    waveIndex,
+    waveLabel: selectedBatch?.label || (limitedToWave ? `parallel wave ${waveIndex + 1}` : 'all supplied tasks'),
+    acceptedTasks,
+    safeConcurrency: preflight.safeConcurrency || MAX_PARALLEL_TASKS,
+    selectedCount: selectedTasks.length,
+    selectedIndexes: routedIndexes,
+    routedOriginalIndexes: routedIndexes,
+    pending: selectedTasks.length < acceptedTasks,
+    pendingParallelCount,
+    remainingParallelBatches,
+    serialQueue,
+    blocked,
+    counts: {
+      selected: selectedTasks.length,
+      accepted: acceptedTasks,
+      pendingParallel: pendingParallelCount,
+      serialRequired: serialQueue.length,
+      blocked: blocked.length,
+      remainingWaves: remainingParallelBatches.length,
+    },
+    nextAction: remainingParallelBatches.length
+      ? `Route wave ${remainingParallelBatches[0].index + 1} after the current wave is reviewed.`
+      : serialQueue.length
+        ? 'Review serialized scopes after the active owner finishes.'
+        : blocked.length
+          ? 'Fix worker readiness for blocked lanes.'
+          : 'All supplied tasks were covered by this routing call.',
+    safety: {
+      batchesLargeRequests: tasks.length > MAX_PARALLEL_TASKS,
+      preservesOriginalIndexes: true,
+      startsOnlySelectedWave: true,
+      serializesOverlappingWriteScopes: true,
+    },
+    selectedTasks,
+  };
+}
+
+function compactParallelExecutionPlan(plan = {}) {
+  return {
+    mode: plan.mode,
+    waveIndex: plan.waveIndex,
+    waveLabel: plan.waveLabel,
+    acceptedTasks: plan.acceptedTasks,
+    safeConcurrency: plan.safeConcurrency,
+    selectedCount: plan.selectedCount,
+    selectedIndexes: plan.selectedIndexes,
+    routedOriginalIndexes: plan.routedOriginalIndexes,
+    pending: plan.pending,
+    pendingParallelCount: plan.pendingParallelCount,
+    remainingParallelBatches: plan.remainingParallelBatches,
+    serialQueue: plan.serialQueue,
+    blocked: plan.blocked,
+    counts: plan.counts,
+    nextAction: plan.nextAction,
+    safety: plan.safety,
+  };
+}
+
 function previewParallelCliTask(item, context = {}) {
   const decision = {
     lane: 'local',
@@ -35442,18 +35532,59 @@ async function routeParallelTasks(options = {}) {
       ? options.items
       : [];
   const preflight = parallelWorkbenchPreflightSnapshot(options);
-  const tasks = applyParallelOwnership(rawTasks
-    .slice(0, MAX_PARALLEL_TASKS)
+  const normalizedTasks = rawTasks
+    .slice(0, MAX_PARALLEL_AGENT_REQUESTS)
     .map((item, index) => normalizeParallelTaskItem(item, index, options))
-    .filter((item) => item.task || item.command));
-  if (!tasks.length) throw new Error('No parallel tasks were provided.');
+    .filter((item) => item.task || item.command);
+  const allTasks = applyParallelOwnership(normalizedTasks);
+  if (!allTasks.length) throw new Error('No parallel tasks were provided.');
+  const executionPlan = parallelRouteExecutionPlan(allTasks, preflight, options);
+  const tasks = executionPlan.selectedTasks || [];
   const execute = options.execute === true || String(options.execute || '').toLowerCase() === 'true';
   const parallelGroup = String(options.parallelGroup || options.group || `parallel:${crypto.randomUUID()}`).slice(0, 120);
   const source = String(options.source || 'parallel_router').slice(0, 80);
   const startedAt = Date.now();
   const results = [];
 
+  if (!tasks.length) {
+    const output = [
+      `Parallel group ${parallelGroup}: no runnable task in ${executionPlan.waveLabel || 'selected wave'}.`,
+      executionPlan.nextAction,
+    ].filter(Boolean).join('\n');
+    appendAudit('task_parallel.routed', {
+      parallelGroup,
+      execute,
+      total: 0,
+      ok: 0,
+      queued: 0,
+      ownershipConflicts: executionPlan.serialQueue?.length || 0,
+      source,
+      waveIndex: executionPlan.waveIndex,
+      selectedCount: 0,
+      acceptedTasks: executionPlan.acceptedTasks,
+    });
+    return {
+      ok: false,
+      executed: execute,
+      parallelGroup,
+      maxTasks: MAX_PARALLEL_TASKS,
+      maxAgentRequests: MAX_PARALLEL_AGENT_REQUESTS,
+      elapsedMs: Date.now() - startedAt,
+      counts: parallelRouteCounts([]),
+      preflight: compactParallelPreflightSnapshot(preflight),
+      executionPlan: compactParallelExecutionPlan(executionPlan),
+      ownership: {
+        conflicts: executionPlan.serialQueue?.length || 0,
+        serialized: executionPlan.serialQueue || [],
+      },
+      results: [],
+      routingLedger: [],
+      output,
+    };
+  }
+
   for (const [index, item] of tasks.entries()) {
+    const originalIndex = Number.isInteger(item.parallelOriginalIndex) ? item.parallelOriginalIndex : index;
     try {
       let result;
       if (execute && item.ownership?.serialized) {
@@ -35513,7 +35644,8 @@ async function routeParallelTasks(options = {}) {
             });
       }
       results.push({
-        index,
+        index: originalIndex,
+        waveIndex: executionPlan.waveIndex,
         task: item.task,
         command: item.command ? redactCommandForLog(item.command) : '',
         ok: result.ok !== false,
@@ -35526,7 +35658,8 @@ async function routeParallelTasks(options = {}) {
       });
     } catch (error) {
       results.push({
-        index,
+        index: originalIndex,
+        waveIndex: executionPlan.waveIndex,
         task: item.task,
         command: item.command ? redactCommandForLog(item.command) : '',
         ok: false,
@@ -35555,6 +35688,10 @@ async function routeParallelTasks(options = {}) {
     queued: counts.queued,
     ownershipConflicts,
     source,
+    waveIndex: executionPlan.waveIndex,
+    selectedCount: executionPlan.selectedCount,
+    acceptedTasks: executionPlan.acceptedTasks,
+    pendingParallelCount: executionPlan.pendingParallelCount,
   });
 
   return {
@@ -35562,9 +35699,11 @@ async function routeParallelTasks(options = {}) {
     executed: execute,
     parallelGroup,
     maxTasks: MAX_PARALLEL_TASKS,
+    maxAgentRequests: MAX_PARALLEL_AGENT_REQUESTS,
     elapsedMs: Date.now() - startedAt,
     counts,
     preflight: compactParallelPreflightSnapshot(preflight),
+    executionPlan: compactParallelExecutionPlan(executionPlan),
     ownership: {
       conflicts: ownershipConflicts,
       serialized: results.filter((item) => item.ownership?.serialized).map((item) => ({
