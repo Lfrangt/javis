@@ -795,6 +795,9 @@ function printVoiceStandbyGuide(action = {}) {
   if (primary.id) console.log(`Primary: ${primary.id}`);
   if (primary.endpoint) console.log(`Endpoint: ${primary.endpoint}`);
   if (standby.mode) console.log(`Standby: ${standby.mode}`);
+  console.log(`Run: npm run work:run -- --action-id ${action.id || 'voice:standby_primary'}`);
+  console.log(`Open input: npm run voice:open`);
+  console.log(`Run API: POST /api/work/next {"actionId":"${action.id || 'voice:standby_primary'}","execute":true}`);
   console.log(`Safety: starts microphone=${primary.startsMicrophone ? 'yes' : 'no'}; realtime=${primary.usesRealtime ? 'yes' : 'no'}; opens Terminal=${primary.opensTerminal ? 'yes' : 'no'}`);
   return true;
 }

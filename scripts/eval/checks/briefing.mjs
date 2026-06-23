@@ -470,6 +470,9 @@ export default {
         output.includes('Guide: Use local no-mic pet input while Realtime is unavailable or spend-locked.') &&
         output.includes('Zero-spend fallback: OpenAI spend is locked; no provider request will be sent.') &&
         output.includes('Primary: open_local_input') &&
+        output.includes('Run: npm run work:run -- --action-id voice:standby_primary') &&
+        output.includes('Open input: npm run voice:open') &&
+        output.includes('Run API: POST /api/work/next {"actionId":"voice:standby_primary","execute":true}') &&
         output.includes('Safety: starts microphone=no; realtime=no; opens Terminal=no');
       const hasRouteRecoveryGuide =
         output.includes('Guide: Continue routed work via') &&
