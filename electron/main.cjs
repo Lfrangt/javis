@@ -14901,10 +14901,52 @@ async function readBrowserContextForApp(appName, source = 'requested') {
   }
 }
 
+async function browserContextFromCdpFallback(options = {}) {
+  const appName = String(options.app || '').trim();
+  if (!appName || !CHROMIUM_BROWSER_APPS.has(appName)) return null;
+  const cdp = await cdpStatusSnapshot({});
+  const target = cdp.selectedTarget || null;
+  if (!cdp.enabled || !target) return null;
+  const previous = options.previous && typeof options.previous === 'object' ? options.previous : {};
+  const context = {
+    available: true,
+    supported: true,
+    app: appName,
+    title: String(target.title || ''),
+    url: String(target.url || ''),
+    source: String(options.source || 'cdp_fallback').slice(0, 80),
+    fallback: 'cdp',
+    fallbackFrom: previous.source || previous.fallbackFrom || '',
+    error: previous.error ? `${compactRecordText(previous.error, 160)}; used_cdp_context_fallback` : '',
+    cdp: {
+      enabled: true,
+      port: cdp.port,
+      targets: cdp.targets,
+      selectedTarget: target,
+    },
+  };
+  appendAudit('browser_context.cdp_fallback_selected', {
+    app: context.app,
+    title: compactRecordText(context.title, 160),
+    url: compactRecordText(context.url, 500),
+    previousError: compactRecordText(previous.error || '', 180),
+    source: context.source,
+  });
+  return context;
+}
+
 async function browserContextSnapshot(options = {}) {
   const frontmost = options.frontmost || await frontmostAppSnapshot();
   const requestedApp = String(options.app || '').trim();
-  if (requestedApp) return readBrowserContextForApp(requestedApp, 'requested');
+  if (requestedApp) {
+    const requested = await readBrowserContextForApp(requestedApp, 'requested');
+    if (requested.available) return requested;
+    return await browserContextFromCdpFallback({
+      app: requested.supported ? requested.app : requestedApp,
+      source: 'requested_cdp',
+      previous: requested,
+    }) || requested;
+  }
 
   let frontmostResult = null;
   let lastSupportedResult = null;
@@ -14935,6 +14977,17 @@ async function browserContextSnapshot(options = {}) {
       return result;
     }
   }
+
+  const cdpApp = [
+    lastSupportedResult?.app,
+    ...browserAppCandidates(runningNames, frontmost.app),
+  ].find((appName) => CHROMIUM_BROWSER_APPS.has(appName));
+  const cdpFallback = await browserContextFromCdpFallback({
+    app: cdpApp,
+    source: 'auto_cdp',
+    previous: lastSupportedResult || frontmostResult || {},
+  });
+  if (cdpFallback) return cdpFallback;
 
   if (lastSupportedResult) {
     appendAudit('browser_context.auto_target_unavailable', {

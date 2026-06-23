@@ -20,6 +20,7 @@ export default {
 
     const readiness = await ctx.api('/api/browser/readiness');
     const r = readiness.data?.readiness;
+    const cdpFallbackActive = c?.fallback === 'cdp';
     out.push(
       readiness.ok &&
         r?.version === 1 &&
@@ -39,6 +40,23 @@ export default {
         Array.isArray(r?.nextActions)
         ? ok('browser.readiness', 'Browser readiness packet', `${r.status || 'unknown'} · default=${r.defaultTarget.mode} · no window picker`)
         : fail('browser.readiness', 'Browser readiness packet', `GET /api/browser/readiness ${readiness.status}`, readiness.data),
+    );
+    out.push(
+      !cdpFallbackActive ||
+        (readiness.ok &&
+          r?.status === 'ready' &&
+          r?.context?.fallback === 'cdp' &&
+          r?.bridges?.cdp?.enabled === true &&
+          r?.bridges?.javascript?.status === 'ready_via_cdp' &&
+          r?.capabilities?.context?.status === 'ready' &&
+          r?.capabilities?.page?.status === 'ready' &&
+          r?.capabilities?.dom?.status === 'ready' &&
+          r?.capabilities?.control?.status === 'ready')
+        ? ok('browser.cdp_context_fallback', 'Browser CDP context fallback', cdpFallbackActive ? 'CDP target keeps browser page/dom/control ready without a window picker' : 'Apple Events browser context is available')
+        : fail('browser.cdp_context_fallback', 'Browser CDP context fallback', 'when Apple Events browser context is unavailable but CDP has a page target, readiness should remain ready through the CDP fallback', {
+            context: c,
+            readiness: r,
+          }),
     );
 
     const preparePreview = await ctx.api('/api/browser/prepare', {
@@ -75,6 +93,8 @@ export default {
     const packageSource = fs.readFileSync('package.json', 'utf8');
     const hasBrowserWorkNextRecovery =
       mainSource.includes('function browserUnavailableRecoveryAction') &&
+      mainSource.includes('async function browserContextFromCdpFallback') &&
+      mainSource.includes('used_cdp_context_fallback') &&
       mainSource.includes('async function browserPrepareAction') &&
       mainSource.includes('function browserPreparedTargetSnapshot') &&
       mainSource.includes('function rememberBrowserReadiness') &&
