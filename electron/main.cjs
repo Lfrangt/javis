@@ -2557,8 +2557,90 @@ function setDesktopClassroomMode(enabled, options = {}) {
   };
 }
 
-function captureClipboardToInbox(source = 'hotkey') {
-  const item = createInboxItem({ fromClipboard: true, source });
+function clipboardInboxCapture(options = {}) {
+  const source = compactRecordText(options.source || 'api', 80) || 'api';
+  const executeRequested = inboxTruthyFlag(options.execute);
+  const notify = options.notify === true;
+  const text = clipboard.readText() || '';
+  const body = String(text || '').trim();
+  const bytes = Buffer.byteLength(body, 'utf8');
+  const firstLine = body.split('\n').find(Boolean) || '';
+  const title = compactRecordText(options.title || firstLine || 'Clipboard capture', 180);
+  const clipboardSummary = {
+    hasText: body.length > 0,
+    length: body.length,
+    bytes,
+    preview: body ? compactRecordText(body.replace(/\s+/g, ' '), 220) : '',
+    truncated: body.length > 220,
+  };
+  const safety = {
+    readsClipboardText: true,
+    storesClipboardText: false,
+    writesInbox: false,
+    startsMicrophone: false,
+    usesRealtime: false,
+    callsOpenAI: false,
+    startsWorkers: false,
+    opensTerminal: false,
+    capturesScreen: false,
+    mutatesUserFiles: false,
+  };
+
+  if (!body) {
+    return {
+      ok: false,
+      status: 'empty_clipboard',
+      executeRequested,
+      previewOnly: true,
+      executed: false,
+      item: null,
+      itemPreview: null,
+      clipboard: clipboardSummary,
+      inbox: { counts: inboxCounts(), open: inboxSnapshot(5, 'open') },
+      safety,
+      output: 'Clipboard is empty; Inbox capture skipped.',
+    };
+  }
+
+  if (bytes > 20000) {
+    return {
+      ok: false,
+      status: 'clipboard_too_large',
+      executeRequested,
+      previewOnly: true,
+      executed: false,
+      item: null,
+      itemPreview: { title, source, bodyLength: body.length, bytes },
+      clipboard: clipboardSummary,
+      inbox: { counts: inboxCounts(), open: inboxSnapshot(5, 'open') },
+      safety,
+      output: 'Clipboard text is too large for one Inbox item.',
+    };
+  }
+
+  if (!executeRequested) {
+    return {
+      ok: true,
+      status: 'preview',
+      executeRequested,
+      previewOnly: true,
+      executed: false,
+      item: null,
+      itemPreview: { title, source, bodyLength: body.length, bytes },
+      clipboard: clipboardSummary,
+      inbox: { counts: inboxCounts(), open: inboxSnapshot(5, 'open') },
+      safety,
+      output: 'Inbox clipboard capture preview only. Pass execute:true to save it locally.',
+    };
+  }
+
+  const item = createInboxItem({
+    title,
+    body,
+    source,
+    priority: options.priority,
+    tags: options.tags,
+  });
   lastInboxCapture = {
     id: item.id,
     title: item.title,
@@ -2569,10 +2651,43 @@ function captureClipboardToInbox(source = 'hotkey') {
     id: item.id,
     source,
     title: item.title,
-    hotkey: source === 'hotkey' ? CAPTURE_HOTKEY : '',
+    hotkey: (options.hotkey || source === 'hotkey') ? CAPTURE_HOTKEY : '',
   });
-  notifyResident('JAVIS inbox captured', 'Clipboard text was saved to Inbox.', { type: 'inbox', id: item.id, source });
+  if (notify) {
+    notifyResident('JAVIS inbox captured', 'Clipboard text was saved to Inbox.', { type: 'inbox', id: item.id, source });
+  }
   updateMenuBarMenu();
+  const executedSafety = {
+    ...safety,
+    storesClipboardText: true,
+    writesInbox: true,
+  };
+  return {
+    ok: true,
+    status: 'saved',
+    executeRequested,
+    previewOnly: false,
+    executed: true,
+    item,
+    itemPreview: { title: item.title, source: item.source, bodyLength: item.body.length, bytes },
+    clipboard: clipboardSummary,
+    inbox: { counts: inboxCounts(), open: inboxSnapshot(5, 'open') },
+    safety: executedSafety,
+    output: `Inbox clipboard capture saved: ${compactRecordText(item.title, 120)}`,
+  };
+}
+
+function captureClipboardToInbox(source = 'hotkey') {
+  const result = clipboardInboxCapture({
+    source,
+    execute: true,
+    notify: true,
+    hotkey: source === 'hotkey',
+  });
+  if (!result.ok || !result.item) {
+    throw new Error(result.output || 'Inbox clipboard capture failed.');
+  }
+  const item = result.item;
   return item;
 }
 
@@ -64218,15 +64333,20 @@ async function executeTool(name, args) {
 
   if (name === 'capture_inbox_item') {
     try {
-      const item = args?.fromClipboard
-        ? captureClipboardToInbox('voice')
-        : createInboxItem({
-            title: args?.title,
-            body: args?.body || args?.text,
-            priority: args?.priority,
-            tags: args?.tags,
-            source: 'voice',
-          });
+      if (args?.fromClipboard) {
+        const result = clipboardInboxCapture({
+          ...(args || {}),
+          source: 'voice',
+        });
+        return { ok: result.ok, output: JSON.stringify(result) };
+      }
+      const item = createInboxItem({
+        title: args?.title,
+        body: args?.body || args?.text,
+        priority: args?.priority,
+        tags: args?.tags,
+        source: 'voice',
+      });
       return { ok: true, output: JSON.stringify({ item, counts: inboxCounts() }) };
     } catch (error) {
       return { ok: false, output: error instanceof Error ? error.message : String(error) };
@@ -64558,7 +64678,7 @@ function createRealtimeSessionConfig(options = {}) {
       'Use save_ui_demonstration_skill only after the user explicitly confirms saving a specific demonstration skill draft. Pass confirm:true only after that confirmation; saving writes to the local user skills directory and does not grant new permissions.',
       'UI demonstrations are explicit local learning records; they store user notes plus sanitized app/browser/screen/accessibility summaries, never screenshots or raw clipboard text. Replay must re-observe the live UI before acting.',
       'Use get_inbox when the user asks what is waiting, what they captured, or which Inbox items are open.',
-      'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory.',
+      'Use capture_inbox_item when the user asks to save, remember for later, capture the clipboard, or add a follow-up without making it durable memory. Clipboard capture previews by default; pass execute:true only after the user explicitly asks to save the current clipboard.',
       'Use process_next_inbox when the user asks to process, do, run, or start the next Inbox item. It previews by default; pass execute:true only after the user asks to run it, and pass confirm:true only after they confirm that exact next item.',
       'Use route_inbox_item when the user asks to do, process, run, or send an Inbox item into the task lanes. It previews by default; pass execute:true plus confirm:true only after explicit confirmation.',
       'Use continue_workflow when the user says to continue, resume, or do the next step from a previous workflow.',
@@ -66185,7 +66305,7 @@ function createRealtimeSessionConfig(options = {}) {
       {
         type: 'function',
         name: 'capture_inbox_item',
-        description: 'Capture a local follow-up item into Inbox, optionally from the current clipboard. This is not durable memory.',
+        description: 'Capture a local follow-up item into Inbox, optionally from the current clipboard. This is not durable memory. Clipboard capture previews by default; pass execute:true only after explicit user intent to save.',
         parameters: {
           type: 'object',
           properties: {
@@ -66193,6 +66313,7 @@ function createRealtimeSessionConfig(options = {}) {
             body: { type: 'string' },
             text: { type: 'string' },
             fromClipboard: { type: 'boolean' },
+            execute: { type: 'boolean' },
             priority: { type: 'number' },
             tags: {
               type: 'array',
@@ -67665,8 +67786,13 @@ function startApiServer() {
 
   api.post('/api/inbox/capture-clipboard', express.json({ limit: '1mb' }), (req, res) => {
     try {
-      const item = captureClipboardToInbox(req.body?.source || 'api');
-      res.json({ ok: true, item, inbox: { counts: inboxCounts(), open: inboxSnapshot(5, 'open') }, window: windowStateSnapshot() });
+      const result = clipboardInboxCapture({
+        ...(req.body || {}),
+        source: req.body?.source || 'api',
+      });
+      res
+        .status(result.status === 'clipboard_too_large' ? 400 : 200)
+        .json({ ...result, window: windowStateSnapshot() });
     } catch (error) {
       jsonError(res, 400, 'Inbox clipboard capture failed', error instanceof Error ? error.message : String(error));
     }

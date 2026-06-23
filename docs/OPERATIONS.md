@@ -1339,9 +1339,9 @@ curl -X POST http://127.0.0.1:3417/api/tasks/route \
   -d '{"message":"状态","execute":true}'
 curl http://127.0.0.1:3417/api/sessions
 curl http://127.0.0.1:3417/api/inbox
-curl -X POST http://127.0.0.1:3417/api/inbox \
+curl -X POST http://127.0.0.1:3417/api/inbox/capture-clipboard \
   -H 'Content-Type: application/json' \
-  -d '{"fromClipboard":true,"priority":3}'
+  -d '{"execute":true,"priority":3}'
 curl -X POST http://127.0.0.1:3417/api/inbox/<item-id>/route \
   -H 'Content-Type: application/json' \
   -d '{"execute":false}'

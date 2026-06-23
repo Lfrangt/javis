@@ -138,7 +138,7 @@ Local Mac-first realtime desktop buddy.
 - macOS menu bar status item for resident controls and setup shortcuts.
 - Global pet park hotkey, defaulting to `Control+Shift+Space`.
 - Global tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Space` on Mac), which wakes JAVIS and parks it at the Dynamic Island/notch position.
-- Global clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`.
+- Global clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`; the companion API previews by default and only saves with `execute:true`.
 - Resident system notifications for approvals and background task completion, with approval/setup/voice attention alerts gated by the quiet attention policy.
 - Voice mode defaults to push-to-talk from the pet: click/summon starts the Realtime session when available, then hold the compact capsule or press Space to talk. `/api/voice/standby`, `/api/pet/status`, wake handoff, and the CUI expose the same `inputMode` contract so open-mic remains a manual expanded-control toggle.
 - Setup/config diagnostics for `.env`, permissions, resident mode, policy, and local workers.
@@ -252,7 +252,7 @@ Local Express service on 127.0.0.1:3417
   /api/demonstrations/:id/replay/* -> safe replay planning and confirmation-gated execution
   /api/demonstrations/:id/skill-draft* -> preview or confirm-save a local skill from a completed demonstration
   /api/inbox            -> local persistent capture inbox
-  /api/inbox/capture-clipboard -> capture current clipboard text into Inbox
+  /api/inbox/capture-clipboard -> preview current clipboard text for Inbox; save only with execute:true
   /api/inbox/triage     -> read-only Inbox priority and lane suggestions
   /api/inbox/process-next -> preview-first processing for the highest-priority open Inbox item; execute requires confirm:true
   /api/inbox/:id/route  -> preview-first routing for one Inbox item into quick/deep/Codex/Claude work
