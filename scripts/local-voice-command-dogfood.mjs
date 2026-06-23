@@ -310,12 +310,23 @@ function buildPayload(options = {}) {
 
 function summarize(data = {}) {
   const route = data.route || {};
+  const actionExecution = data.actionExecution || {};
   return {
     ok: Boolean(data.ok),
     channel: data.channel,
     wakeOnly: Boolean(data.wakeOnly),
     requestedExecute: Boolean(data.requestedExecute),
-    executed: Boolean(data.executed),
+    executed: Boolean(data.executed || actionExecution.executed),
+    actionExecution: {
+      executed: Boolean(actionExecution.executed),
+      queued: Boolean(actionExecution.queued),
+      kind: actionExecution.kind || '',
+      action: actionExecution.action || '',
+      status: actionExecution.status || '',
+      workflowId: actionExecution.workflowId || '',
+      routeId: actionExecution.routeId || '',
+      output: String(actionExecution.output || '').slice(0, 360),
+    },
     heldReason: data.heldReason || '',
     transcriptLength: String(data.transcript || '').length,
     route: {
@@ -424,6 +435,9 @@ function printResult(result, payload, userCli) {
   if (result.wake) console.log(`Wake: ${result.wake.pending ? 'pending' : 'recorded'} · ${result.wake.handoffMode || '-'} · ${result.wake.lastPhrase || '-'}`);
   console.log(`Task: ${payload.transcript}`);
   console.log(`Route: ${result.route.lane || '-'} · queued=${result.route.queued ? 'yes' : 'no'} · executed=${result.executed ? 'yes' : 'no'}`);
+  if (result.actionExecution?.kind || result.actionExecution?.action) {
+    console.log(`Action: ${result.actionExecution.kind || '-'}${result.actionExecution.action ? `/${result.actionExecution.action}` : ''} · executed=${result.actionExecution.executed ? 'yes' : 'no'}`);
+  }
   if (result.route.jobId) console.log(`Job: ${result.route.jobId}`);
   if (result.session?.recorded) {
     console.log(`Session: recorded · ${result.session.title || result.session.sessionId}`);

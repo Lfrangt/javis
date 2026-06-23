@@ -24600,6 +24600,7 @@ async function runBrowserTaskWorkflow(options = {}) {
 
   return {
     ok: !blocked,
+    executed: results.some((result) => result.status === 'executed'),
     mode: 'quick',
     intent: 'act',
     queued: false,
@@ -29342,7 +29343,7 @@ function formatBrowserWorkflowForLocalCommand(result = {}, requestedExecute = fa
   const mode = result.mode || workflow.mode || 'quick';
   const intent = result.intent || workflow.intent || '-';
   return [
-    `Browser workflow: ${requestedExecute ? 'execute requested' : 'preview only'} · intent=${intent} · mode=${mode} · ok=${result.ok !== false ? 'yes' : 'no'}`,
+    `Browser workflow: ${requestedExecute ? 'execute requested' : 'preview only'} · intent=${intent} · mode=${mode} · executed=${result.executed ? 'yes' : 'no'} · ok=${result.ok !== false ? 'yes' : 'no'}`,
     `Page: ${page.available ? 'available' : 'unavailable'} · ${page.supported ? 'supported' : 'unsupported'} · ${page.app || workflow.target?.app || '-'}`,
     page.title || page.url ? `Target: ${compactRecordText(page.title || page.url, 180)} · ${formatBrowserUrlForLocalCommand(page.url || workflow.target?.url || '')}` : '',
     workflow.id ? `Workflow: ${workflow.id} · status=${workflow.status || '-'}` : '',
@@ -31241,6 +31242,36 @@ function voiceCommandLatencyNextAction(status = '', bottleneck = {}) {
   return 'Inspect the slow recent turns and keep voice turns short, metadata-only, and tool-first.';
 }
 
+function voiceCommandActionExecutionSummary(route = {}) {
+  const data = route.data || {};
+  const browserWorkflow = data.browserWorkflow || {};
+  const browserResult = data.result || {};
+  const browserStep = Array.isArray(browserResult.results) ? browserResult.results[0] : null;
+  const nestedBrowserExecuted = browserWorkflow.executed === true || browserResult.executed === true || browserStep?.status === 'executed';
+  const nestedBrowserQueued = browserWorkflow.queued === true || browserResult.queued === true;
+  const kind = route.localCommand?.intent || route.decision?.localCommand || '';
+  const action = browserResult.intent || browserStep?.action || route.localCommand?.args?.intent || '';
+  return {
+    version: 1,
+    executed: Boolean(route.executed || nestedBrowserExecuted),
+    queued: Boolean(route.queued || route.job?.id || nestedBrowserQueued),
+    routeExecuted: Boolean(route.executed),
+    nestedActionExecuted: Boolean(nestedBrowserExecuted),
+    kind: compactRecordText(kind, 80),
+    action: compactRecordText(action, 80),
+    status: compactRecordText(browserStep?.status || route.workflow?.status || route.routing?.status || '', 80),
+    workflowId: route.workflow?.id || browserWorkflow.workflowId || browserResult.workflow?.id || '',
+    routeId: route.routing?.id || browserWorkflow.routeId || browserResult.routing?.id || '',
+    output: compactRecordText(browserStep?.output || browserWorkflow.output || route.output || '', 360),
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      opensTerminal: false,
+    },
+  };
+}
+
 function voiceCommandLatencyReportSnapshot(options = {}) {
   const limit = Math.max(1, Math.min(50, Number(options.limit || 30)));
   const auditLimit = Math.max(80, Math.min(1000, Number(options.auditLimit || limit * 16)));
@@ -32311,13 +32342,16 @@ async function runVoiceCommand(options = {}) {
     speechMs = Date.now() - speechStartedAt;
   }
 
+  const actionExecution = voiceCommandActionExecutionSummary(route);
   const result = {
     ok: route.ok !== false,
     speechOk: !speakRequested || speech?.ok !== false,
     channel: 'local_voice_command',
     transcript,
     requestedExecute,
-    executed: Boolean(route.executed),
+    executed: actionExecution.executed,
+    queued: actionExecution.queued,
+    actionExecution,
     heldReason,
     route,
     routePreview: previewRoute,
@@ -32369,9 +32403,10 @@ async function runVoiceCommand(options = {}) {
     transcriptLength: transcript.length,
     requestedExecute,
     executed: result.executed,
+    actionExecution,
     heldReason,
     lane: route.decision?.lane || '',
-    queued: Boolean(route.queued || route.job?.id),
+    queued: Boolean(result.queued),
     routeId: route.routing?.id || '',
     jobId: route.job?.id || '',
     workflowId: route.workflow?.id || route.data?.workflow?.id || '',
