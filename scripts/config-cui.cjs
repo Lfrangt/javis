@@ -483,6 +483,7 @@ async function printStatus() {
   console.log('4. Open Accessibility settings');
   console.log('5. Open Full Disk Access settings');
   console.log('6. Move pet position');
+  console.log('6C. Enable classroom mode (hide desktop pet)');
   console.log('6H. Hide desktop pet for class/presentation');
   console.log('6S. Show desktop pet');
   console.log('6X. Close desktop pet layer');
@@ -5112,7 +5113,9 @@ function printWindowActionResult(label, result) {
 }
 
 async function runWindowVisibilityAction(action, options = {}) {
-  const endpoint = action === 'hide'
+  const endpoint = action === 'classroom'
+    ? '/api/window/classroom'
+    : action === 'hide'
     ? '/api/window/hide'
     : action === 'close'
       ? '/api/window/close'
@@ -5121,11 +5124,22 @@ async function runWindowVisibilityAction(action, options = {}) {
     method: 'POST',
     body: {
       source: options.source || 'cui_cli',
+      enabled: action === 'classroom' ? options.enabled !== false : undefined,
+      reason: options.reason || undefined,
       focus: options.focus === true,
       park: options.park !== false,
     },
   });
-  printWindowActionResult(action === 'hide' ? 'Hidden desktop pet' : action === 'close' ? 'Closed desktop pet layer' : 'Shown desktop pet', result);
+  printWindowActionResult(
+    action === 'classroom'
+      ? options.enabled === false ? 'Disabled classroom mode' : 'Enabled classroom mode'
+      : action === 'hide'
+        ? 'Hidden desktop pet'
+        : action === 'close'
+          ? 'Closed desktop pet layer'
+          : 'Shown desktop pet',
+    result,
+  );
   return result;
 }
 
@@ -5141,7 +5155,17 @@ async function main() {
     return;
   }
 
-  if (process.argv.includes('--hide-pet') || process.argv.includes('--hide-window') || process.argv.includes('--classroom-mode')) {
+  if (process.argv.includes('--classroom-mode') || process.argv.includes('--enable-classroom-mode')) {
+    await runWindowVisibilityAction('classroom', { source: 'cui_cli_classroom_mode', reason: 'cui_cli' });
+    return;
+  }
+
+  if (process.argv.includes('--disable-classroom-mode') || process.argv.includes('--exit-classroom-mode')) {
+    await runWindowVisibilityAction('classroom', { source: 'cui_cli_disable_classroom_mode', enabled: false, focus: process.argv.includes('--focus') });
+    return;
+  }
+
+  if (process.argv.includes('--hide-pet') || process.argv.includes('--hide-window')) {
     await runWindowVisibilityAction('hide', { source: 'cui_cli_hide_pet' });
     return;
   }
@@ -5633,7 +5657,9 @@ async function main() {
       else if (answer === '5') await setupAction('open_full_disk_access_settings');
       else if (answer === '6') {
         await movePetCorner(rl);
-      } else if (answer === '6h' || answer === 'hide pet' || answer === 'hide window' || answer === 'classroom' || answer === 'classroom mode') {
+      } else if (answer === '6c' || answer === 'classroom' || answer === 'classroom mode' || answer === 'enable classroom') {
+        await runWindowVisibilityAction('classroom', { source: 'cui_interactive_classroom_mode', reason: 'cui_interactive' });
+      } else if (answer === '6h' || answer === 'hide pet' || answer === 'hide window') {
         await runWindowVisibilityAction('hide', { source: 'cui_interactive_hide_pet' });
       } else if (answer === '6s' || answer === 'show pet' || answer === 'show window' || answer === 'summon pet') {
         await runWindowVisibilityAction('show', { source: 'cui_interactive_show_pet' });

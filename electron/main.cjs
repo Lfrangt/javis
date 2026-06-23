@@ -242,6 +242,7 @@ const WORKFLOWS_FILE = path.join(DATA_DIR, 'workflows.json');
 const ROUTING_FILE = path.join(DATA_DIR, 'routing.json');
 const PARALLEL_PLANS_FILE = path.join(DATA_DIR, 'parallel-plans.json');
 const COLLABORATION_FILE = path.join(DATA_DIR, 'collaboration.json');
+const WINDOW_STATE_FILE = path.join(DATA_DIR, 'window-state.json');
 const AUDIT_FILE = path.join(DATA_DIR, 'audit.jsonl');
 const OPENAI_SPEND_GUARD_FILE = path.join(DATA_DIR, 'openai-spend-guard.json');
 const AUDIT_MAX_BYTES = boundedRuntimeNumber(process.env.JAVIS_AUDIT_MAX_BYTES, 64 * 1024 * 1024, 1024 * 1024, 1024 * 1024 * 1024);
@@ -1052,6 +1053,9 @@ let currentParkCorner = WINDOW_PARK_CORNER;
 let desktopWindowHidden = false;
 let desktopWindowHiddenAt = 0;
 let desktopWindowClosedAt = 0;
+let desktopWindowClassroomMode = false;
+let desktopWindowClassroomModeAt = 0;
+let desktopWindowClassroomModeReason = '';
 let toggleHotkeyRegistered = false;
 let summonHotkeyRegistered = false;
 let captureHotkeyRegistered = false;
@@ -1290,6 +1294,7 @@ loadPersistedShortcuts();
 loadPersistedRealtimeDogfoodOperatorSessions();
 loadPersistedAmbient();
 loadPersistedLearning();
+loadPersistedWindowState();
 appendAudit('process.start', {
   pid: process.pid,
   version: packageInfo.version,
@@ -1312,6 +1317,84 @@ function parseParkCorner(value) {
   return ['notch', 'top-left', 'top-right', 'bottom-left', 'bottom-right'].includes(normalized)
     ? normalized
     : 'notch';
+}
+
+function normalizeWindowTimestamp(value) {
+  const number = Number(value || 0);
+  return Number.isFinite(number) && number > 0 ? number : 0;
+}
+
+function desktopClassroomModeSnapshot() {
+  const surface = desktopWindowSurfaceState();
+  const active = desktopWindowClassroomMode || surface !== 'visible';
+  return {
+    available: true,
+    active,
+    persisted: desktopWindowClassroomMode,
+    reason: compactRecordText(desktopWindowClassroomModeReason || (active ? 'desktop_pet_hidden' : ''), 120),
+    updatedAt: desktopWindowClassroomModeAt || null,
+    controls: {
+      enable: '/api/window/classroom',
+      disable: '/api/window/classroom',
+      hide: '/api/window/hide',
+      show: '/api/window/show',
+    },
+    summary: active
+      ? surface === 'closed'
+        ? 'Classroom mode is quiet: the desktop pet layer is closed while resident services, menu bar, and hotkeys remain available.'
+        : 'Classroom mode is quiet: the desktop pet is hidden while resident services, menu bar, and hotkeys remain available.'
+      : 'Classroom mode is off: the desktop pet is visible.',
+  };
+}
+
+function persistedWindowStatePayload() {
+  return {
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    mode: currentWindowMode,
+    parkCorner: currentParkCorner,
+    hidden: Boolean(desktopWindowHidden),
+    hiddenAt: desktopWindowHiddenAt || 0,
+    closedAt: desktopWindowClosedAt || 0,
+    classroomMode: {
+      active: Boolean(desktopWindowClassroomMode),
+      reason: compactRecordText(desktopWindowClassroomModeReason || '', 120),
+      updatedAt: desktopWindowClassroomModeAt || 0,
+    },
+    bounds: windowBoundsSnapshot(),
+  };
+}
+
+function persistWindowState() {
+  try {
+    writeJsonAtomic(WINDOW_STATE_FILE, persistedWindowStatePayload());
+  } catch (error) {
+    appendAudit('window_state.persist_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+function loadPersistedWindowState() {
+  if (!fs.existsSync(WINDOW_STATE_FILE)) return;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(WINDOW_STATE_FILE, 'utf8'));
+    currentWindowMode = normalizeWindowMode(parsed.mode || currentWindowMode);
+    currentParkCorner = parseParkCorner(parsed.parkCorner || currentParkCorner);
+    const classroom = parsed.classroomMode || {};
+    desktopWindowClassroomMode = classroom.active === true;
+    desktopWindowClassroomModeAt = normalizeWindowTimestamp(classroom.updatedAt || parsed.classroomModeAt);
+    desktopWindowClassroomModeReason = compactRecordText(classroom.reason || parsed.classroomModeReason || '', 120);
+    desktopWindowHidden = parsed.hidden === true || desktopWindowClassroomMode;
+    desktopWindowHiddenAt = normalizeWindowTimestamp(parsed.hiddenAt) || (desktopWindowHidden ? Date.now() : 0);
+    desktopWindowClosedAt = normalizeWindowTimestamp(parsed.closedAt);
+    appendAudit('window_state.loaded', {
+      mode: currentWindowMode,
+      parkCorner: currentParkCorner,
+      hidden: desktopWindowHidden,
+      classroomMode: desktopWindowClassroomMode,
+    });
+  } catch (error) {
+    appendAudit('window_state.load_failed', { message: error instanceof Error ? error.message : String(error) });
+  }
 }
 
 function windowBoundsSnapshot() {
@@ -1487,6 +1570,7 @@ function parkWindow(source = 'api', options = {}) {
     y: position.y,
   });
   if (options.menu !== false) updateMenuBarMenu();
+  persistWindowState();
   return windowStateSnapshot();
 }
 
@@ -1505,6 +1589,7 @@ function moveWindow(source = 'api', options = {}) {
     y,
   });
   updateMenuBarMenu();
+  persistWindowState();
   return windowStateSnapshot();
 }
 
@@ -1614,6 +1699,7 @@ function petWindowStateSnapshot(options = {}) {
     parkCorner: currentParkCorner,
     width: bounds?.width || target.width,
     height: bounds?.height || target.height,
+    classroomActive: desktopWindowClassroomMode || desktopWindowSurfaceState() !== 'visible',
   };
 }
 
@@ -1621,6 +1707,7 @@ function windowStateSnapshot() {
   const composeAutoParkDueInMs = composeAutoParkTimer && composeAutoParkStartedAt
     ? Math.max(0, WINDOW_COMPOSE_AUTO_PARK_MS - (Date.now() - composeAutoParkStartedAt))
     : 0;
+  const classroomMode = desktopClassroomModeSnapshot();
   return {
     mode: currentWindowMode,
     surface: desktopWindowSurfaceState(),
@@ -1637,6 +1724,7 @@ function windowStateSnapshot() {
     captureHotkey: CAPTURE_HOTKEY,
     captureHotkeyRegistered,
     lastInboxCapture,
+    windowStateFile: WINDOW_STATE_FILE,
     position: windowBoundsSnapshot(),
     parkCorner: currentParkCorner,
     parkDisplay: WINDOW_PARK_DISPLAY,
@@ -1646,16 +1734,9 @@ function windowStateSnapshot() {
       show: '/api/window/show',
       close: '/api/window/close',
       summon: '/api/window/summon',
+      classroom: '/api/window/classroom',
     },
-    classroomMode: {
-      available: true,
-      active: desktopWindowSurfaceState() !== 'visible',
-      summary: desktopWindowSurfaceState() === 'visible'
-        ? 'Desktop pet is visible.'
-        : desktopWindowSurfaceState() === 'hidden'
-          ? 'Desktop pet is hidden; resident services, menu bar, and hotkeys stay available.'
-          : 'Desktop pet window is closed; resident services, menu bar, and hotkeys stay available.',
-    },
+    classroomMode,
     safety: {
       startsMicrophone: false,
       usesRealtime: false,
@@ -2263,6 +2344,9 @@ function applyWindowMode(mode, options = {}) {
   currentWindowMode = nextMode;
   desktopWindowHidden = false;
   desktopWindowHiddenAt = 0;
+  desktopWindowClassroomMode = false;
+  desktopWindowClassroomModeAt = 0;
+  desktopWindowClassroomModeReason = '';
   if ((!mainWindow || mainWindow.isDestroyed()) && options.create !== false) {
     createWindow({ source: `${options.source || 'api'}:mode` });
   }
@@ -2284,6 +2368,7 @@ function applyWindowMode(mode, options = {}) {
   }
   appendAudit('window.mode', { mode: nextMode, source: options.source || 'api' });
   updateMenuBarMenu();
+  persistWindowState();
   return windowStateSnapshot();
 }
 
@@ -2334,9 +2419,14 @@ function summonJavis(source = 'hotkey', options = {}) {
   };
 }
 
-function hideDesktopWindow(source = 'api') {
+function hideDesktopWindow(source = 'api', options = {}) {
   desktopWindowHidden = true;
   desktopWindowHiddenAt = Date.now();
+  if (options.classroomMode !== false) {
+    desktopWindowClassroomMode = true;
+    desktopWindowClassroomModeAt = desktopWindowHiddenAt;
+    desktopWindowClassroomModeReason = compactRecordText(options.reason || source || 'hidden', 120);
+  }
   clearComposeAutoParkTimer();
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.hide();
@@ -2344,14 +2434,19 @@ function hideDesktopWindow(source = 'api') {
   appendAudit('window.hidden', {
     source: compactRecordText(source, 80),
     mode: currentWindowMode,
+    classroomMode: desktopWindowClassroomMode,
   });
   updateMenuBarMenu();
+  persistWindowState();
   return windowStateSnapshot();
 }
 
 function showDesktopWindow(source = 'api', options = {}) {
   desktopWindowHidden = false;
   desktopWindowHiddenAt = 0;
+  desktopWindowClassroomMode = false;
+  desktopWindowClassroomModeAt = 0;
+  desktopWindowClassroomModeReason = '';
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow({ source: `${source}:show` });
   }
@@ -2370,13 +2465,19 @@ function showDesktopWindow(source = 'api', options = {}) {
     focus: options.focus === true,
   });
   updateMenuBarMenu();
+  persistWindowState();
   return windowStateSnapshot();
 }
 
-function closeDesktopWindow(source = 'api') {
+function closeDesktopWindow(source = 'api', options = {}) {
   desktopWindowHidden = true;
   desktopWindowHiddenAt = Date.now();
   desktopWindowClosedAt = Date.now();
+  if (options.classroomMode !== false) {
+    desktopWindowClassroomMode = true;
+    desktopWindowClassroomModeAt = desktopWindowClosedAt;
+    desktopWindowClassroomModeReason = compactRecordText(options.reason || source || 'closed', 120);
+  }
   clearComposeAutoParkTimer();
   if (rendererRecoveryTimer) {
     clearTimeout(rendererRecoveryTimer);
@@ -2390,9 +2491,70 @@ function closeDesktopWindow(source = 'api') {
   appendAudit('window.desktop_closed', {
     source: compactRecordText(source, 80),
     mode: currentWindowMode,
+    classroomMode: desktopWindowClassroomMode,
   });
   updateMenuBarMenu();
+  persistWindowState();
   return windowStateSnapshot();
+}
+
+function setDesktopClassroomMode(enabled, options = {}) {
+  const source = compactRecordText(options.source || 'api_classroom', 80);
+  if (enabled) {
+    const windowState = hideDesktopWindow(source, {
+      classroomMode: true,
+      reason: options.reason || 'classroom_mode',
+    });
+    appendAudit('window.classroom_mode', { active: true, source, reason: compactRecordText(options.reason || '', 120) });
+    return {
+      ok: true,
+      enabled: true,
+      output: 'JAVIS classroom mode enabled. Desktop pet is hidden; resident services, menu bar, and hotkeys stay available.',
+      classroomMode: desktopClassroomModeSnapshot(),
+      window: windowState,
+      safety: {
+        startsMicrophone: false,
+        usesRealtime: false,
+        callsOpenAI: false,
+        startsWorkers: false,
+        stopsResident: false,
+      },
+    };
+  }
+  desktopWindowClassroomMode = false;
+  desktopWindowClassroomModeAt = 0;
+  desktopWindowClassroomModeReason = '';
+  const shouldShow = options.show !== false;
+  const windowState = shouldShow
+    ? showDesktopWindow(source, {
+        mode: options.mode || 'pet',
+        focus: options.focus === true,
+        park: options.park !== false,
+        corner: options.corner,
+        display: options.display,
+      })
+    : (() => {
+        desktopWindowHidden = false;
+        desktopWindowHiddenAt = 0;
+        persistWindowState();
+        updateMenuBarMenu();
+        return windowStateSnapshot();
+      })();
+  appendAudit('window.classroom_mode', { active: false, source, shown: shouldShow });
+  return {
+    ok: true,
+    enabled: false,
+    output: shouldShow ? 'JAVIS classroom mode disabled. Desktop pet is visible again.' : 'JAVIS classroom mode disabled.',
+    classroomMode: desktopClassroomModeSnapshot(),
+    window: windowState,
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      startsWorkers: false,
+      stopsResident: false,
+    },
+  };
 }
 
 function captureClipboardToInbox(source = 'hotkey') {
@@ -2669,11 +2831,13 @@ function updateMenuBarMenu() {
   const nextInbox = inboxSnapshot(1, 'open')[0] || null;
   const activeSession = activeSessionSnapshot();
   const windowSurface = desktopWindowSurfaceState();
+  const classroomMode = desktopClassroomModeSnapshot();
   const nextSummary = compactRecordText(firstAction?.summary || briefing.summary, 92);
   const menu = Menu.buildFromTemplate([
     { label: 'JAVIS', enabled: false },
     { label: menuBarStatusLabel(readiness), enabled: false },
     { label: `Desktop pet: ${windowSurface}`, enabled: false },
+    { label: `Classroom mode: ${classroomMode.active ? 'on' : 'off'}`, enabled: false },
     { label: activeSession ? `Session: ${compactRecordText(activeSession.title, 42)}` : 'Session: idle', enabled: false },
     { label: `${inbox.open} open inbox item(s)`, enabled: false },
     { type: 'separator' },
@@ -2687,9 +2851,20 @@ function updateMenuBarMenu() {
       click: () => parkWindow('menubar'),
     },
     {
+      label: 'Enable Classroom Mode',
+      enabled: !classroomMode.active,
+      click: () => setDesktopClassroomMode(true, { source: 'menubar', reason: 'menubar' }),
+    },
+    {
+      label: 'Disable Classroom Mode',
+      enabled: classroomMode.active,
+      accelerator: SUMMON_HOTKEY || undefined,
+      click: () => setDesktopClassroomMode(false, { source: 'menubar', show: true, focus: false }),
+    },
+    {
       label: 'Hide Desktop Pet',
       enabled: windowSurface === 'visible',
-      click: () => hideDesktopWindow('menubar'),
+      click: () => hideDesktopWindow('menubar', { reason: 'menubar_hide' }),
     },
     {
       label: 'Show Desktop Pet',
@@ -2700,7 +2875,7 @@ function updateMenuBarMenu() {
     {
       label: 'Close Desktop Pet Layer',
       enabled: windowSurface !== 'closed',
-      click: () => closeDesktopWindow('menubar'),
+      click: () => closeDesktopWindow('menubar', { reason: 'menubar_close' }),
     },
     {
       label: 'Open Config Terminal',
@@ -69300,6 +69475,14 @@ function startApiServer() {
     res.json({ window: windowStateSnapshot() });
   });
 
+  api.get('/api/window/classroom', (_req, res) => {
+    res.json({
+      classroomMode: desktopClassroomModeSnapshot(),
+      window: windowStateSnapshot(),
+      windowStateFile: WINDOW_STATE_FILE,
+    });
+  });
+
   api.get('/api/menubar/state', (_req, res) => {
     res.json({ menuBar: menuBarSnapshot() });
   });
@@ -69335,10 +69518,14 @@ function startApiServer() {
   });
 
   api.post('/api/window/hide', express.json({ limit: '64kb' }), (req, res) => {
-    const windowState = hideDesktopWindow(req.body?.source || 'api');
+    const windowState = hideDesktopWindow(req.body?.source || 'api', {
+      classroomMode: req.body?.classroomMode !== false,
+      reason: req.body?.reason || 'api_hide',
+    });
     res.json({
       ok: true,
       output: 'JAVIS desktop pet hidden. Resident services, menu bar, and hotkeys remain available.',
+      classroomMode: desktopClassroomModeSnapshot(),
       window: windowState,
     });
   });
@@ -69359,12 +69546,35 @@ function startApiServer() {
   });
 
   api.post('/api/window/close', express.json({ limit: '64kb' }), (req, res) => {
-    const windowState = closeDesktopWindow(req.body?.source || 'api');
+    const windowState = closeDesktopWindow(req.body?.source || 'api', {
+      classroomMode: req.body?.classroomMode !== false,
+      reason: req.body?.reason || 'api_close',
+    });
     res.json({
       ok: true,
       output: 'JAVIS desktop pet layer closed. Resident services, menu bar, and hotkeys remain available.',
+      classroomMode: desktopClassroomModeSnapshot(),
       window: windowState,
     });
+  });
+
+  api.post('/api/window/classroom', express.json({ limit: '64kb' }), (req, res) => {
+    const body = req.body || {};
+    const enabled = body.enabled !== undefined
+      ? body.enabled !== false
+      : body.active !== undefined
+        ? body.active !== false
+        : true;
+    res.json(setDesktopClassroomMode(enabled, {
+      source: body.source || 'api_classroom',
+      reason: body.reason || '',
+      show: body.show !== false,
+      focus: body.focus === true,
+      mode: body.mode,
+      corner: body.corner,
+      display: body.display,
+      park: body.park !== false,
+    }));
   });
 
   api.post('/api/window/summon', express.json({ limit: '64kb' }), (req, res) => {

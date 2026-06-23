@@ -992,6 +992,67 @@ export default {
         : warn('resident.window', 'Pet window + hotkeys', `POST /api/window/mode pet ${win.status} ${win.error || ''}`, { window: win2 }),
     );
 
+    const classroomEnable = await ctx.api('/api/window/classroom', {
+      method: 'POST',
+      body: {
+        enabled: true,
+        source: 'eval_resident_classroom',
+        reason: 'eval_classroom',
+      },
+      timeoutMs: 10000,
+    });
+    const classroomEnabledWindow = classroomEnable.data?.window || {};
+    const classroomState = await ctx.api('/api/window/classroom', { timeoutMs: 10000 });
+    const classroomStateWindow = classroomState.data?.window || {};
+    const classroomFile = classroomState.data?.windowStateFile || classroomEnabledWindow.windowStateFile || '';
+    let persistedClassroom = {};
+    try {
+      persistedClassroom = classroomFile && fs.existsSync(classroomFile)
+        ? JSON.parse(fs.readFileSync(classroomFile, 'utf8'))
+        : {};
+    } catch {
+      persistedClassroom = {};
+    }
+    const classroomDisable = await ctx.api('/api/window/classroom', {
+      method: 'POST',
+      body: {
+        enabled: false,
+        source: 'eval_resident_classroom_restore',
+        show: true,
+        focus: false,
+      },
+      timeoutMs: 10000,
+    });
+    const classroomRestoredWindow = classroomDisable.data?.window || {};
+    out.push(
+      classroomEnable.ok &&
+        classroomEnabledWindow.surface === 'hidden' &&
+        classroomEnabledWindow.visible === false &&
+        classroomEnabledWindow.classroomMode?.active === true &&
+        classroomEnabledWindow.classroomMode?.persisted === true &&
+        classroomEnable.data?.safety?.startsMicrophone === false &&
+        classroomEnable.data?.safety?.usesRealtime === false &&
+        classroomEnable.data?.safety?.callsOpenAI === false &&
+        classroomState.ok &&
+        classroomStateWindow.classroomMode?.active === true &&
+        persistedClassroom.hidden === true &&
+        persistedClassroom.classroomMode?.active === true &&
+        classroomDisable.ok &&
+        classroomRestoredWindow.surface === 'visible' &&
+        classroomRestoredWindow.visible === true &&
+        classroomRestoredWindow.classroomMode?.active === false
+        ? ok('resident.classroom_mode', 'Classroom mode hides pet', `hidden=${classroomEnabledWindow.surface} restored=${classroomRestoredWindow.surface}`)
+        : fail('resident.classroom_mode', 'Classroom mode hides pet', 'expected classroom mode to hide the pet persistently without microphone, Realtime, OpenAI, workers, or resident shutdown', {
+          enableStatus: classroomEnable.status,
+          enable: classroomEnable.data,
+          stateStatus: classroomState.status,
+          state: classroomState.data,
+          persistedClassroom,
+          disableStatus: classroomDisable.status,
+          disable: classroomDisable.data,
+        }),
+    );
+
     const composeWindowResponse = await ctx.api('/api/window/mode', {
       method: 'POST',
       body: {

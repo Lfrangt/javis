@@ -220,6 +220,7 @@ Local Express service on 127.0.0.1:3417
   /api/window/state     -> pet mode, position, and global hotkey status
   /api/window/park      -> move the buddy back to its configured notch/corner position
   /api/window/move      -> move the buddy to explicit screen coordinates
+  /api/window/classroom -> persistently hide/show the desktop pet for class or presentation mode
   /api/window/hide      -> hide the desktop pet while resident services keep running
   /api/window/show      -> restore the desktop pet after class/presentation mode
   /api/window/close     -> close only the desktop pet layer; API, menu bar, and hotkeys remain available

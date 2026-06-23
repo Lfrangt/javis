@@ -394,6 +394,19 @@ Routine maintenance lives in the terminal CUI instead of the desktop pet:
 npm run config
 ```
 
+For class or presentation time, hide the desktop layer without stopping the resident:
+
+```bash
+npm run config -- --classroom-mode
+npm run config -- --disable-classroom-mode
+curl -X POST http://127.0.0.1:3417/api/window/classroom \
+  -H "X-JAVIS-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"enabled":true,"reason":"class"}'
+```
+
+Classroom mode persists in `window-state.json`; it hides only the pet layer. It does not stop the resident API, menu bar, hotkeys, background jobs, watchdog, or keep-awake, and it starts no microphone, Realtime session, OpenAI request, Terminal, worker, or screen capture.
+
 Use option `I. Show permission matrix`, or:
 
 ```bash
