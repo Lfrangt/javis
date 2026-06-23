@@ -974,13 +974,21 @@ export default {
       win.ok &&
         win2 &&
         win2.mode === 'pet' &&
+        win2.surface === 'visible' &&
+        win2.visible === true &&
+        win2.hidden === false &&
+        win2.closed === false &&
+        win2.classroomMode?.available === true &&
+        win2.controls?.hide === '/api/window/hide' &&
+        win2.controls?.show === '/api/window/show' &&
+        win2.controls?.close === '/api/window/close' &&
         win2.parkCorner === 'notch' &&
         Number(win2.width || 0) <= 148 &&
         Number(win2.height || 0) <= 40 &&
         win2.hotkeyRegistered === true &&
         win2.summonHotkeyRegistered === true &&
         win2.captureHotkeyRegistered === true
-        ? ok('resident.window', 'Pet window + hotkeys', `mode=${win2.mode} ${win2.width}x${win2.height} park=${win2.parkCorner} hotkey=${win2.hotkeyRegistered ? 'on' : 'off'} summon=${win2.summonHotkeyRegistered ? 'on' : 'off'} capture=${win2.captureHotkeyRegistered ? 'on' : 'off'}`)
+        ? ok('resident.window', 'Pet window + hotkeys', `mode=${win2.mode} ${win2.width}x${win2.height} surface=${win2.surface} park=${win2.parkCorner} hotkey=${win2.hotkeyRegistered ? 'on' : 'off'} summon=${win2.summonHotkeyRegistered ? 'on' : 'off'} capture=${win2.captureHotkeyRegistered ? 'on' : 'off'}`)
         : warn('resident.window', 'Pet window + hotkeys', `POST /api/window/mode pet ${win.status} ${win.error || ''}`, { window: win2 }),
     );
 

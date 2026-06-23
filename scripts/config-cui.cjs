@@ -359,7 +359,8 @@ async function printStatus() {
         console.log(`Control mode: ${mode.mode || '-'} · effective auto Level ${mode.effective?.maxAutoRiskLevel ?? '-'} · approval at Level ${mode.effective?.requireApprovalAtRiskLevel ?? '-'}`);
       }
     }
-    console.log(`Pet: ${window.mode || 'pet'} ${window.position ? `@ ${window.position.x},${window.position.y}` : ''}`);
+    const windowSurface = window.surface || (window.hidden ? 'hidden' : window.closed ? 'closed' : window.visible === false ? 'hidden' : 'visible');
+    console.log(`Pet: ${window.mode || 'pet'} · ${windowSurface}${window.position ? ` @ ${window.position.x},${window.position.y}` : ''}`);
     const tap = window.tapToSummon || {};
     console.log(`Hotkeys: pet ${window.hotkeyRegistered ? 'ready' : 'off'} (${window.hotkey || '-'}) · tap ${tap.registered || window.summonHotkeyRegistered ? 'ready' : 'off'} (${tap.hotkey || window.summonHotkey || '-'}) · capture ${window.captureHotkeyRegistered ? 'ready' : 'off'} (${window.captureHotkey || '-'})`);
     if (status.wake) {
@@ -480,6 +481,9 @@ async function printStatus() {
   console.log('4. Open Accessibility settings');
   console.log('5. Open Full Disk Access settings');
   console.log('6. Move pet position');
+  console.log('6H. Hide desktop pet for class/presentation');
+  console.log('6S. Show desktop pet');
+  console.log('6X. Close desktop pet layer');
   console.log('7. Restart JAVIS resident');
   console.log('8. Toggle local execution');
   console.log('9. Toggle Level 3 auto-run');
@@ -5047,9 +5051,57 @@ async function movePetCorner(rl) {
   }
 }
 
+function printWindowActionResult(label, result) {
+  const window = result.window || {};
+  const surface = window.surface || (window.hidden ? 'hidden' : window.closed ? 'closed' : window.visible === false ? 'hidden' : 'visible');
+  console.log(`\n${label}: ${surface}`);
+  if (result.output) console.log(compact(result.output, 240));
+  if (window.classroomMode?.summary) console.log(compact(window.classroomMode.summary, 240));
+  if (window.position) console.log(`Position: ${window.position.x},${window.position.y}`);
+}
+
+async function runWindowVisibilityAction(action, options = {}) {
+  const endpoint = action === 'hide'
+    ? '/api/window/hide'
+    : action === 'close'
+      ? '/api/window/close'
+      : '/api/window/show';
+  const result = await request(endpoint, {
+    method: 'POST',
+    body: {
+      source: options.source || 'cui_cli',
+      focus: options.focus === true,
+      park: options.park !== false,
+    },
+  });
+  printWindowActionResult(action === 'hide' ? 'Hidden desktop pet' : action === 'close' ? 'Closed desktop pet layer' : 'Shown desktop pet', result);
+  return result;
+}
+
 async function main() {
   if (process.argv.includes('--print-overnight') || process.argv.includes('--overnight')) {
     await showOvernightStatus();
+    return;
+  }
+
+  if (process.argv.includes('--print-window-state') || process.argv.includes('--window-state') || process.argv.includes('--pet-state')) {
+    const result = await request('/api/window/state');
+    printWindowActionResult('Desktop pet', { window: result.window || {} });
+    return;
+  }
+
+  if (process.argv.includes('--hide-pet') || process.argv.includes('--hide-window') || process.argv.includes('--classroom-mode')) {
+    await runWindowVisibilityAction('hide', { source: 'cui_cli_hide_pet' });
+    return;
+  }
+
+  if (process.argv.includes('--show-pet') || process.argv.includes('--show-window') || process.argv.includes('--summon-pet')) {
+    await runWindowVisibilityAction('show', { source: 'cui_cli_show_pet', focus: process.argv.includes('--focus') });
+    return;
+  }
+
+  if (process.argv.includes('--close-pet') || process.argv.includes('--close-window') || process.argv.includes('--close-desktop-pet')) {
+    await runWindowVisibilityAction('close', { source: 'cui_cli_close_pet' });
     return;
   }
 
@@ -5525,6 +5577,12 @@ async function main() {
       else if (answer === '5') await setupAction('open_full_disk_access_settings');
       else if (answer === '6') {
         await movePetCorner(rl);
+      } else if (answer === '6h' || answer === 'hide pet' || answer === 'hide window' || answer === 'classroom' || answer === 'classroom mode') {
+        await runWindowVisibilityAction('hide', { source: 'cui_interactive_hide_pet' });
+      } else if (answer === '6s' || answer === 'show pet' || answer === 'show window' || answer === 'summon pet') {
+        await runWindowVisibilityAction('show', { source: 'cui_interactive_show_pet' });
+      } else if (answer === '6x' || answer === 'close pet' || answer === 'close window' || answer === 'close desktop pet') {
+        await runWindowVisibilityAction('close', { source: 'cui_interactive_close_pet' });
       } else if (answer === '7') {
         await restartJavis();
       } else if (answer === '8') {

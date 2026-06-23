@@ -172,6 +172,40 @@ export default {
       out.push(fail('surface.window_move_restore', 'Pet window move and restore', 'GET /api/window/state did not expose a current JAVIS window position', windowBeforeResponse.data || { status: windowBeforeResponse.status, error: windowBeforeResponse.error }));
     }
 
+    const hideWindowResponse = await ctx.api('/api/window/hide', {
+      method: 'POST',
+      body: { source: 'eval_surface_hide_pet' },
+    });
+    const hiddenWindow = hideWindowResponse.data?.window || {};
+    const showWindowResponse = await ctx.api('/api/window/show', {
+      method: 'POST',
+      body: { source: 'eval_surface_show_pet', focus: false, park: true },
+    });
+    const shownWindow = showWindowResponse.data?.window || {};
+    out.push(
+      hideWindowResponse.ok &&
+        hideWindowResponse.data?.ok === true &&
+        hiddenWindow.surface === 'hidden' &&
+        hiddenWindow.hidden === true &&
+        hiddenWindow.visible === false &&
+        hiddenWindow.classroomMode?.active === true &&
+        hiddenWindow.safety?.startsMicrophone === false &&
+        hiddenWindow.safety?.usesRealtime === false &&
+        hiddenWindow.safety?.callsOpenAI === false &&
+        hiddenWindow.safety?.stopsResident === false &&
+        showWindowResponse.ok &&
+        showWindowResponse.data?.ok === true &&
+        shownWindow.surface === 'visible' &&
+        shownWindow.visible === true &&
+        shownWindow.hidden === false &&
+        shownWindow.closed === false
+        ? ok('surface.window_hide_show', 'Pet hide/show classroom mode', `hidden=${hiddenWindow.surface} · restored=${shownWindow.surface}`)
+        : fail('surface.window_hide_show', 'Pet hide/show classroom mode', 'desktop pet should hide without stopping resident services and restore visibly afterward', {
+          hidden: hideWindowResponse.data || { status: hideWindowResponse.status, error: hideWindowResponse.error },
+          shown: showWindowResponse.data || { status: showWindowResponse.status, error: showWindowResponse.error },
+        }),
+    );
+
     const workflows = await ctx.api('/api/workflows');
     const workflowItems = workflows.data?.workflows || [];
     if (workflows.ok && Array.isArray(workflowItems) && workflowItems[0]?.id) {

@@ -164,7 +164,7 @@ Use the terminal CUI to paste `OPENAI_API_KEY` locally. It hides the input, writ
 
 The same CUI can explicitly toggle `JAVIS_ENABLE_LOCAL_EXEC` for Level 3 local actions after typing `ENABLE` or `DISABLE`.
 It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowledges that automatic Level 3 local actions are intentional while Level 4 sends, purchases, deletes, form submissions, and account changes still require confirmation.
-The CUI also exposes microphone permission recovery, explicit control-mode switching, Realtime evidence watching or one-shot printing, Realtime dogfood brief/prompt/session/archive controls, voice-ready work handoff printing, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh/evolution, inferred-memory save, learning skill draft preview/export, local skill shortcut review/promotion, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
+The CUI also exposes microphone permission recovery, explicit control-mode switching, desktop pet hide/show/close controls for class or presentations, Realtime evidence watching or one-shot printing, Realtime dogfood brief/prompt/session/archive controls, voice-ready work handoff printing, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh/evolution, inferred-memory save, learning skill draft preview/export, local skill shortcut review/promotion, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
 
 Use `npm run verify:ax` as a read-only Accessibility targeting smoke test. For the strict Chrome/Gemini side-pane case, focus Chrome and run `npm run verify:ax -- --require-chromium`.
 
@@ -220,6 +220,9 @@ Local Express service on 127.0.0.1:3417
   /api/window/state     -> pet mode, position, and global hotkey status
   /api/window/park      -> move the buddy back to its configured notch/corner position
   /api/window/move      -> move the buddy to explicit screen coordinates
+  /api/window/hide      -> hide the desktop pet while resident services keep running
+  /api/window/show      -> restore the desktop pet after class/presentation mode
+  /api/window/close     -> close only the desktop pet layer; API, menu bar, and hotkeys remain available
   /api/menubar/state    -> macOS menu bar status item state
   /api/notifications/state -> resident notification support, counters, quiet attention policy, and operator-only attention history
   /api/briefing         -> local status, blockers, recent work, and next actions
@@ -323,6 +326,9 @@ Local Express service on 127.0.0.1:3417
   /api/tasks             -> background / Codex / Claude queue
   /api/tools/execute     -> tools called by the realtime model
   /api/window/mode       -> pet sizing compatibility endpoint
+  /api/window/hide       -> hide the desktop pet without stopping the resident
+  /api/window/show       -> recreate/restore the desktop pet after it was hidden or closed
+  /api/window/close      -> close only the desktop pet layer; resident services stay online
   /api/window/summon     -> wake and park JAVIS from API/CUI/hotkey
 ```
 

@@ -1045,6 +1045,9 @@ let apiToken = '';
 let screenPrivacy;
 let currentWindowMode = 'pet';
 let currentParkCorner = WINDOW_PARK_CORNER;
+let desktopWindowHidden = false;
+let desktopWindowHiddenAt = 0;
+let desktopWindowClosedAt = 0;
 let toggleHotkeyRegistered = false;
 let summonHotkeyRegistered = false;
 let captureHotkeyRegistered = false;
@@ -1317,6 +1320,16 @@ function windowBoundsSnapshot() {
   };
 }
 
+function desktopWindowVisible() {
+  return Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible());
+}
+
+function desktopWindowSurfaceState() {
+  if (!mainWindow || mainWindow.isDestroyed()) return 'closed';
+  if (desktopWindowHidden || !mainWindow.isVisible()) return 'hidden';
+  return 'visible';
+}
+
 function windowTargetForMode(mode = currentWindowMode) {
   return windowModes[mode] || windowModes.pet;
 }
@@ -1580,9 +1593,12 @@ function compactTapToSummonSnapshot(tap = tapToSummonSnapshot()) {
 
 function petWindowStateSnapshot(options = {}) {
   const bounds = windowBoundsSnapshot();
+  const target = windowTargetForMode(currentWindowMode);
   const tapToSummon = compactTapToSummonSnapshot(tapToSummonSnapshot(options));
   return {
     mode: currentWindowMode,
+    surface: desktopWindowSurfaceState(),
+    visible: desktopWindowVisible(),
     hotkey: TOGGLE_HOTKEY,
     hotkeyRegistered: toggleHotkeyRegistered,
     summonHotkey: SUMMON_HOTKEY,
@@ -1591,8 +1607,8 @@ function petWindowStateSnapshot(options = {}) {
     captureHotkey: CAPTURE_HOTKEY,
     captureHotkeyRegistered,
     parkCorner: currentParkCorner,
-    width: bounds.width,
-    height: bounds.height,
+    width: bounds?.width || target.width,
+    height: bounds?.height || target.height,
   };
 }
 
@@ -1602,6 +1618,12 @@ function windowStateSnapshot() {
     : 0;
   return {
     mode: currentWindowMode,
+    surface: desktopWindowSurfaceState(),
+    visible: desktopWindowVisible(),
+    hidden: desktopWindowSurfaceState() === 'hidden',
+    closed: desktopWindowSurfaceState() === 'closed',
+    hiddenAt: desktopWindowHiddenAt || null,
+    closedAt: desktopWindowClosedAt || null,
     hotkey: TOGGLE_HOTKEY,
     hotkeyRegistered: toggleHotkeyRegistered,
     summonHotkey: SUMMON_HOTKEY,
@@ -1614,6 +1636,28 @@ function windowStateSnapshot() {
     parkCorner: currentParkCorner,
     parkDisplay: WINDOW_PARK_DISPLAY,
     parkMargin: WINDOW_PARK_MARGIN,
+    controls: {
+      hide: '/api/window/hide',
+      show: '/api/window/show',
+      close: '/api/window/close',
+      summon: '/api/window/summon',
+    },
+    classroomMode: {
+      available: true,
+      active: desktopWindowSurfaceState() !== 'visible',
+      summary: desktopWindowSurfaceState() === 'visible'
+        ? 'Desktop pet is visible.'
+        : desktopWindowSurfaceState() === 'hidden'
+          ? 'Desktop pet is hidden; resident services, menu bar, and hotkeys stay available.'
+          : 'Desktop pet window is closed; resident services, menu bar, and hotkeys stay available.',
+    },
+    safety: {
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      stopsResident: false,
+      keepsBackgroundServicesRunning: true,
+    },
     composeAutoPark: {
       enabled: WINDOW_COMPOSE_AUTO_PARK_MS > 0,
       timeoutMs: WINDOW_COMPOSE_AUTO_PARK_MS,
@@ -2212,6 +2256,11 @@ function notifyCurrentAttention(source = 'attention', options = {}) {
 function applyWindowMode(mode, options = {}) {
   const nextMode = normalizeWindowMode(mode);
   currentWindowMode = nextMode;
+  desktopWindowHidden = false;
+  desktopWindowHiddenAt = 0;
+  if ((!mainWindow || mainWindow.isDestroyed()) && options.create !== false) {
+    createWindow({ source: `${options.source || 'api'}:mode` });
+  }
   if (nextMode === 'compose') scheduleComposeAutoPark(options.source || 'api');
   else clearComposeAutoParkTimer();
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -2278,6 +2327,67 @@ function summonJavis(source = 'hotkey', options = {}) {
     localInputDefault: tapToSummon.localInputDefault,
     realtimeTapAllowed: tapToSummon.realtimeTapAllowed,
   };
+}
+
+function hideDesktopWindow(source = 'api') {
+  desktopWindowHidden = true;
+  desktopWindowHiddenAt = Date.now();
+  clearComposeAutoParkTimer();
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.hide();
+  }
+  appendAudit('window.hidden', {
+    source: compactRecordText(source, 80),
+    mode: currentWindowMode,
+  });
+  updateMenuBarMenu();
+  return windowStateSnapshot();
+}
+
+function showDesktopWindow(source = 'api', options = {}) {
+  desktopWindowHidden = false;
+  desktopWindowHiddenAt = 0;
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow({ source: `${source}:show` });
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    applyWindowMode(options.mode || currentWindowMode || 'pet', {
+      source,
+      focus: options.focus === true,
+      park: options.park !== false,
+      corner: options.corner,
+      display: options.display,
+    });
+  }
+  appendAudit('window.shown', {
+    source: compactRecordText(source, 80),
+    mode: currentWindowMode,
+    focus: options.focus === true,
+  });
+  updateMenuBarMenu();
+  return windowStateSnapshot();
+}
+
+function closeDesktopWindow(source = 'api') {
+  desktopWindowHidden = true;
+  desktopWindowHiddenAt = Date.now();
+  desktopWindowClosedAt = Date.now();
+  clearComposeAutoParkTimer();
+  if (rendererRecoveryTimer) {
+    clearTimeout(rendererRecoveryTimer);
+    rendererRecoveryTimer = null;
+  }
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const windowToClose = mainWindow;
+    mainWindow = null;
+    windowToClose.destroy();
+  }
+  appendAudit('window.desktop_closed', {
+    source: compactRecordText(source, 80),
+    mode: currentWindowMode,
+  });
+  updateMenuBarMenu();
+  return windowStateSnapshot();
 }
 
 function captureClipboardToInbox(source = 'hotkey') {
@@ -2553,10 +2663,12 @@ function updateMenuBarMenu() {
   const inbox = inboxCounts();
   const nextInbox = inboxSnapshot(1, 'open')[0] || null;
   const activeSession = activeSessionSnapshot();
+  const windowSurface = desktopWindowSurfaceState();
   const nextSummary = compactRecordText(firstAction?.summary || briefing.summary, 92);
   const menu = Menu.buildFromTemplate([
     { label: 'JAVIS', enabled: false },
     { label: menuBarStatusLabel(readiness), enabled: false },
+    { label: `Desktop pet: ${windowSurface}`, enabled: false },
     { label: activeSession ? `Session: ${compactRecordText(activeSession.title, 42)}` : 'Session: idle', enabled: false },
     { label: `${inbox.open} open inbox item(s)`, enabled: false },
     { type: 'separator' },
@@ -2568,6 +2680,22 @@ function updateMenuBarMenu() {
     {
       label: `Park to ${WINDOW_PARK_CORNER === 'notch' ? 'Mac notch' : WINDOW_PARK_CORNER}`,
       click: () => parkWindow('menubar'),
+    },
+    {
+      label: 'Hide Desktop Pet',
+      enabled: windowSurface === 'visible',
+      click: () => hideDesktopWindow('menubar'),
+    },
+    {
+      label: 'Show Desktop Pet',
+      enabled: windowSurface !== 'visible',
+      accelerator: SUMMON_HOTKEY || undefined,
+      click: () => showDesktopWindow('menubar', { focus: false, park: true }),
+    },
+    {
+      label: 'Close Desktop Pet Layer',
+      enabled: windowSurface !== 'closed',
+      click: () => closeDesktopWindow('menubar'),
     },
     {
       label: 'Open Config Terminal',
@@ -68345,6 +68473,39 @@ function startApiServer() {
     res.json({ ok: true, window: windowState });
   });
 
+  api.post('/api/window/hide', express.json({ limit: '64kb' }), (req, res) => {
+    const windowState = hideDesktopWindow(req.body?.source || 'api');
+    res.json({
+      ok: true,
+      output: 'JAVIS desktop pet hidden. Resident services, menu bar, and hotkeys remain available.',
+      window: windowState,
+    });
+  });
+
+  api.post('/api/window/show', express.json({ limit: '64kb' }), (req, res) => {
+    const windowState = showDesktopWindow(req.body?.source || 'api', {
+      mode: req.body?.mode,
+      focus: req.body?.focus === true,
+      corner: req.body?.corner,
+      display: req.body?.display,
+      park: req.body?.park !== false,
+    });
+    res.json({
+      ok: true,
+      output: 'JAVIS desktop pet shown.',
+      window: windowState,
+    });
+  });
+
+  api.post('/api/window/close', express.json({ limit: '64kb' }), (req, res) => {
+    const windowState = closeDesktopWindow(req.body?.source || 'api');
+    res.json({
+      ok: true,
+      output: 'JAVIS desktop pet layer closed. Resident services, menu bar, and hotkeys remain available.',
+      window: windowState,
+    });
+  });
+
   api.post('/api/window/summon', express.json({ limit: '64kb' }), (req, res) => {
     res.json(summonJavis(req.body?.source || 'api', { wake: req.body?.wake !== false }));
   });
@@ -68548,8 +68709,9 @@ function resetRendererRecovery(source = 'renderer_loaded') {
   rendererRecoveryAttempts = 0;
 }
 
-function createWindow() {
+function createWindow(options = {}) {
   const initialWindowMode = windowModes[currentWindowMode];
+  desktopWindowClosedAt = 0;
   mainWindow = new BrowserWindow({
     width: initialWindowMode.width,
     height: initialWindowMode.height,
@@ -68564,6 +68726,7 @@ function createWindow() {
     hasShadow: false,
     alwaysOnTop: true,
     skipTaskbar: true,
+    show: false,
     backgroundColor: '#00000000',
     webPreferences: {
       contextIsolation: true,
@@ -68572,8 +68735,11 @@ function createWindow() {
   });
   mainWindow.setAlwaysOnTop(true, 'floating');
   mainWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
-  parkWindow('startup', { menu: false });
-  scheduleWindowSizeEnforcement('startup_enforce');
+  parkWindow(options.source || 'startup', { menu: false });
+  scheduleWindowSizeEnforcement(options.source || 'startup_enforce');
+  if (!desktopWindowHidden) {
+    mainWindow.showInactive();
+  }
 
   mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL) => {
     rendererState.lastLoadFailedAt = Date.now();
@@ -68609,6 +68775,12 @@ function createWindow() {
   });
   mainWindow.on('ready-to-show', () => {
     scheduleWindowSizeEnforcement('ready_to_show');
+    if (!desktopWindowHidden && mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.showInactive();
+    }
+  });
+  mainWindow.on('closed', () => {
+    if (mainWindow && mainWindow.isDestroyed()) mainWindow = null;
   });
 
   loadRendererIntoWindow('startup');

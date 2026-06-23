@@ -656,7 +656,7 @@ Use option `29. Show skill shortcuts` to inspect saved local trigger phrases for
 
 Use option `5. Open Full Disk Access settings` when you want macOS to allow JAVIS/Electron into protected local folders. macOS still requires a human confirmation in System Settings.
 
-The desktop pet is intentionally minimal. It is a 148x40 Dynamic Island-style voice capsule parked at the Mac notch by default and avoids showing setup state, diagnostic chips, or configuration controls. When Realtime is blocked, it may temporarily widen into the `compose` strip for one local typed turn, then return to the compact capsule after sending. In compact mode it consumes the lightweight `/api/pet/status` payload and maps the resident state to traffic-light dots: red for attention/setup, yellow for waking/working, green for ready/standby, and green+yellow for observing or listening. Full doctor/config/briefing/context details stay in the terminal CUI, `/api/status`, Realtime tools, or the slower expanded-panel refresh.
+The desktop pet is intentionally minimal. It is a 148x40 Dynamic Island-style voice capsule parked at the Mac notch by default and avoids showing setup state, diagnostic chips, or configuration controls. When Realtime is blocked, it may temporarily widen into the `compose` strip for one local typed turn, then return to the compact capsule after sending. In compact mode it consumes the lightweight `/api/pet/status` payload and maps the resident state to traffic-light dots: red for attention/setup, yellow for waking/working, green for ready/standby, and green+yellow for observing or listening. Full doctor/config/briefing/context details stay in the terminal CUI, `/api/status`, Realtime tools, or the slower expanded-panel refresh. For class or presentations, use CUI option `6H`, `npm run pet:hide`, or `/api/window/hide` to hide the desktop pet without stopping the resident; `6S`, `npm run pet:show`, or `/api/window/show` restores it.
 
 Click the pet to start or stop realtime voice with full-screen context once `OPENAI_API_KEY` is configured. If the key is missing, the pet opens the terminal CUI instead. Realtime voice defaults to push-to-talk: after the session is live, hold the compact capsule or press Space to speak, then release to send the audio turn. The expanded controls can still toggle open-mic mode when you intentionally want it. Screen context is captured by the resident process, so it does not ask which window to share. Inside a live voice session, `JAVIS_WAKE_WORDS` defines soft wake words such as `JAVIS`, `Jarvis`, `贾维斯`, and `小贾`. For true local wake, set `JAVIS_WAKE_ENGINE_CMD` to a command that prints `wake` or one configured wake word; JAVIS will then expose that through `/api/wake/status` and the renderer will start voice automatically.
 
@@ -668,9 +668,9 @@ It also registers a tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Spa
 
 It also registers a clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`. Copy text anywhere, press the capture hotkey, and JAVIS saves the clipboard into local Inbox. Change it with `JAVIS_CAPTURE_HOTKEY`, or set `JAVIS_CAPTURE_HOTKEY=false` to disable it.
 
-The desktop buddy parks itself at the Mac notch by default, using a Dynamic Island-style capsule. Use CUI option `6. Move pet position`, or set `JAVIS_WINDOW_PARK_CORNER=notch`, `JAVIS_WINDOW_PARK_DISPLAY=primary`, and `JAVIS_WINDOW_NOTCH_TOP_OFFSET=5` to control the notch placement. Supported positions are `notch`, `top-left`, `top-right`, `bottom-left`, and `bottom-right`; corner placement still uses `JAVIS_WINDOW_PARK_MARGIN`.
+The desktop buddy parks itself at the Mac notch by default, using a Dynamic Island-style capsule. Use CUI option `6. Move pet position`, or set `JAVIS_WINDOW_PARK_CORNER=notch`, `JAVIS_WINDOW_PARK_DISPLAY=primary`, and `JAVIS_WINDOW_NOTCH_TOP_OFFSET=5` to control the notch placement. Supported positions are `notch`, `top-left`, `top-right`, `bottom-left`, and `bottom-right`; corner placement still uses `JAVIS_WINDOW_PARK_MARGIN`. Use CUI option `6X` or `npm run pet:close` to close only the desktop pet layer while the API, menu bar, watchdog, and hotkeys stay online.
 
-JAVIS also creates a macOS menu bar status item. It exposes resident controls without relying on the desktop pet being visible: open the terminal config CUI, park the pet, refresh status, open `.env`, open Screen Recording or Accessibility settings, open the runtime folder, and quit the resident app.
+JAVIS also creates a macOS menu bar status item. It exposes resident controls without relying on the desktop pet being visible: show/hide/close the pet layer, open the terminal config CUI, park the pet, refresh status, open `.env`, open Screen Recording or Accessibility settings, open the runtime folder, and quit the resident app.
 
 ```bash
 curl http://127.0.0.1:3417/api/window/state
@@ -689,6 +689,15 @@ curl -X POST http://127.0.0.1:3417/api/window/mode \
 curl -X POST http://127.0.0.1:3417/api/window/park \
   -H 'Content-Type: application/json' \
   -d '{"corner":"notch"}'
+curl -X POST http://127.0.0.1:3417/api/window/hide \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+curl -X POST http://127.0.0.1:3417/api/window/show \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+curl -X POST http://127.0.0.1:3417/api/window/close \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 curl -X POST http://127.0.0.1:3417/api/window/summon \
   -H 'Content-Type: application/json' \
   -d '{}'
@@ -1335,6 +1344,12 @@ curl -X POST http://127.0.0.1:3417/api/window/park \
 curl -X POST http://127.0.0.1:3417/api/window/move \
   -H 'Content-Type: application/json' \
   -d '{"x":24,"y":760}'
+curl -X POST http://127.0.0.1:3417/api/window/hide \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+curl -X POST http://127.0.0.1:3417/api/window/show \
+  -H 'Content-Type: application/json' \
+  -d '{}'
 ```
 
 ## Action Policy
