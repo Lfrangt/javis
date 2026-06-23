@@ -452,6 +452,7 @@ async function printStatus() {
   console.log('1. Set / replace OpenAI API key');
   console.log('1B. Show OpenAI API billing/quota recovery');
   console.log('SG. Show OpenAI spend guard');
+  console.log('SS. Show OpenAI spend sentinel');
   console.log('SI. Show OpenAI spend incident report');
   console.log('SL. Lock OpenAI spend to zero');
   console.log('2. Open .env');
@@ -3942,9 +3943,45 @@ function printOpenAiSpendIncident(result) {
   console.log('Boundary: local JAVIS evidence only; this does not call OpenAI or query the billing dashboard.');
 }
 
+function printOpenAiSpendSentinel(result) {
+  const sentinel = result?.sentinel || result || {};
+  const watcher = sentinel.watcher || {};
+  const counts = sentinel.counts || {};
+  const guard = sentinel.guard || {};
+  const forensics = sentinel.forensics || {};
+  const issues = Array.isArray(sentinel.issues) ? sentinel.issues : [];
+  console.log('JAVIS OpenAI Spend Sentinel');
+  console.log('===========================');
+  console.log(`Status: ${sentinel.status || '-'} · clear=${sentinel.clear ? 'yes' : 'no'} · enabled=${sentinel.enabled ? 'yes' : 'no'} · running=${sentinel.running ? 'yes' : 'no'}`);
+  if (sentinel.summary) console.log(`Summary: ${compact(sentinel.summary, 300)}`);
+  console.log(`Watcher: checks=${watcher.checkCount ?? 0} · interval=${formatInterval(watcher.intervalMs || 0)} · notify=${watcher.notifyEnabled ? 'on' : 'off'} · last=${watcher.lastCheckedAt ? formatTime(watcher.lastCheckedAt) : 'never'}`);
+  console.log(`OpenAI: mode=${guard.mode || '-'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · emergency=${guard.emergencyZeroSpendLock ? 'on' : 'off'} · daily=${counts.allowedToday ?? 0}/${guard.dailyRequestLimit ?? 0} · unattended=${counts.unattendedAllowedToday ?? 0}/${guard.unattendedDailyRequestLimit ?? 0} · leases=${counts.activeLeases ?? 0}`);
+  console.log(`Forensics: zero locked=${forensics.zeroLocked ? 'yes' : 'no'} · likely billable from JAVIS=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · ${forensics.status || '-'}`);
+  console.log(`Guards: egress=${guard.egressGuardEnabled ? 'on' : 'off'} · runtime key env=${guard.runtimeKeyEnvIsolated ? 'isolated' : 'visible'} · child env=${guard.childEnvGuardEnabled ? 'guarded' : 'loose'} · autopilot cloud=${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · startup probe=${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'}`);
+  if (issues.length) {
+    console.log('\nIssues');
+    for (const issue of issues.slice(0, 8)) {
+      const next = issue.next ? ` · next: ${compact(issue.next, 160)}` : '';
+      console.log(`- ${issue.severity || 'info'} ${issue.label || issue.id}: ${compact(issue.summary || '', 220)}${next}`);
+    }
+  } else {
+    console.log('\nIssues: none');
+  }
+  if (sentinel.next) console.log(`\nNext: ${compact(sentinel.next, 260)}`);
+  console.log('Safety: local guard state only; no OpenAI call, no spend lease, no microphone, no Realtime, no worker, no screen capture.');
+}
+
 async function showOpenAiSpendGuard() {
   const result = await request('/api/openai/spend-guard');
   printOpenAiSpendGuard(result);
+  return result;
+}
+
+async function showOpenAiSpendSentinel(options = {}) {
+  const result = await request(options.checkNow ? '/api/openai/spend-sentinel/check' : '/api/openai/spend-sentinel', options.checkNow
+    ? { method: 'POST', body: { source: 'cui_openai_spend_sentinel' } }
+    : {});
+  printOpenAiSpendSentinel(result);
   return result;
 }
 
@@ -5272,6 +5309,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-openai-spend-sentinel') || process.argv.includes('--openai-spend-sentinel') || process.argv.includes('--spend-sentinel')) {
+    await showOpenAiSpendSentinel({ checkNow: process.argv.includes('--check-now') });
+    return;
+  }
+
   if (process.argv.includes('--print-openai-spend-incident') || process.argv.includes('--openai-spend-incident')) {
     await showOpenAiSpendIncident();
     return;
@@ -5295,6 +5337,7 @@ async function main() {
       if (answer === '1') await setOpenAiKey(rl);
       else if (answer === '1b' || answer === 'billing' || answer === 'quota' || answer === 'realtime recovery') await showRealtimeProviderRecoveryFromCui(rl);
       else if (answer === 'sg' || answer === 'spend' || answer === 'spend guard' || answer === 'openai spend') await showOpenAiSpendGuard();
+      else if (answer === 'ss' || answer === 'spend sentinel' || answer === 'openai sentinel' || answer === 'openai spend sentinel') await showOpenAiSpendSentinel({ checkNow: true });
       else if (answer === 'si' || answer === 'spend incident' || answer === 'openai incident' || answer === 'openai spend incident') await showOpenAiSpendIncident();
       else if (answer === 'sl' || answer === 'lockdown' || answer === 'openai lockdown' || answer === 'lock openai' || answer === 'zero spend') await lockOpenAiSpendInteractive(rl);
       else if (answer === '2') await setupAction('prepare_env_file');

@@ -298,6 +298,10 @@ const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = process.env.JAVIS_OPENAI_ALLOW_RENDE
 const OPENAI_EGRESS_GUARD_ENABLED = process.env.JAVIS_OPENAI_EGRESS_GUARD !== 'false';
 const OPENAI_REQUIRE_SPEND_LEASE = process.env.JAVIS_OPENAI_REQUIRE_SPEND_LEASE !== 'false';
 const OPENAI_SPEND_LEASE_TTL_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_LEASE_TTL_MS, 60000, 5000, 300000);
+const OPENAI_SPEND_SENTINEL_ENABLED = process.env.JAVIS_OPENAI_SPEND_SENTINEL !== 'false';
+const OPENAI_SPEND_SENTINEL_INTERVAL_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_SENTINEL_INTERVAL_MS, 60000, 5000, 3600000);
+const OPENAI_SPEND_SENTINEL_NOTIFY = process.env.JAVIS_OPENAI_SPEND_SENTINEL_NOTIFY !== 'false';
+const OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS, 900000, 60000, 86400000);
 const OPENAI_CHILD_ENV_GUARD_ENABLED = process.env.JAVIS_OPENAI_CHILD_ENV_GUARD !== 'false';
 const OPENAI_CHILD_ENV_CREDENTIAL_KEYS = [
   'OPENAI_API_KEY',
@@ -1036,6 +1040,26 @@ let autopilotTimer = null;
 let autopilotBusy = false;
 let realtimeRendererWatchdogTimer = null;
 let realtimeRendererWatchdogBusy = false;
+let openAiSpendSentinelTimer = null;
+let openAiSpendSentinelBusy = false;
+const openAiSpendSentinelState = {
+  enabled: OPENAI_SPEND_SENTINEL_ENABLED,
+  intervalMs: OPENAI_SPEND_SENTINEL_INTERVAL_MS,
+  notifyEnabled: OPENAI_SPEND_SENTINEL_NOTIFY,
+  notifyCooldownMs: OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS,
+  running: false,
+  checkCount: 0,
+  alertCount: 0,
+  lastCheckedAt: 0,
+  lastStatus: 'unknown',
+  lastSummary: '',
+  lastAlertKey: '',
+  lastAlertAt: 0,
+  lastNotificationAt: 0,
+  lastNotificationResult: null,
+  lastIssues: [],
+  lastError: '',
+};
 let autopilotState = {
   enabled: AUTOPILOT_ENABLED,
   intervalMs: AUTOPILOT_INTERVAL_MS,
@@ -3078,6 +3102,354 @@ function openAiSpendIncidentReportSnapshot(options = {}) {
       executesActions: false,
     },
   };
+}
+
+function openAiSpendSentinelIssue(id, severity, label, summary, options = {}) {
+  return {
+    id,
+    severity,
+    label: compactRecordText(label || id, 120),
+    summary: compactRecordText(summary || '', 260),
+    source: compactRecordText(options.source || 'openai_spend_sentinel', 80),
+    next: compactRecordText(options.next || 'Run npm run openai:lockdown, then inspect npm run openai:incident.', 220),
+    count: Math.max(0, Number(options.count || 0)),
+  };
+}
+
+function openAiSpendSentinelSeverityRank(value) {
+  return {
+    critical: 4,
+    high: 3,
+    medium: 2,
+    low: 1,
+    info: 0,
+  }[String(value || '').toLowerCase()] ?? 0;
+}
+
+function openAiSpendSentinelSnapshot(options = {}) {
+  const guard = options.guard || openAiSpendGuardSnapshot();
+  const egress = options.egress || openAiEgressGuardSnapshot();
+  const forensics = options.forensics || openAiSpendForensicsSnapshot({ guard, egress });
+  const runtimeKeyIsolation = guard.runtimeKeyIsolation || {};
+  const childEnvGuard = guard.childEnvGuard || {};
+  const issues = [];
+  const allowed = Number(guard.counts?.total || 0);
+  const unattendedAllowed = Number(guard.counts?.unattended || 0);
+  const activeLeases = Number(guard.spendLease?.activeCount || 0);
+
+  if (unattendedAllowed > 0) {
+    issues.push(openAiSpendSentinelIssue(
+      'unattended_openai_spend_recorded',
+      'critical',
+      'Unattended OpenAI spend recorded',
+      `JAVIS has ${unattendedAllowed} unattended OpenAI request record(s) today.`,
+      { count: unattendedAllowed },
+    ));
+  }
+  if (allowed > 0) {
+    issues.push(openAiSpendSentinelIssue(
+      'openai_spend_recorded',
+      unattendedAllowed > 0 ? 'critical' : 'high',
+      'OpenAI spend recorded',
+      `JAVIS has ${allowed} allowed OpenAI request record(s) today.`,
+      { count: allowed },
+    ));
+  }
+  if (!forensics.zeroLocked) {
+    issues.push(openAiSpendSentinelIssue(
+      'zero_spend_not_locked',
+      'high',
+      'OpenAI zero-spend lock is not fully active',
+      'The current guard is not fully zero-locked; a future confirmed request may be able to spend API quota.',
+    ));
+  }
+  if (activeLeases > 0) {
+    issues.push(openAiSpendSentinelIssue(
+      'active_openai_spend_lease',
+      'high',
+      'Active OpenAI spend lease',
+      `${activeLeases} one-request OpenAI spend lease(s) are active.`,
+      { count: activeLeases, next: 'Run npm run openai:lockdown to clear active leases, or let them expire before leaving JAVIS unattended.' },
+    ));
+  }
+  if (guard.allowAutopilotCloud) {
+    issues.push(openAiSpendSentinelIssue(
+      'autopilot_cloud_allowed',
+      'high',
+      'Autopilot cloud spend allowed',
+      'Autopilot cloud calls are allowed by environment; unattended model spend is possible.',
+    ));
+  }
+  if (guard.allowRendererStartupProbe) {
+    issues.push(openAiSpendSentinelIssue(
+      'renderer_startup_probe_allowed',
+      'high',
+      'Renderer startup provider probe allowed',
+      'Renderer startup provider probes are allowed and may consume OpenAI quota.',
+    ));
+  }
+  if (Number(guard.dailyRequestLimit || 0) > 0) {
+    issues.push(openAiSpendSentinelIssue(
+      'positive_openai_daily_budget',
+      'medium',
+      'Positive OpenAI daily budget',
+      `Daily request limit is ${guard.dailyRequestLimit}; zero-spend unattended mode expects 0.`,
+      { count: Number(guard.dailyRequestLimit || 0) },
+    ));
+  }
+  if (Number(guard.unattendedDailyRequestLimit || 0) > 0) {
+    issues.push(openAiSpendSentinelIssue(
+      'positive_unattended_openai_budget',
+      'high',
+      'Positive unattended OpenAI budget',
+      `Unattended daily request limit is ${guard.unattendedDailyRequestLimit}; zero-spend unattended mode expects 0.`,
+      { count: Number(guard.unattendedDailyRequestLimit || 0) },
+    ));
+  }
+  if (!guard.egressGuardEnabled || egress.safety?.blocksUnscopedOpenAiFetch !== true) {
+    issues.push(openAiSpendSentinelIssue(
+      'openai_egress_guard_not_blocking',
+      'high',
+      'OpenAI egress guard is not blocking',
+      'Unscoped OpenAI network egress is not fully guarded.',
+    ));
+  }
+  if (runtimeKeyIsolation.openAiApiKeyInProcessEnv || Number(runtimeKeyIsolation.openAiCredentialKeyCount || 0) > 0) {
+    issues.push(openAiSpendSentinelIssue(
+      'openai_key_visible_in_process_env',
+      'high',
+      'OpenAI key visible in process env',
+      'OpenAI credential variables are visible in resident process.env instead of being isolated.',
+    ));
+  }
+  if (childEnvGuard.defaultChildReceivesOpenAiCredentials || childEnvGuard.blocksInlineCredentialEnv !== true) {
+    issues.push(openAiSpendSentinelIssue(
+      'openai_child_env_guard_loose',
+      'high',
+      'OpenAI child env guard loose',
+      'Worker/MCP child processes may inherit OpenAI credentials or inline key injection may be allowed.',
+    ));
+  }
+
+  issues.sort((a, b) => openAiSpendSentinelSeverityRank(b.severity) - openAiSpendSentinelSeverityRank(a.severity) || a.id.localeCompare(b.id));
+  const top = issues[0] || null;
+  const highCount = issues.filter((item) => openAiSpendSentinelSeverityRank(item.severity) >= 3).length;
+  const status = highCount
+    ? 'breach'
+    : issues.length
+      ? 'warning'
+      : 'clear';
+  const summary = status === 'clear'
+    ? 'OpenAI spend sentinel is clear: zero-spend lock is active, no local allowed spend is recorded, and no active spend lease exists.'
+    : `${top.label}: ${top.summary}`;
+  const alertKey = issues.map((item) => `${item.id}:${item.count || 0}`).join('|');
+  return {
+    ok: true,
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'api', 80),
+    enabled: OPENAI_SPEND_SENTINEL_ENABLED,
+    running: Boolean(openAiSpendSentinelTimer),
+    status,
+    clear: status === 'clear',
+    summary,
+    top,
+    issues,
+    alertKey,
+    counts: {
+      issues: issues.length,
+      highPriority: highCount,
+      allowedToday: allowed,
+      unattendedAllowedToday: unattendedAllowed,
+      blockedToday: Number(guard.counts?.blocked || 0),
+      activeLeases,
+    },
+    guard: {
+      mode: guard.mode,
+      hardSpendLock: Boolean(guard.hardSpendLock),
+      emergencyZeroSpendLock: Boolean(guard.emergencyZeroSpendLock),
+      dailyRequestLimit: Number(guard.dailyRequestLimit || 0),
+      unattendedDailyRequestLimit: Number(guard.unattendedDailyRequestLimit || 0),
+      allowAutopilotCloud: Boolean(guard.allowAutopilotCloud),
+      allowRendererStartupProbe: Boolean(guard.allowRendererStartupProbe),
+      requireSpendLease: Boolean(guard.requireSpendLease),
+      egressGuardEnabled: Boolean(guard.egressGuardEnabled),
+      runtimeKeyEnvIsolated: runtimeKeyIsolation.openAiApiKeyInProcessEnv === false && Number(runtimeKeyIsolation.openAiCredentialKeyCount || 0) === 0,
+      childEnvGuardEnabled: Boolean(childEnvGuard.enabled),
+    },
+    forensics: {
+      status: forensics.status || '',
+      zeroLocked: Boolean(forensics.zeroLocked),
+      likelyBillableFromJavis: Boolean(forensics.likelyBillableFromJavis),
+      latestAllowed: forensics.latestAllowed || null,
+      latestBlocked: forensics.latestBlocked || null,
+    },
+    watcher: {
+      enabled: OPENAI_SPEND_SENTINEL_ENABLED,
+      running: Boolean(openAiSpendSentinelTimer),
+      busy: openAiSpendSentinelBusy,
+      intervalMs: OPENAI_SPEND_SENTINEL_INTERVAL_MS,
+      notifyEnabled: OPENAI_SPEND_SENTINEL_NOTIFY,
+      notifyCooldownMs: OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS,
+      checkCount: openAiSpendSentinelState.checkCount,
+      alertCount: openAiSpendSentinelState.alertCount,
+      lastCheckedAt: openAiSpendSentinelState.lastCheckedAt || 0,
+      lastStatus: openAiSpendSentinelState.lastStatus,
+      lastAlertAt: openAiSpendSentinelState.lastAlertAt || 0,
+      lastNotificationAt: openAiSpendSentinelState.lastNotificationAt || 0,
+      lastNotificationResult: openAiSpendSentinelState.lastNotificationResult,
+      lastError: openAiSpendSentinelState.lastError || '',
+    },
+    next: status === 'clear'
+      ? 'Keep zero-spend lockdown on for unattended work.'
+      : top?.next || 'Run npm run openai:lockdown, then inspect npm run openai:incident.',
+    endpoints: {
+      status: '/api/openai/spend-sentinel',
+      checkNow: '/api/openai/spend-sentinel/check',
+      guard: '/api/openai/spend-guard',
+      incident: '/api/openai/spend-incident-report',
+      lockdown: '/api/openai/zero-spend-lockdown',
+    },
+    commands: {
+      status: 'npm run openai:sentinel',
+      guard: 'npm run openai:spend',
+      incident: 'npm run openai:incident',
+      lockdown: 'npm run openai:lockdown',
+    },
+    safety: {
+      readOnly: true,
+      localGuardStateOnly: true,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      startsRealtimeSession: false,
+      startsWorkers: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      readsClipboardText: false,
+      returnsBrowserPageText: false,
+      mutatesUserFiles: false,
+    },
+  };
+}
+
+async function openAiSpendSentinelTick(options = {}) {
+  if (openAiSpendSentinelBusy) {
+    return {
+      ok: true,
+      skipped: true,
+      reason: 'busy',
+      sentinel: openAiSpendSentinelSnapshot({ source: options.source || 'sentinel_busy' }),
+    };
+  }
+  openAiSpendSentinelBusy = true;
+  const source = compactRecordText(options.source || 'openai_spend_sentinel', 80);
+  try {
+    const sentinel = openAiSpendSentinelSnapshot({ source });
+    const now = Date.now();
+    const previousStatus = openAiSpendSentinelState.lastStatus;
+    const previousAlertKey = openAiSpendSentinelState.lastAlertKey;
+    const changed = previousStatus !== sentinel.status || previousAlertKey !== sentinel.alertKey;
+    const shouldAlert = sentinel.status !== 'clear';
+    const notifyCooldownActive = openAiSpendSentinelState.lastNotificationAt &&
+      now - openAiSpendSentinelState.lastNotificationAt < OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS;
+    let notificationResult = null;
+    openAiSpendSentinelState.checkCount += 1;
+    openAiSpendSentinelState.lastCheckedAt = now;
+    openAiSpendSentinelState.lastStatus = sentinel.status;
+    openAiSpendSentinelState.lastSummary = sentinel.summary;
+    openAiSpendSentinelState.lastAlertKey = sentinel.alertKey;
+    openAiSpendSentinelState.lastIssues = sentinel.issues;
+    openAiSpendSentinelState.lastError = '';
+
+    if (changed || options.forceAudit === true || source === 'startup' || source === 'manual_check') {
+      appendAudit('openai.spend_sentinel_checked', {
+        source,
+        status: sentinel.status,
+        changed,
+        issueCount: sentinel.counts.issues,
+        highPriority: sentinel.counts.highPriority,
+        allowedToday: sentinel.counts.allowedToday,
+        activeLeases: sentinel.counts.activeLeases,
+        top: sentinel.top?.id || '',
+      });
+    }
+
+    if (shouldAlert) {
+      openAiSpendSentinelState.alertCount += changed ? 1 : 0;
+      openAiSpendSentinelState.lastAlertAt = now;
+      appendAudit('openai.spend_sentinel_alert', {
+        source,
+        status: sentinel.status,
+        alertKey: sentinel.alertKey,
+        issueCount: sentinel.counts.issues,
+        highPriority: sentinel.counts.highPriority,
+        top: sentinel.top,
+      });
+      if (OPENAI_SPEND_SENTINEL_NOTIFY && !notifyCooldownActive) {
+        const delivered = notifyResident('JAVIS OpenAI spend sentinel', sentinel.summary, {
+          type: 'openai_spend_sentinel',
+          source,
+          status: sentinel.status,
+          topIssue: sentinel.top?.id || '',
+        }, { attention: false });
+        openAiSpendSentinelState.lastNotificationAt = now;
+        notificationResult = { attempted: true, delivered };
+      } else {
+        notificationResult = {
+          attempted: false,
+          reason: OPENAI_SPEND_SENTINEL_NOTIFY ? 'cooldown' : 'disabled',
+        };
+      }
+      openAiSpendSentinelState.lastNotificationResult = notificationResult;
+    }
+
+    return {
+      ok: true,
+      skipped: false,
+      changed,
+      notified: notificationResult,
+      sentinel: openAiSpendSentinelSnapshot({ source }),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    openAiSpendSentinelState.lastError = message;
+    appendAudit('openai.spend_sentinel_failed', {
+      source,
+      error: message,
+    });
+    return {
+      ok: false,
+      skipped: false,
+      error: message,
+      sentinel: openAiSpendSentinelSnapshot({ source }),
+    };
+  } finally {
+    openAiSpendSentinelBusy = false;
+  }
+}
+
+function startOpenAiSpendSentinel() {
+  if (!OPENAI_SPEND_SENTINEL_ENABLED || openAiSpendSentinelTimer) return;
+  openAiSpendSentinelTimer = setInterval(() => {
+    void openAiSpendSentinelTick({ source: 'interval' });
+  }, OPENAI_SPEND_SENTINEL_INTERVAL_MS);
+  openAiSpendSentinelState.running = true;
+  appendAudit('openai.spend_sentinel_started', {
+    intervalMs: OPENAI_SPEND_SENTINEL_INTERVAL_MS,
+    notify: OPENAI_SPEND_SENTINEL_NOTIFY,
+    notifyCooldownMs: OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS,
+  });
+  void openAiSpendSentinelTick({ source: 'startup', forceAudit: true });
+}
+
+function stopOpenAiSpendSentinel() {
+  if (!openAiSpendSentinelTimer) return;
+  clearInterval(openAiSpendSentinelTimer);
+  openAiSpendSentinelTimer = null;
+  openAiSpendSentinelState.running = false;
+  appendAudit('openai.spend_sentinel_stopped');
 }
 
 function evaluateOpenAiSpendGuard(options = {}) {
@@ -64289,6 +64661,21 @@ function startApiServer() {
     });
   });
 
+  api.get('/api/openai/spend-sentinel', (_req, res) => {
+    res.json({ sentinel: openAiSpendSentinelSnapshot({ source: 'api' }) });
+  });
+
+  api.post('/api/openai/spend-sentinel/check', express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      res.json(await openAiSpendSentinelTick({
+        source: req.body?.source || 'manual_check',
+        forceAudit: true,
+      }));
+    } catch (error) {
+      jsonError(res, 500, 'OpenAI spend sentinel check failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.post('/api/openai/zero-spend-lockdown', express.json({ limit: '64kb' }), async (req, res) => {
     try {
       const body = req.body && typeof req.body === 'object' ? req.body : {};
@@ -67237,6 +67624,7 @@ function startJavisApp() {
       createMenuBarTray();
       startAmbientMonitor();
       startLearningMonitor();
+      startOpenAiSpendSentinel();
       startAutopilotMonitor();
       startRealtimeRendererWatchdog();
       startWakeEngine();
@@ -67260,6 +67648,7 @@ function startJavisApp() {
     globalShortcut.unregisterAll();
     stopAmbientMonitor();
     stopLearningMonitor();
+    stopOpenAiSpendSentinel();
     stopAutopilotMonitor();
     stopRealtimeRendererWatchdog();
     stopWakeEngine();

@@ -1805,6 +1805,69 @@ export default {
           body: spendGuardResponse.data,
         }),
     );
+    const spendSentinelResponse = await ctx.api('/api/openai/spend-sentinel');
+    const spendSentinel = spendSentinelResponse.data?.sentinel || {};
+    const spendSentinelCheckResponse = await ctx.api('/api/openai/spend-sentinel/check', {
+      method: 'POST',
+      body: {
+        source: 'eval_resident_spend_sentinel_check',
+      },
+      timeoutMs: 10000,
+    });
+    const spendSentinelCheck = spendSentinelCheckResponse.data?.sentinel || {};
+    const spendGuardAfterSentinelResponse = await ctx.api('/api/openai/spend-guard');
+    const spendGuardAfterSentinel = spendGuardAfterSentinelResponse.data?.spendGuard || {};
+    const sentinelCui = spawnSync(process.execPath, ['scripts/config-cui.cjs', '--print-openai-spend-sentinel'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+    });
+    const sentinelCuiOutput = String(sentinelCui.stdout || '');
+    out.push(
+      spendSentinelResponse.ok &&
+        spendSentinel.ok === true &&
+        spendSentinel.version === 1 &&
+        spendSentinel.enabled === true &&
+        spendSentinel.running === true &&
+        spendSentinel.status === 'clear' &&
+        spendSentinel.clear === true &&
+        spendSentinel.counts?.allowedToday === 0 &&
+        spendSentinel.counts?.activeLeases === 0 &&
+        spendSentinel.guard?.hardSpendLock === true &&
+        spendSentinel.guard?.mode === 'off' &&
+        spendSentinel.guard?.runtimeKeyEnvIsolated === true &&
+        spendSentinel.guard?.childEnvGuardEnabled === true &&
+        spendSentinel.forensics?.zeroLocked === true &&
+        spendSentinel.safety?.callsOpenAI === false &&
+        spendSentinel.safety?.createsSpendLease === false &&
+        spendSentinel.safety?.startsMicrophone === false &&
+        spendSentinel.safety?.usesRealtime === false &&
+        spendSentinel.safety?.startsWorkers === false &&
+        spendSentinelCheckResponse.ok &&
+        spendSentinelCheck.ok === true &&
+        spendSentinelCheck.status === 'clear' &&
+        spendSentinelCheck.safety?.callsOpenAI === false &&
+        spendGuardAfterSentinelResponse.ok &&
+        Number(spendGuardAfterSentinel.counts?.total || 0) === spendGuardTotalBefore &&
+        Number(spendGuardAfterSentinel.spendLease?.activeCount || 0) === 0 &&
+        sentinelCui.status === 0 &&
+        sentinelCuiOutput.includes('JAVIS OpenAI Spend Sentinel') &&
+        sentinelCuiOutput.includes('Status: clear') &&
+        sentinelCuiOutput.includes('Safety: local guard state only')
+        ? ok('resident.openai_spend_sentinel', 'OpenAI spend sentinel', `clear · checks=${spendSentinelCheck.watcher?.checkCount ?? spendSentinel.watcher?.checkCount ?? 0} · allowed=${spendSentinel.counts?.allowedToday || 0} · leases=${spendSentinel.counts?.activeLeases || 0}`)
+        : fail('resident.openai_spend_sentinel', 'OpenAI spend sentinel', 'expected resident/CUI spend sentinel to watch local guard state without OpenAI calls, leases, mic, Realtime, or worker side effects', {
+          status: spendSentinelResponse.status,
+          sentinel: spendSentinelResponse.data,
+          check: spendSentinelCheckResponse.data,
+          spendGuardAfter: spendGuardAfterSentinelResponse.data,
+          cui: {
+            status: sentinelCui.status,
+            stdout: sentinelCuiOutput.slice(0, 1600),
+            stderr: String(sentinelCui.stderr || '').slice(0, 1200),
+          },
+        }),
+    );
 	    const zeroLockdownResponse = await ctx.api('/api/openai/zero-spend-lockdown', {
 	      method: 'POST',
 	      body: {
