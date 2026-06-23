@@ -1621,6 +1621,8 @@ export default {
     const status = await ctx.api('/api/status');
     const statusVoiceHealth = status.data?.voiceHealth || {};
     const statusLocalVoice = status.data?.localVoice || {};
+    const statusConversation = status.data?.conversation || {};
+    const statusMicrophone = statusConversation.microphone || {};
     const realtimeReady = statusVoiceHealth.status === 'ready';
     out.push(
       status.ok &&
@@ -1643,6 +1645,37 @@ export default {
         : fail('resident.status_local_voice_consistency', 'Status local voice consistency', 'GET /api/status must expose localVoice fallback_ready when Realtime is not ready', {
           voiceHealth: statusVoiceHealth,
           localVoice: statusLocalVoice,
+        }),
+    );
+
+    const blockerCui = spawnSync('npm', ['run', 'config', '--', '--print-blockers'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 20000,
+      env: {
+        ...process.env,
+        ...(ctx.token ? { JAVIS_API_TOKEN: ctx.token } : {}),
+      },
+    });
+    const blockerOutput = `${blockerCui.stdout || ''}\n${blockerCui.stderr || ''}`;
+    const expectedMicState = statusConversation.active
+      ? statusConversation.micMode === 'push' ? 'armed' : 'open'
+      : 'off';
+    out.push(
+      status.ok &&
+        statusMicrophone.active === Boolean(statusConversation.active) &&
+        statusMicrophone.state === expectedMicState &&
+        statusMicrophone.requestedMode === (statusConversation.micMode || 'open') &&
+        statusMicrophone.startsMicrophone === Boolean(statusConversation.active) &&
+        statusMicrophone.usesRealtime === Boolean(statusConversation.active) &&
+        blockerCui.status === 0 &&
+        !blockerOutput.includes('Voice: idle · mic open') &&
+        (statusConversation.active || blockerOutput.includes('Voice: idle · mic off'))
+        ? ok('resident.conversation_effective_mic_state', 'Conversation effective microphone state', `${statusConversation.status || 'idle'} · mic=${statusMicrophone.state}`)
+        : fail('resident.conversation_effective_mic_state', 'Conversation effective microphone state', 'idle resident voice status must report actual microphone off instead of configured open mode', {
+          conversation: statusConversation,
+          microphone: statusMicrophone,
+          blockerOutput: blockerOutput.slice(0, 1200),
         }),
     );
 

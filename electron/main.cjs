@@ -1770,7 +1770,7 @@ function attentionPolicySnapshot(options = {}) {
       'voice_live',
       'low',
       'Voice live',
-      `Realtime voice is live in ${conversation.micMode || 'open'} mic mode.`,
+      `Realtime voice is live; ${conversation.microphone?.label || `mic mode ${conversation.micMode || 'open'}`}.`,
       { source: 'realtime', notify: false },
     ));
   }
@@ -37252,12 +37252,13 @@ function perceptionConsentSnapshot(options = {}) {
         status: conversation.status,
         active: conversation.active,
         micMode: conversation.micMode,
+        microphone: conversation.microphone || conversationMicrophoneSnapshot(conversation),
         screenLive: conversation.screenLive,
         ageMs: conversation.ageMs,
         hasOpenAiKey: Boolean(OPENAI_API_KEY),
       },
       summary: conversation.active
-        ? `Voice is ${conversation.status} in ${conversation.micMode} mode.`
+        ? `Voice is ${conversation.status}; ${conversation.microphone?.label || `mic mode ${conversation.micMode}`}.`
         : 'Voice is idle and waits for explicit user action.',
       nextAction: voiceStatus === 'blocked'
         ? (OPENAI_API_KEY ? 'Open Microphone settings and approve JAVIS/Electron.' : 'Add OPENAI_API_KEY locally before starting live voice.')
@@ -37834,7 +37835,7 @@ function presenceStateSnapshot(options = {}) {
     mode === 'standby' ? 'Standing by; passive ambient observation is off.' : '',
     mode === 'fallback_ready' ? 'Standing by with local no-mic voice fallback ready.' : '',
     mode === 'connecting' ? 'Voice conversation is connecting.' : '',
-    mode === 'listening' ? `Voice conversation is live in ${conversation.micMode} mic mode.` : '',
+    mode === 'listening' ? `Voice conversation is live; ${conversation.microphone?.label || `mic mode ${conversation.micMode}`}.` : '',
     mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
     mode === 'waking' ? 'Wake trigger received.' : '',
     mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
@@ -38037,7 +38038,7 @@ function petPresenceSnapshot(options = {}) {
     mode === 'standby' ? 'Standing by.' : '',
     mode === 'fallback_ready' ? 'Standing by with local no-mic voice fallback ready.' : '',
     mode === 'connecting' ? 'Voice conversation is connecting.' : '',
-    mode === 'listening' ? `Voice conversation is live in ${conversation.micMode} mic mode.` : '',
+    mode === 'listening' ? `Voice conversation is live; ${conversation.microphone?.label || `mic mode ${conversation.micMode}`}.` : '',
     mode === 'voice_error' ? `Last voice session failed: ${conversation.error || 'unknown error'}.` : '',
     mode === 'waking' ? 'Wake trigger received.' : '',
     mode === 'working' ? `${activeJobs.length} background job(s) queued or running.` : '',
@@ -38141,12 +38142,19 @@ function petPresenceSnapshot(options = {}) {
 }
 
 function petConversationSnapshot(conversation = conversationStateSnapshot()) {
+  const microphone = conversation.microphone || conversationMicrophoneSnapshot(conversation);
   return {
     status: conversation.status,
     active: Boolean(conversation.active),
     stale: Boolean(conversation.stale),
     sessionId: conversation.sessionId || '',
     micMode: conversation.micMode || 'push',
+    microphone: {
+      active: Boolean(microphone.active),
+      state: microphone.state || 'off',
+      requestedMode: microphone.requestedMode || conversation.micMode || 'push',
+      label: compactRecordText(microphone.label || '', 60),
+    },
     screenLive: Boolean(conversation.screenLive),
     source: conversation.source || '',
     error: compactRecordText(conversation.error || '', 180),
@@ -40407,6 +40415,32 @@ function normalizeConversationStatus(value) {
 
 function normalizeConversationMicMode(value) {
   return String(value || '').trim().toLowerCase() === 'push' ? 'push' : 'open';
+}
+
+function conversationMicrophoneSnapshot(conversation = conversationState) {
+  const status = normalizeConversationStatus(conversation.status) || 'idle';
+  const active = status === 'connecting' || status === 'live';
+  const requestedMode = normalizeConversationMicMode(conversation.micMode);
+  const state = active
+    ? requestedMode === 'push'
+      ? 'armed'
+      : 'open'
+    : 'off';
+  return {
+    active,
+    state,
+    label: state === 'off' ? 'Mic off' : state === 'armed' ? 'Push-to-talk armed' : 'Mic open',
+    requestedMode,
+    realtimeStatus: status,
+    realtimePathActive: active,
+    startsMicrophone: active,
+    usesRealtime: active,
+    summary: active
+      ? requestedMode === 'push'
+        ? 'Realtime voice path is active with push-to-talk armed.'
+        : 'Realtime voice path is active with open microphone mode.'
+      : 'No Realtime voice session is active; the resident is not using the microphone.',
+  };
 }
 
 function normalizeRealtimeSessionNegotiation(options = {}) {
@@ -48580,7 +48614,7 @@ function conversationStateSnapshot() {
   const stale = activeStatus && conversationState.updatedAt && now - conversationState.updatedAt > CONVERSATION_STALE_MS;
   const status = stale ? 'idle' : conversationState.status;
   const active = status === 'connecting' || status === 'live';
-  return {
+  const snapshot = {
     ...conversationState,
     status,
     active,
@@ -48588,6 +48622,10 @@ function conversationStateSnapshot() {
     staleAfterMs: CONVERSATION_STALE_MS,
     ageMs: conversationState.updatedAt ? now - conversationState.updatedAt : null,
     activeForMs: active && conversationState.startedAt ? now - conversationState.startedAt : null,
+  };
+  return {
+    ...snapshot,
+    microphone: conversationMicrophoneSnapshot(snapshot),
   };
 }
 

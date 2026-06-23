@@ -359,7 +359,10 @@ async function printStatus() {
     if (status.conversation) {
       const conversation = status.conversation;
       const voiceHealth = summarizeVoiceHealth(status.voiceHealth, conversation, doctor.doctor);
-      console.log(`Voice: ${conversation.status || 'idle'} · mic ${conversation.micMode || 'open'} · screen ${conversation.screenLive ? 'on' : 'off'}${conversation.stale ? ' · stale' : ''}${voiceHealth ? ` · ${voiceHealth}` : ''}`);
+      const micState = conversation.microphone?.state || (conversation.active ? conversation.micMode || 'open' : 'off');
+      const micMode = conversation.microphone?.requestedMode || conversation.micMode || '';
+      const micDetail = conversation.active && micMode && micMode !== micState ? ` (${micMode})` : '';
+      console.log(`Voice: ${conversation.status || 'idle'} · mic ${micState}${micDetail} · screen ${conversation.screenLive ? 'on' : 'off'}${conversation.stale ? ' · stale' : ''}${voiceHealth ? ` · ${voiceHealth}` : ''}`);
     }
     if (status.voiceStandby) {
       const standby = status.voiceStandby;
@@ -3477,7 +3480,7 @@ function printRealtimeEvidence(result) {
     }
   }
   console.log('\nVoice session:');
-  console.log(`- status ${conversation.status || 'idle'} · mic ${conversation.micMode || '-'} · session ${conversation.sessionId || '-'}`);
+  console.log(`- status ${conversation.status || 'idle'} · mic ${conversation.microphone?.state || (conversation.active ? conversation.micMode || '-' : 'off')} · session ${conversation.sessionId || '-'}`);
   if (voiceHealth.summary) {
     console.log(`- provider ${voiceHealth.status || 'unknown'} · ${compact(voiceHealth.summary, 220)}`);
     if (voiceHealth.next) console.log(`- next ${compact(voiceHealth.next, 220)}`);
@@ -3677,7 +3680,7 @@ function printRealtimeRendererControl(result) {
   console.log('JAVIS Realtime Renderer Control');
   console.log('===============================');
   console.log(`Renderer: ${rendererReady ? 'ready' : 'missing'} · action=${control.action || result?.action || 'stop'} · status=${control.status || 'idle'}`);
-  console.log(`Voice: ${conversation.status || '-'} · active=${conversation.active ? 'yes' : 'no'} · mic=${conversation.micMode || '-'} · session=${conversation.sessionId || '-'}`);
+  console.log(`Voice: ${conversation.status || '-'} · active=${conversation.active ? 'yes' : 'no'} · mic=${conversation.microphone?.state || (conversation.active ? conversation.micMode || '-' : 'off')} · session=${conversation.sessionId || '-'}`);
   console.log(`Watchdog: ${watchdog.enabled === false ? 'off' : 'on'} · reason=${watchdogTrigger.reason || watchdogState.lastReason || '-'} · stops=${watchdogState.stopCount || 0} · last=${watchdogState.lastActionAt ? new Date(watchdogState.lastActionAt).toISOString() : '-'}`);
   console.log(`Safety: starts mic=${safety.startsMicrophone ? 'yes' : 'no'} · starts session=${safety.startsRealtimeSession ? 'yes' : 'no'} · stores raw audio=${safety.storesRawAudio ? 'yes' : 'no'} · opens Terminal=${safety.opensTerminal ? 'yes' : 'no'}`);
   if (result?.output || payload.nextAction) console.log(`\n${compact(result?.output || payload.nextAction, 1000)}`);
