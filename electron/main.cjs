@@ -313,23 +313,24 @@ const AMBIENT_LEARNING_INTERVAL_MS = Math.max(15000, Math.min(600000, Number(pro
 const INCLUDE_LEARNING_IN_PROMPTS = process.env.JAVIS_INCLUDE_LEARNING_IN_PROMPTS !== 'false';
 const LEARNING_AUTO_MEMORY_ENABLED = process.env.JAVIS_LEARNING_AUTO_MEMORY !== 'false';
 const LEARNING_AUTO_MEMORY_MIN_EVENTS = Math.max(5, Math.min(200, Number(process.env.JAVIS_LEARNING_AUTO_MEMORY_MIN_EVENTS || 20)));
-const OPENAI_HARD_SPEND_LOCK = process.env.JAVIS_OPENAI_HARD_SPEND_LOCK !== 'false';
-const OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE = process.env.JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE !== 'false';
+const OPENAI_PARANOID_ZERO_SPEND = process.env.JAVIS_OPENAI_PARANOID_ZERO_SPEND !== 'false';
+const OPENAI_HARD_SPEND_LOCK = OPENAI_PARANOID_ZERO_SPEND || process.env.JAVIS_OPENAI_HARD_SPEND_LOCK !== 'false';
+const OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE = OPENAI_PARANOID_ZERO_SPEND || process.env.JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE !== 'false';
 const OPENAI_SPEND_CONFIRMATION_PHRASE = String(process.env.JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE || 'SPEND OPENAI').trim();
-const OPENAI_CLOUD_MODE = normalizeOpenAiCloudMode(process.env.JAVIS_OPENAI_CLOUD_MODE || process.env.JAVIS_CLOUD_CALL_MODE || 'off');
-const OPENAI_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_DAILY_REQUEST_LIMIT, 0, 0, 10000);
-const OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT = boundedRuntimeInteger(process.env.JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT, 0, 0, 10000);
-const OPENAI_ALLOW_AUTOPILOT = process.env.JAVIS_OPENAI_ALLOW_AUTOPILOT === 'true';
-const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = process.env.JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE === 'true';
-const OPENAI_EGRESS_GUARD_ENABLED = process.env.JAVIS_OPENAI_EGRESS_GUARD !== 'false';
-const OPENAI_REQUIRE_SPEND_LEASE = process.env.JAVIS_OPENAI_REQUIRE_SPEND_LEASE !== 'false';
+const OPENAI_CLOUD_MODE = OPENAI_PARANOID_ZERO_SPEND ? 'off' : normalizeOpenAiCloudMode(process.env.JAVIS_OPENAI_CLOUD_MODE || process.env.JAVIS_CLOUD_CALL_MODE || 'off');
+const OPENAI_DAILY_REQUEST_LIMIT = OPENAI_PARANOID_ZERO_SPEND ? 0 : boundedRuntimeInteger(process.env.JAVIS_OPENAI_DAILY_REQUEST_LIMIT, 0, 0, 10000);
+const OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT = OPENAI_PARANOID_ZERO_SPEND ? 0 : boundedRuntimeInteger(process.env.JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT, 0, 0, 10000);
+const OPENAI_ALLOW_AUTOPILOT = OPENAI_PARANOID_ZERO_SPEND ? false : process.env.JAVIS_OPENAI_ALLOW_AUTOPILOT === 'true';
+const OPENAI_ALLOW_RENDERER_STARTUP_PROBE = OPENAI_PARANOID_ZERO_SPEND ? false : process.env.JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE === 'true';
+const OPENAI_EGRESS_GUARD_ENABLED = OPENAI_PARANOID_ZERO_SPEND || process.env.JAVIS_OPENAI_EGRESS_GUARD !== 'false';
+const OPENAI_REQUIRE_SPEND_LEASE = OPENAI_PARANOID_ZERO_SPEND || process.env.JAVIS_OPENAI_REQUIRE_SPEND_LEASE !== 'false';
 const OPENAI_SPEND_LEASE_TTL_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_LEASE_TTL_MS, 60000, 5000, 300000);
 const OPENAI_SPEND_SENTINEL_ENABLED = process.env.JAVIS_OPENAI_SPEND_SENTINEL !== 'false';
 const OPENAI_SPEND_SENTINEL_INTERVAL_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_SENTINEL_INTERVAL_MS, 60000, 5000, 3600000);
 const OPENAI_SPEND_SENTINEL_NOTIFY = process.env.JAVIS_OPENAI_SPEND_SENTINEL_NOTIFY !== 'false';
 const OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS = boundedRuntimeInteger(process.env.JAVIS_OPENAI_SPEND_SENTINEL_NOTIFY_COOLDOWN_MS, 900000, 60000, 86400000);
-const OPENAI_CHILD_ENV_GUARD_ENABLED = process.env.JAVIS_OPENAI_CHILD_ENV_GUARD !== 'false';
-const OPENAI_MEMORY_KEY_VAULT = process.env.JAVIS_OPENAI_MEMORY_KEY_VAULT !== 'false';
+const OPENAI_CHILD_ENV_GUARD_ENABLED = OPENAI_PARANOID_ZERO_SPEND || process.env.JAVIS_OPENAI_CHILD_ENV_GUARD !== 'false';
+const OPENAI_MEMORY_KEY_VAULT = OPENAI_PARANOID_ZERO_SPEND || process.env.JAVIS_OPENAI_MEMORY_KEY_VAULT !== 'false';
 const OPENAI_CHILD_ENV_CREDENTIAL_KEYS = [
   'OPENAI_API_KEY',
   'OPENAI_ADMIN_KEY',
@@ -339,7 +340,7 @@ const OPENAI_CHILD_ENV_CREDENTIAL_KEYS = [
   'JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE',
   'JAVIS_API_TOKEN',
 ];
-const OPENAI_RUNTIME_KEY_ISOLATION = process.env.JAVIS_OPENAI_RUNTIME_KEY_ISOLATION !== 'false';
+const OPENAI_RUNTIME_KEY_ISOLATION = OPENAI_PARANOID_ZERO_SPEND || process.env.JAVIS_OPENAI_RUNTIME_KEY_ISOLATION !== 'false';
 const OPENAI_RUNTIME_ENV_CREDENTIAL_KEYS = OPENAI_CHILD_ENV_CREDENTIAL_KEYS.filter((key) => key !== 'JAVIS_API_TOKEN');
 const OPENAI_RUNTIME_ENV_ISOLATED_KEYS = [];
 if (OPENAI_RUNTIME_KEY_ISOLATION) {
@@ -2827,6 +2828,14 @@ function openAiSpendGuardSnapshot() {
   const state = readOpenAiSpendState();
   return {
     version: 1,
+    paranoidZeroSpend: {
+      enabled: OPENAI_PARANOID_ZERO_SPEND,
+      env: 'JAVIS_OPENAI_PARANOID_ZERO_SPEND',
+      disableValue: 'false',
+      effect: OPENAI_PARANOID_ZERO_SPEND
+        ? 'forces hard lock, cloud off, zero budgets, one-request lease, egress guard, runtime key isolation, child env guard, and memory key vault'
+        : 'disabled; lower-level spend guards still apply',
+    },
     mode: OPENAI_CLOUD_MODE,
     hardSpendLock: OPENAI_HARD_SPEND_LOCK,
     egressGuardEnabled: OPENAI_EGRESS_GUARD_ENABLED,
@@ -2869,6 +2878,8 @@ function openAiSpendGuardSnapshot() {
       emergencyZeroSpendLockActive: openAiEmergencyZeroSpendLock,
       confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
       oneRequestLeaseRequired: OPENAI_REQUIRE_SPEND_LEASE,
+      paranoidZeroSpendDefault: OPENAI_PARANOID_ZERO_SPEND,
+      paranoidZeroSpendBlocksSpend: OPENAI_PARANOID_ZERO_SPEND,
       off: OPENAI_CLOUD_MODE === 'off',
       unscopedOpenAiEgressBlocked: OPENAI_EGRESS_GUARD_ENABLED,
       childProcessOpenAiCredentialsBlocked: OPENAI_CHILD_ENV_GUARD_ENABLED,
@@ -2880,6 +2891,7 @@ function openAiSpendGuardSnapshot() {
 function openAiZeroSpendModeActive() {
   const guard = openAiSpendGuardSnapshot();
   return Boolean(
+    guard.paranoidZeroSpend?.enabled ||
     guard.emergencyZeroSpendLock ||
     guard.hardSpendLock ||
     guard.mode === 'off' ||
@@ -3167,6 +3179,15 @@ function openAiSpendSentinelSnapshot(options = {}) {
   const unattendedAllowed = Number(guard.counts?.unattended || 0);
   const activeLeases = Number(guard.spendLease?.activeCount || 0);
 
+  if (guard.paranoidZeroSpend?.enabled !== true) {
+    issues.push(openAiSpendSentinelIssue(
+      'paranoid_zero_spend_disabled',
+      'high',
+      'Paranoid zero-spend is disabled',
+      'JAVIS_OPENAI_PARANOID_ZERO_SPEND is not active; lower-level spend settings may allow intentional OpenAI calls.',
+      { next: 'Run npm run openai:lockdown to restore the extra zero-spend override before unattended use.' },
+    ));
+  }
   if (unattendedAllowed > 0) {
     issues.push(openAiSpendSentinelIssue(
       'unattended_openai_spend_recorded',
@@ -3314,6 +3335,7 @@ function openAiSpendSentinelSnapshot(options = {}) {
     },
     guard: {
       mode: guard.mode,
+      paranoidZeroSpend: Boolean(guard.paranoidZeroSpend?.enabled),
       hardSpendLock: Boolean(guard.hardSpendLock),
       emergencyZeroSpendLock: Boolean(guard.emergencyZeroSpendLock),
       dailyRequestLimit: Number(guard.dailyRequestLimit || 0),

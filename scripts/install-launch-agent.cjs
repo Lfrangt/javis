@@ -18,6 +18,29 @@ const stopScript = path.join(repoRoot, 'scripts', 'stop-resident-processes.cjs')
 const watchdogScript = path.join(repoRoot, 'scripts', 'resident-watchdog.cjs');
 const uid = process.getuid?.();
 const launchAgentWorkingDirectory = homeDir;
+const openAiCredentialEnvKeys = [
+  'OPENAI_API_KEY',
+  'OPENAI_ADMIN_KEY',
+  'OPENAI_ORG_ID',
+  'OPENAI_ORGANIZATION',
+  'OPENAI_PROJECT',
+];
+const openAiZeroSpendEnv = {
+  JAVIS_OPENAI_PARANOID_ZERO_SPEND: 'true',
+  JAVIS_OPENAI_HARD_SPEND_LOCK: 'true',
+  JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE: 'true',
+  JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE: 'SPEND OPENAI',
+  JAVIS_OPENAI_CLOUD_MODE: 'off',
+  JAVIS_OPENAI_DAILY_REQUEST_LIMIT: '0',
+  JAVIS_OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT: '0',
+  JAVIS_OPENAI_ALLOW_AUTOPILOT: 'false',
+  JAVIS_OPENAI_ALLOW_RENDERER_STARTUP_PROBE: 'false',
+  JAVIS_OPENAI_EGRESS_GUARD: 'true',
+  JAVIS_OPENAI_REQUIRE_SPEND_LEASE: 'true',
+  JAVIS_OPENAI_CHILD_ENV_GUARD: 'true',
+  JAVIS_OPENAI_RUNTIME_KEY_ISOLATION: 'true',
+  JAVIS_OPENAI_MEMORY_KEY_VAULT: 'true',
+};
 
 function xmlEscape(value) {
   return String(value)
@@ -30,12 +53,33 @@ function xmlEscape(value) {
 
 function run(command, args, options = {}) {
   try {
-    execFileSync(command, args, { stdio: options.stdio || 'pipe' });
+    execFileSync(command, args, {
+      stdio: options.stdio || 'pipe',
+      env: options.env || zeroSpendProcessEnv(),
+    });
     return true;
   } catch (error) {
     if (options.optional) return false;
     throw error;
   }
+}
+
+function zeroSpendProcessEnv(extra = {}) {
+  const env = {
+    ...process.env,
+    ...openAiZeroSpendEnv,
+    ...extra,
+  };
+  for (const key of openAiCredentialEnvKeys) {
+    delete env[key];
+  }
+  return env;
+}
+
+function plistEnvironmentXml(values) {
+  return Object.entries(values)
+    .map(([key, value]) => `    <key>${xmlEscape(key)}</key>\n    <string>${xmlEscape(value)}</string>`)
+    .join('\n');
 }
 
 fs.mkdirSync(launchAgentsDir, { recursive: true });
@@ -52,6 +96,19 @@ if (!fs.existsSync(electronExecutable)) {
 if (!fs.existsSync(watchdogScript)) {
   throw new Error(`Resident watchdog script not found: ${watchdogScript}`);
 }
+const residentLaunchEnv = {
+  PATH: process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+  ...openAiZeroSpendEnv,
+  JAVIS_ALLOW_TERMINAL_VOICE_LOOP: 'false',
+  JAVIS_RESIDENT_LAUNCH_AGENT: 'true',
+  JAVIS_REPO_ROOT: repoRoot,
+};
+const watchdogLaunchEnv = {
+  PATH: process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
+  ...openAiZeroSpendEnv,
+  JAVIS_REPO_ROOT: repoRoot,
+  JAVIS_WATCHDOG_MANAGED_BY_LAUNCHD: 'true',
+};
 const plist = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -75,14 +132,7 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>${xmlEscape(errLog)}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
-    <string>${xmlEscape(process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')}</string>
-    <key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>
-    <string>false</string>
-    <key>JAVIS_RESIDENT_LAUNCH_AGENT</key>
-    <string>true</string>
-    <key>JAVIS_REPO_ROOT</key>
-    <string>${xmlEscape(repoRoot)}</string>
+${plistEnvironmentXml(residentLaunchEnv)}
   </dict>
 </dict>
 </plist>
@@ -108,12 +158,7 @@ const watchdogPlist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>${xmlEscape(watchdogErrLog)}</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key>
-    <string>${xmlEscape(process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')}</string>
-    <key>JAVIS_REPO_ROOT</key>
-    <string>${xmlEscape(repoRoot)}</string>
-    <key>JAVIS_WATCHDOG_MANAGED_BY_LAUNCHD</key>
-    <string>true</string>
+${plistEnvironmentXml(watchdogLaunchEnv)}
   </dict>
 </dict>
 </plist>

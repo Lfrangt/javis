@@ -1448,9 +1448,13 @@ export default {
       !installSource.includes("const command = 'npm run start:desktop'") &&
       !installSource.includes('<string>-c</string>') &&
       !installSource.includes('<string>-lc</string>') &&
-      installSource.includes('<key>JAVIS_ALLOW_TERMINAL_VOICE_LOOP</key>') &&
-      installSource.includes('<string>false</string>') &&
-      installSource.includes('<key>JAVIS_REPO_ROOT</key>') &&
+      installSource.includes("JAVIS_ALLOW_TERMINAL_VOICE_LOOP: 'false'") &&
+      installSource.includes('residentLaunchEnv') &&
+      installSource.includes('watchdogLaunchEnv') &&
+      installSource.includes('plistEnvironmentXml(residentLaunchEnv)') &&
+      installSource.includes('plistEnvironmentXml(watchdogLaunchEnv)') &&
+      installSource.includes("JAVIS_REPO_ROOT: repoRoot") &&
+      installSource.includes("JAVIS_OPENAI_PARANOID_ZERO_SPEND: 'true'") &&
       stopSource.includes('isProjectLocalVoiceLoopProcess') &&
       stopSource.includes('npm run voice:chat') &&
       stopSource.includes('local-voice-command-dogfood\\.mjs.*--chat');
@@ -1803,6 +1807,7 @@ export default {
     const spendGuardBlockedBefore = Number(spendGuard.counts?.blocked || 0);
     out.push(
       spendGuardResponse.ok &&
+        spendGuard.paranoidZeroSpend?.enabled === true &&
         spendGuard.mode === 'off' &&
         spendGuard.hardSpendLock === true &&
         spendGuard.egressGuardEnabled === true &&
@@ -1843,6 +1848,7 @@ export default {
         spendForensics.safety?.createsSpendLease === false &&
         spendGuard.safety?.off === true &&
         spendGuard.safety?.zeroBudgetDefault === true &&
+        spendGuard.safety?.paranoidZeroSpendDefault === true &&
         spendGuard.safety?.hardSpendLockDefault === true &&
         spendGuard.safety?.confirmationPhraseRequired === true &&
         spendGuard.safety?.unattendedCloudDefaultBlocked === true
@@ -1882,6 +1888,7 @@ export default {
         spendSentinel.counts?.allowedToday === 0 &&
         spendSentinel.counts?.activeLeases === 0 &&
         spendSentinel.guard?.hardSpendLock === true &&
+        spendSentinel.guard?.paranoidZeroSpend === true &&
         spendSentinel.guard?.mode === 'off' &&
         spendSentinel.guard?.runtimeKeyEnvIsolated === true &&
         spendSentinel.guard?.memoryKeyVaultEnabled === true &&

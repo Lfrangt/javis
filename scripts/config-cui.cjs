@@ -16,6 +16,7 @@ const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const PARK_CORNERS = ['notch', 'bottom-right', 'bottom-left', 'top-right', 'top-left'];
 const CONTROL_MODES = ['observe_only', 'ask_before_action', 'trusted_local', 'takeover_supervised'];
 const OPENAI_ZERO_SPEND_ENV = {
+  JAVIS_OPENAI_PARANOID_ZERO_SPEND: 'true',
   JAVIS_OPENAI_HARD_SPEND_LOCK: 'true',
   JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE: 'true',
   JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE: 'SPEND OPENAI',
@@ -1352,6 +1353,7 @@ async function startLocalVoiceCommandLoopFromCui(rl) {
     cwd: process.cwd(),
     env: {
       ...process.env,
+      ...OPENAI_ZERO_SPEND_ENV,
       JAVIS_LOCAL_VOICE_CLI: 'true',
     },
     stdio: 'inherit',
@@ -3877,11 +3879,13 @@ function printOpenAiSpendGuard(result) {
   const memoryVault = runtimeKeyIsolation.memoryKeyVault || {};
   const childEnvGuard = guard.childEnvGuard || {};
   const childEnvSafety = childEnvGuard.safety || {};
+  const paranoidZeroSpend = guard.paranoidZeroSpend || {};
   const activeLeases = Array.isArray(lease.active) ? lease.active : [];
   const blockedSources = Array.isArray(forensics.blockedBySource) ? forensics.blockedBySource.slice(0, 4) : [];
   const allowedSources = Array.isArray(forensics.allowedBySource) ? forensics.allowedBySource.slice(0, 4) : [];
   console.log('JAVIS OpenAI Spend Guard');
   console.log('========================');
+  console.log(`Paranoid zero-spend: ${paranoidZeroSpend.enabled ? 'on' : 'off'}${paranoidZeroSpend.enabled ? '' : ' · run npm run openai:lockdown before unattended use'}`);
   console.log(`Mode: ${guard.mode || 'off'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · daily=${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · remaining=${remaining.total ?? 0}`);
   console.log(`Emergency lock: ${guard.emergencyZeroSpendLock || emergency.active ? 'active' : 'off'}${emergency.activatedAtIso ? ` · since=${emergency.activatedAtIso}` : ''}`);
   console.log(`Unattended: ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · manual=${counts.manual || 0} · blocked=${counts.blocked || 0}`);
@@ -3898,8 +3902,8 @@ function printOpenAiSpendGuard(result) {
   console.log(`Egress guard: ${guard.egressGuardEnabled ? 'on' : 'off'} · ${guard.egressGuardMode || '-'}`);
   console.log(`Runtime key env: ${runtimeKeyIsolation.enabled ? 'isolated' : 'inherited'} · OPENAI_API_KEY in process.env=${runtimeKeyIsolation.openAiApiKeyInProcessEnv ? 'yes' : 'no'} · OpenAI env keys=${runtimeKeyIsolation.openAiCredentialKeyCount ?? '-'} · memory vault=${memoryVault.enabled ? (memoryVault.active ? 'active' : 'armed') : 'off'} · callable key=${runtimeKeyIsolation.availableForGuardedCalls ? 'yes' : 'no'}`);
   console.log(`Child env guard: ${childEnvGuard.enabled ? 'on' : 'off'} · child key inheritance=${childEnvGuard.defaultChildReceivesOpenAiCredentials ? 'allowed' : 'blocked'} · inline key env=${childEnvGuard.blocksInlineCredentialEnv ? 'blocked' : 'allowed'} · MCP key env=${childEnvSafety.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'allowed'}`);
-  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · one-request lease=${safety.oneRequestLeaseRequired ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'} · runtime env blocked=${runtimeKeySafety.childProcessesCannotInheritRuntimeOpenAiCredentials ? 'yes' : 'no'} · child creds blocked=${safety.childProcessOpenAiCredentialsBlocked ? 'yes' : 'no'}`);
-  console.log('\nTo intentionally spend later: set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase to create one short-lived, one-request lease.');
+  console.log(`Safety: paranoid zero-spend=${safety.paranoidZeroSpendDefault ? 'yes' : 'no'} · cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · one-request lease=${safety.oneRequestLeaseRequired ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'} · runtime env blocked=${runtimeKeySafety.childProcessesCannotInheritRuntimeOpenAiCredentials ? 'yes' : 'no'} · child creds blocked=${safety.childProcessOpenAiCredentialsBlocked ? 'yes' : 'no'}`);
+  console.log('\nTo intentionally spend later: set JAVIS_OPENAI_PARANOID_ZERO_SPEND=false, set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase to create one short-lived, one-request lease.');
   if (activeLeases.length) {
     console.log('\nActive OpenAI spend leases:');
     for (const item of activeLeases.slice(0, 5)) {
@@ -4079,7 +4083,7 @@ async function lockOpenAiSpendDown(options = {}) {
   console.log('=================================');
   console.log(`Env: ${result.envFile}`);
   console.log(`Changed: ${result.changed.length ? result.changed.join(', ') : 'already locked'}`);
-  console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on · one-request spend lease required · child env guard on · runtime key env isolated · memory key vault on');
+  console.log('Locked values: paranoid zero-spend on · hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on · one-request spend lease required · child env guard on · runtime key env isolated · memory key vault on');
   console.log('OPENAI_API_KEY was preserved in .env, but zero-spend mode vaults it from callable runtime memory; API key presence still does not grant spend permission.');
   console.log(`Runtime emergency lock: ${runtimeLock.ok === false ? compact(runtimeLock.error || 'resident unavailable; env lockdown will still be written', 180) : 'active before restart · leases cleared · current process blocked'}`);
   if (realtimeStop) console.log(`Realtime voice stop: ${realtimeStop.ok === false ? compact(realtimeStop.error || 'resident unavailable; continuing lockdown', 180) : compact(realtimeStop.output || 'requested or already idle', 180)}`);
@@ -4113,7 +4117,7 @@ async function lockOpenAiSpendDown(options = {}) {
 
 async function lockOpenAiSpendInteractive(rl) {
   console.log('\nThis preserves OPENAI_API_KEY but forces all OpenAI spend controls back to zero-spend defaults.');
-  console.log('It will set hard lock on, cloud mode off, daily budget 0, unattended budget 0, egress guard on, one-request spend lease required, child env guard on, runtime key env isolation on, and memory key vault on.');
+  console.log('It will set paranoid zero-spend on, hard lock on, cloud mode off, daily budget 0, unattended budget 0, egress guard on, one-request spend lease required, child env guard on, runtime key env isolation on, and memory key vault on.');
   const answer = (await rl.question('Type LOCK to enforce zero-spend lockdown and restart JAVIS: ')).trim();
   if (answer !== 'LOCK') {
     console.log('\nNo change made.');
