@@ -56833,6 +56833,39 @@ function workflowBriefing(options = {}) {
     nextActions.push(readinessAction);
   }
 
+  if (
+    realtimeWorkbench.voiceHealth?.status !== 'ready' &&
+    realtimeWorkbench.voiceHealth?.recovery?.active === true &&
+    !nextActions.some((action) => action.id === 'readiness:realtime_voice_provider')
+  ) {
+    const providerProbeFreshness = realtimeProviderProbeFreshness();
+    const providerAutoProbe = realtimeWorkbench.voiceHealth.recovery.autoProbe || {};
+    nextActions.push({
+      id: 'readiness:realtime_voice_provider',
+      priority: 1.8,
+      label: 'Realtime voice provider',
+      summary: realtimeWorkbench.voiceHealth.next || realtimeWorkbench.voiceHealth.summary || 'Run the no-mic Realtime provider probe.',
+      source: 'readiness',
+      providerProbe: true,
+      executable: Boolean(providerAutoProbe.available ?? openAiApiKeyAvailableForCalls()),
+      autoEligible: false,
+      autopilotEligible: false,
+      manualOnly: true,
+      manualOnlyReason: providerAutoProbe.manualOnlyReason || 'OpenAI provider probes can consume API quota and require explicit user action.',
+      requiresUserPresence: true,
+      startsMicrophone: false,
+      requiresMicConfirmation: false,
+      startsRecording: false,
+      startsWorkers: false,
+      executesTask: false,
+      riskLevel: 1,
+      providerProbeFreshness: compactRealtimePreflightFreshness(providerProbeFreshness),
+      cooldown: providerProbeFreshness.waitLabel || autopilotWaitDurationLabel(REALTIME_PROVIDER_PROBE_FRESH_MS),
+      localFallback: realtimeWorkbench.voiceHealth?.fallback || null,
+      recovery: realtimeWorkbench.voiceHealth.recovery,
+    });
+  }
+
   if (pendingApprovals.length) {
     nextActions.push({
       id: 'approvals',

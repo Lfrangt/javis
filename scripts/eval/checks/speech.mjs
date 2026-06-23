@@ -13,12 +13,31 @@ function parseJson(text) {
   return JSON.parse(raw.slice(start, end + 1));
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readIdleSpeechState(ctx) {
+  await ctx.api('/api/speech/stop', {
+    method: 'POST',
+    body: { reason: 'eval_speech_state_cleanup' },
+    timeoutMs: 10000,
+  });
+
+  let state = await ctx.api('/api/speech/state', { timeoutMs: 10000 });
+  for (let attempt = 0; attempt < 5 && state.ok && state.data?.speech?.speaking === true; attempt += 1) {
+    await sleep(200);
+    state = await ctx.api('/api/speech/state', { timeoutMs: 10000 });
+  }
+  return state;
+}
+
 export default {
   lane: 'speech',
   async run(ctx) {
     const out = [];
 
-    const state = await ctx.api('/api/speech/state', { timeoutMs: 10000 });
+    const state = await readIdleSpeechState(ctx);
     const speech = state.data?.speech || {};
     out.push(
       state.ok &&
