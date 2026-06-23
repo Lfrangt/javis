@@ -491,6 +491,7 @@ async function printStatus() {
   console.log('IR. Show incident report');
   console.log('VS. Show voice standby/fallback status');
   console.log('VC. Start local voice command loop (no mic)');
+  console.log('AS. Show autonomy readiness');
   console.log('AG. Preview bounded autonomy loop');
   console.log('AR. Run bounded autonomy loop');
   console.log('WH. Show wake handoff');
@@ -999,6 +1000,42 @@ function printAutonomyResult(result) {
     console.log('\nRun explicitly: npm run autonomy:run -- --task "<task>"');
   }
   return autonomy;
+}
+
+function printAutonomyReadiness(result) {
+  const readiness = result?.readiness || result || {};
+  const selfDrive = readiness.selfDrive || {};
+  const recommended = readiness.recommended || null;
+  const blockers = readiness.blockers || {};
+  const spend = readiness.spend || {};
+  const learning = readiness.learning || {};
+  const waitingFor = Array.isArray(blockers.waitingFor) ? blockers.waitingFor : [];
+  console.log('\nJAVIS Autonomy Readiness');
+  console.log('========================');
+  console.log(`Posture: ${readiness.posture || '-'} · self-drive ${selfDrive.canActNow ? 'yes' : 'no'} · prepare-on-request ${selfDrive.canPrepareOnRequest ? 'yes' : 'no'}`);
+  console.log(compact(readiness.spokenSummary || readiness.summary || '-', 520));
+  if (recommended) {
+    console.log(`Recommended: ${recommended.label || recommended.id || '-'} · source=${recommended.source || '-'} · executable=${recommended.executable ? 'yes' : 'no'} · risk=${recommended.riskLevel ?? '-'}`);
+    if (recommended.decision?.reason) console.log(`Decision: ${recommended.decision.reason} · ${compact(recommended.decision.detail || '', 220)}`);
+  } else {
+    console.log('Recommended: none');
+  }
+  if (waitingFor.length) {
+    console.log('\nWaiting/boundaries:');
+    for (const item of waitingFor.slice(0, 5)) {
+      console.log(`- ${item.label || item.id || '-'} · ${item.severity || '-'} · ${compact(item.summary || item.next || '', 220)}`);
+    }
+  }
+  console.log(`\nSpend: zero-locked=${spend.zeroSpendLocked ? 'yes' : 'no'} · allowed=${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · blocked=${spend.blockedToday ?? 0} · likely billable=${spend.likelyBillableFromJavis ? 'yes' : 'no'}`);
+  console.log(`Learning: ${learning.enabled ? 'on' : learning.paused ? 'paused' : 'off'} · events=${learning.sourceEventCount ?? 0}${learning.habitCandidate ? ` · candidate ${compact(learning.habitCandidate.label || learning.habitCandidate.id || '', 80)}` : ''}`);
+  if (readiness.nextAction) console.log(`Next: ${compact(readiness.nextAction, 360)}`);
+  console.log('Safety: read-only; no work-next execution, no worker start, no mic/Realtime, no OpenAI call, no Terminal.');
+  return readiness;
+}
+
+async function showAutonomyReadiness() {
+  const result = await request('/api/autonomy/readiness?workflowLimit=6&jobLimit=6&source=cui_cli');
+  return printAutonomyReadiness(result);
 }
 
 async function showAutonomyLoop(options = {}) {
@@ -3821,6 +3858,7 @@ function printOpenAiSpendGuard(result) {
   const safety = guard.safety || {};
   const recent = Array.isArray(guard.recent) ? guard.recent : [];
   const lease = guard.spendLease || {};
+  const emergency = guard.emergencyLock || {};
   const runtimeKeyIsolation = guard.runtimeKeyIsolation || {};
   const runtimeKeySafety = runtimeKeyIsolation.safety || {};
   const childEnvGuard = guard.childEnvGuard || {};
@@ -3831,6 +3869,7 @@ function printOpenAiSpendGuard(result) {
   console.log('JAVIS OpenAI Spend Guard');
   console.log('========================');
   console.log(`Mode: ${guard.mode || 'off'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · daily=${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · remaining=${remaining.total ?? 0}`);
+  console.log(`Emergency lock: ${guard.emergencyZeroSpendLock || emergency.active ? 'active' : 'off'}${emergency.activatedAtIso ? ` · since=${emergency.activatedAtIso}` : ''}`);
   console.log(`Unattended: ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · manual=${counts.manual || 0} · blocked=${counts.blocked || 0}`);
   if (forensics.version) {
     console.log(`Forensics: likely billable from JAVIS=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'} · status=${forensics.status || '-'}`);
@@ -3962,8 +4001,28 @@ async function stopRealtimeForOpenAiLockdown() {
   }
 }
 
+async function runtimeOpenAiZeroSpendLockdown() {
+  try {
+    return await request('/api/openai/zero-spend-lockdown', {
+      method: 'POST',
+      body: {
+        source: 'cui_openai_lockdown',
+        reason: 'CUI zero-spend lockdown requested before env rewrite and resident restart.',
+      },
+    });
+  } catch (error) {
+    const realtimeStop = await stopRealtimeForOpenAiLockdown();
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      realtimeStop,
+    };
+  }
+}
+
 async function lockOpenAiSpendDown(options = {}) {
-  const realtimeStop = await stopRealtimeForOpenAiLockdown();
+  const runtimeLock = await runtimeOpenAiZeroSpendLockdown();
+  const realtimeStop = runtimeLock.realtimeStop || runtimeLock.emergencyLock?.realtimeStop || null;
   const result = applyOpenAiZeroSpendEnv();
   console.log('JAVIS OpenAI Zero-Spend Lockdown');
   console.log('=================================');
@@ -3971,7 +4030,8 @@ async function lockOpenAiSpendDown(options = {}) {
   console.log(`Changed: ${result.changed.length ? result.changed.join(', ') : 'already locked'}`);
   console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on · one-request spend lease required · child env guard on · runtime key env isolated');
   console.log('OPENAI_API_KEY was preserved; API key presence still does not grant spend permission.');
-  console.log(`Realtime voice stop: ${realtimeStop.ok === false ? compact(realtimeStop.error || 'resident unavailable; continuing lockdown', 180) : compact(realtimeStop.output || 'requested or already idle', 180)}`);
+  console.log(`Runtime emergency lock: ${runtimeLock.ok === false ? compact(runtimeLock.error || 'resident unavailable; env lockdown will still be written', 180) : 'active before restart · leases cleared · current process blocked'}`);
+  if (realtimeStop) console.log(`Realtime voice stop: ${realtimeStop.ok === false ? compact(realtimeStop.error || 'resident unavailable; continuing lockdown', 180) : compact(realtimeStop.output || 'requested or already idle', 180)}`);
 
   if (options.restart === false) {
     console.log('\nRestart skipped. Run npm run resident:restart so the running resident reloads the zero-spend env.');
@@ -5015,6 +5075,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-autonomy-readiness') || process.argv.includes('--autonomy-readiness') || process.argv.includes('--self-drive-readiness')) {
+    await showAutonomyReadiness();
+    return;
+  }
+
   if (process.argv.includes('--print-autonomy') || process.argv.includes('--autonomy')) {
     await showAutonomyLoop({ execute: false });
     return;
@@ -5307,6 +5372,8 @@ async function main() {
         await showVoiceStandby();
       } else if (answer === 'vc' || answer === 'voice chat' || answer === 'local voice loop' || answer === 'local voice command loop') {
         await startLocalVoiceCommandLoopFromCui(rl);
+      } else if (answer === 'as' || answer === 'autonomy readiness' || answer === 'self drive' || answer === 'self-drive') {
+        await showAutonomyReadiness();
       } else if (answer === 'ag' || answer === 'agent' || answer === 'autonomy' || answer === 'bounded autonomy') {
         const task = await rl.question('Task to preview with bounded autonomy: ');
         await showAutonomyLoop({ task, source: 'cui_autonomy_preview', execute: false });

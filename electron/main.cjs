@@ -2782,6 +2782,15 @@ function openAiSpendGuardSnapshot() {
     unattendedDailyRequestLimit: OPENAI_UNATTENDED_DAILY_REQUEST_LIMIT,
     allowAutopilotCloud: OPENAI_ALLOW_AUTOPILOT,
     allowRendererStartupProbe: OPENAI_ALLOW_RENDERER_STARTUP_PROBE,
+    emergencyZeroSpendLock: openAiEmergencyZeroSpendLock,
+    emergencyLock: {
+      active: openAiEmergencyZeroSpendLock,
+      activatedAt: openAiEmergencyZeroSpendAt || 0,
+      activatedAtIso: openAiEmergencyZeroSpendAt ? new Date(openAiEmergencyZeroSpendAt).toISOString() : '',
+      source: compactRecordText(openAiEmergencyZeroSpendSource || '', 80),
+      reason: compactRecordText(openAiEmergencyZeroSpendReason || '', 180),
+      blocksCurrentProcessImmediately: true,
+    },
     requireSpendConfirmationPhrase: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
     spendConfirmationPhrase: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE ? 'configured' : 'not_required',
     requireSpendLease: OPENAI_REQUIRE_SPEND_LEASE,
@@ -2803,6 +2812,7 @@ function openAiSpendGuardSnapshot() {
       zeroBudgetDefault: OPENAI_DAILY_REQUEST_LIMIT === 0,
       manualOnlyByDefault: OPENAI_CLOUD_MODE === 'manual',
       hardSpendLockDefault: OPENAI_HARD_SPEND_LOCK,
+      emergencyZeroSpendLockActive: openAiEmergencyZeroSpendLock,
       confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
       oneRequestLeaseRequired: OPENAI_REQUIRE_SPEND_LEASE,
       off: OPENAI_CLOUD_MODE === 'off',
@@ -2816,6 +2826,7 @@ function openAiSpendGuardSnapshot() {
 function openAiZeroSpendModeActive() {
   const guard = openAiSpendGuardSnapshot();
   return Boolean(
+    guard.emergencyZeroSpendLock ||
     guard.hardSpendLock ||
     guard.mode === 'off' ||
     guard.dailyRequestLimit <= 0 ||
@@ -2844,8 +2855,10 @@ function openAiSpendForensicsSnapshot(options = {}) {
   };
   const latestAllowed = allowed[0] || null;
   const latestBlocked = blocked[0] || null;
+  const emergencyLocked = guard.emergencyZeroSpendLock === true;
   const zeroLocked = Boolean(
-    guard.hardSpendLock === true &&
+    emergencyLocked ||
+    (guard.hardSpendLock === true &&
       guard.mode === 'off' &&
       Number(guard.dailyRequestLimit || 0) === 0 &&
       Number(guard.unattendedDailyRequestLimit || 0) === 0 &&
@@ -2853,7 +2866,7 @@ function openAiSpendForensicsSnapshot(options = {}) {
       guard.allowRendererStartupProbe === false &&
       guard.requireSpendLease === true &&
       guard.egressGuardEnabled === true &&
-      egress.safety?.blocksUnscopedOpenAiFetch === true
+      egress.safety?.blocksUnscopedOpenAiFetch === true)
   );
   const localAllowedCount = Number(guard.counts?.total || 0);
   const localUnattendedAllowedCount = Number(guard.counts?.unattended || 0);
@@ -3076,6 +3089,7 @@ function evaluateOpenAiSpendGuard(options = {}) {
   const state = readOpenAiSpendState();
   const reasons = [];
 
+  if (openAiEmergencyZeroSpendLock) reasons.push('emergency_zero_spend_lock_active');
   if (OPENAI_HARD_SPEND_LOCK) reasons.push('hard_spend_lock_enabled');
   if (OPENAI_CLOUD_MODE === 'off') reasons.push('cloud_mode_off');
   if (OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE && !confirmed) reasons.push('explicit_spend_confirmation_required');
@@ -3409,6 +3423,10 @@ let openAiEgressGuardInstalled = false;
 let openAiEgressAllowDepth = 0;
 const openAiEgressSourceStack = [];
 const openAiSpendLeases = new Map();
+let openAiEmergencyZeroSpendLock = false;
+let openAiEmergencyZeroSpendAt = 0;
+let openAiEmergencyZeroSpendSource = '';
+let openAiEmergencyZeroSpendReason = '';
 
 function openAiSpendLeaseIdFromOptions(options = {}) {
   return String(
@@ -3552,6 +3570,113 @@ function createOpenAiSpendLease(options = {}) {
     lease: openAiSpendLeaseSnapshot(lease, now),
     spendGuard: openAiSpendGuardSnapshot(),
     output: 'OpenAI spend lease created for one request.',
+  };
+}
+
+function clearOpenAiSpendLeases(source = 'openai_zero_spend_lockdown') {
+  pruneOpenAiSpendLeases();
+  const cleared = openAiSpendLeases.size;
+  openAiSpendLeases.clear();
+  appendAudit('openai.spend_leases_cleared', {
+    source: compactRecordText(source, 80),
+    cleared,
+  });
+  return { cleared };
+}
+
+function activateOpenAiEmergencyZeroSpendLock(options = {}) {
+  const source = compactRecordText(options.source || 'openai_zero_spend_lockdown', 80);
+  const reason = compactRecordText(options.reason || 'operator requested zero-spend lockdown', 180);
+  const before = openAiSpendGuardSnapshot();
+  const leases = clearOpenAiSpendLeases(source);
+  const removedEnvKeys = [];
+  for (const key of OPENAI_RUNTIME_ENV_CREDENTIAL_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+      delete process.env[key];
+      removedEnvKeys.push(key);
+    }
+  }
+  openAiEmergencyZeroSpendLock = true;
+  openAiEmergencyZeroSpendAt = Date.now();
+  openAiEmergencyZeroSpendSource = source;
+  openAiEmergencyZeroSpendReason = reason;
+  appendAudit('openai.emergency_zero_spend_lock_activated', {
+    source,
+    reason,
+    clearedSpendLeases: leases.cleared,
+    removedEnvKeys,
+  });
+  const after = openAiSpendGuardSnapshot();
+  return {
+    ok: true,
+    version: 1,
+    source,
+    reason,
+    activatedAt: openAiEmergencyZeroSpendAt,
+    activatedAtIso: new Date(openAiEmergencyZeroSpendAt).toISOString(),
+    clearedSpendLeases: leases.cleared,
+    removedEnvKeys,
+    before,
+    after,
+    safety: {
+      readOnly: false,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      startsRealtimeSession: false,
+      startsWorkers: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      readsClipboardText: false,
+      mutatesUserFiles: false,
+      blocksCurrentProcessImmediately: true,
+      preservesEnvFile: true,
+    },
+  };
+}
+
+async function openAiZeroSpendLockdownRuntime(options = {}) {
+  const source = compactRecordText(options.source || 'openai_zero_spend_lockdown_api', 80);
+  const reason = compactRecordText(options.reason || 'operator requested zero-spend lockdown', 180);
+  let realtimeStop = null;
+  try {
+    realtimeStop = await requestRealtimeRendererControl({
+      action: 'stop',
+      execute: true,
+      stopScreen: true,
+      source,
+      reason,
+    });
+  } catch (error) {
+    realtimeStop = {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  const emergencyLock = activateOpenAiEmergencyZeroSpendLock({ source, reason });
+  return {
+    ok: true,
+    version: 1,
+    output: 'OpenAI zero-spend runtime lockdown is active. Current process spend leases are cleared, OpenAI credential env is removed from process.env, and new OpenAI guard checks are blocked before egress.',
+    emergencyLock,
+    realtimeStop,
+    spendGuard: openAiSpendGuardSnapshot(),
+    egressGuard: openAiEgressGuardSnapshot(),
+    incident: openAiSpendIncidentReportSnapshot({ query: reason, limit: 8, auditLimit: 180 }),
+    safety: {
+      callsOpenAI: false,
+      createsSpendLease: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      startsRealtimeSession: false,
+      stopsRealtimeOnly: true,
+      startsWorkers: false,
+      opensTerminal: false,
+      capturesScreen: false,
+      readsClipboardText: false,
+      mutatesUserFiles: false,
+    },
   };
 }
 
@@ -11932,6 +12057,297 @@ function blockerStatusSnapshot(options = {}) {
       readsClipboardText: false,
       mutatesUserFiles: false,
     },
+  };
+}
+
+async function autonomyReadinessSnapshot(options = {}) {
+  const source = compactRecordText(options.source || 'api', 80);
+  const workflowLimit = options.workflowLimit || 6;
+  const jobLimit = options.jobLimit || 6;
+  const blockers = blockerStatusSnapshot({
+    jobLimit,
+    workflowLimit,
+    approvalLimit: options.approvalLimit || 5,
+    includeAutopilot: true,
+    source,
+  });
+  const workNextRaw = await workNextAction({
+    execute: false,
+    workflowLimit,
+    jobLimit,
+    includeMaintenance: true,
+    source: `${source}:autonomy_readiness_work_next`,
+  });
+  const rawAction = workNextRaw.action || null;
+  const action = compactWorkNextActionPayload(rawAction);
+  const actionDecision = rawAction ? autopilotEligibilityDecision(rawAction) : {
+    executable: false,
+    reason: 'missing_action',
+    detail: 'No work-next action is available.',
+  };
+  const autopilot = autopilotStatusVoicePayload(
+    autopilotVoiceStatusSnapshot({
+      source,
+      workflowLimit,
+      jobLimit,
+    }),
+    { source },
+  );
+  const spendGuard = openAiSpendGuardSnapshot();
+  const spendForensics = openAiSpendForensicsSnapshot({
+    guard: spendGuard,
+    egress: openAiEgressGuardSnapshot(),
+  });
+  const activity = recentActivitySnapshot({
+    limit: options.activityLimit || 3,
+    eventLimit: options.activityEventLimit || 80,
+  });
+  const learning = learningDistillationVoiceSnapshot({
+    source,
+    recentLimit: options.recentLimit || 6,
+    baselineLimit: options.baselineLimit || 18,
+    skillLimit: options.skillLimit || 3,
+    demonstrationLimit: options.demonstrationLimit || 3,
+    shortcutLimit: options.shortcutLimit || 3,
+    habitLimit: options.habitLimit || 3,
+  });
+
+  const actionStartsMicrophone = Boolean(rawAction?.startsMicrophone || rawAction?.requiresMicConfirmation);
+  const actionUsesRealtime = Boolean(
+    rawAction?.usesRealtime ||
+    rawAction?.requiresMicConfirmation ||
+    rawAction?.startsMicrophone ||
+    (rawAction?.source === 'realtime_voice' && rawAction?.realtimePreparation !== 'preflight_bundle')
+  );
+  const actionOpensTerminal = Boolean(rawAction?.opensTerminal);
+  const actionStartsWorkers = Boolean(rawAction?.startsWorkers);
+  const actionCallsOpenAi = Boolean(rawAction?.providerProbe || rawAction?.callsOpenAI || rawAction?.callsOpenAi);
+  const actionMutatesUserFiles = Boolean(rawAction?.mutatesUserFiles);
+  const actionSendsMessages = Boolean(rawAction?.sendsMessages);
+  const actionRisk = Number(rawAction?.riskLevel || 0);
+  const cloudSpendLocked = Boolean(openAiZeroSpendModeActive() || spendGuard.hardSpendLock || spendGuard.mode === 'off' || Number(spendGuard.dailyRequestLimit || 0) <= 0);
+  const unsafeForUnattended = actionStartsMicrophone ||
+    actionUsesRealtime ||
+    actionOpensTerminal ||
+    actionCallsOpenAi ||
+    actionMutatesUserFiles ||
+    actionSendsMessages ||
+    actionRisk > 1;
+  const safePreparedAction = Boolean(
+    rawAction &&
+    actionDecision.executable === true &&
+    rawAction.executable !== false &&
+    rawAction.manualOnly !== true &&
+    rawAction.requiresUserPresence !== true &&
+    rawAction.autopilotEligible !== false &&
+    !unsafeForUnattended
+  );
+  const highBoundaryBlockers = (Array.isArray(blockers.blockers) ? blockers.blockers : [])
+    .filter((item) => ['critical', 'high'].includes(item.severity));
+  const canSelfDriveNow = Boolean(autopilot.enabled && autopilot.canActNow && safePreparedAction);
+  const canPrepareOnRequest = Boolean(safePreparedAction);
+  const posture = canSelfDriveNow
+    ? 'can_self_drive'
+    : highBoundaryBlockers.length
+      ? 'needs_user_boundary'
+      : canPrepareOnRequest
+        ? 'ready_if_enabled'
+        : action?.id
+          ? 'preview_only'
+          : 'standby';
+  const topBoundary = highBoundaryBlockers[0] || blockers.top || null;
+  const recommended = action
+    ? {
+        id: action.id,
+        label: action.label,
+        source: action.source,
+        summary: action.summary,
+        executable: Boolean(action.executable),
+        autoEligible: Boolean(action.autoEligible),
+        autopilotEligible: Boolean(action.autopilotEligible),
+        riskLevel: action.riskLevel,
+        decision: {
+          executable: Boolean(actionDecision.executable),
+          reason: compactRecordText(actionDecision.reason || '', 120),
+          detail: compactRecordText(actionDecision.detail || '', 240),
+        },
+        endpoint: '/api/work/next',
+        executeBody: {
+          execute: true,
+          actionId: action.id,
+        },
+      }
+    : null;
+  const waitingFor = [
+    ...(Array.isArray(blockers.blockers) ? blockers.blockers.slice(0, 4).map((item) => ({
+      id: item.id,
+      label: item.label,
+      severity: item.severity,
+      source: item.source,
+      summary: item.summary,
+      next: item.next,
+    })) : []),
+    ...(Array.isArray(autopilot.waitingFor) ? autopilot.waitingFor.slice(0, 3).map((item) => ({
+      id: item.id,
+      label: item.label || item.id,
+      severity: 'low',
+      source: 'autopilot',
+      summary: item.summary || item.status || '',
+      next: item.waitLabel || '',
+    })) : []),
+  ].filter((item, index, list) => item.id && list.findIndex((candidate) => `${candidate.source}:${candidate.id}` === `${item.source}:${item.id}`) === index);
+  const currentActivity = activity.current || null;
+  const habitCandidate = Array.isArray(learning.habitCandidates?.candidates)
+    ? learning.habitCandidates.candidates[0] || null
+    : null;
+  const summary = posture === 'can_self_drive'
+    ? `JAVIS can run one low-risk local preparation now: ${recommended?.label || recommended?.id || 'work-next'}.`
+    : posture === 'ready_if_enabled'
+      ? `A low-risk local preparation is available, but unattended autopilot is not currently acting: ${recommended?.label || recommended?.id || 'work-next'}.`
+      : posture === 'needs_user_boundary'
+        ? `JAVIS should wait for the user boundary first: ${topBoundary?.label || topBoundary?.id || 'approval/setup boundary'}.`
+        : recommended
+          ? `JAVIS has a next preview, but it is not safe for unattended execution: ${recommended.label || recommended.id}.`
+          : 'No self-drive action is available; JAVIS should stay in standby and keep observing local metadata.';
+
+  return {
+    version: 1,
+    ok: true,
+    generatedAt: new Date().toISOString(),
+    source,
+    posture,
+    summary,
+    spokenSummary: compactRecordText(summary, 420),
+    selfDrive: {
+      enabled: Boolean(autopilot.enabled),
+      canActNow: canSelfDriveNow,
+      canPrepareOnRequest,
+      status: posture,
+      reason: compactRecordText(
+        canSelfDriveNow
+          ? 'autopilot_enabled_and_low_risk_action_ready'
+          : highBoundaryBlockers.length
+            ? 'user_boundary_required'
+            : canPrepareOnRequest
+              ? 'low_risk_action_ready_but_autopilot_not_acting'
+              : actionDecision.reason || 'no_safe_action',
+        120,
+      ),
+      askLast: true,
+      maxSafeAttemptsBeforeUser: 3,
+    },
+    recommended,
+    blockers: {
+      status: blockers.status,
+      counts: blockers.counts,
+      top: blockers.top,
+      waitingFor,
+    },
+    autopilot: {
+      enabled: Boolean(autopilot.enabled),
+      running: Boolean(autopilot.running),
+      busy: Boolean(autopilot.busy),
+      canActNow: Boolean(autopilot.canActNow),
+      reason: compactRecordText(autopilot.reason || '', 120),
+      nextWait: compactRecordText(autopilot.nextWait || '', 260),
+      spokenSummary: compactRecordText(autopilot.spokenSummary || autopilot.skipSummary || '', 360),
+      candidateCounts: autopilot.candidateCounts || null,
+      selectedAction: autopilot.selectedAction,
+    },
+    workNext: {
+      ok: workNextRaw.ok !== false,
+      executed: false,
+      action,
+      output: compactRecordText(workNextRaw.output || '', 700),
+      decision: {
+        executable: Boolean(actionDecision.executable),
+        reason: compactRecordText(actionDecision.reason || '', 120),
+        detail: compactRecordText(actionDecision.detail || '', 240),
+      },
+    },
+    spend: {
+      zeroSpendLocked: cloudSpendLocked,
+      mode: compactRecordText(spendGuard.mode || 'off', 40),
+      hardSpendLock: Boolean(spendGuard.hardSpendLock),
+      dailyRequestLimit: Number(spendGuard.dailyRequestLimit || 0),
+      allowedToday: Number(spendGuard.counts?.total || 0),
+      blockedToday: Number(spendGuard.counts?.blocked || 0),
+      activeLeases: Number(spendGuard.spendLease?.activeCount || 0),
+      likelyBillableFromJavis: Boolean(spendForensics.likelyBillableFromJavis),
+    },
+    learning: {
+      enabled: Boolean(learning.state?.enabled),
+      paused: Boolean(learning.state?.paused),
+      includeInPrompts: Boolean(learning.state?.includeInPrompts),
+      sourceEventCount: Number(learning.profile?.sourceEventCount || 0),
+      summary: compactRecordText(learning.profile?.summary || learning.summary || '', 260),
+      habitCandidate: habitCandidate
+        ? {
+            id: compactRecordText(habitCandidate.id || '', 120),
+            label: compactRecordText(habitCandidate.label || '', 160),
+            confidence: Number(habitCandidate.confidence || 0),
+            requiresConfirmation: Boolean(habitCandidate.recommendedAction?.requiresConfirmation),
+          }
+        : null,
+      privacy: {
+        localOnly: true,
+        metadataOnly: true,
+        noPermissionGrant: true,
+        noAutoSave: true,
+      },
+    },
+    activity: {
+      enabled: Boolean(activity.enabled),
+      count: Number(activity.count || 0),
+      current: currentActivity
+        ? {
+            app: compactRecordText(currentActivity.app || currentActivity.browserApp || '', 120),
+            title: compactRecordText(currentActivity.windowTitle || currentActivity.browserTitle || '', 180),
+            host: compactRecordText(currentActivity.browserHost || '', 120),
+          }
+        : null,
+      summary: compactRecordText(activity.spokenSummary || activity.summary || '', 320),
+    },
+    boundaries: [
+      'Run at most one low-risk local preparation per autonomy tick.',
+      'Ask the user for credentials, permissions, microphone/live voice, sends, deletes, purchases, account changes, exports, installs, and private-data exposure.',
+      'Use work-next, worker recovery, browser/file/app previews, and scoped Codex/Claude delegation before handing recoverable problems back to the user.',
+      'Local inferred learning is routing context, not permission.',
+    ],
+    safety: {
+      readOnly: true,
+      executesActions: false,
+      executesWorkNext: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAI: false,
+      createsSpendLease: false,
+      opensTerminal: false,
+      startsWorkers: false,
+      capturesScreenNow: false,
+      readsClipboardText: false,
+      returnsScreenImage: false,
+      returnsBrowserPageText: false,
+      mutatesUserFiles: false,
+      sendsMessages: false,
+      grantsPermission: false,
+      actionPolicyBypassed: false,
+      recommendedActionIfExecuted: {
+        startsMicrophone: actionStartsMicrophone,
+        usesRealtime: actionUsesRealtime,
+        callsOpenAI: actionCallsOpenAi,
+        opensTerminal: actionOpensTerminal,
+        startsWorkers: actionStartsWorkers,
+        mutatesUserFiles: actionMutatesUserFiles,
+        sendsMessages: actionSendsMessages,
+        riskLevel: actionRisk,
+      },
+    },
+    nextAction: canSelfDriveNow
+      ? `Autopilot can run one tick to execute ${recommended?.label || recommended?.id || 'the selected safe action'} through /api/autopilot/tick.`
+      : canPrepareOnRequest
+        ? `Ask JAVIS to run work-next when you want this local preparation: ${recommended?.label || recommended?.id || 'work-next'}.`
+        : topBoundary?.next || blockers.summary || 'Stay quiet until a safe work-next action appears or the user gives a task.',
   };
 }
 
@@ -26983,6 +27399,38 @@ function naturalWorkNextLocalCommand(text) {
   };
 }
 
+function naturalAutonomyReadinessLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const english = /\b(self[- ]?drive readiness|autonomy readiness|agency readiness|can you self[- ]?drive|can you keep going by yourself|what can you do by yourself|what can you safely do next|what can you safely prepare|can you autonomously continue|can javis autonomously continue)\b/i.test(raw)
+    || /\b(can|could|will|should).*(you|javis).*(continue|proceed|work|prepare|act|advance).*(by yourself|autonomously|safely|without me|unattended)\b/i.test(raw)
+    || /\b(what|which).*(safe|autonomous|self[- ]?driven|unattended).*(next|action|step|preparation)\b/i.test(raw);
+  const chinese = /(?:自主推进|自推进|自主准备|自己推进|自己继续|自己跑|自己干|自己做|无人值守|能动性|自主性).*(?:准备好|就绪|状态|能不能|可以|能否|现在|下一步|能做什么|能准备什么|安全)/i.test(compactPlain)
+    || /(?:你|JAVIS|javis|贾维斯).*(?:现在)?(?:能不能|可以|能否|会不会).*(?:自己|自动|自主|无人值守).*(?:安全准备|准备什么|能做什么|做什么|干什么|下一步|安全)/i.test(compactPlain)
+    || /(?:现在|当前).*(?:能自己|可以自己|能自主|可以自主).*(?:做什么|干什么|推进什么|准备什么|继续什么)/i.test(compactPlain)
+    || /(?:下一步|当前下一步).*(?:能不能自己|可以自己|能自主|可以自主|安全准备|自己准备)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+  const explicitReadiness = /\b(self[- ]?drive readiness|autonomy readiness|agency readiness)\b/i.test(raw)
+    || /(?:自主.*就绪|自推进.*状态|自主.*状态|无人值守.*状态|能动性.*状态|自主性.*状态)/i.test(compactPlain);
+  const recoverySignal = /\b(unblock|recover|recovery|unstuck|fix blockers?|resolve blockers?|get unstuck)\b/i.test(raw)
+    || /(?:解卡|解除阻塞|解决阻塞|处理阻塞|处理卡住|卡住|卡着|阻塞|恢复|解开|能自己解决什么|可以自己解决什么|下一步怎么解|下一步怎么恢复|怎么继续跑|怎么继续推进|怎么让.*继续)/i.test(compactPlain);
+  if (recoverySignal && !explicitReadiness) return null;
+
+  return {
+    intent: 'autonomy_readiness',
+    label: 'Autonomy readiness',
+    args: {
+      query: raw,
+      includeAutopilot: true,
+      workflowLimit: 6,
+      jobLimit: 6,
+    },
+  };
+}
+
 function naturalContinueLastVoiceRouteLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -27538,6 +27986,9 @@ function localCommandDecision(task) {
   const approvalStatusCommand = naturalApprovalStatusLocalCommand(text);
   if (approvalStatusCommand) return approvalStatusCommand;
 
+  const autonomyReadinessCommand = naturalAutonomyReadinessLocalCommand(text);
+  if (autonomyReadinessCommand) return autonomyReadinessCommand;
+
   const unblockPreviewCommand = naturalUnblockPreviewLocalCommand(text);
   if (unblockPreviewCommand) return unblockPreviewCommand;
 
@@ -28029,7 +28480,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status'].includes(localCommand)) {
+  if (statusSignal || ['status', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -28080,7 +28531,7 @@ function buildContextPlan(message, options = {}) {
       needs.browserContext = false;
       needs.browserPage = false;
       needs.browserDom = false;
-    } else if (['autopilot_status'].includes(localCommand)) {
+    } else if (['autopilot_status', 'autonomy_readiness'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -29325,6 +29776,35 @@ function formatAutopilotStatusForLocalCommand(status = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatAutonomyReadinessForLocalCommand(readiness = {}) {
+  const selfDrive = readiness.selfDrive || {};
+  const recommended = readiness.recommended || null;
+  const blockers = readiness.blockers || {};
+  const spend = readiness.spend || {};
+  const learning = readiness.learning || {};
+  const activity = readiness.activity || {};
+  const safety = readiness.safety || {};
+  const waitingFor = Array.isArray(blockers.waitingFor) ? blockers.waitingFor.slice(0, 4) : [];
+  const waitingLines = waitingFor
+    .map((item) => `- ${item.label || item.id || '-'} · ${item.severity || '-'} · ${compactRecordText(item.summary || item.next || '', 180)}`);
+  const safetyFlags = safety.recommendedActionIfExecuted || {};
+  return [
+    `Autonomy readiness: ${readiness.posture || selfDrive.status || '-'} · self-drive=${selfDrive.canActNow ? 'yes' : 'no'} · prepare-on-request=${selfDrive.canPrepareOnRequest ? 'yes' : 'no'}`,
+    readiness.spokenSummary || readiness.summary ? `Summary: ${compactRecordText(readiness.spokenSummary || readiness.summary, 420)}` : '',
+    recommended
+      ? `Recommended: ${recommended.label || recommended.id} · source=${recommended.source || '-'} · executable=${recommended.executable ? 'yes' : 'no'} · risk=${recommended.riskLevel ?? '-'} · reason=${recommended.decision?.reason || '-'}`
+      : 'Recommended: none',
+    waitingLines.length ? `Waiting/boundaries:\n${waitingLines.join('\n')}` : '',
+    `Spend: zero-locked=${spend.zeroSpendLocked ? 'yes' : 'no'} · allowed=${spend.allowedToday ?? 0}/${spend.dailyRequestLimit ?? 0} · blocked=${spend.blockedToday ?? 0} · likely billable=${spend.likelyBillableFromJavis ? 'yes' : 'no'}`,
+    learning.summary ? `Learning: ${learning.enabled ? 'on' : learning.paused ? 'paused' : 'off'} · events=${learning.sourceEventCount ?? 0} · ${compactRecordText(learning.summary, 220)}` : '',
+    learning.habitCandidate ? `Habit candidate: ${learning.habitCandidate.label || learning.habitCandidate.id} · confidence ${Math.round(Number(learning.habitCandidate.confidence || 0) * 100)}%` : '',
+    activity.summary ? `Recent activity: ${compactRecordText(activity.summary, 220)}` : '',
+    readiness.nextAction ? `Next: ${compactRecordText(readiness.nextAction, 320)}` : '',
+    `Recommended safety if executed: mic=${safetyFlags.startsMicrophone ? 'yes' : 'no'} · realtime=${safetyFlags.usesRealtime ? 'yes' : 'no'} · OpenAI=${safetyFlags.callsOpenAI ? 'yes' : 'no'} · terminal=${safetyFlags.opensTerminal ? 'yes' : 'no'} · workers=${safetyFlags.startsWorkers ? 'yes' : 'no'}`,
+    '边界: 这里只读 self-drive readiness；不执行 work-next，不启动 worker，不开麦克风/Realtime，不调用 OpenAI，不开 Terminal，不读剪贴板正文或网页正文。',
+  ].filter(Boolean).join('\n');
+}
+
 function formatBrowserUrlForLocalCommand(value) {
   const raw = String(value || '').trim();
   if (!raw) return '-';
@@ -29989,6 +30469,21 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatUnblockPreviewForLocalCommand(unblockPreview),
         data: { unblockPreview },
+      };
+    }
+
+    if (command.intent === 'autonomy_readiness') {
+      const readiness = await autonomyReadinessSnapshot({
+        ...(command.args || {}),
+        source: 'local_command',
+        jobLimit: command.args?.jobLimit || 6,
+        workflowLimit: command.args?.workflowLimit || 6,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatAutonomyReadinessForLocalCommand(readiness),
+        data: { autonomyReadiness: readiness },
       };
     }
 
@@ -30968,6 +31463,9 @@ function voiceCommandAck(route = {}, options = {}) {
     return output;
   }
   if (route.localCommand?.intent === 'incident_report' && output) {
+    return output;
+  }
+  if (route.localCommand?.intent === 'autonomy_readiness' && output) {
     return output;
   }
   const reason = compactRecordText(route.decision?.reason || '已经完成分流预览', 120);
@@ -32785,7 +33283,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'observe_now', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false });
         return finalizeRouteResult({
           ok: Boolean(result.ok),
@@ -63289,6 +63787,19 @@ function startApiServer() {
     }
   });
 
+  api.get('/api/autonomy/readiness', async (req, res) => {
+    try {
+      res.json({
+        readiness: await autonomyReadinessSnapshot({
+          ...(req.query || {}),
+          source: req.query?.source || 'api',
+        }),
+      });
+    } catch (error) {
+      jsonError(res, 500, 'Autonomy readiness failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
   api.get('/api/sessions', (req, res) => {
     try {
       const limit = Number(req.query.limit || 20);
@@ -63776,6 +64287,18 @@ function startApiServer() {
         auditLimit: req.query.auditLimit,
       }),
     });
+  });
+
+  api.post('/api/openai/zero-spend-lockdown', express.json({ limit: '64kb' }), async (req, res) => {
+    try {
+      const body = req.body && typeof req.body === 'object' ? req.body : {};
+      res.json(await openAiZeroSpendLockdownRuntime({
+        source: body.source || 'api_zero_spend_lockdown',
+        reason: body.reason || 'operator requested zero-spend lockdown',
+      }));
+    } catch (error) {
+      jsonError(res, 500, 'OpenAI zero-spend lockdown failed', error instanceof Error ? error.message : String(error));
+    }
   });
 
   api.post('/api/openai/spend-guard/check', (req, res) => {

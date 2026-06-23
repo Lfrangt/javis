@@ -123,6 +123,106 @@ export default {
         : fail('autonomy.learning_context', 'Autonomy learning context', `expected local learning evidence envelope (${learnedPreview.status})`, learnedPreview.data),
     );
 
+    const readiness = await ctx.api('/api/autonomy/readiness?workflowLimit=6&jobLimit=6&source=eval_autonomy_readiness');
+    const readinessData = readiness.data?.readiness || {};
+    const readinessSafety = readinessData.safety || {};
+    const recommendedSafety = readinessSafety.recommendedActionIfExecuted || {};
+    out.push(
+      readiness.ok &&
+        readinessData.ok === true &&
+        readinessData.version === 1 &&
+        ['can_self_drive', 'needs_user_boundary', 'ready_if_enabled', 'preview_only', 'standby'].includes(readinessData.posture) &&
+        readinessData.selfDrive?.askLast === true &&
+        readinessData.selfDrive?.maxSafeAttemptsBeforeUser >= 3 &&
+        typeof readinessData.selfDrive?.canActNow === 'boolean' &&
+        typeof readinessData.selfDrive?.canPrepareOnRequest === 'boolean' &&
+        readinessData.workNext?.executed === false &&
+        readinessData.workNext?.decision &&
+        typeof readinessData.workNext.decision.reason === 'string' &&
+        readinessData.spend?.zeroSpendLocked === true &&
+        readinessData.spend?.likelyBillableFromJavis === false &&
+        readinessData.learning?.privacy?.localOnly === true &&
+        readinessData.learning?.privacy?.metadataOnly === true &&
+        readinessData.learning?.privacy?.noPermissionGrant === true &&
+        Array.isArray(readinessData.boundaries) &&
+        readinessData.boundaries.some((item) => /Ask the user/i.test(item)) &&
+        readinessSafety.readOnly === true &&
+        readinessSafety.executesActions === false &&
+        readinessSafety.executesWorkNext === false &&
+        readinessSafety.startsMicrophone === false &&
+        readinessSafety.usesRealtime === false &&
+        readinessSafety.callsOpenAI === false &&
+        readinessSafety.createsSpendLease === false &&
+        readinessSafety.opensTerminal === false &&
+        readinessSafety.startsWorkers === false &&
+        readinessSafety.capturesScreenNow === false &&
+        readinessSafety.readsClipboardText === false &&
+        readinessSafety.returnsBrowserPageText === false &&
+        readinessSafety.mutatesUserFiles === false &&
+        readinessSafety.sendsMessages === false &&
+        readinessSafety.grantsPermission === false &&
+        readinessSafety.actionPolicyBypassed === false &&
+        typeof recommendedSafety.startsMicrophone === 'boolean' &&
+        typeof recommendedSafety.callsOpenAI === 'boolean'
+        ? ok('autonomy.readiness_snapshot', 'Autonomy readiness snapshot', `${readinessData.posture} · ${readinessData.recommended?.id || 'no action'} · spend locked=${readinessData.spend.zeroSpendLocked ? 'yes' : 'no'}`)
+        : fail('autonomy.readiness_snapshot', 'Autonomy readiness snapshot', `expected read-only self-drive readiness envelope (${readiness.status})`, readiness.data),
+    );
+
+    try {
+      const { stdout } = await execFileAsync(process.execPath, ['scripts/config-cui.cjs', '--print-autonomy-readiness'], {
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+        env: process.env,
+      });
+      out.push(
+        stdout.includes('JAVIS Autonomy Readiness') &&
+          stdout.includes('Posture:') &&
+          stdout.includes('Spend: zero-locked=yes') &&
+          stdout.includes('Safety: read-only') &&
+          stdout.includes('no mic/Realtime') &&
+          stdout.includes('no OpenAI call')
+          ? ok('autonomy.readiness_cui', 'Autonomy readiness CUI', 'config CUI prints self-drive readiness without execution')
+          : fail('autonomy.readiness_cui', 'Autonomy readiness CUI', 'expected CUI readiness output with spend and read-only safety', { stdout: stdout.slice(0, 2200) }),
+      );
+    } catch (error) {
+      out.push(fail('autonomy.readiness_cui', 'Autonomy readiness CUI', error instanceof Error ? error.message : String(error)));
+    }
+
+    const spendBeforeReadinessVoice = await ctx.api('/api/openai/spend-guard');
+    const spendBeforeCount = Number(spendBeforeReadinessVoice.data?.spendGuard?.counts?.total || 0);
+    const voiceReadiness = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '你现在能自己推进什么？能安全准备什么？',
+        execute: false,
+        source: 'eval_autonomy_readiness_voice',
+      },
+      timeoutMs: 30000,
+    });
+    const voiceReadinessData = voiceReadiness.data || {};
+    const voiceRoute = voiceReadinessData.route || {};
+    const voiceAutonomyReadiness = voiceReadinessData.autonomyReadiness || voiceRoute.data?.autonomyReadiness || {};
+    const spendAfterReadinessVoice = await ctx.api('/api/openai/spend-guard');
+    const spendAfterCount = Number(spendAfterReadinessVoice.data?.spendGuard?.counts?.total || 0);
+    out.push(
+      voiceReadiness.ok &&
+        voiceRoute.localCommand?.intent === 'autonomy_readiness' &&
+        voiceAutonomyReadiness.ok === true &&
+        voiceAutonomyReadiness.safety?.readOnly === true &&
+        voiceAutonomyReadiness.safety?.startsMicrophone === false &&
+        voiceAutonomyReadiness.safety?.usesRealtime === false &&
+        voiceAutonomyReadiness.safety?.callsOpenAI === false &&
+        voiceAutonomyReadiness.safety?.opensTerminal === false &&
+        voiceAutonomyReadiness.safety?.executesWorkNext === false &&
+        spendAfterCount === spendBeforeCount
+        ? ok('autonomy.readiness_voice_command', 'Autonomy readiness voice command', `${voiceAutonomyReadiness.posture} · spendDelta=${spendAfterCount - spendBeforeCount}`)
+        : fail('autonomy.readiness_voice_command', 'Autonomy readiness voice command', 'expected natural local command to return readiness without spend or execution', {
+            before: spendBeforeReadinessVoice.data,
+            after: spendAfterReadinessVoice.data,
+            voice: voiceReadiness.data,
+          }),
+    );
+
     const workNext = await ctx.api('/api/work/next?workflowLimit=6&jobLimit=6');
     const workNextActions = workNext.data?.next?.briefing?.nextActions || [];
     const noMicAction = workNextActions.find((action) => action.id === 'realtime_voice:prepare_preflight_bundle');

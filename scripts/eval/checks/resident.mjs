@@ -1805,6 +1805,56 @@ export default {
           body: spendGuardResponse.data,
         }),
     );
+	    const zeroLockdownResponse = await ctx.api('/api/openai/zero-spend-lockdown', {
+	      method: 'POST',
+	      body: {
+	        source: 'eval_resident_zero_spend_lockdown',
+	        reason: 'eval verifies emergency lock prevents surprise OpenAI spend',
+	      },
+	      timeoutMs: 10000,
+	    });
+	    const zeroLockdown = zeroLockdownResponse.data || {};
+	    const spendGuardAfterZeroLockdown = zeroLockdown.spendGuard || {};
+	    const postLockDecisionResponse = await ctx.api('/api/openai/spend-guard/check', {
+	      method: 'POST',
+	      body: {
+	        kind: 'responses_text',
+	        source: 'eval_post_zero_lockdown_confirmed_request',
+	        model: 'gpt-test',
+	        confirmOpenAiSpend: true,
+	        confirmOpenAiSpendPhrase: 'SPEND OPENAI',
+	      },
+	      timeoutMs: 10000,
+	    });
+	    const postLockDecision = postLockDecisionResponse.data?.decision || {};
+	    const spendGuardAfterZeroLockdownCheckResponse = await ctx.api('/api/openai/spend-guard');
+	    const spendGuardAfterZeroLockdownCheck = spendGuardAfterZeroLockdownCheckResponse.data?.spendGuard || {};
+	    out.push(
+	      zeroLockdownResponse.ok &&
+	        zeroLockdown.ok === true &&
+	        zeroLockdown.emergencyLock?.ok === true &&
+	        zeroLockdown.emergencyLock?.safety?.callsOpenAI === false &&
+	        zeroLockdown.emergencyLock?.safety?.createsSpendLease === false &&
+	        zeroLockdown.safety?.startsMicrophone === false &&
+	        zeroLockdown.safety?.usesRealtime === false &&
+	        zeroLockdown.safety?.startsRealtimeSession === false &&
+	        zeroLockdown.safety?.startsWorkers === false &&
+	        spendGuardAfterZeroLockdown.emergencyZeroSpendLock === true &&
+	        spendGuardAfterZeroLockdown.spendLease?.activeCount === 0 &&
+	        postLockDecisionResponse.ok &&
+	        postLockDecision.allowed === false &&
+	        Array.isArray(postLockDecision.reasons) &&
+	        postLockDecision.reasons.includes('emergency_zero_spend_lock_active') &&
+	        spendGuardAfterZeroLockdownCheckResponse.ok &&
+	        Number(spendGuardAfterZeroLockdownCheck.counts?.total || 0) === spendGuardTotalBefore
+	        ? ok('resident.openai_zero_spend_lockdown', 'OpenAI zero-spend lockdown', 'runtime lockdown clears leases and blocks even a confirmed spend preflight without OpenAI egress')
+	        : fail('resident.openai_zero_spend_lockdown', 'OpenAI zero-spend lockdown', 'expected runtime lockdown to block current-process OpenAI spend immediately without cloud, mic, Realtime, worker, or lease side effects', {
+	          status: zeroLockdownResponse.status,
+	          lockdown: zeroLockdown,
+	          decision: postLockDecisionResponse.data,
+	          spendGuardAfter: spendGuardAfterZeroLockdownCheckResponse.data,
+	        }),
+	    );
 	    const spendIncidentResponse = await ctx.api('/api/openai/spend-incident-report');
 	    const spendIncident = spendIncidentResponse.data?.incident || {};
 	    out.push(

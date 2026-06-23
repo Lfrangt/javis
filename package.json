@@ -63,6 +63,7 @@
     "openai:incident": "node scripts/config-cui.cjs --print-openai-spend-incident",
     "openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend",
     "openai:zero": "node scripts/config-cui.cjs --lock-openai-spend",
+    "autonomy:readiness": "node scripts/config-cui.cjs --print-autonomy-readiness",
     "autonomy": "node scripts/config-cui.cjs --print-autonomy",
     "autonomy:run": "node scripts/config-cui.cjs --run-autonomy",
     "work:next": "node scripts/config-cui.cjs --print-work-next",
