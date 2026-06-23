@@ -1403,6 +1403,103 @@ function moveWindow(source = 'api', options = {}) {
   return windowStateSnapshot();
 }
 
+function tapToSummonSnapshot(options = {}) {
+  const voiceHealth = options.voiceHealth || realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
+  const fallbackReady = voiceHealth.status !== 'ready';
+  const hotkey = SUMMON_HOTKEY;
+  const currentAction = fallbackReady
+    ? {
+        id: 'open_compact_local_input',
+        label: 'Open local input',
+        mode: 'compose',
+        endpoint: '/api/voice/command',
+        startsMicrophone: false,
+        usesRealtime: false,
+      }
+    : {
+        id: 'wake_realtime_voice',
+        label: 'Wake Realtime voice',
+        mode: 'pet',
+        endpoint: '/api/wake/status',
+        startsMicrophone: true,
+        usesRealtime: true,
+      };
+  return {
+    version: 1,
+    enabled: Boolean(hotkey),
+    hotkey,
+    registered: Boolean(summonHotkeyRegistered),
+    endpoint: '/api/window/summon',
+    label: 'Tap to summon',
+    sourceEnv: 'JAVIS_SUMMON_HOTKEY or JAVIS_TAP_HOTKEY',
+    parksAt: currentParkCorner,
+    fallbackReady,
+    currentAction,
+    summary: hotkey
+      ? fallbackReady
+        ? `${hotkey} opens the compact local input at the notch without microphone, Realtime, Terminal, or provider spend.`
+        : `${hotkey} wakes JAVIS through the renderer voice path; microphone startup stays in the renderer voice contract.`
+      : 'Tap-to-summon is disabled.',
+    safety: {
+      residentStartsMicrophone: false,
+      residentUsesRealtime: false,
+      opensTerminal: false,
+      mutatesUserFiles: false,
+      storesRawAudio: false,
+      fallbackStartsMicrophone: false,
+      fallbackUsesRealtime: false,
+      fallbackCallsOpenAi: false,
+      realtimeReadyMayStartRendererVoice: !fallbackReady,
+    },
+  };
+}
+
+function compactTapToSummonSnapshot(tap = tapToSummonSnapshot()) {
+  return {
+    version: tap.version,
+    enabled: Boolean(tap.enabled),
+    hotkey: tap.hotkey || '',
+    registered: Boolean(tap.registered),
+    endpoint: tap.endpoint || '/api/window/summon',
+    fallbackReady: Boolean(tap.fallbackReady),
+    currentAction: tap.currentAction
+      ? {
+          id: tap.currentAction.id || '',
+          mode: tap.currentAction.mode || '',
+          endpoint: tap.currentAction.endpoint || '',
+          startsMicrophone: Boolean(tap.currentAction.startsMicrophone),
+          usesRealtime: Boolean(tap.currentAction.usesRealtime),
+        }
+      : null,
+    safety: {
+      residentStartsMicrophone: Boolean(tap.safety?.residentStartsMicrophone),
+      residentUsesRealtime: Boolean(tap.safety?.residentUsesRealtime),
+      opensTerminal: Boolean(tap.safety?.opensTerminal),
+      fallbackStartsMicrophone: Boolean(tap.safety?.fallbackStartsMicrophone),
+      fallbackUsesRealtime: Boolean(tap.safety?.fallbackUsesRealtime),
+      fallbackCallsOpenAi: Boolean(tap.safety?.fallbackCallsOpenAi),
+    },
+  };
+}
+
+function petWindowStateSnapshot(options = {}) {
+  const bounds = windowBoundsSnapshot();
+  const tapToSummon = compactTapToSummonSnapshot(tapToSummonSnapshot(options));
+  return {
+    mode: currentWindowMode,
+    hotkey: TOGGLE_HOTKEY,
+    hotkeyRegistered: toggleHotkeyRegistered,
+    summonHotkey: SUMMON_HOTKEY,
+    summonHotkeyRegistered,
+    tapToSummon,
+    captureHotkey: CAPTURE_HOTKEY,
+    captureHotkeyRegistered,
+    parkCorner: currentParkCorner,
+    width: bounds.width,
+    height: bounds.height,
+  };
+}
+
 function windowStateSnapshot() {
   const composeAutoParkDueInMs = composeAutoParkTimer && composeAutoParkStartedAt
     ? Math.max(0, WINDOW_COMPOSE_AUTO_PARK_MS - (Date.now() - composeAutoParkStartedAt))
@@ -1413,6 +1510,7 @@ function windowStateSnapshot() {
     hotkeyRegistered: toggleHotkeyRegistered,
     summonHotkey: SUMMON_HOTKEY,
     summonHotkeyRegistered,
+    tapToSummon: tapToSummonSnapshot(),
     captureHotkey: CAPTURE_HOTKEY,
     captureHotkeyRegistered,
     lastInboxCapture,
@@ -2012,6 +2110,7 @@ function toggleWindowMode(source = 'hotkey') {
 function summonJavis(source = 'hotkey', options = {}) {
   const voiceHealth = realtimeVoiceHealthSnapshot({ includeRecentAudit: true });
   const fallbackReady = voiceHealth.status !== 'ready';
+  const tapToSummon = tapToSummonSnapshot({ voiceHealth });
   const windowState = applyWindowMode(fallbackReady ? 'compose' : 'pet', {
     source,
     focus: fallbackReady,
@@ -2030,6 +2129,7 @@ function summonJavis(source = 'hotkey', options = {}) {
     hotkey: SUMMON_HOTKEY,
     mode: windowState.mode,
     fallbackReady,
+    currentAction: tapToSummon.currentAction?.id || '',
     wakeTriggered,
     wakePending: wake.pending,
     triggerCount: wake.triggerCount,
@@ -2040,6 +2140,7 @@ function summonJavis(source = 'hotkey', options = {}) {
     window: windowState,
     wake,
     hotkey: SUMMON_HOTKEY,
+    tapToSummon,
     fallbackReady,
   };
 }
@@ -3022,6 +3123,7 @@ const ORIGINAL_HTTPS_REQUEST = https.request.bind(https);
 const ORIGINAL_HTTPS_GET = https.get.bind(https);
 let openAiEgressGuardInstalled = false;
 let openAiEgressAllowDepth = 0;
+const openAiEgressSourceStack = [];
 const openAiSpendLeases = new Map();
 
 function openAiSpendLeaseIdFromOptions(options = {}) {
@@ -3258,29 +3360,42 @@ async function withOpenAiEgressAllowed(decision, fn) {
   }
 }
 
+async function withOpenAiEgressSource(source, fn) {
+  openAiEgressSourceStack.push(compactRecordText(source || 'openai_egress', 80));
+  try {
+    return await fn();
+  } finally {
+    openAiEgressSourceStack.pop();
+  }
+}
+
+function currentOpenAiEgressSource(fallback = 'network_egress_guard') {
+  return openAiEgressSourceStack[openAiEgressSourceStack.length - 1] || fallback;
+}
+
 function installOpenAiEgressGuard() {
   if (!OPENAI_EGRESS_GUARD_ENABLED || openAiEgressGuardInstalled) return false;
   openAiEgressGuardInstalled = true;
   if (ORIGINAL_GLOBAL_FETCH) {
     globalThis.fetch = async function javisGuardedFetch(input, init) {
-      assertOpenAiEgressAllowed('egress_fetch', urlFromFetchInput(input), 'global_fetch');
+      assertOpenAiEgressAllowed('egress_fetch', urlFromFetchInput(input), currentOpenAiEgressSource('global_fetch'));
       return ORIGINAL_GLOBAL_FETCH(input, init);
     };
   }
   http.request = function javisGuardedHttpRequest(...args) {
-    assertOpenAiEgressAllowed('egress_http', urlFromRequestArgs(args, 'http:'), 'http_request');
+    assertOpenAiEgressAllowed('egress_http', urlFromRequestArgs(args, 'http:'), currentOpenAiEgressSource('http_request'));
     return ORIGINAL_HTTP_REQUEST(...args);
   };
   http.get = function javisGuardedHttpGet(...args) {
-    assertOpenAiEgressAllowed('egress_http_get', urlFromRequestArgs(args, 'http:'), 'http_get');
+    assertOpenAiEgressAllowed('egress_http_get', urlFromRequestArgs(args, 'http:'), currentOpenAiEgressSource('http_get'));
     return ORIGINAL_HTTP_GET(...args);
   };
   https.request = function javisGuardedHttpsRequest(...args) {
-    assertOpenAiEgressAllowed('egress_https', urlFromRequestArgs(args, 'https:'), 'https_request');
+    assertOpenAiEgressAllowed('egress_https', urlFromRequestArgs(args, 'https:'), currentOpenAiEgressSource('https_request'));
     return ORIGINAL_HTTPS_REQUEST(...args);
   };
   https.get = function javisGuardedHttpsGet(...args) {
-    assertOpenAiEgressAllowed('egress_https_get', urlFromRequestArgs(args, 'https:'), 'https_get');
+    assertOpenAiEgressAllowed('egress_https_get', urlFromRequestArgs(args, 'https:'), currentOpenAiEgressSource('https_get'));
     return ORIGINAL_HTTPS_GET(...args);
   };
   appendAudit('openai.egress_guard_installed', {
@@ -38119,7 +38234,7 @@ function petStatusSnapshot() {
     progressVersion: workProgressSnapshot(),
     wake: petWakeSnapshot(wake),
     speech: speechStateSnapshot(),
-    window: windowStateSnapshot(),
+    window: petWindowStateSnapshot({ voiceHealth: rawVoiceHealth }),
     menuBar: menuBarSnapshot(),
     notifications: petNotificationSnapshot(),
     approvals: pendingApprovals.slice(0, 3).map((approval) => ({
@@ -49957,6 +50072,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
         position: pet.window?.position || null,
         hotkeyRegistered: Boolean(pet.window?.hotkeyRegistered),
         summonHotkeyRegistered: Boolean(pet.window?.summonHotkeyRegistered),
+        tapToSummon: pet.window?.tapToSummon || null,
         captureHotkeyRegistered: Boolean(pet.window?.captureHotkeyRegistered),
       },
     },
@@ -62946,13 +63062,14 @@ function startApiServer() {
     }
   });
 
-  api.post('/api/openai/egress-guard/probe', async (_req, res) => {
+  api.post('/api/openai/egress-guard/probe', express.json({ limit: '64kb' }), async (req, res) => {
+    const source = compactRecordText(req.body?.source || 'api_openai_egress_guard_probe', 80);
     const before = openAiSpendGuardSnapshot();
     try {
-      await fetch('https://api.openai.com/v1/models', {
+      await withOpenAiEgressSource(source, async () => fetch('https://api.openai.com/v1/models', {
         method: 'GET',
         headers: { Authorization: 'Bearer javis-egress-guard-probe' },
-      });
+      }));
       res.status(409).json({
         ok: false,
         blocked: false,

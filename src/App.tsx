@@ -265,6 +265,36 @@ type WindowState = {
   hotkeyRegistered: boolean
   summonHotkey: string
   summonHotkeyRegistered: boolean
+  tapToSummon?: {
+    version: number
+    enabled: boolean
+    hotkey: string
+    registered: boolean
+    endpoint: string
+    label: string
+    parksAt: string
+    fallbackReady: boolean
+    currentAction?: {
+      id: string
+      label: string
+      mode: string
+      endpoint: string
+      startsMicrophone: boolean
+      usesRealtime: boolean
+    }
+    summary: string
+    safety?: {
+      residentStartsMicrophone: boolean
+      residentUsesRealtime: boolean
+      opensTerminal: boolean
+      mutatesUserFiles: boolean
+      storesRawAudio: boolean
+      fallbackStartsMicrophone: boolean
+      fallbackUsesRealtime: boolean
+      fallbackCallsOpenAi: boolean
+      realtimeReadyMayStartRendererVoice: boolean
+    }
+  }
   captureHotkey: string
   captureHotkeyRegistered: boolean
   lastInboxCapture: null | {

@@ -345,7 +345,8 @@ async function printStatus() {
       }
     }
     console.log(`Pet: ${window.mode || 'pet'} ${window.position ? `@ ${window.position.x},${window.position.y}` : ''}`);
-    console.log(`Hotkeys: pet ${window.hotkeyRegistered ? 'ready' : 'off'} (${window.hotkey || '-'}) · capture ${window.captureHotkeyRegistered ? 'ready' : 'off'} (${window.captureHotkey || '-'})`);
+    const tap = window.tapToSummon || {};
+    console.log(`Hotkeys: pet ${window.hotkeyRegistered ? 'ready' : 'off'} (${window.hotkey || '-'}) · tap ${tap.registered || window.summonHotkeyRegistered ? 'ready' : 'off'} (${tap.hotkey || window.summonHotkey || '-'}) · capture ${window.captureHotkeyRegistered ? 'ready' : 'off'} (${window.captureHotkey || '-'})`);
     if (status.wake) {
       console.log(`Wake: ${status.wake.engine?.configured ? (status.wake.engine.running ? 'engine running' : 'engine stopped') : 'soft'} · words ${status.wake.words?.join(', ') || '-'}`);
     }
@@ -3981,7 +3982,9 @@ function printSetupRecoveryBundle(result) {
   console.log('\nResident');
   console.log(`- installed=${resident.installed ? 'yes' : 'no'} loaded=${resident.loaded ? 'yes' : 'no'} matchesProject=${resident.matchesProject ? 'yes' : 'no'}${resident.pid ? ` pid=${resident.pid}` : ''}`);
   if (pet.window) {
-    console.log(`- pet ${pet.window.mode || pet.mode || '-'} ${pet.window.width || '-'}x${pet.window.height || '-'} park=${pet.window.parkCorner || '-'} hotkey=${pet.window.hotkeyRegistered ? 'on' : 'off'} summon=${pet.window.summonHotkeyRegistered ? 'on' : 'off'}`);
+    const tap = pet.window.tapToSummon || {};
+    console.log(`- pet ${pet.window.mode || pet.mode || '-'} ${pet.window.width || '-'}x${pet.window.height || '-'} park=${pet.window.parkCorner || '-'} hotkey=${pet.window.hotkeyRegistered ? 'on' : 'off'} tap=${tap.registered || pet.window.summonHotkeyRegistered ? 'on' : 'off'}${tap.hotkey ? ` (${tap.hotkey})` : ''}`);
+    if (tap.currentAction?.id) console.log(`- tap action ${tap.currentAction.id} -> ${tap.currentAction.mode || '-'} · mic=${tap.currentAction.startsMicrophone ? 'yes' : 'no'} realtime=${tap.currentAction.usesRealtime ? 'yes' : 'no'}`);
   }
   if (keepAwake.plan) {
     const keepAwakeLabel = keepAwake.running ? 'managed' : keepAwake.active ? 'external assertion' : 'off';

@@ -83,6 +83,7 @@ export default {
     const bundleVoiceStandby = bundle.voice?.standby || {};
     const bundleLocalVoice = bundle.voice?.localFallback || {};
     const bundleRealtimeKind = bundle.voice?.realtime?.recovery?.kind || bundle.voice?.realtime?.kind || '';
+    const bundleTapToSummon = bundle.pet?.window?.tapToSummon || {};
     const bundlePolicy = bundle.automation?.policy || {};
     const bundleAllow = bundlePolicy.allow || {};
     const bundlePermissions = Array.isArray(bundle.permissions) ? bundle.permissions : [];
@@ -117,6 +118,11 @@ export default {
         bundleLocalVoice.safety?.startsMicrophone === false &&
         bundleLocalVoice.safety?.usesRealtime === false &&
         bundleLocalVoice.safety?.storesRawAudio === false &&
+        bundleTapToSummon.version === 1 &&
+        bundleTapToSummon.endpoint === '/api/window/summon' &&
+        bundleTapToSummon.safety?.residentStartsMicrophone === false &&
+        bundleTapToSummon.safety?.residentUsesRealtime === false &&
+        bundleTapToSummon.safety?.opensTerminal === false &&
         ['realtime_ready', 'local_fallback_ready'].includes(bundleVoiceStandby.mode) &&
         bundleVoiceStandby.primaryAction?.id &&
         bundleVoiceStandby.local?.input?.endpoint === '/api/voice/command' &&
@@ -922,6 +928,7 @@ export default {
       const summonWindow = summonWindowResponse.data?.window || {};
       const summonFallbackReady = summonWindowResponse.data?.fallbackReady === true;
       const summonRecoveredBeforeOpen = summonWindowResponse.data?.fallbackReady === false;
+      const summonTap = summonWindowResponse.data?.tapToSummon || summonWindow.tapToSummon || {};
       const summonRestoreResponse = await ctx.api('/api/window/mode', {
         method: 'POST',
         body: {
@@ -934,12 +941,28 @@ export default {
         summonWindowResponse.ok &&
           ((summonFallbackReady && summonWindow.mode === 'compose') ||
             (summonRecoveredBeforeOpen && summonWindow.mode === 'pet')) &&
+          summonTap.version === 1 &&
+          summonTap.enabled === true &&
+          summonTap.registered === true &&
+          summonTap.endpoint === '/api/window/summon' &&
+          summonTap.currentAction?.id === (summonFallbackReady ? 'open_compact_local_input' : 'wake_realtime_voice') &&
+          (!summonFallbackReady ||
+            (summonTap.currentAction?.mode === 'compose' &&
+              summonTap.currentAction?.startsMicrophone === false &&
+              summonTap.currentAction?.usesRealtime === false &&
+              summonTap.safety?.residentStartsMicrophone === false &&
+              summonTap.safety?.residentUsesRealtime === false &&
+              summonTap.safety?.opensTerminal === false &&
+              summonTap.safety?.fallbackStartsMicrophone === false &&
+              summonTap.safety?.fallbackUsesRealtime === false &&
+              summonTap.safety?.fallbackCallsOpenAi === false)) &&
           summonRestoreResponse.ok &&
           summonRestoreResponse.data?.window?.mode === 'pet'
-          ? ok('resident.summon_compose', 'Summon opens compose in fallback mode', `${summonWindow.width}x${summonWindow.height} · fallback=${summonFallbackReady} · wake=${summonWindowResponse.data?.wake?.triggerCount || 0}`)
+          ? ok('resident.summon_compose', 'Summon opens compose in fallback mode', `${summonWindow.width}x${summonWindow.height} · fallback=${summonFallbackReady} · action=${summonTap.currentAction?.id || '-'} · wake=${summonWindowResponse.data?.wake?.triggerCount || 0}`)
           : fail('resident.summon_compose', 'Summon opens compose in fallback mode', 'expected summon to open compose while Realtime is blocked, or stay pet if provider recovered before summon', {
             status: summonWindowResponse.status,
             body: summonWindowResponse.data,
+            summonTap,
             restoreStatus: summonRestoreResponse.status,
             restoreBody: summonRestoreResponse.data,
           }),
@@ -1012,6 +1035,7 @@ export default {
     const localVoicePromptPack = localVoice.promptPack || {};
     const petWakeHandoff = p.wake?.handoff || {};
     const petWakePromptPack = petWakeHandoff.promptPack || {};
+    const petTapToSummon = p.window?.tapToSummon || {};
     const localBlocker = localVoice.blocker || {};
     const fallbackBlocker = voiceFallback.blocker || {};
     const wakeBlocker = petWakeHandoff.blocker || {};
@@ -1154,6 +1178,14 @@ export default {
         petWakeHandoff.safety?.usesRealtime === false &&
         petWakeHandoff.safety?.storesRawAudio === false &&
         p.window?.mode &&
+        petTapToSummon.version === 1 &&
+        petTapToSummon.hotkey &&
+        petTapToSummon.registered === true &&
+        petTapToSummon.endpoint === '/api/window/summon' &&
+        petTapToSummon.currentAction?.id &&
+        petTapToSummon.safety?.residentStartsMicrophone === false &&
+        petTapToSummon.safety?.residentUsesRealtime === false &&
+        petTapToSummon.safety?.opensTerminal === false &&
         p.presence?.intervention?.passiveByDefault === true &&
         p.presence?.intervention?.requiresUserIntent === true &&
         !p.screen?.imageDataUrl &&
@@ -1181,6 +1213,7 @@ export default {
           localVoiceInteraction,
           localBlocker,
           petWakeHandoff,
+          petTapToSummon,
         }),
     );
 
@@ -1651,10 +1684,11 @@ export default {
 	    out.push(
 	      egressProbeResponse.ok &&
 	        egressProbe.ok === true &&
-	        egressProbe.blocked === true &&
-	        egressProbe.decision?.allowed === false &&
-	        Array.isArray(egressProbe.decision?.reasons) &&
-	        egressProbe.decision.reasons.includes('unscoped_openai_egress_blocked') &&
+        egressProbe.blocked === true &&
+        egressProbe.decision?.allowed === false &&
+        egressProbe.decision?.source === 'eval_unscoped_openai_egress_probe' &&
+        Array.isArray(egressProbe.decision?.reasons) &&
+        egressProbe.decision.reasons.includes('unscoped_openai_egress_blocked') &&
 	        egressProbe.safety?.callsOpenAi === false &&
 	        egressProbe.egressGuard?.installed === true &&
 	        spendGuardAfterEgressProbeResponse.ok &&
@@ -1818,9 +1852,11 @@ export default {
 		      mainSource.includes('Allowed sources: none in local guard records.') &&
 		      mainSource.includes('spend_lease_required') &&
 		      mainSource.includes('renderer_startup_probe_disabled') &&
-	      mainSource.includes('function installOpenAiEgressGuard') &&
-	      mainSource.includes('function openAiEgressGuardSnapshot') &&
-	      mainSource.includes('unscoped_openai_egress_blocked') &&
+		      mainSource.includes('function installOpenAiEgressGuard') &&
+		      mainSource.includes('function openAiEgressGuardSnapshot') &&
+		      mainSource.includes('function withOpenAiEgressSource') &&
+		      mainSource.includes('currentOpenAiEgressSource(') &&
+		      mainSource.includes('unscoped_openai_egress_blocked') &&
 		      mainSource.includes("api.post('/api/openai/egress-guard/probe'") &&
 		      mainSource.includes("api.post('/api/openai/child-env-guard/probe'") &&
 		      mainSource.includes('await withOpenAiEgressAllowed(spendDecision') &&
