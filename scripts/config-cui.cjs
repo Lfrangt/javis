@@ -54,6 +54,11 @@ function compact(value, max = 140) {
   return text.length > max ? `${text.slice(0, Math.max(0, max - 3))}...` : text;
 }
 
+function shellArg(value) {
+  const text = String(value || '');
+  return `'${text.replace(/'/g, `'\\''`)}'`;
+}
+
 function argvValue(name, fallback = '') {
   const index = process.argv.findIndex((item) => item === name);
   if (index < 0) return fallback;
@@ -790,11 +795,19 @@ function printVoiceStandbyGuide(action = {}) {
   if (action.source !== 'voice_standby' || !action.voiceStandbyPrimary) return false;
   const primary = action.primaryAction || {};
   const standby = action.standby || {};
+  const promptPack = action.promptPack || standby.promptPack || standby.local?.promptPack || {};
+  const examples = Array.isArray(promptPack.examples) ? promptPack.examples : [];
+  const nextUtterance = promptPack.nextUtterance || promptPack.placeholder || '';
   console.log(`Guide: Use local no-mic pet input while Realtime is unavailable or spend-locked.`);
   if (action.zeroSpendFallback) console.log(`Zero-spend fallback: OpenAI spend is locked; no provider request will be sent.`);
   if (primary.id) console.log(`Primary: ${primary.id}`);
   if (primary.endpoint) console.log(`Endpoint: ${primary.endpoint}`);
   if (standby.mode) console.log(`Standby: ${standby.mode}`);
+  if (nextUtterance) console.log(`Try: npm run voice -- ${shellArg(nextUtterance)}`);
+  for (const example of examples.slice(0, 3)) {
+    const utterance = example?.utterance || example?.label || '';
+    if (utterance) console.log(`Example: ${compact(utterance, 140)}`);
+  }
   console.log(`Run: npm run work:run -- --action-id ${action.id || 'voice:standby_primary'}`);
   console.log(`Open input: npm run voice:open`);
   console.log(`Run API: POST /api/work/next {"actionId":"${action.id || 'voice:standby_primary'}","execute":true}`);

@@ -143,6 +143,10 @@ export default {
           zeroSpendVoiceAction.primaryAction?.id === 'open_local_input' &&
           zeroSpendVoiceAction.primaryAction?.startsMicrophone === false &&
           zeroSpendVoiceAction.primaryAction?.usesRealtime === false &&
+          typeof zeroSpendVoiceAction.promptPack?.nextUtterance === 'string' &&
+          zeroSpendVoiceAction.promptPack.nextUtterance.length > 0 &&
+          Array.isArray(zeroSpendVoiceAction.promptPack?.examples) &&
+          zeroSpendVoiceAction.promptPack.examples.length >= 3 &&
           zeroSpendVoiceAction.manualOnly === false &&
           zeroSpendVoiceAction.autopilotEligible === false &&
           zeroSpendVoiceIndex >= 0 &&
@@ -470,6 +474,8 @@ export default {
         output.includes('Guide: Use local no-mic pet input while Realtime is unavailable or spend-locked.') &&
         output.includes('Zero-spend fallback: OpenAI spend is locked; no provider request will be sent.') &&
         output.includes('Primary: open_local_input') &&
+        output.includes('Try: npm run voice -- ') &&
+        output.includes('Example:') &&
         output.includes('Run: npm run work:run -- --action-id voice:standby_primary') &&
         output.includes('Open input: npm run voice:open') &&
         output.includes('Run API: POST /api/work/next {"actionId":"voice:standby_primary","execute":true}') &&
