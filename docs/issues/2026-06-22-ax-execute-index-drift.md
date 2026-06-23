@@ -112,11 +112,30 @@ observations:
 1. Retry-on-drift only helps when the read *succeeds* but the node moved; it is
    useless against a read that never completes.
 2. Suggested follow-ups for the read-timeout (Codex owns the read path):
-   - On `accessibility_tree_read_timeout` during execute, retry once at a
-     **reduced** node/depth budget (a shallow read may still expose a top-docked
-     composer and completes under the timeout).
+   - ~~On timeout, retry at a reduced budget~~ — **measured and ruled out.**
    - Longer term, the per-node Apple-Event cost is the wall; a native
      `AXUIElement` C-API path (helper) would remove the JXA ceiling entirely.
+
+### Data: `scripts/ax-read-budget-scan.mjs` (run on heavy Chrome, 1 run/budget)
+
+```
+budget   avgMs   nodes   composer
+ 40/6     6084     40       no
+ 60/8    13081     60       no
+ 80/10    8625     80       no
+```
+(120+ returned 0 nodes — Chrome lost frontmost mid-scan; the ~40s sweep outlasts
+focus stability on this desktop.)
+
+Two hard numbers: **~150 ms per node** via System Events/JXA, and the composer is
+**not reached even at 80 nodes** because Chrome's browser chrome (toolbar/tabs)
+fills the first BFS nodes before the web area. So a *reduced*-budget retry is a
+dead end — the budget that completes under the timeout (≤~60 nodes) does not
+reach the composer, and the budget that reaches it (>120 nodes) cannot complete
+in time. The only real fix is to remove the per-node Apple-Event overhead: a
+native `AXUIElement` C-API helper (or rooting the walk at `AXWebArea` /
+`AXFocusedUIElement` to skip the browser-chrome nodes entirely). Re-run
+`node scripts/ax-read-budget-scan.mjs` with a stable single-app target to confirm.
 
 Also note: interactive AX testing on this machine is unreliable because
 Chrome/Codex/League keep stealing frontmost between activate and read
