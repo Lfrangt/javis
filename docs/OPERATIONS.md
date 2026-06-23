@@ -41,6 +41,8 @@ process is still alive but the API times out, the watchdog stops stale JAVIS pro
 kickstarts `com.haoge.javis`. It does not call OpenAI, start microphone capture, capture the
 screen, start workers, or touch user files. `npm run resident:watchdog:check` performs the same
 health check without restarting; `npm run resident:watchdog` performs the self-heal path.
+The same watchdog state is visible in `/api/resident/status`, `/api/setup/recovery-bundle`,
+`/api/overnight/status`, `npm run doctor`, and the main CUI status screen.
 
 Unattended overnight work:
 

@@ -276,6 +276,12 @@ const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const LAUNCH_AGENT_FILE = path.join(os.homedir(), 'Library', 'LaunchAgents', `${LAUNCH_AGENT_LABEL}.plist`);
 const RESIDENT_OUT_LOG = path.join(process.cwd(), 'logs', 'resident.out.log');
 const RESIDENT_ERR_LOG = path.join(process.cwd(), 'logs', 'resident.err.log');
+const RESIDENT_WATCHDOG_LABEL = `${LAUNCH_AGENT_LABEL}.watchdog`;
+const RESIDENT_WATCHDOG_FILE = path.join(os.homedir(), 'Library', 'LaunchAgents', `${RESIDENT_WATCHDOG_LABEL}.plist`);
+const RESIDENT_WATCHDOG_STATE_FILE = path.join(DATA_DIR, 'resident-watchdog.json');
+const RESIDENT_WATCHDOG_SCRIPT = path.join(process.cwd(), 'scripts', 'resident-watchdog.cjs');
+const RESIDENT_WATCHDOG_OUT_LOG = path.join(process.cwd(), 'logs', 'resident-watchdog.out.log');
+const RESIDENT_WATCHDOG_ERR_LOG = path.join(process.cwd(), 'logs', 'resident-watchdog.err.log');
 const KEEP_AWAKE_LABEL = process.env.JAVIS_KEEP_AWAKE_LABEL || `${LAUNCH_AGENT_LABEL}.keepawake`;
 const KEEP_AWAKE_COMMAND = '/usr/bin/caffeinate';
 const KEEP_AWAKE_FLAGS = normalizeKeepAwakeFlags(process.env.JAVIS_KEEP_AWAKE_FLAGS || '-i -m -s');
@@ -14936,6 +14942,41 @@ function residentPlistContent() {
 `;
 }
 
+function residentWatchdogPlistContent() {
+  const nodeExecutable = residentNodeExecutable();
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${xmlEscape(RESIDENT_WATCHDOG_LABEL)}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>${xmlEscape(nodeExecutable)}</string>
+    <string>${xmlEscape(RESIDENT_WATCHDOG_SCRIPT)}</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>${xmlEscape(process.cwd())}</string>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>${xmlEscape(RESIDENT_WATCHDOG_OUT_LOG)}</string>
+  <key>StandardErrorPath</key>
+  <string>${xmlEscape(RESIDENT_WATCHDOG_ERR_LOG)}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>${xmlEscape(process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin')}</string>
+    <key>JAVIS_REPO_ROOT</key>
+    <string>${xmlEscape(process.cwd())}</string>
+    <key>JAVIS_WATCHDOG_MANAGED_BY_LAUNCHD</key>
+    <string>true</string>
+  </dict>
+</dict>
+</plist>
+`;
+}
+
 async function residentLaunchctlState() {
   const target = residentServiceTarget();
   if (!target) return { available: false, loaded: false, raw: '', pid: null, error: 'launchctl_domain_unavailable' };
@@ -14950,6 +14991,154 @@ async function residentLaunchctlState() {
   } catch (error) {
     return { available: true, loaded: false, raw: '', pid: null, error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function residentWatchdogTarget() {
+  const domain = residentDomain();
+  return domain ? `${domain}/${RESIDENT_WATCHDOG_LABEL}` : '';
+}
+
+function parseLaunchctlJobText(text = '') {
+  const raw = String(text || '');
+  return {
+    pid: Number(raw.match(/\bpid\s*=\s*(\d+)/)?.[1] || 0) || null,
+    state: compactRecordText(raw.match(/\bstate\s*=\s*([^\n]+)/)?.[1] || '', 80),
+    runs: Number(raw.match(/\bruns\s*=\s*(\d+)/)?.[1] || 0),
+    lastExitCode: raw.includes('last exit code = (never exited)')
+      ? null
+      : Number(raw.match(/\blast exit code\s*=\s*(-?\d+)/)?.[1] || 0),
+    runIntervalSeconds: Number(raw.match(/\brun interval\s*=\s*(\d+)\s+seconds/i)?.[1] || 0),
+  };
+}
+
+function launchctlJobStateSync(label, source) {
+  const domain = residentDomain();
+  const target = domain ? `${domain}/${label}` : '';
+  if (!target) {
+    return { available: false, loaded: false, target, raw: '', pid: null, state: '', runs: 0, lastExitCode: null, runIntervalSeconds: 0, error: 'launchctl_domain_unavailable' };
+  }
+  try {
+    const stdout = execFileSync('launchctl', ['print', target], {
+      encoding: 'utf8',
+      timeout: 3000,
+      maxBuffer: 1024 * 256,
+      env: guardedChildProcessEnv({ source }),
+    });
+    const parsed = parseLaunchctlJobText(stdout);
+    return {
+      available: true,
+      loaded: true,
+      target,
+      raw: String(stdout || '').slice(0, 2000),
+      ...parsed,
+      error: '',
+    };
+  } catch (error) {
+    return {
+      available: true,
+      loaded: false,
+      target,
+      raw: '',
+      pid: null,
+      state: '',
+      runs: 0,
+      lastExitCode: null,
+      runIntervalSeconds: 0,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+function residentWatchdogStateFileSnapshot() {
+  let state = {};
+  try {
+    state = JSON.parse(fs.readFileSync(RESIDENT_WATCHDOG_STATE_FILE, 'utf8'));
+  } catch {}
+  const lastHealth = state.lastHealth || {};
+  const lastFailure = state.lastFailure || {};
+  const lastRestart = state.lastRestart || {};
+  return {
+    file: RESIDENT_WATCHDOG_STATE_FILE,
+    exists: fs.existsSync(RESIDENT_WATCHDOG_STATE_FILE),
+    lastStatus: compactRecordText(state.lastStatus || lastHealth.status || '', 80),
+    lastOkAt: compactRecordText(state.lastOkAt || lastHealth.checkedAt || '', 80),
+    lastFailureAt: compactRecordText(state.lastFailureAt || lastFailure.checkedAt || '', 80),
+    lastRestartAt: compactRecordText(state.lastRestartAt || lastRestart.checkedAt || '', 80),
+    lastHealth: {
+      status: compactRecordText(lastHealth.status || '', 80),
+      checkedAt: compactRecordText(lastHealth.checkedAt || '', 80),
+      apiPort: boundedCount(lastHealth.apiPort, 65535),
+      pid: boundedCount(lastHealth.pid, 1000000) || null,
+      elapsedMs: boundedCount(lastHealth.elapsedMs, 600000),
+      restarted: Boolean(lastHealth.restarted),
+    },
+    lastFailure: {
+      status: compactRecordText(lastFailure.status || '', 80),
+      checkedAt: compactRecordText(lastFailure.checkedAt || '', 80),
+      error: compactRecordText(lastFailure.error || '', 240),
+      restarted: Boolean(lastFailure.restarted),
+    },
+    lastRestart: {
+      status: compactRecordText(lastRestart.status || '', 80),
+      checkedAt: compactRecordText(lastRestart.checkedAt || '', 80),
+      reason: compactRecordText(lastRestart.error || lastRestart.restart?.reason || '', 240),
+      restarted: Boolean(lastRestart.restarted),
+    },
+  };
+}
+
+function residentWatchdogStatusSnapshot(options = {}) {
+  const includeLaunchctl = options.includeLaunchctl !== false;
+  const installed = fs.existsSync(RESIDENT_WATCHDOG_FILE);
+  const plist = installed ? fs.readFileSync(RESIDENT_WATCHDOG_FILE, 'utf8') : '';
+  const plistIntervalSeconds = Number(plist.match(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/)?.[1] || 0);
+  const launchctl = includeLaunchctl
+    ? launchctlJobStateSync(RESIDENT_WATCHDOG_LABEL, 'resident_watchdog_status')
+    : { available: true, loaded: null, target: residentWatchdogTarget(), pid: null, state: '', runs: 0, lastExitCode: null, runIntervalSeconds: plistIntervalSeconds, error: 'not_checked' };
+  const state = residentWatchdogStateFileSnapshot();
+  const matchesProject = installed &&
+    (plist.includes(xmlEscape(process.cwd())) || plist.includes(process.cwd())) &&
+    plist.includes('resident-watchdog.cjs');
+  const lastHealthy = state.lastStatus === 'healthy' || state.lastHealth.status === 'healthy';
+  const lastExitOk = launchctl.lastExitCode === null || launchctl.lastExitCode === 0;
+  const ready = Boolean(installed && matchesProject && (!includeLaunchctl || launchctl.loaded) && lastExitOk && (lastHealthy || !state.exists));
+  return {
+    label: RESIDENT_WATCHDOG_LABEL,
+    installed,
+    loaded: includeLaunchctl ? Boolean(launchctl.loaded) : null,
+    ready,
+    healthy: Boolean(lastHealthy),
+    pid: launchctl.pid,
+    state: launchctl.state,
+    runs: boundedCount(launchctl.runs, 1000000),
+    lastExitCode: launchctl.lastExitCode,
+    runIntervalSeconds: boundedCount(launchctl.runIntervalSeconds || plistIntervalSeconds, 86400),
+    plistPath: RESIDENT_WATCHDOG_FILE,
+    script: RESIDENT_WATCHDOG_SCRIPT,
+    outLog: RESIDENT_WATCHDOG_OUT_LOG,
+    errLog: RESIDENT_WATCHDOG_ERR_LOG,
+    target: residentWatchdogTarget(),
+    matchesProject,
+    launchctlError: launchctl.loaded ? '' : compactRecordText(launchctl.error || '', 240),
+    stateFile: state,
+    commands: {
+      check: 'npm run resident:watchdog:check',
+      heal: 'npm run resident:watchdog',
+      install: 'npm run resident:install',
+      restart: 'npm run resident:restart',
+    },
+    safety: {
+      localHealthOnly: true,
+      callsOpenAi: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      capturesScreen: false,
+      startsWorkers: false,
+      mutatesUserFiles: false,
+      mutatesProjectFiles: false,
+      mayRestartResident: true,
+    },
+  };
 }
 
 async function residentStatusSnapshot() {
@@ -14969,6 +15158,7 @@ async function residentStatusSnapshot() {
     matchesProject: installed ? plist.includes(xmlEscape(process.cwd())) || plist.includes(process.cwd()) : false,
     expectedProgram,
     launchctlError: launchctl.loaded ? '' : launchctl.error,
+    watchdog: residentWatchdogStatusSnapshot({ includeLaunchctl: true }),
   };
 }
 
@@ -15266,6 +15456,15 @@ async function overnightStatusSnapshot(options = {}) {
       'Run npm run resident:install from /Users/Haoge/Documents/javis.',
     ));
   }
+  if (resident.loaded && (!resident.watchdog?.installed || !resident.watchdog?.loaded || !resident.watchdog?.matchesProject)) {
+    issues.push(overnightIssue(
+      'resident_watchdog_not_loaded',
+      'medium',
+      'Resident watchdog is not loaded',
+      'The resident API is running, but the local health watchdog is not loaded, so a stuck API may not self-heal overnight.',
+      'Run npm run resident:restart to install and load the watchdog.',
+    ));
+  }
   if (!keepAwake.active) {
     issues.push(overnightIssue(
       'keep_awake_off',
@@ -15298,6 +15497,9 @@ async function overnightStatusSnapshot(options = {}) {
   const nextActions = [];
   if (issues.some((item) => item.id === 'resident_not_loaded' || item.id === 'resident_project_mismatch')) {
     nextActions.push({ id: 'install_resident', label: 'Install resident', command: 'npm run resident:install' });
+  }
+  if (issues.some((item) => item.id === 'resident_watchdog_not_loaded')) {
+    nextActions.push({ id: 'install_resident_watchdog', label: 'Install resident watchdog', command: 'npm run resident:restart' });
   }
   if (issues.some((item) => item.id === 'keep_awake_off')) {
     nextActions.push({ id: 'start_keep_awake', label: 'Start keep-awake', command: 'npm run overnight:start', endpoint: '/api/overnight/prepare' });
@@ -15375,6 +15577,8 @@ async function overnightStatusSnapshot(options = {}) {
       prepare: 'npm run overnight:start',
       keepAwakeStatus: 'npm run keepawake',
       keepAwakeStart: 'npm run keepawake:start',
+      residentWatchdog: 'npm run resident:watchdog:check',
+      residentWatchdogHeal: 'npm run resident:watchdog',
       openAiSpend: 'npm run openai:spend',
       openAiIncident: 'npm run openai:incident',
       openAiLockdown: 'npm run openai:lockdown',
@@ -15386,6 +15590,7 @@ async function overnightStatusSnapshot(options = {}) {
       status: '/api/overnight/status',
       prepare: '/api/overnight/prepare',
       keepAwake: '/api/keep-awake/status',
+      resident: '/api/resident/status',
       openAiSpendGuard: '/api/openai/spend-guard',
       openAiSpendIncident: '/api/openai/spend-incident-report',
       blockers: '/api/blockers',
@@ -15604,7 +15809,8 @@ async function installResidentAgent() {
   fs.mkdirSync(path.dirname(LAUNCH_AGENT_FILE), { recursive: true });
   fs.mkdirSync(path.join(process.cwd(), 'logs'), { recursive: true });
   fs.writeFileSync(LAUNCH_AGENT_FILE, residentPlistContent(), 'utf8');
-  appendAudit('resident.installed', { plistPath: LAUNCH_AGENT_FILE, startNow: false });
+  fs.writeFileSync(RESIDENT_WATCHDOG_FILE, residentWatchdogPlistContent(), 'utf8');
+  appendAudit('resident.installed', { plistPath: LAUNCH_AGENT_FILE, watchdogPlistPath: RESIDENT_WATCHDOG_FILE, startNow: false });
   return residentStatusSnapshot();
 }
 
@@ -15629,7 +15835,27 @@ async function uninstallResidentAgent() {
     }
   }
   if (fs.existsSync(LAUNCH_AGENT_FILE)) fs.unlinkSync(LAUNCH_AGENT_FILE);
-  appendAudit('resident.uninstalled', { plistPath: LAUNCH_AGENT_FILE });
+  if (target) {
+    const watchdogTarget = residentWatchdogTarget();
+    try {
+      await execFileAsync('launchctl', ['bootout', residentDomain(), RESIDENT_WATCHDOG_FILE], guardedChildProcessOptions(
+        { timeout: 5000 },
+        { source: 'resident_watchdog_uninstall_bootout' },
+      ));
+    } catch {
+      // It is fine if the watchdog is not currently loaded.
+    }
+    try {
+      await execFileAsync('launchctl', ['disable', watchdogTarget], guardedChildProcessOptions(
+        { timeout: 3000 },
+        { source: 'resident_watchdog_uninstall_disable' },
+      ));
+    } catch {
+      // It is fine if the watchdog was never enabled.
+    }
+  }
+  if (fs.existsSync(RESIDENT_WATCHDOG_FILE)) fs.unlinkSync(RESIDENT_WATCHDOG_FILE);
+  appendAudit('resident.uninstalled', { plistPath: LAUNCH_AGENT_FILE, watchdogPlistPath: RESIDENT_WATCHDOG_FILE });
   return residentStatusSnapshot();
 }
 
@@ -51300,14 +51526,14 @@ async function runSetupAction(action) {
 
   if (normalized === 'install_resident_agent') {
     const status = await installResidentAgent();
-    const output = `Installed login-start resident agent at ${status.plistPath}. It will start on next login; the current manual JAVIS process keeps running now.`;
-    appendAudit('setup_action.completed', { action: normalized, plistPath: status.plistPath });
+    const output = `Installed login-start resident agent at ${status.plistPath} and watchdog at ${status.watchdog?.plistPath || RESIDENT_WATCHDOG_FILE}. They will start on next login; the current manual JAVIS process keeps running now.`;
+    appendAudit('setup_action.completed', { action: normalized, plistPath: status.plistPath, watchdogPlistPath: status.watchdog?.plistPath || RESIDENT_WATCHDOG_FILE });
     return { ok: true, action: normalized, output, resident: status };
   }
 
   if (normalized === 'uninstall_resident_agent') {
     const status = await uninstallResidentAgent();
-    const output = `Uninstalled login-start resident agent: ${LAUNCH_AGENT_LABEL}`;
+    const output = `Uninstalled login-start resident agent and watchdog: ${LAUNCH_AGENT_LABEL}, ${RESIDENT_WATCHDOG_LABEL}`;
     appendAudit('setup_action.completed', { action: normalized });
     return { ok: true, action: normalized, output, resident: status };
   }
@@ -51369,11 +51595,11 @@ function setupActionForCheck(item) {
       reason: 'Local execution is controlled by JAVIS_ENABLE_LOCAL_EXEC in .env.',
     };
   }
-  if (id === 'launch_agent') {
+  if (id === 'launch_agent' || id === 'resident_watchdog') {
     return {
       action: 'install_resident_agent',
       label: 'Install login agent',
-      reason: 'The resident LaunchAgent can be installed locally.',
+      reason: 'The resident LaunchAgent and health watchdog can be installed locally.',
     };
   }
   if (id === 'action_policy_file' || id === 'action_policy') {
@@ -51623,6 +51849,16 @@ async function setupRecoveryBundleSnapshot(options = {}) {
             startsMicrophone: false,
           }
         : null,
+    resident.installed && (!resident.watchdog?.installed || !resident.watchdog?.loaded || !resident.watchdog?.matchesProject)
+      ? {
+          id: 'resident_watchdog:install',
+          label: 'Install resident watchdog',
+          summary: 'Install or reload the local health watchdog so JAVIS can recover when the resident API stops responding.',
+          command: 'npm run resident:restart',
+          mutatesFiles: true,
+          startsMicrophone: false,
+        }
+      : null,
     !keepAwake.running
       ? {
           id: 'keep_awake:start',
@@ -51671,6 +51907,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       readiness: '/api/readiness',
       doctor: '/api/doctor/report',
       resident: '/api/resident/status',
+      residentWatchdog: '/api/resident/status',
       pet: '/api/pet/status',
       keepAwake: '/api/keep-awake/status',
       voiceStandby: '/api/voice/standby',
@@ -51682,6 +51919,8 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       configCui: 'npm run config',
       doctor: 'npm run doctor -- --allow-blocked',
       restart: 'npm run resident:restart',
+      residentWatchdog: 'npm run resident:watchdog:check',
+      residentWatchdogHeal: 'npm run resident:watchdog',
       realtimeProviderProbe: 'npm run dogfood:realtime-provider-probe',
       voiceStandby: 'npm run voice:standby',
       localVoiceLoop: 'npm run voice:chat',
@@ -51698,6 +51937,21 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       matchesProject: Boolean(resident.matchesProject),
       target: resident.target,
       launchctlError: compactRecordText(resident.launchctlError || '', 180),
+      watchdog: {
+        label: resident.watchdog?.label || RESIDENT_WATCHDOG_LABEL,
+        installed: Boolean(resident.watchdog?.installed),
+        loaded: Boolean(resident.watchdog?.loaded),
+        ready: Boolean(resident.watchdog?.ready),
+        healthy: Boolean(resident.watchdog?.healthy),
+        runs: boundedCount(resident.watchdog?.runs, 1000000),
+        lastExitCode: resident.watchdog?.lastExitCode ?? null,
+        runIntervalSeconds: boundedCount(resident.watchdog?.runIntervalSeconds, 86400),
+        matchesProject: Boolean(resident.watchdog?.matchesProject),
+        lastStatus: compactRecordText(resident.watchdog?.stateFile?.lastStatus || '', 80),
+        lastOkAt: compactRecordText(resident.watchdog?.stateFile?.lastOkAt || '', 80),
+        commands: resident.watchdog?.commands || {},
+        safety: resident.watchdog?.safety || null,
+      },
     },
     keepAwake: {
       active: Boolean(keepAwake.active),
@@ -57788,6 +58042,7 @@ function configCheckSnapshot(options = {}) {
   const envFile = path.join(process.cwd(), '.env');
   const envExampleFile = path.join(process.cwd(), '.env.example');
   const launchAgentInstalled = fs.existsSync(LAUNCH_AGENT_FILE);
+  const watchdog = residentWatchdogStatusSnapshot({ includeLaunchctl: true });
   const codexCommand = process.env.JAVIS_CODEX_CMD || 'codex exec';
   const claudeCommand = process.env.JAVIS_CLAUDE_CMD || 'claude -p';
   const workerItems = [
@@ -57827,6 +58082,17 @@ function configCheckSnapshot(options = {}) {
       launchAgentInstalled ? 'ready' : 'warning',
       launchAgentInstalled ? `LaunchAgent installed: ${LAUNCH_AGENT_FILE}` : 'LaunchAgent is not installed yet.',
       launchAgentInstalled ? '' : 'Run npm run resident:install when you want JAVIS to start at login.',
+    ),
+    checkItem(
+      'resident_watchdog',
+      'Resident watchdog',
+      watchdog.installed && watchdog.matchesProject && watchdog.loaded && (watchdog.lastExitCode === null || watchdog.lastExitCode === 0) ? 'ready' : 'warning',
+      watchdog.installed
+        ? watchdog.loaded
+          ? `Watchdog installed for ${watchdog.runIntervalSeconds || 60}s health checks; last status ${watchdog.stateFile.lastStatus || 'unknown'}.`
+          : 'Watchdog plist exists, but launchd does not report it loaded.'
+        : 'Resident watchdog is not installed.',
+      watchdog.installed && watchdog.matchesProject && watchdog.loaded ? '' : 'Run npm run resident:install so JAVIS installs the self-healing watchdog.',
     ),
     checkItem(
       'action_policy_file',
@@ -57880,6 +58146,7 @@ function configCheckSnapshot(options = {}) {
       auditFile: AUDIT_FILE,
       openAiSpendGuardFile: OPENAI_SPEND_GUARD_FILE,
       launchAgentFile: LAUNCH_AGENT_FILE,
+      residentWatchdogFile: RESIDENT_WATCHDOG_FILE,
     },
     runtime: {
       apiBase: API_BASE,
@@ -57892,6 +58159,7 @@ function configCheckSnapshot(options = {}) {
       controlMode: controlModeSnapshot({ includeAvailableModes: true }),
       effectiveActionPolicy: effectiveActionPolicySnapshot(),
       launchAgentInstalled,
+      residentWatchdog: watchdog,
       window: windowStateSnapshot(),
       renderer: rendererHealthSnapshot(),
       menuBar: menuBarSnapshot(),
@@ -57936,6 +58204,10 @@ function healthSnapshot() {
       openAiSpendGuard: openAiSpendGuardSnapshot(),
       localExecutionEnabled: LOCAL_EXEC_ENABLED,
       trustedLocalMode: TRUSTED_LOCAL_MODE,
+    },
+    resident: {
+      label: LAUNCH_AGENT_LABEL,
+      watchdog: residentWatchdogStatusSnapshot({ includeLaunchctl: false }),
     },
     models,
     laneContracts: {
@@ -58279,6 +58551,37 @@ async function doctorReportSnapshot() {
       plistPath: resident.plistPath,
     },
     resident.installed ? '' : 'Run npm run resident:install.',
+  ));
+
+  const watchdog = resident.watchdog || residentWatchdogStatusSnapshot({ includeLaunchctl: true });
+  const watchdogReady = Boolean(
+    watchdog.installed &&
+      watchdog.loaded &&
+      watchdog.matchesProject &&
+      (watchdog.lastExitCode === null || watchdog.lastExitCode === 0),
+  );
+  checks.push(doctorCheck(
+    'resident_watchdog',
+    'Resident watchdog',
+    watchdogReady ? 'ready' : 'warning',
+    watchdogReady
+      ? `Watchdog loaded; checks /api/health every ${watchdog.runIntervalSeconds || 60}s, last status ${watchdog.stateFile?.lastStatus || 'unknown'}.`
+      : watchdog.installed
+        ? 'Watchdog plist exists, but launchd/state evidence is incomplete.'
+        : 'Resident watchdog is not installed.',
+    {
+      installed: watchdog.installed,
+      loaded: watchdog.loaded,
+      ready: watchdog.ready,
+      healthy: watchdog.healthy,
+      runs: watchdog.runs,
+      lastExitCode: watchdog.lastExitCode,
+      runIntervalSeconds: watchdog.runIntervalSeconds,
+      matchesProject: watchdog.matchesProject,
+      stateFile: watchdog.stateFile,
+      safety: watchdog.safety,
+    },
+    watchdogReady ? '' : 'Run npm run resident:restart to install/load the health watchdog.',
   ));
 
   checks.push(doctorCheck(
@@ -64967,6 +65270,10 @@ function startApiServer() {
         version: packageInfo.version,
         uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
         dataDir: DATA_DIR,
+      },
+      resident: {
+        label: LAUNCH_AGENT_LABEL,
+        watchdog: residentWatchdogStatusSnapshot({ includeLaunchctl: false }),
       },
       actionPolicy: {
         dryRun: actionPolicy.dryRun,

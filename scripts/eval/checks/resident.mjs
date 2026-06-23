@@ -132,6 +132,14 @@ export default {
         typeof bundle.resident?.installed === 'boolean' &&
         typeof bundle.resident?.loaded === 'boolean' &&
         typeof bundle.resident?.matchesProject === 'boolean' &&
+        bundle.resident?.watchdog?.installed === true &&
+        bundle.resident?.watchdog?.loaded === true &&
+        bundle.resident?.watchdog?.ready === true &&
+        bundle.resident?.watchdog?.safety?.callsOpenAi === false &&
+        bundle.resident?.watchdog?.safety?.startsMicrophone === false &&
+        bundle.resident?.watchdog?.safety?.capturesScreen === false &&
+        bundle.endpoints?.residentWatchdog === '/api/resident/status' &&
+        bundle.commands?.residentWatchdog?.includes('resident:watchdog:check') &&
         typeof bundle.keepAwake?.active === 'boolean' &&
         bundle.keepAwake?.plan?.command === '/usr/bin/caffeinate' &&
         bundle.keepAwake?.plan?.screenMaySleep === true &&
@@ -222,8 +230,14 @@ export default {
         overnight.commands?.openAiSpend === 'npm run openai:spend' &&
         overnight.commands?.openAiIncident === 'npm run openai:incident' &&
         overnight.commands?.openAiLockdown === 'npm run openai:lockdown' &&
+        overnight.commands?.residentWatchdog === 'npm run resident:watchdog:check' &&
         overnight.endpoints?.openAiSpendIncident === '/api/openai/spend-incident-report' &&
 	        typeof overnight.resident?.loaded === 'boolean' &&
+	        overnight.resident?.watchdog?.loaded === true &&
+	        overnight.resident?.watchdog?.ready === true &&
+	        overnight.resident?.watchdog?.safety?.callsOpenAi === false &&
+	        overnight.resident?.watchdog?.safety?.startsMicrophone === false &&
+	        overnight.resident?.watchdog?.safety?.capturesScreen === false &&
 	        typeof overnight.keepAwake?.active === 'boolean' &&
 	        overnight.openAiSpendGuard?.hardSpendLock === true &&
 	        overnight.openAiSpendGuard?.mode === 'off' &&

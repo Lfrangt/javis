@@ -311,7 +311,7 @@ async function printStatus() {
   console.log('JAVIS Config');
   console.log('============');
   try {
-    const [status, doctor, autopilotResult, browserReady, shortcutsResult, perceptionResult, collaborationHandoffResult, keepAwakeResult] = await Promise.all([
+    const [status, doctor, autopilotResult, browserReady, shortcutsResult, perceptionResult, collaborationHandoffResult, keepAwakeResult, residentResult] = await Promise.all([
       request('/api/status'),
       request('/api/doctor/report'),
       request('/api/autopilot').catch(() => ({ autopilot: null })),
@@ -320,6 +320,7 @@ async function printStatus() {
       request('/api/perception/consent?limit=3').catch(() => ({ perception: null })),
       request('/api/collaboration/handoff?limit=5').catch(() => ({ handoff: null })),
       request('/api/keep-awake/status').catch(() => ({ keepAwake: null })),
+      request('/api/resident/status').catch(() => ({ resident: null })),
     ]);
     const window = status.window || {};
     console.log(`API: ${status.api?.baseUrl || API_BASE}`);
@@ -358,6 +359,11 @@ async function printStatus() {
       const power = keepAwake.power?.source ? ` · ${keepAwake.power.source}` : '';
       const managed = keepAwake.running ? `managed pid ${keepAwake.pid || '-'}` : keepAwake.active ? 'external assertion' : 'off';
       console.log(`Keep-awake: ${managed}${power} · screen ${keepAwake.plan?.screenMaySleep ? 'may sleep' : 'held awake'}`);
+    }
+    if (residentResult.resident) {
+      const resident = residentResult.resident;
+      const watchdog = resident.watchdog || status.resident?.watchdog || {};
+      console.log(`Resident: loaded=${resident.loaded ? 'yes' : 'no'}${resident.pid ? ` pid=${resident.pid}` : ''} · watchdog=${watchdog.loaded ? 'loaded' : watchdog.installed ? 'installed' : 'missing'}${watchdog.ready ? '/ready' : ''} · last=${watchdog.stateFile?.lastStatus || '-'}`);
     }
     if (status.conversation) {
       const conversation = status.conversation;
@@ -4147,6 +4153,10 @@ function printSetupRecoveryBundle(result) {
 
   console.log('\nResident');
   console.log(`- installed=${resident.installed ? 'yes' : 'no'} loaded=${resident.loaded ? 'yes' : 'no'} matchesProject=${resident.matchesProject ? 'yes' : 'no'}${resident.pid ? ` pid=${resident.pid}` : ''}`);
+  if (resident.watchdog) {
+    const watchdog = resident.watchdog;
+    console.log(`- watchdog installed=${watchdog.installed ? 'yes' : 'no'} loaded=${watchdog.loaded ? 'yes' : 'no'} ready=${watchdog.ready ? 'yes' : 'no'} last=${watchdog.lastStatus || '-'} interval=${watchdog.runIntervalSeconds || 60}s`);
+  }
   if (pet.window) {
     const tap = pet.window.tapToSummon || {};
     console.log(`- pet ${pet.window.mode || pet.mode || '-'} ${pet.window.width || '-'}x${pet.window.height || '-'} park=${pet.window.parkCorner || '-'} hotkey=${pet.window.hotkeyRegistered ? 'on' : 'off'} tap=${tap.registered || pet.window.summonHotkeyRegistered ? 'on' : 'off'}${tap.hotkey ? ` (${tap.hotkey})` : ''}`);
@@ -4199,6 +4209,7 @@ function printSetupRecoveryBundle(result) {
   console.log(`- bundle: ${commands.bundle || 'npm run config -- --print-setup-recovery-bundle'}`);
   console.log(`- doctor: ${commands.doctor || 'npm run doctor -- --allow-blocked'}`);
   console.log(`- restart: ${commands.restart || 'npm run resident:restart'}`);
+  console.log(`- watchdog: ${commands.residentWatchdog || 'npm run resident:watchdog:check'} / ${commands.residentWatchdogHeal || 'npm run resident:watchdog'}`);
   console.log(`- local voice: ${commands.localVoiceLoop || 'npm run voice:chat'}`);
   console.log(`- voice standby: ${commands.voiceStandby || 'npm run voice:standby'}`);
   console.log(`- realtime probe: ${commands.realtimeProviderProbe || 'npm run dogfood:realtime-provider-probe'}`);
@@ -4234,6 +4245,10 @@ function printOvernight(result) {
   console.log(`Status: ${overnight.status || '-'} · ready=${overnight.readyForOvernight ? 'yes' : 'no'}`);
   if (overnight.summary) console.log(`Summary: ${compact(overnight.summary, 520)}`);
   console.log(`Resident: loaded=${overnight.resident?.loaded ? 'yes' : 'no'} matchesProject=${overnight.resident?.matchesProject ? 'yes' : 'no'}${overnight.resident?.pid ? ` pid=${overnight.resident.pid}` : ''}`);
+  if (overnight.resident?.watchdog) {
+    const watchdog = overnight.resident.watchdog;
+    console.log(`Watchdog: loaded=${watchdog.loaded ? 'yes' : 'no'} ready=${watchdog.ready ? 'yes' : 'no'} last=${watchdog.stateFile?.lastStatus || '-'} interval=${watchdog.runIntervalSeconds || 60}s`);
+  }
   console.log(`Keep-awake: active=${keepAwake.active ? 'yes' : 'no'} running=${keepAwake.running ? 'yes' : 'no'} · ${keepAwake.plan?.commandLine || 'npm run keepawake:start'}`);
   console.log(`OpenAI: mode=${spendGuard.mode || '-'} hard lock=${spendGuard.hardSpendLock ? 'on' : 'off'} egress=${spendGuard.egressGuardEnabled ? 'on' : 'off'} daily=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit ?? 0} · blocked=${spendGuard.counts?.blocked || 0}`);
   console.log(`Voice: ${overnight.voice?.standby?.mode || '-'} · provider=${overnight.voice?.health?.status || '-'}`);
@@ -4257,6 +4272,7 @@ function printOvernight(result) {
   console.log('\nCommands');
   console.log(`- status: ${commands.status || 'npm run overnight'}`);
   console.log(`- prepare: ${commands.prepare || 'npm run overnight:start'}`);
+  console.log(`- watchdog: ${commands.residentWatchdog || 'npm run resident:watchdog:check'}`);
   console.log(`- spend guard: ${commands.openAiSpend || 'npm run openai:spend'}`);
   console.log(`- zero-spend lockdown: ${commands.openAiLockdown || 'npm run openai:lockdown'}`);
   console.log('\nSafety');
