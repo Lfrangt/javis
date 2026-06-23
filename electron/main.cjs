@@ -290,6 +290,17 @@ const OPENAI_CHILD_ENV_CREDENTIAL_KEYS = [
   'JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE',
   'JAVIS_API_TOKEN',
 ];
+const OPENAI_RUNTIME_KEY_ISOLATION = process.env.JAVIS_OPENAI_RUNTIME_KEY_ISOLATION !== 'false';
+const OPENAI_RUNTIME_ENV_CREDENTIAL_KEYS = OPENAI_CHILD_ENV_CREDENTIAL_KEYS.filter((key) => key !== 'JAVIS_API_TOKEN');
+const OPENAI_RUNTIME_ENV_ISOLATED_KEYS = [];
+if (OPENAI_RUNTIME_KEY_ISOLATION) {
+  for (const key of OPENAI_RUNTIME_ENV_CREDENTIAL_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(process.env, key)) {
+      delete process.env[key];
+      OPENAI_RUNTIME_ENV_ISOLATED_KEYS.push(key);
+    }
+  }
+}
 const AUTOPILOT_ENABLED = process.env.JAVIS_AUTOPILOT_ENABLED === 'true';
 const AUTOPILOT_INTERVAL_MS = Math.max(30000, Math.min(1800000, Number(process.env.JAVIS_AUTOPILOT_INTERVAL_MS || 120000)));
 const AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS = Math.max(60000, Math.min(86400000, Number(process.env.JAVIS_AUTOPILOT_MAINTENANCE_MIN_INTERVAL_MS || 900000)));
@@ -2743,6 +2754,7 @@ function openAiSpendGuardSnapshot() {
     requireSpendLease: OPENAI_REQUIRE_SPEND_LEASE,
     spendLeaseTtlMs: OPENAI_SPEND_LEASE_TTL_MS,
     spendLease: openAiSpendLeaseStateSnapshot(),
+    runtimeKeyIsolation: openAiRuntimeKeyIsolationSnapshot(),
     childEnvGuard: openAiChildEnvGuardSnapshot(),
     autopilotRequiresExplicitEnv: true,
     autopilotEnabled: AUTOPILOT_ENABLED,
@@ -2763,6 +2775,7 @@ function openAiSpendGuardSnapshot() {
       off: OPENAI_CLOUD_MODE === 'off',
       unscopedOpenAiEgressBlocked: OPENAI_EGRESS_GUARD_ENABLED,
       childProcessOpenAiCredentialsBlocked: OPENAI_CHILD_ENV_GUARD_ENABLED,
+      runtimeProcessEnvOpenAiCredentialsBlocked: OPENAI_RUNTIME_KEY_ISOLATION,
     },
   };
 }
@@ -3165,6 +3178,37 @@ function openAiCredentialEnvKeys(env = process.env) {
   });
 }
 
+function openAiRuntimeCredentialEnvKeys(env = process.env) {
+  return OPENAI_RUNTIME_ENV_CREDENTIAL_KEYS.filter((key) => {
+    if (!Object.prototype.hasOwnProperty.call(env, key)) return false;
+    return String(env[key] || '').trim() !== '';
+  });
+}
+
+function openAiRuntimeKeyIsolationSnapshot() {
+  const processEnvOpenAiKeys = openAiRuntimeCredentialEnvKeys(process.env);
+  return {
+    version: 1,
+    enabled: OPENAI_RUNTIME_KEY_ISOLATION,
+    protectedKeys: OPENAI_RUNTIME_ENV_CREDENTIAL_KEYS,
+    isolatedKeys: OPENAI_RUNTIME_ENV_ISOLATED_KEYS,
+    openAiApiKeyInProcessEnv: Object.prototype.hasOwnProperty.call(process.env, 'OPENAI_API_KEY') &&
+      String(process.env.OPENAI_API_KEY || '').trim() !== '',
+    openAiCredentialKeyCount: processEnvOpenAiKeys.length,
+    processEnvOpenAiCredentialKeys: processEnvOpenAiKeys,
+    preservedForGuardedCalls: Boolean(OPENAI_API_KEY),
+    safety: {
+      defaultRuntimeProcessEnvOpenAiCredentialsBlocked: OPENAI_RUNTIME_KEY_ISOLATION,
+      childProcessesCannotInheritRuntimeOpenAiCredentials: OPENAI_RUNTIME_KEY_ISOLATION && processEnvOpenAiKeys.length === 0,
+      preservesEnvFile: true,
+      callsOpenAi: false,
+      createsSpendLease: false,
+      startsProcess: false,
+      exposesSecretValues: false,
+    },
+  };
+}
+
 function openAiCredentialEnvPattern() {
   const escaped = OPENAI_CHILD_ENV_CREDENTIAL_KEYS.map((key) => key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   return new RegExp(`(?:^|[\\s;&|()])(?:export\\s+)?(?:${escaped})\\s*=`, 'i');
@@ -3176,12 +3220,14 @@ function commandContainsOpenAiCredentialEnv(command = '') {
 
 function openAiChildEnvGuardSnapshot() {
   const presentCredentialKeys = openAiCredentialEnvKeys(process.env);
+  const runtimeKeyIsolation = openAiRuntimeKeyIsolationSnapshot();
   return {
     version: 1,
     enabled: OPENAI_CHILD_ENV_GUARD_ENABLED,
     protectedKeys: OPENAI_CHILD_ENV_CREDENTIAL_KEYS,
     presentCredentialKeyCount: presentCredentialKeys.length,
     presentCredentialKeys,
+    runtimeKeyIsolation,
     defaultChildReceivesOpenAiCredentials: !OPENAI_CHILD_ENV_GUARD_ENABLED,
     blocksInlineCredentialEnv: OPENAI_CHILD_ENV_GUARD_ENABLED,
     defaultChildProcessEnv: OPENAI_CHILD_ENV_GUARD_ENABLED ? 'openai_credentials_redacted' : 'inherits_parent_env',
@@ -3200,6 +3246,7 @@ function openAiChildEnvGuardSnapshot() {
       blocksInlineOpenAiApiKeyAssignments: OPENAI_CHILD_ENV_GUARD_ENABLED,
       mcpConfiguredEnvCredentialsBlocked: OPENAI_CHILD_ENV_GUARD_ENABLED,
       knownChildEntrypointsUseSanitizedEnv: OPENAI_CHILD_ENV_GUARD_ENABLED,
+      runtimeProcessEnvOpenAiCredentialsBlocked: OPENAI_RUNTIME_KEY_ISOLATION && runtimeKeyIsolation.openAiCredentialKeyCount === 0,
       preservesParentEnvFile: true,
       callsOpenAi: false,
       startsProcess: false,

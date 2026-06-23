@@ -1742,6 +1742,11 @@ export default {
         spendGuard.requireSpendLease === true &&
         spendGuard.spendLease?.oneRequestOnly === true &&
         Number(spendGuard.spendLeaseTtlMs || 0) >= 5000 &&
+        spendGuard.runtimeKeyIsolation?.enabled === true &&
+        spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv === false &&
+        Number(spendGuard.runtimeKeyIsolation?.openAiCredentialKeyCount || 0) === 0 &&
+        spendGuard.runtimeKeyIsolation?.safety?.defaultRuntimeProcessEnvOpenAiCredentialsBlocked === true &&
+        spendGuard.runtimeKeyIsolation?.safety?.childProcessesCannotInheritRuntimeOpenAiCredentials === true &&
         spendGuard.childEnvGuard?.enabled === true &&
         spendGuard.childEnvGuard?.defaultChildReceivesOpenAiCredentials === false &&
         spendGuard.childEnvGuard?.blocksInlineCredentialEnv === true &&
@@ -1749,6 +1754,7 @@ export default {
         spendGuard.safety?.unscopedOpenAiEgressBlocked === true &&
         spendGuard.safety?.oneRequestLeaseRequired === true &&
         spendGuard.safety?.childProcessOpenAiCredentialsBlocked === true &&
+        spendGuard.safety?.runtimeProcessEnvOpenAiCredentialsBlocked === true &&
         egressGuard.enabled === true &&
         egressGuard.installed === true &&
         egressGuard.mode === 'scoped_allow_only' &&
@@ -1764,7 +1770,7 @@ export default {
         spendGuard.safety?.hardSpendLockDefault === true &&
         spendGuard.safety?.confirmationPhraseRequired === true &&
         spendGuard.safety?.unattendedCloudDefaultBlocked === true
-        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
+        ? ok('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', `mode=${spendGuard.mode} · hardLock=${spendGuard.hardSpendLock} · egress=${egressGuard.mode} · runtimeEnv=${spendGuard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · today=${spendGuard.counts?.total || 0}/${spendGuard.dailyRequestLimit} · unattended=${spendGuard.counts?.unattended || 0}/${spendGuard.unattendedDailyRequestLimit}`)
         : fail('resident.openai_spend_guard_runtime', 'OpenAI spend guard runtime', 'expected resident runtime to default to zero-spend OpenAI usage, hard-lock cloud calls, block unattended/autopilot calls, and disable renderer startup probes', {
           status: spendGuardResponse.status,
           body: spendGuardResponse.data,
@@ -1868,8 +1874,12 @@ export default {
 			        childEnvProbe.guard?.defaultChildReceivesOpenAiCredentials === false &&
 			        childEnvProbe.guard?.blocksInlineCredentialEnv === true &&
 			        childEnvProbe.guard?.defaultChildProcessEnv === 'openai_credentials_redacted' &&
+			        childEnvProbe.guard?.runtimeKeyIsolation?.enabled === true &&
+			        childEnvProbe.guard?.runtimeKeyIsolation?.openAiApiKeyInProcessEnv === false &&
+			        Number(childEnvProbe.guard?.runtimeKeyIsolation?.openAiCredentialKeyCount || 0) === 0 &&
 			        childEnvProbe.guard?.safety?.mcpConfiguredEnvCredentialsBlocked === true &&
 			        childEnvProbe.guard?.safety?.knownChildEntrypointsUseSanitizedEnv === true &&
+			        childEnvProbe.guard?.safety?.runtimeProcessEnvOpenAiCredentialsBlocked === true &&
 			        childEnvProbe.sanitizedHasOpenAiCredentials === false &&
 			        childEnvProbe.mcpSanitizedHasOpenAiCredentials === false &&
 			        childEnvProbe.mcpAllowedEnvPreserved === true &&
@@ -1973,6 +1983,9 @@ export default {
 		      mainSource.includes('OPENAI_REQUIRE_SPEND_LEASE') &&
 		      mainSource.includes('OPENAI_SPEND_LEASE_TTL_MS') &&
 			      mainSource.includes('OPENAI_CHILD_ENV_GUARD_ENABLED') &&
+			      mainSource.includes('OPENAI_RUNTIME_KEY_ISOLATION') &&
+			      mainSource.includes('OPENAI_RUNTIME_ENV_ISOLATED_KEYS') &&
+			      mainSource.includes('function openAiRuntimeKeyIsolationSnapshot') &&
 			      mainSource.includes('function createOpenAiSpendLease') &&
 			      mainSource.includes('function sanitizeChildProcessEnv') &&
 			      mainSource.includes('function guardedChildProcessOptions') &&
@@ -2019,6 +2032,7 @@ export default {
 		      configCuiSource.includes("source: 'openai_lockdown'") &&
 			      configCuiSource.includes('stopScreen: true') &&
 			      configCuiSource.includes('Realtime voice stop:') &&
+			      configCuiSource.includes('runtime key env isolated') &&
 			      configCuiSource.includes('Forensics: likely billable from JAVIS=') &&
 			      configCuiSource.includes('printOpenAiSpendIncident') &&
 			      configCuiSource.includes('SI. Show OpenAI spend incident report') &&
@@ -2028,6 +2042,7 @@ export default {
       packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
       packageSource.includes('"openai:incident": "node scripts/config-cui.cjs --print-openai-spend-incident"') &&
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&
+      packageSource.includes('"openai:zero": "node scripts/config-cui.cjs --lock-openai-spend"') &&
       envExampleSource.includes('JAVIS_OPENAI_HARD_SPEND_LOCK=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE=true') &&
 	      envExampleSource.includes('JAVIS_OPENAI_SPEND_CONFIRMATION_PHRASE=SPEND OPENAI') &&
@@ -2039,7 +2054,8 @@ export default {
 		      envExampleSource.includes('JAVIS_OPENAI_EGRESS_GUARD=true') &&
 		      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_LEASE=true') &&
 		      envExampleSource.includes('JAVIS_OPENAI_SPEND_LEASE_TTL_MS=60000') &&
-		      envExampleSource.includes('JAVIS_OPENAI_CHILD_ENV_GUARD=true');
+		      envExampleSource.includes('JAVIS_OPENAI_CHILD_ENV_GUARD=true') &&
+		      envExampleSource.includes('JAVIS_OPENAI_RUNTIME_KEY_ISOLATION=true');
 	    out.push(
 		      hasOpenAiSpendGuardStatic
 		        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls and worker child env are guarded, lockdown stops existing Realtime voice, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')

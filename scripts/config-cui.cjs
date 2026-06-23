@@ -28,6 +28,7 @@ const OPENAI_ZERO_SPEND_ENV = {
   JAVIS_OPENAI_REQUIRE_SPEND_LEASE: 'true',
   JAVIS_OPENAI_SPEND_LEASE_TTL_MS: '60000',
   JAVIS_OPENAI_CHILD_ENV_GUARD: 'true',
+  JAVIS_OPENAI_RUNTIME_KEY_ISOLATION: 'true',
 };
 
 function formatTime(value) {
@@ -325,7 +326,7 @@ async function printStatus() {
     if (status.api?.openAiSpendGuard) {
       const guard = status.api.openAiSpendGuard;
       const counts = guard.counts || {};
-      console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · lease ${guard.requireSpendLease ? 'required' : 'off'} · child env ${guard.childEnvGuard?.enabled ? 'guarded' : 'unguarded'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
+      console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · lease ${guard.requireSpendLease ? 'required' : 'off'} · child env ${guard.childEnvGuard?.enabled ? 'guarded' : 'unguarded'} · runtime key env ${guard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
     }
     if (status.voiceHealth?.kind === 'quota_or_rate_limit') {
       console.log(`OpenAI provider: quota/rate-limit · ${compact(status.voiceHealth.next || status.voiceHealth.summary || '', 180)}`);
@@ -1441,11 +1442,11 @@ async function showPermissionMatrix() {
   console.log('=======================');
   console.log(config.summary || status.readiness?.summary || 'Permission state loaded from the resident API.');
   console.log(`Overall: config=${config.overall || '-'} · readiness=${status.readiness?.overall || '-'} · local=${status.api?.localExecutionEnabled ? 'on' : 'off'} · trusted=${status.api?.trustedLocalMode ? 'yes' : 'no'}`);
-  if (status.api?.openAiSpendGuard) {
-    const guard = status.api.openAiSpendGuard;
-    const counts = guard.counts || {};
-    console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · child env ${guard.childEnvGuard?.enabled ? 'guarded' : 'unguarded'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
-  }
+    if (status.api?.openAiSpendGuard) {
+      const guard = status.api.openAiSpendGuard;
+      const counts = guard.counts || {};
+      console.log(`OpenAI spend guard: mode ${guard.mode || 'off'} · hard lock ${guard.hardSpendLock ? 'on' : 'off'} · phrase ${guard.requireSpendConfirmationPhrase ? 'required' : 'off'} · child env ${guard.childEnvGuard?.enabled ? 'guarded' : 'unguarded'} · runtime key env ${guard.runtimeKeyIsolation?.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · today ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} total · unattended ${counts.unattended || 0}/${guard.unattendedDailyRequestLimit ?? 0} · blocked ${counts.blocked || 0} · autopilot cloud ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'}`);
+    }
   console.log('Note: macOS privacy panes still require your manual toggle. JAVIS can open the pane and verify evidence after you grant it.');
 
   printPermissionRows('macOS privacy', [
@@ -3820,6 +3821,8 @@ function printOpenAiSpendGuard(result) {
   const safety = guard.safety || {};
   const recent = Array.isArray(guard.recent) ? guard.recent : [];
   const lease = guard.spendLease || {};
+  const runtimeKeyIsolation = guard.runtimeKeyIsolation || {};
+  const runtimeKeySafety = runtimeKeyIsolation.safety || {};
   const childEnvGuard = guard.childEnvGuard || {};
   const childEnvSafety = childEnvGuard.safety || {};
   const activeLeases = Array.isArray(lease.active) ? lease.active : [];
@@ -3840,8 +3843,9 @@ function printOpenAiSpendGuard(result) {
   console.log(`Autopilot cloud: ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · renderer startup probe: ${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'}`);
   console.log(`Spend lease: ${guard.requireSpendLease ? 'required' : 'off'} · ttl=${formatInterval(guard.spendLeaseTtlMs || lease.ttlMs || 0)} · active=${lease.activeCount || activeLeases.length || 0} · one-request-only=${lease.oneRequestOnly === false ? 'no' : 'yes'}`);
   console.log(`Egress guard: ${guard.egressGuardEnabled ? 'on' : 'off'} · ${guard.egressGuardMode || '-'}`);
+  console.log(`Runtime key env: ${runtimeKeyIsolation.enabled ? 'isolated' : 'inherited'} · OPENAI_API_KEY in process.env=${runtimeKeyIsolation.openAiApiKeyInProcessEnv ? 'yes' : 'no'} · OpenAI env keys=${runtimeKeyIsolation.openAiCredentialKeyCount ?? '-'}`);
   console.log(`Child env guard: ${childEnvGuard.enabled ? 'on' : 'off'} · child key inheritance=${childEnvGuard.defaultChildReceivesOpenAiCredentials ? 'allowed' : 'blocked'} · inline key env=${childEnvGuard.blocksInlineCredentialEnv ? 'blocked' : 'allowed'} · MCP key env=${childEnvSafety.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'allowed'}`);
-  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · one-request lease=${safety.oneRequestLeaseRequired ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'} · child creds blocked=${safety.childProcessOpenAiCredentialsBlocked ? 'yes' : 'no'}`);
+  console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · one-request lease=${safety.oneRequestLeaseRequired ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'} · runtime env blocked=${runtimeKeySafety.childProcessesCannotInheritRuntimeOpenAiCredentials ? 'yes' : 'no'} · child creds blocked=${safety.childProcessOpenAiCredentialsBlocked ? 'yes' : 'no'}`);
   console.log('\nTo intentionally spend later: set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase to create one short-lived, one-request lease.');
   if (activeLeases.length) {
     console.log('\nActive OpenAI spend leases:');
@@ -3866,6 +3870,7 @@ function printOpenAiSpendIncident(result) {
   const counts = guard.counts || {};
   const childEnvGuard = incident.childEnvGuard || {};
   const childEnvSafety = childEnvGuard.safety || {};
+  const runtimeKeyIsolation = guard.runtimeKeyIsolation || childEnvGuard.runtimeKeyIsolation || {};
   const hypotheses = Array.isArray(incident.hypotheses) ? incident.hypotheses : [];
   const recommendations = Array.isArray(incident.recommendations) ? incident.recommendations : [];
   const events = Array.isArray(incident.audit?.events) ? incident.audit.events : [];
@@ -3874,7 +3879,7 @@ function printOpenAiSpendIncident(result) {
   console.log(`Conclusion: ${conclusion.label || forensics.status || '-'} · severity=${conclusion.severity || '-'}`);
   if (incident.summary) console.log(`Summary: ${compact(incident.summary, 260)}`);
   console.log(`Local allowed today: ${counts.total || 0}/${guard.dailyRequestLimit ?? 0} · likely billable from JAVIS=${forensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${forensics.zeroLocked ? 'yes' : 'no'}`);
-  console.log(`Guards: cloud=${guard.mode || '-'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · egress=${incident.egressGuard?.mode || guard.egressGuardMode || '-'} · child env=${childEnvGuard.defaultChildProcessEnv || '-'} · MCP key env=${childEnvSafety.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'unknown'}`);
+  console.log(`Guards: cloud=${guard.mode || '-'} · hard lock=${guard.hardSpendLock ? 'on' : 'off'} · egress=${incident.egressGuard?.mode || guard.egressGuardMode || '-'} · runtime key env=${runtimeKeyIsolation.openAiApiKeyInProcessEnv ? 'present' : 'isolated'} · child env=${childEnvGuard.defaultChildProcessEnv || '-'} · MCP key env=${childEnvSafety.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'unknown'}`);
   if (forensics.latestAllowed) console.log(`Latest allowed: ${forensics.latestAllowed.at || '-'} · ${forensics.latestAllowed.kind || '-'} · ${forensics.latestAllowed.source || '-'}`);
   else console.log('Latest allowed: none in local guard records');
   console.log(`Blocked locally: ${counts.blocked || 0} · local guard stops, not confirmed billable JAVIS requests`);
@@ -3964,7 +3969,7 @@ async function lockOpenAiSpendDown(options = {}) {
   console.log('=================================');
   console.log(`Env: ${result.envFile}`);
   console.log(`Changed: ${result.changed.length ? result.changed.join(', ') : 'already locked'}`);
-  console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on · one-request spend lease required · child env guard on');
+  console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on · one-request spend lease required · child env guard on · runtime key env isolated');
   console.log('OPENAI_API_KEY was preserved; API key presence still does not grant spend permission.');
   console.log(`Realtime voice stop: ${realtimeStop.ok === false ? compact(realtimeStop.error || 'resident unavailable; continuing lockdown', 180) : compact(realtimeStop.output || 'requested or already idle', 180)}`);
 
@@ -3997,7 +4002,7 @@ async function lockOpenAiSpendDown(options = {}) {
 
 async function lockOpenAiSpendInteractive(rl) {
   console.log('\nThis preserves OPENAI_API_KEY but forces all OpenAI spend controls back to zero-spend defaults.');
-  console.log('It will set hard lock on, cloud mode off, daily budget 0, unattended budget 0, egress guard on, one-request spend lease required, and child env guard on.');
+  console.log('It will set hard lock on, cloud mode off, daily budget 0, unattended budget 0, egress guard on, one-request spend lease required, child env guard on, and runtime key env isolation on.');
   const answer = (await rl.question('Type LOCK to enforce zero-spend lockdown and restart JAVIS: ')).trim();
   if (answer !== 'LOCK') {
     console.log('\nNo change made.');
