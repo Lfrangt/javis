@@ -3868,7 +3868,28 @@ async function createOpenAiSpendLease(options = {}) {
   return result.lease;
 }
 
+async function stopRealtimeForOpenAiLockdown() {
+  try {
+    return await request('/api/realtime/renderer/control', {
+      method: 'POST',
+      body: {
+        action: 'stop',
+        execute: true,
+        stopScreen: true,
+        source: 'openai_lockdown',
+        reason: 'OpenAI zero-spend lockdown requested; stop any existing Realtime WebRTC voice session before restart.',
+      },
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 async function lockOpenAiSpendDown(options = {}) {
+  const realtimeStop = await stopRealtimeForOpenAiLockdown();
   const result = applyOpenAiZeroSpendEnv();
   console.log('JAVIS OpenAI Zero-Spend Lockdown');
   console.log('=================================');
@@ -3876,6 +3897,7 @@ async function lockOpenAiSpendDown(options = {}) {
   console.log(`Changed: ${result.changed.length ? result.changed.join(', ') : 'already locked'}`);
   console.log('Locked values: hard lock on · cloud off · daily 0 · unattended 0 · autopilot cloud off · renderer startup probe off · egress guard on · one-request spend lease required · child env guard on');
   console.log('OPENAI_API_KEY was preserved; API key presence still does not grant spend permission.');
+  console.log(`Realtime voice stop: ${realtimeStop.ok === false ? compact(realtimeStop.error || 'resident unavailable; continuing lockdown', 180) : compact(realtimeStop.output || 'requested or already idle', 180)}`);
 
   if (options.restart === false) {
     console.log('\nRestart skipped. Run npm run resident:restart so the running resident reloads the zero-spend env.');

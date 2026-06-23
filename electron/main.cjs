@@ -30583,6 +30583,7 @@ function latestExecutableVoiceRoute(options = {}) {
 function localVoicePromptContextSnapshot() {
   const activeJobs = jobSnapshot(12).filter((job) => job.status === 'queued' || job.status === 'running');
   const activeRoutes = activeRoutingSnapshot(8);
+  const activeSession = activeSessionSnapshot();
   const browser = browserActivitySnapshot({ limit: 3 });
   const appUi = appUiCacheStateSnapshot();
   const latestAmbient = ambientSnapshot(1)[0] || null;
@@ -30594,6 +30595,14 @@ function localVoicePromptContextSnapshot() {
   return {
     activeJobCount: activeJobs.length,
     activeRouteCount: activeRoutes.length,
+    activeSession: activeSession
+      ? {
+          id: compactRecordText(activeSession.id || '', 80),
+          title: compactRecordText(activeSession.title || activeSession.goal || '', 120),
+          goal: compactRecordText(activeSession.goal || '', 160),
+          eventCount: Array.isArray(activeSession.events) ? activeSession.events.length : 0,
+        }
+      : null,
     browserAvailable: Boolean(browser.current),
     browserHost: compactRecordText(browser.current?.host || browser.current?.title || '', 80),
     appUiAvailable: Boolean(appUi.available && appUi.nodeCount),
@@ -30616,9 +30625,12 @@ function localVoicePromptPack(options = {}) {
   const latest = options.latest || null;
   const latestCanContinue = Boolean(options.latestCanContinue ?? (latest && latest.executed === false && latest.queued === false && latest.routeId));
   const context = options.context || localVoicePromptContextSnapshot();
+  const hasActiveSession = Boolean(context.activeSession?.id);
   const candidates = fallbackReady
     ? [
         latestCanContinue ? localVoicePromptExample('continue', '继续刚才那个') : null,
+        hasActiveSession ? localVoicePromptExample('session_check_in', '会话汇报') : null,
+        hasActiveSession ? localVoicePromptExample('session_note', '记到当前会话：下一步要做什么') : null,
         (context.activeJobCount || context.activeRouteCount) ? localVoicePromptExample('progress', '后台现在怎么样？') : null,
         context.browserAvailable ? localVoicePromptExample('browser_page', '读一下当前网页。') : null,
         context.browserAvailable ? localVoicePromptExample('browser_dom', '当前网页有哪些按钮？') : null,
@@ -30629,6 +30641,7 @@ function localVoicePromptPack(options = {}) {
       ]
     : [
         localVoicePromptExample('start', 'JAVIS，开始语音。'),
+        hasActiveSession ? localVoicePromptExample('session_check_in', '会话汇报') : null,
         context.browserAvailable ? localVoicePromptExample('browser_page', '读一下当前网页。') : null,
         context.appUiAvailable || context.frontmostApp ? localVoicePromptExample('app_ui', '这个界面能点什么？') : null,
         localVoicePromptExample('preview', '先不要开麦，帮我预览下一步。'),

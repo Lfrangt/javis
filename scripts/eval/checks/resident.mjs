@@ -336,6 +336,72 @@ export default {
         }),
     );
 
+    const sessionPromptGoal = `eval voice standby session prompt ${Date.now()}`;
+    let cleanupSessionPromptId = '';
+    try {
+      const sessionsBeforePrompt = await ctx.api('/api/sessions?limit=1', { timeoutMs: 10000 });
+      let activePromptSession = sessionsBeforePrompt.data?.sessions?.active || null;
+      if (!activePromptSession?.id) {
+        const startPromptSession = await ctx.api('/api/sessions/start', {
+          method: 'POST',
+          body: {
+            goal: sessionPromptGoal,
+            source: 'eval_voice_standby_session_prompt',
+          },
+          timeoutMs: 10000,
+        });
+        activePromptSession = startPromptSession.data?.session || null;
+        cleanupSessionPromptId = activePromptSession?.id || '';
+      }
+      const sessionStandbyResponse = await ctx.api('/api/voice/standby', { timeoutMs: 10000 });
+      const sessionStandby = sessionStandbyResponse.data?.standby || {};
+      const sessionPetResponse = await ctx.api('/api/pet/status', { timeoutMs: 10000 });
+      const sessionPet = sessionPetResponse.data || {};
+      const sessionWakeResponse = await ctx.api('/api/wake/status', { timeoutMs: 10000 });
+      const sessionWake = sessionWakeResponse.data?.wake || {};
+      const standbyExamples = sessionStandby.promptPack?.examples || [];
+      const petExamples = sessionPet.localVoice?.promptPack?.examples || [];
+      const wakeExamples = sessionWake.handoff?.promptPack?.examples || [];
+      out.push(
+        activePromptSession?.id &&
+          sessionStandbyResponse.ok &&
+          sessionPetResponse.ok &&
+          sessionWakeResponse.ok &&
+          sessionStandby.promptPack?.nextUtterance === '会话汇报' &&
+          standbyExamples.some((example) => example.id === 'session_check_in' && example.utterance === '会话汇报') &&
+          standbyExamples.some((example) => example.id === 'session_note') &&
+          petExamples.some((example) => example.id === 'session_check_in') &&
+          wakeExamples.some((example) => example.id === 'session_check_in') &&
+          sessionStandby.promptPack?.safety?.startsMicrophone === false &&
+          sessionPet.localVoice?.promptPack?.safety?.startsMicrophone === false &&
+          sessionWake.handoff?.promptPack?.safety?.startsMicrophone === false
+          ? ok('resident.voice_standby_session_prompt', 'Voice standby session-aware prompt pack', `${activePromptSession.title || activePromptSession.goal} -> 会话汇报`)
+          : fail('resident.voice_standby_session_prompt', 'Voice standby session-aware prompt pack', 'active work sessions should rank session check-in prompts across standby, pet, and wake surfaces without mic/realtime', {
+              activePromptSession,
+              sessionStandby: sessionStandby.promptPack,
+              sessionPet: sessionPet.localVoice?.promptPack,
+              sessionWake: sessionWake.handoff?.promptPack,
+            }),
+      );
+    } catch (error) {
+      out.push(fail('resident.voice_standby_session_prompt', 'Voice standby session-aware prompt pack', error instanceof Error ? error.message : String(error)));
+    } finally {
+      if (cleanupSessionPromptId) {
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionPromptId)}/end`, {
+          method: 'POST',
+          body: {
+            source: 'eval_voice_standby_session_prompt_cleanup',
+            note: 'Cleaning up eval-created voice standby session prompt.',
+          },
+          timeoutMs: 10000,
+        });
+        await ctx.api(`/api/sessions/${encodeURIComponent(cleanupSessionPromptId)}`, {
+          method: 'DELETE',
+          timeoutMs: 10000,
+        });
+      }
+    }
+
     const voiceStatusCommandResponse = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
@@ -1716,6 +1782,7 @@ export default {
 	    );
 
 	    const envExampleSource = fs.readFileSync('.env.example', 'utf8');
+	    const configCuiSource = fs.readFileSync('scripts/config-cui.cjs', 'utf8');
 	    const rendererSource = fs.readFileSync('src/App.tsx', 'utf8');
 	    const hasOpenAiSpendGuardStatic =
 	      mainSource.includes('OPENAI_SPEND_GUARD_FILE') &&
@@ -1757,6 +1824,10 @@ export default {
 		      rendererSource.includes("params.set('confirmOpenAiSpend', 'true')") &&
 		      rendererSource.includes("params.set('confirmOpenAiSpendPhrase', detail.confirmOpenAiSpendPhrase)") &&
 		      rendererSource.includes("params.set('openAiSpendLeaseId', detail.openAiSpendLeaseId)") &&
+		      configCuiSource.includes('async function stopRealtimeForOpenAiLockdown') &&
+		      configCuiSource.includes("source: 'openai_lockdown'") &&
+		      configCuiSource.includes('stopScreen: true') &&
+		      configCuiSource.includes('Realtime voice stop:') &&
       packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
       packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&
@@ -1772,9 +1843,9 @@ export default {
 		      envExampleSource.includes('JAVIS_OPENAI_REQUIRE_SPEND_LEASE=true') &&
 		      envExampleSource.includes('JAVIS_OPENAI_SPEND_LEASE_TTL_MS=60000') &&
 		      envExampleSource.includes('JAVIS_OPENAI_CHILD_ENV_GUARD=true');
-    out.push(
+	    out.push(
 		      hasOpenAiSpendGuardStatic
-		        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls and worker child env are guarded, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')
+		        ? ok('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'OpenAI calls and worker child env are guarded, lockdown stops existing Realtime voice, autopilot requires explicit env, startup probes are opt-in, and .env.example documents zero-spend defaults')
 	        : fail('resident.openai_spend_guard_static', 'OpenAI spend guard static contract', 'expected source to guard OpenAI calls and document zero-spend defaults'),
 	    );
 
