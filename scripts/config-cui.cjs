@@ -529,6 +529,7 @@ async function printStatus() {
   console.log('CR. Show local control readiness');
   console.log('S. Show routing speed policy');
   console.log('BR. Show browser readiness');
+  console.log('BC. Show browser control status');
   console.log('BP. Prepare browser target');
   console.log('G. Show browser workflow benchmarks');
   console.log('F. Show file workflow benchmarks');
@@ -2690,6 +2691,7 @@ function printBrowserReadiness(result) {
   console.log(`- prepare: ${commands.prepare || 'npm run browser:prepare'}`);
   console.log(`- page: ${commands.page || 'curl http://127.0.0.1:3417/api/browser/page'}`);
   console.log(`- DOM: ${commands.dom || 'curl "http://127.0.0.1:3417/api/browser/dom?limit=20"'}`);
+  console.log(`- control: ${commands.control || 'npm run browser:control'}`);
   console.log(`- benchmarks: ${commands.benchmarks || 'npm run config -- --print-browser-benchmarks'}`);
   console.log('\nSafety');
   console.log(`- read-only=${safety.readOnly ? 'yes' : 'no'} starts browser=${safety.startsBrowser ? 'yes' : 'no'} executes actions=${safety.executesBrowserActions ? 'yes' : 'no'} executes JS=${safety.executesPageJavaScript ? 'yes' : 'no'} reads page text=${safety.readsPageText ? 'yes' : 'no'} asks window=${safety.asksWhichWindow ? 'yes' : 'no'}`);
@@ -2699,6 +2701,42 @@ async function showBrowserReadiness() {
   const result = await request('/api/browser/readiness');
   console.log('');
   printBrowserReadiness(result);
+}
+
+function printBrowserControlStatus(result) {
+  const control = result?.control || result || {};
+  const context = control.context || {};
+  const policy = control.policy || {};
+  const counts = control.counts || {};
+  const safety = control.safety || {};
+  const actions = Array.isArray(control.actions) ? control.actions : [];
+  console.log('JAVIS Browser Control');
+  console.log('=====================');
+  console.log(`Status: ${control.status || '-'} · ${control.label || '-'}`);
+  if (control.summary) console.log(`Summary: ${compact(control.summary, 360)}`);
+  console.log(`Target: ${context.available ? 'available' : 'not-ready'} · supported=${context.supported ? 'yes' : 'no'} · app=${context.app || '-'} · asks window=${context.asksWhichWindow ? 'yes' : 'no'}`);
+  if (context.title) console.log(`Title: ${compact(context.title, 160)}`);
+  if (context.host) console.log(`Host: ${context.host}`);
+  console.log(`Policy: browser_control=${policy.browserControlEnabled ? 'on' : 'off'} · local exec=${policy.localExecutionEnabled ? 'on' : 'off'} · dry-run=${policy.dryRun ? 'on' : 'off'} · auto L${policy.maxAutoRiskLevel ?? '-'} · approval L${policy.requireApprovalAtRiskLevel ?? '-'}`);
+  console.log(`Counts: ready ${counts.ready || 0}/${counts.total || 0} · allowed ${counts.allowed || 0} · waiting ${counts.waitingForBrowser || 0} · approval ${counts.requiresApproval || 0}`);
+  console.log('\nActions');
+  for (const action of actions) {
+    const host = action.hostScoped ? ` · hosts=${(action.allowedHosts || []).join(', ') || '-'}` : '';
+    console.log(`- ${action.status || '-'} ${action.id || '-'} · risk L${action.riskLevel ?? '-'} · approval=${action.requiresApproval ? 'yes' : 'no'} · auto=${action.autoEligible ? 'yes' : 'no'}${host}`);
+  }
+  const commands = control.commands || {};
+  console.log('\nCommands');
+  console.log(`- status: ${commands.status || 'npm run browser:control'}`);
+  console.log(`- readiness: ${commands.readiness || 'npm run browser:ready'}`);
+  console.log(`- benchmarks: ${commands.benchmarks || 'npm run config -- --print-browser-benchmarks'}`);
+  console.log('\nSafety');
+  console.log(`- read-only=${safety.readOnly ? 'yes' : 'no'} starts browser=${safety.startsBrowser ? 'yes' : 'no'} executes browser actions=${safety.executesBrowserActions ? 'yes' : 'no'} executes JS=${safety.executesPageJavaScript ? 'yes' : 'no'} reads page text=${safety.readsPageText ? 'yes' : 'no'} calls OpenAI=${safety.callsOpenAi ? 'yes' : 'no'} starts mic=${safety.startsMicrophone ? 'yes' : 'no'}`);
+}
+
+async function showBrowserControlStatus() {
+  const result = await request('/api/browser/control/status?source=cui_browser_control_status');
+  console.log('');
+  printBrowserControlStatus(result);
 }
 
 function printBrowserPrepare(result) {
@@ -5494,6 +5532,11 @@ async function main() {
     return;
   }
 
+  if (process.argv.includes('--print-browser-control') || process.argv.includes('--browser-control') || process.argv.includes('--browser-controls')) {
+    await showBrowserControlStatus();
+    return;
+  }
+
   if (process.argv.includes('--prepare-browser') || process.argv.includes('--browser-prepare')) {
     await prepareBrowserTarget({
       execute: !process.argv.includes('--preview') && !process.argv.includes('--dry-run'),
@@ -5768,6 +5811,8 @@ async function main() {
         await showRoutingSpeedPolicy();
       } else if (answer === 'br' || answer === 'browser readiness' || answer === 'browser ready') {
         await showBrowserReadiness();
+      } else if (answer === 'bc' || answer === 'browser control' || answer === 'browser controls') {
+        await showBrowserControlStatus();
       } else if (answer === 'bp' || answer === 'browser prepare' || answer === 'prepare browser') {
         await prepareBrowserTarget({ execute: true, source: 'cui_browser_prepare' });
       } else if (answer === 'g' || answer === 'browser benchmark' || answer === 'browser benchmarks') {

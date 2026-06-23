@@ -35,11 +35,52 @@ export default {
         r?.capabilities?.page?.endpoint === '/api/browser/page' &&
         r?.commands?.prepare === 'npm run browser:prepare' &&
         r?.commands?.readiness === 'npm run browser:ready' &&
+        r?.commands?.control === 'npm run browser:control' &&
         Array.isArray(r?.endpoints) &&
         r.endpoints.includes('/api/browser/prepare') &&
+        r.endpoints.includes('/api/browser/control/status') &&
         Array.isArray(r?.nextActions)
         ? ok('browser.readiness', 'Browser readiness packet', `${r.status || 'unknown'} · default=${r.defaultTarget.mode} · no window picker`)
         : fail('browser.readiness', 'Browser readiness packet', `GET /api/browser/readiness ${readiness.status}`, readiness.data),
+    );
+
+    const controlStatusResponse = await ctx.api('/api/browser/control/status?source=eval_browser_control_status');
+    const controlStatus = controlStatusResponse.data?.control || {};
+    const controlActions = Array.isArray(controlStatus.actions) ? controlStatus.actions : [];
+    const controlActionIds = new Set(controlActions.map((action) => action.id));
+    const expectedControlActions = ['back', 'forward', 'reload', 'new_tab', 'close_tab', 'focus_address', 'open_url', 'search'];
+    out.push(
+      controlStatusResponse.ok &&
+        controlStatus.version === 1 &&
+        ['ready', 'waiting_for_browser', 'blocked', 'blocked_by_policy'].includes(controlStatus.status) &&
+        controlStatus.defaultTarget?.asksWhichWindow === false &&
+        controlStatus.context?.asksWhichWindow === false &&
+        controlStatus.policy?.browserControlEnabled === true &&
+        controlStatus.counts?.total === expectedControlActions.length &&
+        expectedControlActions.every((id) => controlActionIds.has(id)) &&
+        controlActions.every((action) => (
+          action.preview?.endpoint === '/api/browser/control' &&
+          action.execute?.endpoint === '/api/browser/control' &&
+          action.startsBrowser === false &&
+          action.executesPageJavaScript === false &&
+          action.readsPageText === false &&
+          action.mutatesUserFiles === false
+        )) &&
+        controlActions.some((action) => action.id === 'close_tab' && action.riskLevel === 3 && action.execute?.requiresPolicy === true) &&
+        controlActions.some((action) => action.id === 'reload' && action.riskLevel === 2) &&
+        controlActions.some((action) => action.id === 'search' && action.hostScoped === true) &&
+        controlStatus.safety?.readOnly === true &&
+        controlStatus.safety?.startsBrowser === false &&
+        controlStatus.safety?.executesBrowserActions === false &&
+        controlStatus.safety?.executesPageJavaScript === false &&
+        controlStatus.safety?.readsPageText === false &&
+        controlStatus.safety?.callsOpenAi === false &&
+        controlStatus.safety?.startsMicrophone === false
+        ? ok('browser.control_status', 'Browser control status packet', `${controlStatus.status} · ${controlStatus.counts.ready}/${controlStatus.counts.total} ready · no action`)
+        : fail('browser.control_status', 'Browser control status packet', 'expected read-only browser control capability/status packet with all chrome actions and no side effects', {
+            status: controlStatusResponse.status,
+            control: controlStatus,
+          }),
     );
     out.push(
       !cdpFallbackActive ||
@@ -688,12 +729,39 @@ export default {
           output.includes('asks window=no') &&
           output.includes('read-only=yes') &&
           output.includes('executes JS=no') &&
+          output.includes('control: npm run browser:control') &&
           output.includes('readiness: npm run browser:ready')
           ? ok('browser.cui_readiness', 'Browser CUI readiness', 'npm run browser:ready prints default target, capabilities, commands, and safety')
           : fail('browser.cui_readiness', 'Browser CUI readiness', 'expected CUI readiness output to print no-window-picker safety and commands', { output: output.slice(0, 2400) }),
       );
     } catch (error) {
       out.push(fail('browser.cui_readiness', 'Browser CUI readiness', error instanceof Error ? error.message : String(error)));
+    }
+
+    try {
+      const cuiControl = await execFileAsync('npm', ['run', 'browser:control'], {
+        cwd: process.cwd(),
+        env: process.env,
+        timeout: 15000,
+        maxBuffer: 1024 * 1024,
+      });
+      const output = `${cuiControl.stdout || ''}\n${cuiControl.stderr || ''}`;
+      out.push(
+        output.includes('JAVIS Browser Control') &&
+          output.includes('Counts: ready') &&
+          output.includes('reload') &&
+          output.includes('close_tab') &&
+          output.includes('read-only=yes') &&
+          output.includes('starts browser=no') &&
+          output.includes('executes browser actions=no') &&
+          output.includes('executes JS=no') &&
+          output.includes('calls OpenAI=no') &&
+          output.includes('starts mic=no')
+          ? ok('browser.cui_control_status', 'Browser CUI control status', 'npm run browser:control prints actions, policy, and no-side-effect safety')
+          : fail('browser.cui_control_status', 'Browser CUI control status', 'expected browser:control to print action readiness and no-side-effect safety', { output: output.slice(0, 2400) }),
+      );
+    } catch (error) {
+      out.push(fail('browser.cui_control_status', 'Browser CUI control status', error instanceof Error ? error.message : String(error)));
     }
 
     try {

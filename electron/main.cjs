@@ -16073,7 +16073,7 @@ function boardStatus(value = '') {
   const status = String(value || '').trim().toLowerCase();
   if (['ready', 'ok', 'healthy', 'done', 'safe', 'local_fallback_ready', 'fallback_ready', 'realtime_ready'].includes(status)) return 'ready';
   if (['running', 'active', 'in_progress', 'working'].includes(status)) return 'running';
-  if (['blocked', 'failed', 'error', 'unsafe_cloud'].includes(status)) return 'blocked';
+  if (['blocked', 'failed', 'error', 'unsafe_cloud', 'blocked_by_policy'].includes(status)) return 'blocked';
   if ([
     'warning',
     'degraded',
@@ -16085,6 +16085,7 @@ function boardStatus(value = '') {
     'needs_provider_probe',
     'manual_required',
     'needs_user',
+    'waiting_for_browser',
   ].includes(status)) return 'warning';
   return status || 'unknown';
 }
@@ -16230,6 +16231,20 @@ async function progressBoardSnapshot(options = {}) {
     issues: [],
     keepAwake: null,
   }));
+  const browserControl = await browserControlStatusSnapshot({
+    source,
+  }).catch((error) => ({
+    status: 'warning',
+    summary: `Browser control status failed: ${error instanceof Error ? error.message : String(error)}`,
+    counts: {},
+    actions: [],
+    safety: {
+      readOnly: true,
+      startsBrowser: false,
+      executesBrowserActions: false,
+      callsOpenAi: false,
+    },
+  }));
 
   const spendLocked = Boolean(
     spendGuard.hardSpendLock &&
@@ -16293,13 +16308,17 @@ async function progressBoardSnapshot(options = {}) {
     boardNode(
       'browser_control',
       '浏览器控制',
-      'running',
-      '正在补齐刷新、后退、前进、新标签、关闭标签、地址栏这些本地浏览器控制的安全预览链路。',
-      '先本地预览，不调用模型；明确执行时才通过本地策略按浏览器快捷键。',
+      browserControl.status || 'warning',
+      browserControl.summary || 'Browser control status unavailable.',
+      browserControl.status === 'ready'
+        ? '可以先预览，再按本地策略执行浏览器快捷动作。'
+        : '先看 browser:control；没有可控浏览器时不要猜窗口。',
       {
         previewFirst: true,
         modelCall: false,
-        actions: ['reload', 'back', 'forward', 'new_tab', 'close_tab', 'focus_address'],
+        actions: (browserControl.actions || []).map((action) => action.id).slice(0, 8),
+        ready: Number(browserControl.counts?.ready || 0),
+        total: Number(browserControl.counts?.total || 0),
       },
     ),
     boardNode(
@@ -16375,9 +16394,9 @@ async function progressBoardSnapshot(options = {}) {
     },
     {
       id: 'browser_controls',
-      status: 'running',
+      status: browserControl.status || 'warning',
       title: '浏览器本地控制',
-      body: '正在把自然语言刷新/后退/新标签等动作接入本地 fallback 和评测。',
+      body: browserControl.summary || '浏览器控制状态暂不可用。',
     },
     {
       id: 'visual_board',
@@ -16428,7 +16447,9 @@ async function progressBoardSnapshot(options = {}) {
       voiceNextStep
         ? `语音上线下一步：${voiceNextStep.label}。`
         : '继续 Realtime live dogfood。',
-      '完成并复跑浏览器控制本地评测。',
+      browserControl.status === 'ready'
+        ? '用 browser:control 查看可执行浏览器动作，再按需走本地策略。'
+        : '完成并复跑浏览器控制本地评测。',
       '让本看板成为后续长任务的默认汇报界面。',
     ],
     safety: {
@@ -23710,6 +23731,7 @@ async function browserReadinessSnapshot(options = {}) {
       '/api/browser/page',
       '/api/browser/javascript',
       '/api/browser/dom?limit=20',
+      '/api/browser/control/status',
       '/api/browser/control',
       '/api/browser/workflow',
       '/api/browser/benchmarks',
@@ -23721,6 +23743,7 @@ async function browserReadinessSnapshot(options = {}) {
       page: 'curl http://127.0.0.1:3417/api/browser/page',
       javascript: 'curl http://127.0.0.1:3417/api/browser/javascript',
       dom: 'curl "http://127.0.0.1:3417/api/browser/dom?limit=20"',
+      control: 'npm run browser:control',
       benchmarks: 'npm run config -- --print-browser-benchmarks',
     },
     nextActions,
@@ -24483,6 +24506,17 @@ const BROWSER_CONTROL_ACTIONS = new Set([
   'search',
 ]);
 
+const BROWSER_CONTROL_ACTION_LABELS = {
+  back: 'Back',
+  forward: 'Forward',
+  reload: 'Reload',
+  new_tab: 'New tab',
+  close_tab: 'Close current tab',
+  focus_address: 'Focus address bar',
+  open_url: 'Open URL',
+  search: 'Search web',
+};
+
 function normalizeBrowserControlAction(value) {
   const raw = String(value || '').trim().toLowerCase().replace(/[-\s]+/g, '_');
   const aliases = {
@@ -24511,6 +24545,169 @@ function normalizeBrowserControlAction(value) {
   };
   const normalized = aliases[raw] || raw;
   return BROWSER_CONTROL_ACTIONS.has(normalized) ? normalized : '';
+}
+
+function browserControlRiskLevel(action) {
+  return action === 'close_tab' ? 3 : 2;
+}
+
+function browserControlStatusForAction(action, { controlPolicy = {}, openUrlPolicy = {}, readiness = {} } = {}) {
+  const normalized = normalizeBrowserControlAction(action);
+  const allowedByControl = Boolean(
+    controlPolicy.enabled &&
+      normalized &&
+      valueMatchesAllowlist(normalized, controlPolicy.allowedActions || []),
+  );
+  const hostScoped = normalized === 'open_url' || normalized === 'search';
+  const searchHostAllowed = normalized !== 'search' || (
+    openUrlPolicy.enabled &&
+      valueMatchesAllowlist('www.google.com', openUrlPolicy.allowedHosts || [])
+  );
+  const openUrlPossible = normalized !== 'open_url' || (
+    openUrlPolicy.enabled &&
+      Array.isArray(openUrlPolicy.allowedHosts) &&
+      openUrlPolicy.allowedHosts.length > 0
+  );
+  const policyAllowed = Boolean(allowedByControl && searchHostAllowed && openUrlPossible);
+  const riskLevel = browserControlRiskLevel(normalized);
+  const requiresApproval = riskLevel >= Number(actionPolicy.requireApprovalAtRiskLevel || 0);
+  const autoEligible = Boolean(
+    policyAllowed &&
+      LOCAL_EXEC_ENABLED &&
+      !actionPolicy.dryRun &&
+      riskLevel <= Number(actionPolicy.maxAutoRiskLevel || 0) &&
+      !requiresApproval,
+  );
+  const targetReady = Boolean(
+    readiness.context?.supported &&
+      (readiness.context?.available || readiness.defaultTarget?.app),
+  );
+  const status = !normalized || !policyAllowed
+    ? 'blocked'
+    : targetReady
+      ? 'ready'
+      : 'waiting_for_browser';
+  return {
+    id: normalized,
+    label: compactRecordText(BROWSER_CONTROL_ACTION_LABELS[normalized] || normalized, 80),
+    status,
+    policyAllowed,
+    enabled: Boolean(controlPolicy.enabled),
+    riskLevel,
+    requiresApproval,
+    autoEligible,
+    requiresUserPresence: !autoEligible,
+    hostScoped,
+    allowedHosts: hostScoped ? (openUrlPolicy.allowedHosts || []).slice(0, 8) : [],
+    startsBrowser: false,
+    executesPageJavaScript: false,
+    readsPageText: false,
+    mutatesUserFiles: false,
+    preview: {
+      method: 'POST',
+      endpoint: '/api/browser/control',
+      body: normalized === 'search'
+        ? { action: 'search', query: 'example search', preview: true }
+        : normalized === 'open_url'
+          ? { action: 'open_url', url: 'https://example.com', preview: true }
+          : { action: normalized, preview: true },
+    },
+    execute: {
+      method: 'POST',
+      endpoint: '/api/browser/control',
+      requiresLocalExecution: true,
+      requiresPolicy: true,
+      requiresApproval,
+    },
+  };
+}
+
+async function browserControlStatusSnapshot(options = {}) {
+  const readiness = options.readiness || await browserReadinessSnapshot({
+    app: options.app || '',
+    source: options.source || 'browser_control_status',
+  });
+  const controlPolicy = actionPolicy.allow?.browser_control || {};
+  const openUrlPolicy = actionPolicy.allow?.open_url || {};
+  const actions = Array.from(BROWSER_CONTROL_ACTIONS).map((action) => browserControlStatusForAction(action, {
+    controlPolicy,
+    openUrlPolicy,
+    readiness,
+  }));
+  const allowed = actions.filter((action) => action.policyAllowed);
+  const ready = actions.filter((action) => action.status === 'ready');
+  const status = !controlPolicy.enabled
+    ? 'blocked'
+    : ready.length
+      ? 'ready'
+      : allowed.length
+        ? 'waiting_for_browser'
+        : 'blocked_by_policy';
+  return {
+    version: 1,
+    generatedAt: new Date().toISOString(),
+    source: compactRecordText(options.source || 'browser_control_status', 80),
+    status,
+    label: status === 'ready'
+      ? 'Browser controls ready'
+      : status === 'waiting_for_browser'
+        ? 'Browser controls waiting for a supported browser'
+        : 'Browser controls blocked by policy',
+    summary: status === 'ready'
+      ? `${ready.length}/${actions.length} browser chrome action(s) can be previewed or executed through policy.`
+      : status === 'waiting_for_browser'
+        ? `${allowed.length}/${actions.length} browser chrome action(s) are allowed, but no supported browser target is ready.`
+        : 'Browser chrome controls are disabled or fully blocked by action-policy.json.',
+    defaultTarget: readiness.defaultTarget || null,
+    context: {
+      status: readiness.context?.available ? 'available' : readiness.context?.supported ? 'supported_not_available' : 'unavailable',
+      supported: Boolean(readiness.context?.supported),
+      available: Boolean(readiness.context?.available),
+      app: compactRecordText(readiness.context?.app || '', 120),
+      title: compactRecordText(readiness.context?.title || '', 160),
+      host: compactRecordText(safeUrlHost(readiness.context?.url || ''), 120),
+      asksWhichWindow: false,
+    },
+    policy: {
+      localExecutionEnabled: LOCAL_EXEC_ENABLED,
+      dryRun: Boolean(actionPolicy.dryRun),
+      maxAutoRiskLevel: Number(actionPolicy.maxAutoRiskLevel || 0),
+      requireApprovalAtRiskLevel: Number(actionPolicy.requireApprovalAtRiskLevel || 0),
+      browserControlEnabled: Boolean(controlPolicy.enabled),
+      allowedActions: (controlPolicy.allowedActions || []).filter((action) => BROWSER_CONTROL_ACTIONS.has(action)).slice(0, 20),
+      openUrlEnabled: Boolean(openUrlPolicy.enabled),
+      allowedHosts: (openUrlPolicy.allowedHosts || []).slice(0, 12),
+    },
+    counts: {
+      total: actions.length,
+      allowed: allowed.length,
+      ready: ready.length,
+      blocked: actions.filter((action) => action.status === 'blocked').length,
+      waitingForBrowser: actions.filter((action) => action.status === 'waiting_for_browser').length,
+      requiresApproval: actions.filter((action) => action.requiresApproval).length,
+    },
+    actions,
+    commands: {
+      status: 'npm run browser:control',
+      readiness: 'npm run browser:ready',
+      benchmarks: 'npm run config -- --print-browser-benchmarks',
+      previewReload: 'curl -X POST http://127.0.0.1:3417/api/browser/control -d \'{"action":"reload","preview":true}\'',
+    },
+    safety: {
+      readOnly: true,
+      startsBrowser: false,
+      executesBrowserActions: false,
+      executesPageJavaScript: false,
+      readsPageText: false,
+      storesPageText: false,
+      startsMicrophone: false,
+      usesRealtime: false,
+      callsOpenAi: false,
+      asksWhichWindow: false,
+      mutatesUserFiles: false,
+      createsSpendLease: false,
+    },
+  };
 }
 
 function browserControlUrl(args = {}) {
@@ -69068,6 +69265,18 @@ function startApiServer() {
       res.json({ benchmarks });
     } catch (error) {
       jsonError(res, 500, 'Browser benchmarks failed', error instanceof Error ? error.message : String(error));
+    }
+  });
+
+  api.get('/api/browser/control/status', async (req, res) => {
+    try {
+      const control = await browserControlStatusSnapshot({
+        app: req.query.app || '',
+        source: req.query.source || 'api_browser_control_status',
+      });
+      res.json({ control });
+    } catch (error) {
+      jsonError(res, 500, 'Browser control status failed', error instanceof Error ? error.message : String(error));
     }
   });
 

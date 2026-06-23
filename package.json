@@ -67,6 +67,7 @@
     "pet:show": "node scripts/config-cui.cjs --show-pet",
     "pet:close": "node scripts/config-cui.cjs --close-pet",
     "browser:ready": "node scripts/config-cui.cjs --print-browser-readiness",
+    "browser:control": "node scripts/config-cui.cjs --print-browser-control",
     "browser:prepare": "node scripts/config-cui.cjs --prepare-browser",
     "openai:spend": "node scripts/config-cui.cjs --print-openai-spend-guard",
     "openai:sentinel": "node scripts/config-cui.cjs --print-openai-spend-sentinel",
