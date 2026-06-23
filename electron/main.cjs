@@ -2284,6 +2284,7 @@ function openTerminalCommand(command, options = {}) {
   ], {
     detached: true,
     stdio: 'ignore',
+    env: guardedChildProcessEnv({ source: options.source || 'terminal_open' }),
   });
   child.unref();
   appendAudit(options.auditType || 'terminal.opened', {
@@ -3025,10 +3026,22 @@ function openAiChildEnvGuardSnapshot() {
     presentCredentialKeys,
     defaultChildReceivesOpenAiCredentials: !OPENAI_CHILD_ENV_GUARD_ENABLED,
     blocksInlineCredentialEnv: OPENAI_CHILD_ENV_GUARD_ENABLED,
+    defaultChildProcessEnv: OPENAI_CHILD_ENV_GUARD_ENABLED ? 'openai_credentials_redacted' : 'inherits_parent_env',
+    coversKnownChildEntrypoints: [
+      'background_jobs',
+      'worker_fallbacks',
+      'mcp_stdio_servers',
+      'wake_engine',
+      'browser_control_helpers',
+      'mac_setup_helpers',
+      'local_speech',
+    ],
     bypassEnv: 'JAVIS_OPENAI_CHILD_ENV_GUARD=false',
     safety: {
       stripsOpenAiApiKeyFromWorkers: OPENAI_CHILD_ENV_GUARD_ENABLED,
       blocksInlineOpenAiApiKeyAssignments: OPENAI_CHILD_ENV_GUARD_ENABLED,
+      mcpConfiguredEnvCredentialsBlocked: OPENAI_CHILD_ENV_GUARD_ENABLED,
+      knownChildEntrypointsUseSanitizedEnv: OPENAI_CHILD_ENV_GUARD_ENABLED,
       preservesParentEnvFile: true,
       callsOpenAi: false,
       startsProcess: false,
@@ -3052,6 +3065,17 @@ function sanitizeChildProcessEnv(options = {}) {
   env.JAVIS_OPENAI_CHILD_ENV_GUARD = OPENAI_CHILD_ENV_GUARD_ENABLED ? 'true' : 'false';
   env.JAVIS_OPENAI_CHILD_ENV_REDACTED_KEYS = redactedKeys.join(',');
   return env;
+}
+
+function guardedChildProcessEnv(options = {}) {
+  return sanitizeChildProcessEnv(options);
+}
+
+function guardedChildProcessOptions(options = {}, envOptions = {}) {
+  return {
+    ...options,
+    env: options.env || guardedChildProcessEnv(envOptions),
+  };
 }
 
 function assertOpenAiChildEnvCommandAllowed(command = '', options = {}) {
@@ -3092,16 +3116,38 @@ function openAiChildEnvGuardProbe(options = {}) {
   }
   const sanitized = sanitizeChildProcessEnv({ source: options.source || 'child_env_guard_probe' });
   const sanitizedCredentialKeys = openAiCredentialEnvKeys(sanitized);
+  const mcpSanitized = mcpServerEnvForSpawn({
+    server: {
+      env: {
+        OPENAI_API_KEY: 'sk-probe-should-be-redacted',
+        JAVIS_API_TOKEN: 'probe-token-should-be-redacted',
+        JAVIS_CHILD_ENV_PROBE_ALLOWED: 'kept',
+      },
+    },
+    normalized: {
+      name: 'child_env_guard_probe',
+      sourceId: 'probe',
+      command: 'probe',
+    },
+  });
+  const mcpSanitizedCredentialKeys = openAiCredentialEnvKeys(mcpSanitized);
   return {
     version: 1,
     ok: OPENAI_CHILD_ENV_GUARD_ENABLED
-      ? sanitizedCredentialKeys.length === 0 && inlineInjectionBlocked
+      ? sanitizedCredentialKeys.length === 0 &&
+        inlineInjectionBlocked &&
+        mcpSanitizedCredentialKeys.length === 0 &&
+        mcpSanitized.JAVIS_CHILD_ENV_PROBE_ALLOWED === 'kept'
       : true,
     guard: openAiChildEnvGuardSnapshot(),
     parentHasOpenAiCredentials: openAiCredentialEnvKeys(process.env).length > 0,
     sanitizedHasOpenAiCredentials: sanitizedCredentialKeys.length > 0,
     sanitizedCredentialKeys,
     redactedKeys: String(sanitized.JAVIS_OPENAI_CHILD_ENV_REDACTED_KEYS || '').split(',').filter(Boolean),
+    mcpSanitizedHasOpenAiCredentials: mcpSanitizedCredentialKeys.length > 0,
+    mcpSanitizedCredentialKeys,
+    mcpRedactedKeys: String(mcpSanitized.JAVIS_OPENAI_CHILD_ENV_MCP_REDACTED_KEYS || '').split(',').filter(Boolean),
+    mcpAllowedEnvPreserved: mcpSanitized.JAVIS_CHILD_ENV_PROBE_ALLOWED === 'kept',
     inlineInjectionBlocked,
     inlineInjectionReason,
     commandPreview: redactCommandForLog(command),
@@ -4625,7 +4671,10 @@ async function captureScreenWithScreencapture() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'javis-screen-'));
   const target = path.join(dir, 'screen.jpg');
   try {
-    await execFileAsync('/usr/sbin/screencapture', ['-x', '-t', 'jpg', target], { timeout: 10000 });
+    await execFileAsync('/usr/sbin/screencapture', ['-x', '-t', 'jpg', target], guardedChildProcessOptions(
+      { timeout: 10000 },
+      { source: 'screen_capture_fallback' },
+    ));
     const image = nativeImage.createFromPath(target);
     if (image.isEmpty()) throw new Error('screencapture_thumbnail_empty');
     return image;
@@ -13795,7 +13844,10 @@ async function residentLaunchctlState() {
   const target = residentServiceTarget();
   if (!target) return { available: false, loaded: false, raw: '', pid: null, error: 'launchctl_domain_unavailable' };
   try {
-    const { stdout } = await execFileAsync('launchctl', ['print', target], { timeout: 3000, maxBuffer: 1024 * 512 });
+    const { stdout } = await execFileAsync('launchctl', ['print', target], guardedChildProcessOptions(
+      { timeout: 3000, maxBuffer: 1024 * 512 },
+      { source: 'resident_launchctl_state' },
+    ));
     const text = String(stdout || '');
     const pid = Number(text.match(/\bpid\s*=\s*(\d+)/)?.[1] || 0) || null;
     return { available: true, loaded: true, raw: text.slice(0, 2000), pid, error: '' };
@@ -13848,7 +13900,10 @@ async function keepAwakeLaunchctlState() {
   const target = keepAwakeTarget();
   if (!target) return { available: false, loaded: false, running: false, raw: '', pid: null, state: '', error: 'launchctl_domain_unavailable' };
   try {
-    const { stdout } = await execFileAsync('launchctl', ['print', target], { timeout: 3000, maxBuffer: 1024 * 256 });
+    const { stdout } = await execFileAsync('launchctl', ['print', target], guardedChildProcessOptions(
+      { timeout: 3000, maxBuffer: 1024 * 256 },
+      { source: 'keep_awake_launchctl_state' },
+    ));
     const text = String(stdout || '');
     const pid = Number(text.match(/\bpid\s*=\s*(\d+)/)?.[1] || 0) || null;
     const state = compactRecordText(text.match(/\bstate\s*=\s*([^\n]+)/)?.[1] || '', 80);
@@ -13879,7 +13934,10 @@ async function keepAwakePowerSnapshot() {
     return { available: false, source: '', acPower: false, raw: '', error: 'pmset_is_macos_only' };
   }
   try {
-    const { stdout } = await execFileAsync('pmset', ['-g', 'batt'], { timeout: 3000, maxBuffer: 1024 * 128 });
+    const { stdout } = await execFileAsync('pmset', ['-g', 'batt'], guardedChildProcessOptions(
+      { timeout: 3000, maxBuffer: 1024 * 128 },
+      { source: 'keep_awake_power_snapshot' },
+    ));
     const raw = String(stdout || '');
     const source = compactRecordText(raw.match(/Now drawing from '([^']+)'/)?.[1] || '', 80);
     return {
@@ -13899,7 +13957,10 @@ async function keepAwakeAssertionsSnapshot() {
     return { available: false, active: false, system: false, idle: false, disk: false, display: false, raw: '', error: 'pmset_is_macos_only' };
   }
   try {
-    const { stdout } = await execFileAsync('pmset', ['-g', 'assertions'], { timeout: 3000, maxBuffer: 1024 * 512 });
+    const { stdout } = await execFileAsync('pmset', ['-g', 'assertions'], guardedChildProcessOptions(
+      { timeout: 3000, maxBuffer: 1024 * 512 },
+      { source: 'keep_awake_assertions_snapshot' },
+    ));
     const raw = String(stdout || '');
     const hasCaffeinate = /caffeinate command-line tool|caffeinate/i.test(raw);
     return {
@@ -14349,10 +14410,13 @@ async function startKeepAwake(options = {}) {
       plan,
     };
   }
-  await execFileAsync('launchctl', ['submit', '-l', KEEP_AWAKE_LABEL, '--', KEEP_AWAKE_COMMAND, ...KEEP_AWAKE_FLAGS], {
-    timeout: 5000,
-    maxBuffer: 1024 * 128,
-  });
+  await execFileAsync('launchctl', ['submit', '-l', KEEP_AWAKE_LABEL, '--', KEEP_AWAKE_COMMAND, ...KEEP_AWAKE_FLAGS], guardedChildProcessOptions(
+    {
+      timeout: 5000,
+      maxBuffer: 1024 * 128,
+    },
+    { source: 'keep_awake_start' },
+  ));
   await new Promise((resolve) => setTimeout(resolve, 300));
   const after = await keepAwakeStatusSnapshot();
   appendAudit('keep_awake.started', {
@@ -14404,12 +14468,18 @@ async function stopKeepAwake(options = {}) {
       keepAwake: before,
     };
   }
-  await execFileAsync('launchctl', ['remove', KEEP_AWAKE_LABEL], {
-    timeout: 5000,
-    maxBuffer: 1024 * 128,
-  }).catch(async () => {
+  await execFileAsync('launchctl', ['remove', KEEP_AWAKE_LABEL], guardedChildProcessOptions(
+    {
+      timeout: 5000,
+      maxBuffer: 1024 * 128,
+    },
+    { source: 'keep_awake_stop' },
+  )).catch(async () => {
     if (before.pid) {
-      await execFileAsync('kill', [String(before.pid)], { timeout: 3000, maxBuffer: 1024 * 64 });
+      await execFileAsync('kill', [String(before.pid)], guardedChildProcessOptions(
+        { timeout: 3000, maxBuffer: 1024 * 64 },
+        { source: 'keep_awake_stop_kill' },
+      ));
     }
   });
   await new Promise((resolve) => setTimeout(resolve, 300));
@@ -14444,12 +14514,18 @@ async function uninstallResidentAgent() {
   const target = residentServiceTarget();
   if (target) {
     try {
-      await execFileAsync('launchctl', ['bootout', residentDomain(), LAUNCH_AGENT_FILE], { timeout: 5000 });
+      await execFileAsync('launchctl', ['bootout', residentDomain(), LAUNCH_AGENT_FILE], guardedChildProcessOptions(
+        { timeout: 5000 },
+        { source: 'resident_uninstall_bootout' },
+      ));
     } catch {
       // It is fine if the agent is not currently loaded.
     }
     try {
-      await execFileAsync('launchctl', ['disable', target], { timeout: 3000 });
+      await execFileAsync('launchctl', ['disable', target], guardedChildProcessOptions(
+        { timeout: 3000 },
+        { source: 'resident_uninstall_disable' },
+      ));
     } catch {
       // It is fine if the agent was never enabled.
     }
@@ -14499,7 +14575,10 @@ async function frontmostAppSnapshot() {
   ].join('\n');
 
   try {
-    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 2000 });
+    const { stdout } = await execFileAsync('osascript', ['-e', script], guardedChildProcessOptions(
+      { timeout: 2000 },
+      { source: 'frontmost_app_snapshot' },
+    ));
     const [appName = '', ...titleParts] = String(stdout || '').trimEnd().split(/\r?\n/);
     return {
       available: true,
@@ -14560,7 +14639,10 @@ async function runningApplicationNames() {
     'return appNames as text',
   ].join('\n');
   try {
-    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 2000 });
+    const { stdout } = await execFileAsync('osascript', ['-e', script], guardedChildProcessOptions(
+      { timeout: 2000 },
+      { source: 'running_application_names' },
+    ));
     return String(stdout || '').split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
   } catch {
     return [];
@@ -14631,7 +14713,10 @@ async function readBrowserContextForApp(appName, source = 'requested') {
       ].join('\n');
 
   try {
-    const { stdout } = await execFileAsync('osascript', ['-e', script], { timeout: 2500 });
+    const { stdout } = await execFileAsync('osascript', ['-e', script], guardedChildProcessOptions(
+      { timeout: 2500 },
+      { source: 'browser_context_snapshot' },
+    ));
     const [title = '', ...urlParts] = String(stdout || '').trimEnd().split(/\r?\n/);
     const url = urlParts.join('\n');
     return {
@@ -15108,7 +15193,10 @@ if (!processes.length) {
 `;
 
   try {
-    const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: AX_TREE_TIMEOUT_MS, maxBuffer: 3_000_000 });
+    const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], guardedChildProcessOptions(
+      { timeout: AX_TREE_TIMEOUT_MS, maxBuffer: 3_000_000 },
+      { source: 'accessibility_tree_snapshot' },
+    ));
     const tree = JSON.parse(String(stdout || '{}'));
     const result = {
       accessibilityTrusted,
@@ -18355,6 +18443,7 @@ async function executeNativeProductivityAction(action, options = {}, plan = {}) 
     const { stdout, stderr } = await execFileAsync('osascript', ['-e', spec.script, ...spec.args], {
       timeout: Math.max(5000, Math.min(60000, Number(options.timeoutMs || 20000))),
       maxBuffer: 1024 * 1024,
+      env: guardedChildProcessEnv({ source: 'productivity_native_action' }),
     });
     const nativeOutput = compactRecordText(String(stdout || stderr || spec.summary).trim(), 1200);
     let observation = null;
@@ -20331,7 +20420,10 @@ JSON.stringify({
 });
 `;
 
-  const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], { timeout: AX_ACTION_TIMEOUT_MS, maxBuffer: 1_000_000 });
+  const { stdout } = await execFileAsync('osascript', ['-l', 'JavaScript', '-e', script], guardedChildProcessOptions(
+    { timeout: AX_ACTION_TIMEOUT_MS, maxBuffer: 1_000_000 },
+    { source: 'accessibility_action' },
+  ));
   const result = JSON.parse(String(stdout || '{}'));
   appendAudit('accessibility_action.executed', {
     action: plan.action,
@@ -20818,6 +20910,7 @@ async function executeBrowserJavaScript(browser, js, options = {}) {
   const { stdout } = await execFileAsync('osascript', ['-e', script], {
     timeout: Math.max(1000, Math.min(15000, Number(options.timeoutMs || 6000))),
     maxBuffer: Math.max(1024 * 256, Math.min(1024 * 1024 * 8, Number(options.maxBuffer || 1024 * 1024 * 4))),
+    env: guardedChildProcessEnv({ source: 'browser_javascript_bridge' }),
   });
   return String(stdout || '').trim();
 }
@@ -20980,6 +21073,7 @@ async function launchChromeCdpFallback(browser = {}) {
   ], {
     detached: true,
     stdio: 'ignore',
+    env: guardedChildProcessEnv({ source: 'chrome_cdp_fallback' }),
   });
   child.unref();
   appendAudit('browser_cdp.launch_requested', {
@@ -22249,7 +22343,10 @@ async function runBrowserControlPlan(plan, evaluation) {
           `  set URL of active tab of front window to ${appleScriptString(url)}`,
           'end tell',
         ].join('\n');
-    await execFileAsync('osascript', ['-e', script], { timeout: 5000 });
+    await execFileAsync('osascript', ['-e', script], guardedChildProcessOptions(
+      { timeout: 5000 },
+      { source: 'browser_control' },
+    ));
     appendAudit('browser_control.executed', { app: appName, action: browserAction, url });
     return browserAction === 'search'
       ? `Searched in ${appName}: ${plan.args.query}`
@@ -22262,7 +22359,10 @@ async function runBrowserControlPlan(plan, evaluation) {
     `tell application ${quotedApp} to activate`,
     `tell application "System Events" to keystroke ${appleScriptString(key)} using {command down}`,
   ].join('\n');
-  await execFileAsync('osascript', ['-e', script], { timeout: 5000 });
+  await execFileAsync('osascript', ['-e', script], guardedChildProcessOptions(
+    { timeout: 5000 },
+    { source: 'browser_control' },
+  ));
   appendAudit('browser_control.executed', { app: appName, action: browserAction });
   return `Browser ${browserAction} executed in ${appName}.`;
 }
@@ -34255,11 +34355,28 @@ function mcpServerEnvForSpawn(entry = {}) {
   const rawEnv = entry.server?.env && typeof entry.server.env === 'object' && !Array.isArray(entry.server.env)
     ? entry.server.env
     : {};
-  const env = { ...process.env };
+  const env = guardedChildProcessEnv({
+    source: 'mcp_stdio_server',
+    command: entry.normalized?.command || entry.server?.command || '',
+  });
+  const redactedKeys = [];
   for (const [key, value] of Object.entries(rawEnv)) {
     if (!key) continue;
     if (value === undefined || value === null) continue;
-    env[String(key)] = String(value);
+    const normalizedKey = String(key);
+    if (OPENAI_CHILD_ENV_GUARD_ENABLED && OPENAI_CHILD_ENV_CREDENTIAL_KEYS.includes(normalizedKey)) {
+      redactedKeys.push(normalizedKey);
+      continue;
+    }
+    env[normalizedKey] = String(value);
+  }
+  env.JAVIS_OPENAI_CHILD_ENV_MCP_REDACTED_KEYS = redactedKeys.join(',');
+  if (redactedKeys.length) {
+    appendAudit('openai.child_env_guard_mcp_env_redacted', {
+      serverName: entry.normalized?.name || '',
+      sourceId: entry.normalized?.sourceId || '',
+      redactedKeys,
+    });
   }
   return env;
 }
@@ -48337,9 +48454,29 @@ function consumeWakeEngineOutput(chunk) {
 
 function startWakeEngine() {
   if (!WAKE_ENGINE_CMD || wakeEngineProcess) return wakeStatusSnapshot();
+  try {
+    assertOpenAiChildEnvCommandAllowed(WAKE_ENGINE_CMD, {
+      source: 'wake_engine',
+      commandName: shellCommandName(WAKE_ENGINE_CMD),
+    });
+  } catch (error) {
+    if (error instanceof OpenAiSpendGuardBlocked) {
+      wakeState = {
+        ...wakeState,
+        engineRunning: false,
+        enginePid: null,
+        engineLastError: error.decision?.summary || 'Wake engine blocked by OpenAI child env guard.',
+      };
+      return wakeStatusSnapshot();
+    }
+    throw error;
+  }
   wakeEngineProcess = spawn('/bin/zsh', ['-lc', WAKE_ENGINE_CMD], {
     cwd: process.cwd(),
-    env: process.env,
+    env: guardedChildProcessEnv({
+      source: 'wake_engine',
+      command: WAKE_ENGINE_CMD,
+    }),
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   wakeState = {
@@ -49507,12 +49644,12 @@ function prepareEnvFile() {
 }
 
 async function openPathInFinder(targetPath) {
-  await execFileAsync('open', [targetPath]);
+  await execFileAsync('open', [targetPath], guardedChildProcessOptions({}, { source: 'open_path_in_finder' }));
 }
 
 async function openSystemSettings(anchor) {
   const url = `x-apple.systempreferences:com.apple.preference.security?${anchor}`;
-  await execFileAsync('open', [url]);
+  await execFileAsync('open', [url], guardedChildProcessOptions({}, { source: 'open_system_settings' }));
 }
 
 async function openExternalUrl(url) {
@@ -49520,7 +49657,7 @@ async function openExternalUrl(url) {
   if (!/^https:\/\/(platform|help)\.openai\.com\//i.test(normalized)) {
     throw new Error('Only OpenAI setup URLs can be opened from this setup action.');
   }
-  await execFileAsync('open', [normalized]);
+  await execFileAsync('open', [normalized], guardedChildProcessOptions({}, { source: 'open_external_url' }));
 }
 
 async function runSetupAction(action) {
@@ -51917,6 +52054,7 @@ async function ensureBrowserRecoveryReadableTarget(action = {}, options = {}) {
       const { stdout } = await execFileAsync('osascript', ['-e', script], {
         timeout: 5000,
         maxBuffer: 1024 * 256,
+        env: guardedChildProcessEnv({ source: 'browser_workflow_ensure_page' }),
       });
       const [createdWindow = '', createdTab = '', ...urlParts] = String(stdout || '').trimEnd().split(/\r?\n/);
       ensure.ok = true;
@@ -57265,6 +57403,7 @@ function speechSay(options = {}) {
   const child = spawn('/usr/bin/say', args, {
     stdio: 'ignore',
     detached: false,
+    env: guardedChildProcessEnv({ source: 'local_speech' }),
   });
   speechProcess = child;
   appendAudit('speech.say', {
@@ -58431,12 +58570,12 @@ async function runMacActionPlan(plan, evaluation) {
   }
 
   if (plan.action === 'open_url') {
-    await execFileAsync('open', [plan.args.value]);
+    await execFileAsync('open', [plan.args.value], guardedChildProcessOptions({}, { source: 'mac_action_open_url' }));
     return `Opened ${plan.args.value}`;
   }
 
   if (plan.action === 'open_app') {
-    await execFileAsync('open', ['-a', plan.args.value]);
+    await execFileAsync('open', ['-a', plan.args.value], guardedChildProcessOptions({}, { source: 'mac_action_open_app' }));
     return `Opened ${plan.args.value}`;
   }
 
@@ -58462,7 +58601,7 @@ async function runMacActionPlan(plan, evaluation) {
     await execFileAsync('osascript', [
       '-e',
       `tell application "System Events" to keystroke ${JSON.stringify(plan.args.value)}`,
-    ]);
+    ], guardedChildProcessOptions({}, { source: 'mac_action_type_text' }));
     return 'Typed text into the active app.';
   }
 
@@ -58473,7 +58612,7 @@ async function runMacActionPlan(plan, evaluation) {
     const modifiers = keys.length
       ? ` using {${keys.map((item) => `${appleScriptModifier(item)} down`).join(', ')}}`
       : '';
-    await execFileAsync('osascript', ['-e', `tell application "System Events" to keystroke "${key}"${modifiers}`]);
+    await execFileAsync('osascript', ['-e', `tell application "System Events" to keystroke "${key}"${modifiers}`], guardedChildProcessOptions({}, { source: 'mac_action_hotkey' }));
     return `Pressed ${plan.args.keys}`;
   }
 

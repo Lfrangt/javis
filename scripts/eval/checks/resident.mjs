@@ -1741,13 +1741,21 @@ export default {
 		    out.push(
 		      childEnvProbeResponse.ok &&
 		        childEnvProbe.ok === true &&
-		        childEnvProbe.guard?.enabled === true &&
-		        childEnvProbe.guard?.defaultChildReceivesOpenAiCredentials === false &&
-		        childEnvProbe.guard?.blocksInlineCredentialEnv === true &&
-		        childEnvProbe.sanitizedHasOpenAiCredentials === false &&
-		        childEnvProbe.inlineInjectionBlocked === true &&
-		        childEnvProbe.inlineInjectionReason === 'inline_openai_credential_env_blocked' &&
-		        childEnvProbe.safety?.readOnly === true &&
+			        childEnvProbe.guard?.enabled === true &&
+			        childEnvProbe.guard?.defaultChildReceivesOpenAiCredentials === false &&
+			        childEnvProbe.guard?.blocksInlineCredentialEnv === true &&
+			        childEnvProbe.guard?.defaultChildProcessEnv === 'openai_credentials_redacted' &&
+			        childEnvProbe.guard?.safety?.mcpConfiguredEnvCredentialsBlocked === true &&
+			        childEnvProbe.guard?.safety?.knownChildEntrypointsUseSanitizedEnv === true &&
+			        childEnvProbe.sanitizedHasOpenAiCredentials === false &&
+			        childEnvProbe.mcpSanitizedHasOpenAiCredentials === false &&
+			        childEnvProbe.mcpAllowedEnvPreserved === true &&
+			        Array.isArray(childEnvProbe.mcpRedactedKeys) &&
+			        childEnvProbe.mcpRedactedKeys.includes('OPENAI_API_KEY') &&
+			        childEnvProbe.mcpRedactedKeys.includes('JAVIS_API_TOKEN') &&
+			        childEnvProbe.inlineInjectionBlocked === true &&
+			        childEnvProbe.inlineInjectionReason === 'inline_openai_credential_env_blocked' &&
+			        childEnvProbe.safety?.readOnly === true &&
 		        childEnvProbe.safety?.startsProcess === false &&
 		        childEnvProbe.safety?.callsOpenAi === false &&
 		        childEnvProbe.safety?.usesRealtime === false &&
@@ -1841,12 +1849,19 @@ export default {
 		      mainSource.includes('OPENAI_EGRESS_GUARD_ENABLED') &&
 		      mainSource.includes('OPENAI_REQUIRE_SPEND_LEASE') &&
 		      mainSource.includes('OPENAI_SPEND_LEASE_TTL_MS') &&
-		      mainSource.includes('OPENAI_CHILD_ENV_GUARD_ENABLED') &&
-		      mainSource.includes('function createOpenAiSpendLease') &&
-		      mainSource.includes('function sanitizeChildProcessEnv') &&
-		      mainSource.includes('function assertOpenAiChildEnvCommandAllowed') &&
-		      mainSource.includes('function openAiChildEnvGuardProbe') &&
-		      mainSource.includes('function openAiSpendForensicsSnapshot') &&
+			      mainSource.includes('OPENAI_CHILD_ENV_GUARD_ENABLED') &&
+			      mainSource.includes('function createOpenAiSpendLease') &&
+			      mainSource.includes('function sanitizeChildProcessEnv') &&
+			      mainSource.includes('function guardedChildProcessOptions') &&
+			      mainSource.includes('function assertOpenAiChildEnvCommandAllowed') &&
+			      mainSource.includes('function openAiChildEnvGuardProbe') &&
+			      mainSource.includes('defaultChildProcessEnv') &&
+			      mainSource.includes('mcpConfiguredEnvCredentialsBlocked') &&
+			      mainSource.includes('knownChildEntrypointsUseSanitizedEnv') &&
+			      mainSource.includes('JAVIS_OPENAI_CHILD_ENV_MCP_REDACTED_KEYS') &&
+			      mainSource.includes("source: 'wake_engine'") &&
+			      mainSource.includes("env: guardedChildProcessEnv({ source: 'local_speech' })") &&
+			      mainSource.includes('function openAiSpendForensicsSnapshot') &&
 		      mainSource.includes('likelyBillableFromJavis') &&
 		      mainSource.includes('blockedBySource') &&
 		      mainSource.includes('Allowed sources: none in local guard records.') &&
@@ -1873,10 +1888,11 @@ export default {
 		      rendererSource.includes("params.set('openAiSpendLeaseId', detail.openAiSpendLeaseId)") &&
 		      configCuiSource.includes('async function stopRealtimeForOpenAiLockdown') &&
 		      configCuiSource.includes("source: 'openai_lockdown'") &&
-		      configCuiSource.includes('stopScreen: true') &&
-		      configCuiSource.includes('Realtime voice stop:') &&
-		      configCuiSource.includes('Forensics: likely billable from JAVIS=') &&
-		      configCuiSource.includes('Latest allowed: none in local guard records') &&
+			      configCuiSource.includes('stopScreen: true') &&
+			      configCuiSource.includes('Realtime voice stop:') &&
+			      configCuiSource.includes('Forensics: likely billable from JAVIS=') &&
+			      configCuiSource.includes('MCP key env=') &&
+			      configCuiSource.includes('Latest allowed: none in local guard records') &&
       packageSource.includes('"dogfood:realtime-provider-probe": "node scripts/config-cui.cjs --print-realtime-provider-probe"') &&
       packageSource.includes('"dogfood:realtime-provider-probe:run": "node scripts/config-cui.cjs --run-realtime-provider-probe"') &&
       packageSource.includes('"openai:lockdown": "node scripts/config-cui.cjs --lock-openai-spend"') &&

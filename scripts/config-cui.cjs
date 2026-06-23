@@ -3812,6 +3812,7 @@ function printOpenAiSpendGuard(result) {
   const recent = Array.isArray(guard.recent) ? guard.recent : [];
   const lease = guard.spendLease || {};
   const childEnvGuard = guard.childEnvGuard || {};
+  const childEnvSafety = childEnvGuard.safety || {};
   const activeLeases = Array.isArray(lease.active) ? lease.active : [];
   const blockedSources = Array.isArray(forensics.blockedBySource) ? forensics.blockedBySource.slice(0, 4) : [];
   const allowedSources = Array.isArray(forensics.allowedBySource) ? forensics.allowedBySource.slice(0, 4) : [];
@@ -3830,7 +3831,7 @@ function printOpenAiSpendGuard(result) {
   console.log(`Autopilot cloud: ${guard.allowAutopilotCloud ? 'allowed' : 'blocked'} · renderer startup probe: ${guard.allowRendererStartupProbe ? 'allowed' : 'blocked'} · phrase=${guard.requireSpendConfirmationPhrase ? 'required' : 'off'}`);
   console.log(`Spend lease: ${guard.requireSpendLease ? 'required' : 'off'} · ttl=${formatInterval(guard.spendLeaseTtlMs || lease.ttlMs || 0)} · active=${lease.activeCount || activeLeases.length || 0} · one-request-only=${lease.oneRequestOnly === false ? 'no' : 'yes'}`);
   console.log(`Egress guard: ${guard.egressGuardEnabled ? 'on' : 'off'} · ${guard.egressGuardMode || '-'}`);
-  console.log(`Child env guard: ${childEnvGuard.enabled ? 'on' : 'off'} · child key inheritance=${childEnvGuard.defaultChildReceivesOpenAiCredentials ? 'allowed' : 'blocked'} · inline key env=${childEnvGuard.blocksInlineCredentialEnv ? 'blocked' : 'allowed'}`);
+  console.log(`Child env guard: ${childEnvGuard.enabled ? 'on' : 'off'} · child key inheritance=${childEnvGuard.defaultChildReceivesOpenAiCredentials ? 'allowed' : 'blocked'} · inline key env=${childEnvGuard.blocksInlineCredentialEnv ? 'blocked' : 'allowed'} · MCP key env=${childEnvSafety.mcpConfiguredEnvCredentialsBlocked ? 'blocked' : 'allowed'}`);
   console.log(`Safety: cloud off=${safety.off ? 'yes' : 'no'} · zero budget=${safety.zeroBudgetDefault ? 'yes' : 'no'} · hard lock=${safety.hardSpendLockDefault ? 'yes' : 'no'} · one-request lease=${safety.oneRequestLeaseRequired ? 'yes' : 'no'} · unscoped egress blocked=${safety.unscopedOpenAiEgressBlocked ? 'yes' : 'no'} · child creds blocked=${safety.childProcessOpenAiCredentialsBlocked ? 'yes' : 'no'}`);
   console.log('\nTo intentionally spend later: set JAVIS_OPENAI_HARD_SPEND_LOCK=false, set JAVIS_OPENAI_CLOUD_MODE=manual, set JAVIS_OPENAI_DAILY_REQUEST_LIMIT above 0, restart JAVIS, then type the spend phrase to create one short-lived, one-request lease.');
   if (activeLeases.length) {
