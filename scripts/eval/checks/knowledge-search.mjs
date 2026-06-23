@@ -33,6 +33,19 @@ export default {
         : warn('knowledge.skills_search', 'Local skills search', `POST /api/skills/local/search ${skills.status} ${skills.error || s?.error || ''}`),
     );
 
+    // Knowledge workflow in preview mode (README: knowledge work over the vault).
+    const workflow = await ctx.api('/api/knowledge/workflow', {
+      method: 'POST',
+      body: { instruction: 'find notes about javis', execute: false, source: 'eval' },
+      timeoutMs: 15000,
+    });
+    const w = workflow.data;
+    out.push(
+      workflow.ok && w?.ok === true && w.executed === false
+        ? ok('knowledge.workflow', 'Knowledge workflow preview', `intent=${w.intent || '?'} · scanned ${w.totalFilesScanned ?? '?'} file(s) · executed=false`)
+        : warn('knowledge.workflow', 'Knowledge workflow preview', `POST /api/knowledge/workflow ${workflow.status} ${workflow.error || w?.error || ''}`),
+    );
+
     return out;
   },
 };
