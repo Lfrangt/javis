@@ -91,7 +91,7 @@ Flags:
   --session-goal <goal>       Goal/title for the auto-started work session.
   --no-session                Disable active session logging for this command.
   --chat, --loop              Keep a local no-mic command loop open until /exit or /quit.
-                               Slash commands: /try, /status, /resident, /watchdog, /wake, /voice, /realtime, /unlock, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
+                               Slash commands: /try, /status, /resident, /watchdog, /wake, /voice, /realtime, /unlock, /latency, /spend, /session, /note, /app, /ui, /file, /browser, /browse, /open, /delegate, /codex, /claude, /handoff, /board, /jobs, /progress, /blockers, /unblock, /incident, /next, /auto, /learn, /history, /agent, /help.
   --full-status               In chat mode, make /status use the full diagnostics payload.
   --full-app                  Make /app read live Mac context and Accessibility outline.
   --full-browser              Make /browser read live browser page text.
@@ -516,6 +516,7 @@ function loopHelpText() {
     '  /codex    Shortcut for /delegate codex.',
     '  /claude   Shortcut for /delegate claude.',
     '  /handoff  Read the voice-ready work handoff summary.',
+    '  /board    Read the local visual progress board summary without opening the board.',
     '  /jobs     Read active/recent jobs, worker groups, recovery hints, and next action.',
     '  /progress Alias for /jobs.',
     '  /blockers Read why JAVIS is blocked/waiting across voice, approvals, jobs, routes, and autopilot.',
@@ -1525,6 +1526,47 @@ function formatLoopJobs(data = {}) {
   return lines.filter(Boolean).join('\n');
 }
 
+function formatLoopProgressBoard(data = {}) {
+  const board = data.board || data || {};
+  const performance = board.performance || {};
+  const recovery = board.recovery || {};
+  const voiceSetup = board.voiceSetup || {};
+  const provider = voiceSetup.provider || {};
+  const microphone = voiceSetup.microphone || {};
+  const nodes = Array.isArray(board.nodes) ? board.nodes.slice(0, 7) : [];
+  const blockers = Array.isArray(board.blockers?.top) ? board.blockers.top.slice(0, 3) : [];
+  const nextActions = Array.isArray(board.nextActions) ? board.nextActions.slice(0, 3) : [];
+  const safety = board.safety || {};
+  const lines = [
+    `Board: ${board.status || 'unknown'} · ${performance.durationMs ?? '-'}ms`,
+    `Summary: ${compactText(board.summary || '-', 520)}`,
+    recovery.summary ? `Recovery: ${recovery.label || recovery.actionId || '-'} · ${compactText(recovery.summary, 260)}` : '',
+    `Voice: ${voiceSetup.rawStatus || voiceSetup.status || '-'} · provider=${provider.status || '-'} · mic=${microphone.status || '-'}`,
+  ];
+  if (nodes.length) {
+    lines.push('Nodes:');
+    for (const node of nodes) {
+      lines.push(`- ${node.label || node.id || '-'}: ${node.status || '-'} · ${compactText(node.summary || '', 150)}`);
+    }
+  }
+  if (blockers.length) {
+    lines.push('Blockers:');
+    for (const item of blockers) {
+      lines.push(`- ${item.label || item.id || '-'}: ${compactText(item.summary || item.next || '', 180)}`);
+    }
+  } else {
+    lines.push('Blockers: none listed on the board.');
+  }
+  if (nextActions.length) {
+    lines.push('Next:');
+    nextActions.forEach((item, index) => lines.push(`${index + 1}. ${compactText(item, 220)}`));
+  }
+  lines.push('Manual open: npm run board');
+  lines.push(`Safety: OpenAI=${safety.callsOpenAi ? 'would call' : 'no'} · mic=${safety.startsMicrophone ? 'yes' : 'no'} · Realtime=${safety.usesRealtime ? 'yes' : 'no'} · workers=${safety.startsWorkers ? 'yes' : 'no'} · actions=${safety.executesActions ? 'yes' : 'no'}`);
+  lines.push('Boundary: read-only /api/progress-board; does not open browser, call OpenAI, start microphone/Realtime/workers, or execute actions.');
+  return lines.filter(Boolean).join('\n');
+}
+
 function formatLoopNext(data = {}) {
   const next = data.next || {};
   const action = next.action || {};
@@ -2320,6 +2362,15 @@ async function runLoopCommand(transcript) {
       return loopCommandResult(base, response, formatLoopHandoff(response.data || {}), {
         endpoint: '/api/work/handoff?jobLimit=6&workflowLimit=6&nextLimit=3&followUpLimit=3&maxChars=900',
         detailLevel: 'full',
+      });
+    }
+    if (command === 'board' || command === 'dashboard' || command === 'progress-board' || command === 'status-board') {
+      const endpoint = '/api/progress-board?jobLimit=5&workflowLimit=5&approvalLimit=5&timelineLimit=5';
+      const response = await request(endpoint);
+      return loopCommandResult(base, response, formatLoopProgressBoard(response.data || {}), {
+        command,
+        endpoint,
+        detailLevel: 'fast',
       });
     }
     if (command === 'jobs' || command === 'progress') {

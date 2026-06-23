@@ -29647,6 +29647,29 @@ function naturalUnblockPreviewLocalCommand(text) {
   };
 }
 
+function naturalProgressBoardLocalCommand(text) {
+  const raw = String(text || '').trim();
+  const compactTextNoSpace = raw.replace(/\s+/g, '');
+  const compactPlain = compactTextNoSpace.replace(/[？?。.!！,，:：]/g, '');
+  if (!raw) return null;
+
+  const english = /\b(progress board|status board|local board|visual board|work board|progress dashboard|status dashboard|local dashboard)\b/i.test(raw)
+    || /\b(show|read|check|summari[sz]e|what'?s on|what is on).*\b(progress|status|local|work).*\b(board|dashboard)\b/i.test(raw)
+    || /\b(board|dashboard).*\b(progress|status|blocked|stuck|running|next|recovery)\b/i.test(raw);
+  const chinese = /(?:进度看板|状态看板|本地看板|可视化看板|后台看板|工作看板|状态板)/i.test(compactPlain)
+    || /(?:打开|看看|看一下|读一下|汇报|总结|显示|告诉我).*(?:看板|状态板)/i.test(compactPlain)
+    || /(?:看板|状态板).*(?:怎么样|写什么|显示什么|卡在哪|卡在哪里|现在|进度|状态|下一步|恢复)/i.test(compactPlain);
+  if (!english && !chinese) return null;
+
+  return {
+    intent: 'progress_board',
+    label: 'Progress board',
+    args: {
+      query: raw,
+    },
+  };
+}
+
 function naturalObserveNowLocalCommand(text) {
   const raw = String(text || '').trim();
   const compactTextNoSpace = raw.replace(/\s+/g, '');
@@ -30383,6 +30406,9 @@ function localCommandDecision(task) {
   const approvalStatusCommand = naturalApprovalStatusLocalCommand(text);
   if (approvalStatusCommand) return approvalStatusCommand;
 
+  const progressBoardCommand = naturalProgressBoardLocalCommand(text);
+  if (progressBoardCommand) return progressBoardCommand;
+
   const autonomyReadinessCommand = naturalAutonomyReadinessLocalCommand(text);
   if (autonomyReadinessCommand) return autonomyReadinessCommand;
 
@@ -30883,7 +30909,7 @@ function buildContextPlan(message, options = {}) {
     needs.clipboardText = clipboardTextSignal;
     contextPlanPushReason(reasons, needs.clipboardText ? 'task asks for clipboard content' : 'task refers to clipboard state');
   }
-  if (statusSignal || ['status', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_recovery_guide', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight'].includes(localCommand)) {
+  if (statusSignal || ['status', 'resident_health', 'wake_status', 'work_progress', 'progress_board', 'work_next', 'browser_activity', 'browser_recovery', 'session_status', 'session_check_in', 'list_inbox', 'triage_inbox', 'capability_status', 'voice_status', 'voice_latency', 'openai_spend_status', 'incident_report', 'realtime_recovery_guide', 'realtime_provider_probe', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'app_ui_status', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight'].includes(localCommand)) {
     needs.residentState = true;
     contextPlanPushReason(reasons, 'task can use resident state instead of screen/page capture');
   }
@@ -30926,7 +30952,7 @@ function buildContextPlan(message, options = {}) {
       needs.browserContext = false;
       needs.browserPage = false;
       needs.browserDom = false;
-    } else if (['blocker_status', 'unblock_preview'].includes(localCommand)) {
+    } else if (['blocker_status', 'unblock_preview', 'progress_board'].includes(localCommand)) {
       needs.residentState = true;
       needs.macContext = false;
       needs.screen = false;
@@ -31095,6 +31121,35 @@ function formatBriefingForLocalCommand(briefing) {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function formatProgressBoardForLocalCommand(board = {}) {
+  const performance = board.performance || {};
+  const recovery = board.recovery || {};
+  const voiceSetup = board.voiceSetup || {};
+  const voiceProvider = voiceSetup.provider || {};
+  const microphone = voiceSetup.microphone || {};
+  const nodes = Array.isArray(board.nodes) ? board.nodes.slice(0, 7) : [];
+  const blockers = Array.isArray(board.blockers?.top) ? board.blockers.top.slice(0, 3) : [];
+  const nextActions = Array.isArray(board.nextActions) ? board.nextActions.slice(0, 3) : [];
+  const nodeLines = nodes.map((node) => {
+    const next = node.next ? ` · next=${compactRecordText(node.next, 120)}` : '';
+    return `- ${node.label || node.id || '-'}: ${node.status || '-'} · ${compactRecordText(node.summary || '', 150)}${next}`;
+  });
+  const blockerLines = blockers.map((item) => `- ${item.label || item.id || '-'}: ${compactRecordText(item.summary || item.next || '', 180)}`);
+  const safety = board.safety || {};
+  return [
+    `JAVIS 看板: ${board.status || 'unknown'} · ${performance.durationMs ?? '-'}ms`,
+    board.summary ? `摘要: ${compactRecordText(board.summary, 360)}` : '',
+    recovery.summary ? `下一步恢复: ${recovery.label || recovery.actionId || '-'} · ${compactRecordText(recovery.summary, 260)}` : '',
+    `语音: ${voiceSetup.rawStatus || voiceSetup.status || '-'} · provider=${voiceProvider.status || '-'} · mic=${microphone.status || '-'}`,
+    nodeLines.length ? `节点:\n${nodeLines.join('\n')}` : '',
+    blockerLines.length ? `阻塞:\n${blockerLines.join('\n')}` : '阻塞: 当前看板没有列出必须处理的阻塞。',
+    nextActions.length ? `下一步:\n${nextActions.map((item, index) => `${index + 1}. ${compactRecordText(item, 220)}`).join('\n')}` : '',
+    '手动打开: npm run board',
+    `安全: OpenAI=${safety.callsOpenAi ? 'would call' : 'no'} · mic=${safety.startsMicrophone ? 'yes' : 'no'} · Realtime=${safety.usesRealtime ? 'yes' : 'no'} · workers=${safety.startsWorkers ? 'yes' : 'no'} · actions=${safety.executesActions ? 'yes' : 'no'}`,
+    '边界: 只读 /api/progress-board；不打开浏览器，不调用 OpenAI，不启动麦克风/Realtime/worker，不执行动作。',
+  ].filter(Boolean).join('\n');
 }
 
 function formatInboxForLocalCommand(items, counts) {
@@ -32556,6 +32611,22 @@ async function runLocalCommand(command, options = {}) {
         localCommand: command,
         output: formatWakeStatusForLocalCommand(wakeStatus),
         data: { wakeStatus },
+      };
+    }
+
+    if (command.intent === 'progress_board') {
+      const progressBoard = await progressBoardSnapshot({
+        source: 'local_command_progress_board',
+        jobLimit: 5,
+        workflowLimit: 5,
+        approvalLimit: 5,
+        sectionTimeoutMs: 900,
+      });
+      return {
+        ok: true,
+        localCommand: command,
+        output: formatProgressBoardForLocalCommand(progressBoard),
+        data: { progressBoard },
       };
     }
 
@@ -36225,7 +36296,7 @@ async function routeTask(options = {}) {
       contextMode: decision.contextPlan.mode,
     });
     if (!execute) {
-      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'wake_status', 'work_progress', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight', 'observe_now', 'realtime_recovery_guide', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'browser_control', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
+      if (['app_ui_status', 'app_ui', 'app_workflow', 'creative_workflow', 'delegate_task', 'resident_health', 'wake_status', 'work_progress', 'progress_board', 'work_next', 'capability_status', 'voice_status', 'perception_status', 'approval_status', 'blocker_status', 'unblock_preview', 'learning_distillation', 'recent_activity', 'browser_activity', 'prompt_suggestions', 'voice_latency', 'openai_spend_status', 'openai_spend_incident', 'incident_report', 'autopilot_status', 'autonomy_readiness', 'parallel_preflight', 'observe_now', 'realtime_recovery_guide', 'realtime_provider_probe', 'realtime_dogfood_archive', 'realtime_dogfood_script_copy', 'realtime_dogfood_prompt_copy', 'realtime_dogfood_pack', 'realtime_dogfood_status', 'session_status', 'session_check_in', 'start_session', 'resume_session', 'session_note', 'end_session', 'browser_readiness', 'browser_recovery', 'browser_page', 'browser_dom', 'browser_workflow', 'browser_control', 'window_control', 'capture_text', 'capture_clipboard', 'process_next_inbox', 'keep_awake'].includes(localCommand.intent)) {
         const result = await runLocalCommand(localCommand, { execute: false, source: routingContext.source });
         return finalizeRouteResult({
           ok: Boolean(result.ok),

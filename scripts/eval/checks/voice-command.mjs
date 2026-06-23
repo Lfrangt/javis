@@ -1017,6 +1017,58 @@ export default {
         : fail('voice_command.natural_progress', 'Natural progress voice command', 'natural progress phrase did not use the local work_progress fast path', naturalProgress.data),
     );
 
+    const naturalProgressBoard = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '打开本地进度看板，告诉我现在卡在哪里',
+        execute: false,
+        includeScreen: false,
+        useMemory: false,
+        speak: true,
+        source: 'eval_voice_command_natural_progress_board',
+      },
+      timeoutMs: 30000,
+    });
+    const naturalProgressBoardData = naturalProgressBoard.data || {};
+    const progressBoardRoute = naturalProgressBoardData.route || {};
+    const progressBoard = progressBoardRoute.data?.progressBoard || {};
+    const progressBoardSafety = progressBoard.safety || {};
+    const localVoiceLoopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
+    const loopBoardSlashReady =
+      localVoiceLoopSource.includes("command === 'board'") &&
+      localVoiceLoopSource.includes('/api/progress-board') &&
+      localVoiceLoopSource.includes('formatLoopProgressBoard') &&
+      localVoiceLoopSource.includes('/board');
+    out.push(
+      naturalProgressBoard.ok &&
+        naturalProgressBoardData.ok === true &&
+        naturalProgressBoardData.executed === false &&
+        progressBoardRoute.decision?.localCommand === 'progress_board' &&
+        progressBoardRoute.localCommand?.intent === 'progress_board' &&
+        progressBoardRoute.executed === false &&
+        typeof progressBoardRoute.output === 'string' &&
+        progressBoardRoute.output.includes('JAVIS 看板:') &&
+        progressBoardRoute.output.includes('下一步恢复:') &&
+        progressBoardRoute.output.includes('边界:') &&
+        progressBoard.version === 1 &&
+        progressBoard.recovery?.previewOnly === true &&
+        progressBoardSafety.callsOpenAi === false &&
+        progressBoardSafety.startsMicrophone === false &&
+        progressBoardSafety.usesRealtime === false &&
+        progressBoardSafety.startsWorkers === false &&
+        progressBoardSafety.executesActions === false &&
+        naturalProgressBoardData.safety?.startsMicrophone === false &&
+        naturalProgressBoardData.safety?.usesRealtime === false &&
+        naturalProgressBoardData.safety?.callsOpenAIImmediately === false &&
+        naturalProgressBoardData.speech?.dryRun === true &&
+        loopBoardSlashReady
+        ? ok('voice_command.natural_progress_board', 'Natural progress-board voice command', '进度看板 routes to the local board summary and /board exists without cloud, mic, Realtime, worker, or action execution')
+        : fail('voice_command.natural_progress_board', 'Natural progress-board voice command', 'natural progress-board phrase did not use the read-only local board path', {
+          body: naturalProgressBoard.data,
+          loopBoardSlashReady,
+        }),
+    );
+
     const naturalWorkNext = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
