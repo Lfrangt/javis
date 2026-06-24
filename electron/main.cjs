@@ -55359,6 +55359,68 @@ function setupRecoveryAllowSummary() {
   };
 }
 
+function setupRecoveryFreeNextActions(options = {}) {
+  const localVoice = options.localVoice || {};
+  const resident = options.resident || {};
+  const actions = [
+    {
+      id: 'free:local_voice',
+      label: '使用本地无麦输入',
+      summary: 'Realtime provider 还需要手动验证时，先用本地文字/系统听写入口继续协作。',
+      command: 'npm run voice -- "后台现在怎么样"',
+      endpoint: '/api/voice/command',
+      available: Boolean(localVoice.available),
+    },
+    {
+      id: 'free:status_board',
+      label: '打开本地状态板',
+      summary: '查看可视化进度、Realtime 阻塞原因和下一步，不调用 OpenAI，也不开麦。',
+      command: 'npm run board -- --no-open',
+      endpoint: '/api/progress-board',
+      available: true,
+    },
+    {
+      id: 'free:capabilities',
+      label: '查看本地能力图',
+      summary: '查看浏览器、文件、App、Codex、Claude、CLI 和本地自动化现在能做什么。',
+      command: 'npm run config -- --print-capabilities --include-next',
+      endpoint: '/api/capabilities',
+      available: true,
+    },
+    {
+      id: 'free:browser_control',
+      label: '检查浏览器控制',
+      summary: '在让 JAVIS 操作浏览器前，先看浏览器导航和控制动作是否就绪。',
+      command: 'npm run browser:control',
+      endpoint: '/api/browser/control/status',
+      available: true,
+    },
+    {
+      id: 'free:work_handoff',
+      label: '读取当前工作交接',
+      summary: '用口语化摘要查看当前工作、阻塞和下一步安全动作，不启动 worker。',
+      command: 'npm run config -- --print-work-handoff',
+      endpoint: '/api/work/handoff',
+      available: Boolean(resident.loaded || resident.installed),
+    },
+  ];
+  return actions.filter((action) => action.available !== false).map((action) => ({
+    id: action.id,
+    label: compactRecordText(action.label, 140),
+    summary: compactRecordText(action.summary, 260),
+    command: action.command,
+    endpoint: action.endpoint,
+    noCost: true,
+    readOnly: true,
+    startsMicrophone: false,
+    usesRealtime: false,
+    callsOpenAi: false,
+    startsWorkers: false,
+    executesActions: false,
+    mutatesFiles: false,
+  }));
+}
+
 async function setupRecoveryBundleSnapshot(options = {}) {
   const includeRecentAudit = options.includeRecentAudit !== false;
   const readiness = readinessSnapshot({ includeRecentAudit });
@@ -55453,6 +55515,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
       : null,
     ...workActions,
   ].filter(Boolean).slice(0, 6);
+  const freeNextActions = setupRecoveryFreeNextActions({ localVoice, resident });
   const residentReady = Boolean(resident.installed && resident.loaded && resident.matchesProject);
   const setupBlocked = readiness.overall === 'blocked' || config.overall === 'blocked';
   const realtimeReady = voiceHealth.status === 'ready';
@@ -55479,6 +55542,7 @@ async function setupRecoveryBundleSnapshot(options = {}) {
     generatedAt: new Date().toISOString(),
     nextAction: nextActions[0] || null,
     nextActions,
+    freeNextActions,
     endpoints: {
       bundle: '/api/setup/recovery-bundle',
       setupGuide: '/api/setup/guide',

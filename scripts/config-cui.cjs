@@ -4550,6 +4550,7 @@ function printSetupRecoveryBundle(result) {
   const permissions = Array.isArray(bundle.permissions) ? bundle.permissions : [];
   const capabilities = Array.isArray(automation.capabilities) ? automation.capabilities : [];
   const nextActions = Array.isArray(bundle.nextActions) ? bundle.nextActions : [];
+  const freeNextActions = Array.isArray(bundle.freeNextActions) ? bundle.freeNextActions : [];
   console.log('JAVIS Setup Recovery Bundle');
   console.log('===========================');
   console.log(`Status: ${bundle.overall || '-'} · ${bundle.label || '-'}`);
@@ -4605,6 +4606,15 @@ function printSetupRecoveryBundle(result) {
     console.log('\nCapabilities');
     for (const item of capabilities.slice(0, 8)) {
       console.log(`- ${item.status || '-'} ${item.label || item.id}: ${compact(item.summary || item.next || '', 180)}`);
+    }
+  }
+
+  if (freeNextActions.length) {
+    console.log('\nZero-cost now / 零费用现在可做');
+    for (const [index, action] of freeNextActions.slice(0, 5).entries()) {
+      const command = action.command ? ` · ${action.command}` : '';
+      console.log(`${index + 1}. ${action.label || action.id}${command}`);
+      if (action.summary) console.log(`   ${compact(action.summary, 220)}`);
     }
   }
 

@@ -140,6 +140,15 @@ export default {
     const bundleAllow = bundlePolicy.allow || {};
     const bundlePermissions = Array.isArray(bundle.permissions) ? bundle.permissions : [];
     const bundleCapabilities = Array.isArray(bundle.automation?.capabilities) ? bundle.automation.capabilities : [];
+    const bundleFreeNextActions = Array.isArray(bundle.freeNextActions) ? bundle.freeNextActions : [];
+    const bundleFreeNextIds = new Set(bundleFreeNextActions.map((action) => action.id));
+    const setupBundleCui = spawnSync(process.execPath, ['scripts/config-cui.cjs', '--print-setup-recovery-bundle'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+    });
+    const setupBundleCuiOutput = String(setupBundleCui.stdout || '');
     out.push(
       recoveryBundleResponse.ok &&
         bundle.version === 1 &&
@@ -206,6 +215,25 @@ export default {
         bundleAllow.files?.rootCount >= 0 &&
         Array.isArray(bundleAllow.cli?.allowedCommands) &&
         Array.isArray(bundle.nextActions) &&
+        bundleFreeNextIds.has('free:local_voice') &&
+        bundleFreeNextIds.has('free:status_board') &&
+        bundleFreeNextIds.has('free:capabilities') &&
+        bundleFreeNextIds.has('free:browser_control') &&
+        bundleFreeNextActions.every((action) =>
+          action.noCost === true &&
+          action.readOnly === true &&
+          action.startsMicrophone === false &&
+          action.usesRealtime === false &&
+          action.callsOpenAi === false &&
+          action.startsWorkers === false &&
+          action.executesActions === false &&
+          action.mutatesFiles === false
+        ) &&
+        setupBundleCui.status === 0 &&
+        setupBundleCuiOutput.includes('Zero-cost now') &&
+        setupBundleCuiOutput.includes('npm run board -- --no-open') &&
+        setupBundleCuiOutput.includes('npm run browser:control') &&
+        setupBundleCuiOutput.includes('npm run config -- --print-capabilities --include-next') &&
         bundle.safety?.readOnly === true &&
         bundle.safety?.startsMicrophone === false &&
         bundle.safety?.callsOpenAi === false &&
@@ -217,6 +245,11 @@ export default {
         : fail('resident.setup_recovery_bundle', 'Resident setup recovery bundle', 'expected compact read-only resident recovery bundle with setup, permissions, voice fallback, automation, and safety contract', {
           status: recoveryBundleResponse.status,
           bundle,
+          cui: {
+            status: setupBundleCui.status,
+            stdout: setupBundleCuiOutput.slice(0, 1600),
+            stderr: String(setupBundleCui.stderr || '').slice(0, 1200),
+          },
         }),
 	    );
 
