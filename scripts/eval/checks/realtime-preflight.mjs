@@ -109,6 +109,8 @@ export default {
 
     const probe = providerProbe.data?.probe || {};
     const probePreview = providerProbePreview.data || {};
+    const runbook = probe.attendedRunbook || {};
+    const previewRunbook = probePreview.attendedRunbook || {};
     out.push(
       providerProbe.ok &&
         providerProbePreview.ok &&
@@ -138,6 +140,15 @@ export default {
         probePreview.endpoint?.executeBody?.confirmOpenAiSpend === true &&
         probePreview.endpoint?.executeBody?.confirmOpenAiSpendPhrase === '<type spend phrase>' &&
         probePreview.endpoint?.executeBody?.openAiSpendLeaseId === '<one-request lease id>' &&
+        runbook.manualOnly === true &&
+        runbook.startsMicrophone === false &&
+        runbook.createsSpendLeaseOnExecution === true &&
+        runbook.callsOpenAiOnExecution === true &&
+        runbook.interactiveCommand === 'npm run dogfood:realtime-provider-probe:run' &&
+        String(runbook.confirmedCommand || '').includes('--confirm-openai-spend') &&
+        previewRunbook.manualOnly === true &&
+        previewRunbook.safety?.previewCallsOpenAi === false &&
+        previewRunbook.safety?.executionStartsMicrophone === false &&
         probePreview.detail?.action === 'probe'
         ? ok('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `${probe.status || 'idle'} · renderer=${probe.rendererAvailable ? 'ready' : 'missing'} · key=${probe.hasOpenAiKey ? 'present' : 'missing'} · spend confirmation required`)
         : fail('realtime_preflight.provider_probe_preview', 'No-mic Realtime provider probe preview', `GET/POST /api/realtime/provider/probe ${providerProbe.status}/${providerProbePreview.status}`, { probe, preview: probePreview }),

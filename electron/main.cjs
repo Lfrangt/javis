@@ -51272,6 +51272,62 @@ function recordRealtimeProviderProbeEvent(options = {}) {
   return realtimeProviderProbeSnapshot();
 }
 
+function realtimeProviderProbeAttendedRunbook(options = {}) {
+  const phrase = OPENAI_SPEND_CONFIRMATION_PHRASE || 'SPEND OPENAI';
+  const keySync = options.keySync || openAiApiKeySyncSnapshot();
+  const spendGuard = options.spendGuard || null;
+  const guardStatus = spendGuard?.allowed
+    ? 'allowed'
+    : spendGuard?.manualRequired || spendGuard?.status === 'manual_required'
+      ? 'manual_required'
+      : spendGuard ? 'blocked' : '';
+  const blockers = [];
+  if (keySync.requiresRestart) blockers.push('restart_required');
+  if (!openAiApiKeyConfigured()) blockers.push('missing_openai_key');
+  if (!openAiApiKeyAvailableForCalls()) blockers.push('callable_key_unavailable');
+  if (OPENAI_HARD_SPEND_LOCK) blockers.push('hard_spend_lock_on');
+  if (OPENAI_CLOUD_MODE === 'off') blockers.push('cloud_mode_off');
+  if (OPENAI_DAILY_REQUEST_LIMIT <= 0) blockers.push('daily_limit_zero');
+  if (spendGuard?.allowed === false && guardStatus !== 'manual_required') blockers.push('spend_guard_blocked');
+  const status = options.providerReady
+    ? 'provider_ready'
+    : blockers.length
+      ? 'blocked_before_attended_probe'
+      : 'ready_for_attended_probe';
+  return {
+    version: 1,
+    status,
+    manualOnly: true,
+    requiresUserPresence: true,
+    startsMicrophone: false,
+    startsRealtimeSession: false,
+    createsSpendLeaseOnExecution: true,
+    callsOpenAiOnExecution: true,
+    oneRequestOnly: true,
+    confirmationPhraseRequired: OPENAI_REQUIRE_SPEND_CONFIRMATION_PHRASE,
+    phrasePreview: phrase,
+    previewCommand: 'npm run dogfood:realtime-provider-probe',
+    interactiveCommand: 'npm run dogfood:realtime-provider-probe:run',
+    confirmedCommand: `npm run config -- --run-realtime-provider-probe --confirm-openai-spend --confirm-openai-spend-phrase ${shellQuote(phrase)}`,
+    liveVoiceCommandAfterSuccess: 'npm run dogfood:realtime-renderer -- --execute --confirm-mic --require-acceptance',
+    blockers,
+    next: options.providerReady
+      ? 'Provider probe is already ready; keep using the mic-confirmed live drill path only when present.'
+      : blockers.length
+        ? 'Resolve the listed blocker, then rerun the preview before creating a one-request lease.'
+        : 'Run the interactive command while present, type the exact spend phrase, then run the mic-confirmed live drill only after the no-mic provider probe succeeds.',
+    safety: {
+      previewCallsOpenAi: false,
+      previewCreatesSpendLease: false,
+      executionRequiresPhrase: true,
+      executionRequiresLease: OPENAI_REQUIRE_SPEND_LEASE,
+      executionCallsOpenAi: true,
+      executionStartsMicrophone: false,
+      liveVoiceStillRequiresConfirmMic: true,
+    },
+  };
+}
+
 function realtimeProviderProbeSnapshot(options = {}) {
   const openAiKeyConfigured = openAiApiKeyConfigured();
   const openAiKeyAvailable = openAiApiKeyAvailableForCalls();
@@ -51335,6 +51391,11 @@ function realtimeProviderProbeSnapshot(options = {}) {
       kind: 'realtime_provider_probe',
       source: 'status',
       required: true,
+    }),
+    attendedRunbook: realtimeProviderProbeAttendedRunbook({
+      providerReady,
+      keySync,
+      spendGuard,
     }),
     summary,
     next: !openAiKeyConfigured
@@ -51433,6 +51494,11 @@ async function startRealtimeProviderProbe(options = {}) {
     spendGuard: compactOpenAiSpendGuardDecision(spendPreview),
     spendGuardDecision: spendPreview,
     providerProbe: realtimeProviderProbeSnapshot(),
+    attendedRunbook: realtimeProviderProbeAttendedRunbook({
+      providerReady: false,
+      keySync: openAiApiKeySyncSnapshot(),
+      spendGuard: compactOpenAiSpendGuardDecision(spendPreview),
+    }),
     endpoint: {
       method: 'POST',
       path: '/api/realtime/provider/probe',

@@ -4073,6 +4073,7 @@ function printRealtimeProviderProbe(result) {
   const probe = result?.probe || result?.providerProbe || result || {};
   const providerResult = probe.result || result?.result || {};
   const keySync = probe.keySync || result?.keySync || {};
+  const runbook = result?.attendedRunbook || probe.attendedRunbook || {};
   console.log('JAVIS Realtime Provider Probe');
   console.log('=============================');
   console.log(`Run: ${probe.runId || result?.runId || providerResult.runId || '-'}`);
@@ -4098,6 +4099,18 @@ function printRealtimeProviderProbe(result) {
   }
   if (probe.summary) console.log(`Summary: ${compact(probe.summary, 300)}`);
   if (probe.next) console.log(`Next: ${compact(probe.next, 300)}`);
+  if (runbook.version) {
+    console.log('\nAttended runbook');
+    console.log(`- status: ${runbook.status || '-'} · phrase=${runbook.confirmationPhraseRequired ? runbook.phrasePreview || '<configured phrase>' : 'not required'}`);
+    console.log(`- preview: ${runbook.previewCommand || 'npm run dogfood:realtime-provider-probe'}`);
+    console.log(`- interactive: ${runbook.interactiveCommand || 'npm run dogfood:realtime-provider-probe:run'}`);
+    if (runbook.confirmedCommand) console.log(`- one-shot: ${runbook.confirmedCommand}`);
+    if (runbook.liveVoiceCommandAfterSuccess) console.log(`- after success: ${runbook.liveVoiceCommandAfterSuccess}`);
+    if (Array.isArray(runbook.blockers) && runbook.blockers.length) console.log(`- blockers: ${runbook.blockers.join(', ')}`);
+    if (runbook.next) console.log(`- next: ${compact(runbook.next, 260)}`);
+    const safety = runbook.safety || {};
+    console.log(`- safety: preview calls OpenAI=${safety.previewCallsOpenAi ? 'yes' : 'no'} · execution calls OpenAI=${safety.executionCallsOpenAi ? 'yes' : 'no'} · execution starts mic=${safety.executionStartsMicrophone ? 'yes' : 'no'} · live voice still needs confirmMic=${safety.liveVoiceStillRequiresConfirmMic ? 'yes' : 'no'}`);
+  }
   if (providerResult.error) console.log(`Error: ${compact(providerResult.error, 360)}`);
   if (result?.output) console.log(`\n${compact(result.output, 1200)}`);
   const events = Array.isArray(probe.events) ? probe.events : [];
