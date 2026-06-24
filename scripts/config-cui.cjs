@@ -15,6 +15,9 @@ const ENV_EXAMPLE_FILE = path.join(process.cwd(), '.env.example');
 const LAUNCH_AGENT_LABEL = 'com.haoge.javis';
 const PARK_CORNERS = ['notch', 'bottom-right', 'bottom-left', 'top-right', 'top-left'];
 const CONTROL_MODES = ['observe_only', 'ask_before_action', 'trusted_local', 'takeover_supervised'];
+const REQUEST_RETRY_ATTEMPTS = Math.max(1, Math.min(20, Number(process.env.JAVIS_CUI_REQUEST_RETRY_ATTEMPTS || 8)));
+const REQUEST_RETRY_DELAY_MS = Math.max(100, Math.min(3000, Number(process.env.JAVIS_CUI_REQUEST_RETRY_DELAY_MS || 500)));
+const REQUEST_TIMEOUT_MS = Math.max(1000, Math.min(30000, Number(process.env.JAVIS_CUI_REQUEST_TIMEOUT_MS || 10000)));
 const OPENAI_ZERO_SPEND_ENV = {
   JAVIS_OPENAI_PARANOID_ZERO_SPEND: 'true',
   JAVIS_OPENAI_HARD_SPEND_LOCK: 'true',
@@ -116,7 +119,18 @@ function readApiToken() {
   }
 }
 
-function request(path, options = {}) {
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientApiConnectError(error) {
+  const code = String(error?.code || '');
+  const message = String(error?.message || '');
+  return ['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'ETIMEDOUT'].includes(code) ||
+    /ECONNREFUSED|ECONNRESET|socket hang up|timeout|timed out/i.test(message);
+}
+
+function requestOnce(path, options = {}) {
   const url = new URL(path, API_BASE);
   const body = options.body ? JSON.stringify(options.body) : '';
   const token = readApiToken();
@@ -149,10 +163,38 @@ function request(path, options = {}) {
         resolve(data);
       });
     });
+    req.setTimeout(Number(options.timeoutMs || REQUEST_TIMEOUT_MS), () => {
+      const error = new Error(`JAVIS resident API request timed out after ${Number(options.timeoutMs || REQUEST_TIMEOUT_MS)}ms`);
+      error.code = 'ETIMEDOUT';
+      req.destroy(error);
+    });
     req.on('error', reject);
     if (body) req.write(body);
     req.end();
   });
+}
+
+async function request(path, options = {}) {
+  const method = String(options.method || 'GET').toUpperCase();
+  const retry = options.retry === true || (options.retry !== false && ['GET', 'HEAD'].includes(method));
+  const attempts = retry ? Math.max(1, Math.min(20, Number(options.retryAttempts || REQUEST_RETRY_ATTEMPTS))) : 1;
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await requestOnce(path, options);
+    } catch (error) {
+      lastError = error;
+      if (!retry || !isTransientApiConnectError(error)) throw error;
+      if (attempt >= attempts) {
+        throw new Error(`JAVIS resident API unavailable after ${attempts} attempt(s): ${error.message}`);
+      }
+      await sleep(Math.min(REQUEST_RETRY_DELAY_MS * attempt, 3000));
+    }
+  }
+  if (lastError && isTransientApiConnectError(lastError)) {
+    throw new Error(`JAVIS resident API unavailable after ${attempts} attempt(s): ${lastError.message}`);
+  }
+  throw lastError || new Error('JAVIS resident API request failed');
 }
 
 function issueLines(doctor) {
@@ -4334,7 +4376,7 @@ async function showOpenAiSpendGuard() {
 
 async function showOpenAiSpendSentinel(options = {}) {
   const result = await request(options.checkNow ? '/api/openai/spend-sentinel/check' : '/api/openai/spend-sentinel', options.checkNow
-    ? { method: 'POST', body: { source: 'cui_openai_spend_sentinel' } }
+    ? { method: 'POST', body: { source: 'cui_openai_spend_sentinel' }, retry: true, timeoutMs: 15000 }
     : {});
   printOpenAiSpendSentinel(result);
   return result;

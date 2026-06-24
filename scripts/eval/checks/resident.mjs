@@ -2375,6 +2375,21 @@ export default {
       maxBuffer: 1024 * 1024,
     });
     const sentinelCuiOutput = String(sentinelCui.stdout || '');
+    const configCuiSourceForRequestRetry = fs.readFileSync('scripts/config-cui.cjs', 'utf8');
+    const sentinelCuiUnavailable = spawnSync(process.execPath, ['scripts/config-cui.cjs', '--print-openai-spend-sentinel'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 8000,
+      maxBuffer: 1024 * 1024,
+      env: {
+        ...process.env,
+        JAVIS_API_BASE: 'http://127.0.0.1:9',
+        JAVIS_CUI_REQUEST_RETRY_ATTEMPTS: '2',
+        JAVIS_CUI_REQUEST_RETRY_DELAY_MS: '100',
+        JAVIS_CUI_REQUEST_TIMEOUT_MS: '1000',
+      },
+    });
+    const sentinelCuiUnavailableError = String(sentinelCuiUnavailable.stderr || sentinelCuiUnavailable.stdout || '');
     const spendSentinelZeroLocked = Boolean(
       spendSentinel.forensics?.zeroLocked === true &&
         (spendSentinel.guard?.emergencyZeroSpendLock === true ||
@@ -2432,7 +2447,14 @@ export default {
         sentinelCui.status === 0 &&
         sentinelCuiOutput.includes('JAVIS OpenAI Spend Sentinel') &&
         sentinelCuiOutput.includes('Status: clear') &&
-        sentinelCuiOutput.includes('Safety: local guard state only')
+        sentinelCuiOutput.includes('Safety: local guard state only') &&
+        configCuiSourceForRequestRetry.includes('REQUEST_RETRY_ATTEMPTS') &&
+        configCuiSourceForRequestRetry.includes('isTransientApiConnectError') &&
+        configCuiSourceForRequestRetry.includes("['GET', 'HEAD'].includes(method)") &&
+        configCuiSourceForRequestRetry.includes('JAVIS resident API unavailable after') &&
+        configCuiSourceForRequestRetry.includes("retry: true, timeoutMs: 15000") &&
+        sentinelCuiUnavailable.status !== 0 &&
+        sentinelCuiUnavailableError.includes('JAVIS resident API unavailable after 2 attempt')
         ? ok('resident.openai_spend_sentinel', 'OpenAI spend sentinel', `${spendSentinelCheck.status || spendSentinel.status} · checks=${spendSentinelCheck.watcher?.checkCount ?? spendSentinel.watcher?.checkCount ?? 0} · allowed=${spendSentinel.counts?.allowedToday || 0} · leases=${spendSentinel.counts?.activeLeases || 0}`)
         : fail('resident.openai_spend_sentinel', 'OpenAI spend sentinel', 'expected resident/CUI spend sentinel to report clear zero-lock or clear manual-guarded state without OpenAI calls, leases, mic, Realtime, or worker side effects', {
           status: spendSentinelResponse.status,
@@ -2443,6 +2465,8 @@ export default {
             status: sentinelCui.status,
             stdout: sentinelCuiOutput.slice(0, 1600),
             stderr: String(sentinelCui.stderr || '').slice(0, 1200),
+            unavailableStatus: sentinelCuiUnavailable.status,
+            unavailable: sentinelCuiUnavailableError.slice(0, 1200),
           },
         }),
     );
