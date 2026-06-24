@@ -12,6 +12,7 @@ dist
 dist-ssr
 coverage
 *.tsbuildinfo
+electron/main.bundle.cjs
 *.local
 .env
 .env.*

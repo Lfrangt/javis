@@ -1763,6 +1763,8 @@ export default {
     const mainSource = fs.readFileSync('electron/main.cjs', 'utf8');
     const loopSource = fs.readFileSync('scripts/local-voice-command-dogfood.mjs', 'utf8');
     const installSource = fs.readFileSync('scripts/install-launch-agent.cjs', 'utf8');
+    const launcherSource = fs.readFileSync('scripts/resident-launcher.cjs', 'utf8');
+    const bootstrapSource = fs.readFileSync('electron/bootstrap.cjs', 'utf8');
     const stopSource = fs.readFileSync('scripts/stop-resident-processes.cjs', 'utf8');
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf8'));
     const hasLocalLoopApiTerminalBlock =
@@ -1795,10 +1797,14 @@ export default {
 
     const hasResidentLaunchNoTerminalLoop =
       installSource.includes('const launchAgentWorkingDirectory = homeDir') &&
-      installSource.includes("const electronExecutable = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')") &&
-      installSource.includes('const electronAppTarget = repoRoot') &&
-      installSource.includes('<string>${xmlEscape(electronExecutable)}</string>') &&
-      installSource.includes('<string>${xmlEscape(electronAppTarget)}</string>') &&
+      installSource.includes("const residentLauncherScript = path.join(repoRoot, 'scripts', 'resident-launcher.cjs')") &&
+      installSource.includes('function buildMainProcessBundleForResident') &&
+      installSource.includes("const rolldownExecutable = path.join(repoRoot, 'node_modules', '.bin', 'rolldown')") &&
+      installSource.includes("const electronMainBundle = path.join(repoRoot, 'electron', 'main.bundle.cjs')") &&
+      installSource.includes("'--external'") &&
+      installSource.includes("'electron'") &&
+      installSource.includes('<string>${xmlEscape(process.execPath)}</string>') &&
+      installSource.includes('<string>${xmlEscape(residentLauncherScript)}</string>') &&
       !installSource.includes("electron', 'cli.js'") &&
       !installSource.includes("const command = 'npm run start:desktop'") &&
       !installSource.includes('<string>-c</string>') &&
@@ -1810,12 +1816,22 @@ export default {
       installSource.includes('plistEnvironmentXml(watchdogLaunchEnv)') &&
       installSource.includes("JAVIS_REPO_ROOT: repoRoot") &&
       installSource.includes("JAVIS_OPENAI_PARANOID_ZERO_SPEND: 'true'") &&
+      launcherSource.includes('waitForHealthyChild') &&
+      launcherSource.includes('resident API did not become healthy') &&
+      launcherSource.includes("JAVIS_RESIDENT_LAUNCHER: 'true'") &&
+      launcherSource.includes("spawn(electronExecutable, [repoRoot]") &&
+      bootstrapSource.includes("main.bundle.cjs") &&
+      bootstrapSource.includes("readFileBufferInChunksSync") &&
+      launcherSource.includes("path: '/api/health?lite=watchdog'") &&
+      launcherSource.includes("stdio: ['ignore', 'inherit', 'inherit']") &&
+      launcherSource.includes("stopChild('SIGTERM')") &&
+      !launcherSource.includes("shell: true") &&
       stopSource.includes('isProjectLocalVoiceLoopProcess') &&
       stopSource.includes('npm run voice:chat') &&
       stopSource.includes('local-voice-command-dogfood\\.mjs.*--chat');
     out.push(
       hasResidentLaunchNoTerminalLoop
-        ? ok('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'resident startup uses home cwd, direct Electron, JAVIS_REPO_ROOT, and clears stale local voice loops')
+        ? ok('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'resident startup uses home cwd, health-gated launcher, JAVIS_REPO_ROOT, and clears stale local voice loops')
         : fail('resident.launch_agent_no_terminal_loop', 'Launch agent avoids Terminal voice loop', 'expected launch agent install/stop scripts to prevent runaway voice:chat Terminal loops'),
     );
 
@@ -2018,7 +2034,7 @@ export default {
     const launchAgentWorkingDirectory = launchAgentPlist.match(/<key>WorkingDirectory<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || '';
     const launchAgentUsesSafeWorkingDirectory =
       launchAgentWorkingDirectory === os.homedir() &&
-      launchAgentPlist.includes('/node_modules/electron/dist/Electron.app/Contents/MacOS/Electron') &&
+      launchAgentPlist.includes('/scripts/resident-launcher.cjs') &&
       !launchAgentPlist.includes('/node_modules/electron/cli.js') &&
       launchAgentPlist.includes(process.cwd()) &&
       launchAgentPlist.includes('<key>JAVIS_REPO_ROOT</key>') &&
@@ -2028,8 +2044,8 @@ export default {
       !launchAgentPlist.includes('<string>-lc</string>');
     out.push(
       launchAgentUsesSafeWorkingDirectory
-        ? ok('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'plist starts from home, passes JAVIS_REPO_ROOT, and launches Electron directly with Terminal voice loop disabled')
-        : fail('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'expected LaunchAgent WorkingDirectory to avoid protected project cwd and pass JAVIS_REPO_ROOT to direct Electron startup', {
+        ? ok('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'plist starts from home, passes JAVIS_REPO_ROOT, and launches the health-gated resident launcher with Terminal voice loop disabled')
+        : fail('resident.launchagent_safe_cwd', 'LaunchAgent safe startup cwd', 'expected LaunchAgent WorkingDirectory to avoid protected project cwd and pass JAVIS_REPO_ROOT to the health-gated resident launcher', {
             launchAgentPath,
             installed: fs.existsSync(launchAgentPath),
             workingDirectory: launchAgentWorkingDirectory,

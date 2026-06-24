@@ -17,8 +17,18 @@ const watchdogOutLog = path.join(repoRoot, 'logs', 'resident-watchdog.out.log');
 const watchdogErrLog = path.join(repoRoot, 'logs', 'resident-watchdog.err.log');
 const stopScript = path.join(repoRoot, 'scripts', 'stop-resident-processes.cjs');
 const watchdogScript = path.join(repoRoot, 'scripts', 'resident-watchdog.cjs');
+const residentLauncherScript = path.join(repoRoot, 'scripts', 'resident-launcher.cjs');
+const rolldownExecutable = path.join(repoRoot, 'node_modules', '.bin', 'rolldown');
+const electronMainSource = path.join(repoRoot, 'electron', 'main.cjs');
+const electronMainBundle = path.join(repoRoot, 'electron', 'main.bundle.cjs');
+const distIndexFile = path.join(repoRoot, 'dist', 'index.html');
 const uid = process.getuid?.();
 const launchAgentWorkingDirectory = homeDir;
+const args = new Set(process.argv.slice(2));
+const skipBuild = args.has('--skip-build') || ['1', 'true', 'yes'].includes(String(process.env.JAVIS_RESIDENT_INSTALL_SKIP_BUILD || '').toLowerCase());
+const skipMainBundle = args.has('--skip-main-bundle') || ['1', 'true', 'yes'].includes(String(process.env.JAVIS_RESIDENT_INSTALL_SKIP_MAIN_BUNDLE || '').toLowerCase());
+const buildTimeoutMs = Math.max(10000, Math.min(300000, Number(process.env.JAVIS_RESIDENT_INSTALL_BUILD_TIMEOUT_MS || 60000)));
+const mainBundleTimeoutMs = Math.max(10000, Math.min(120000, Number(process.env.JAVIS_RESIDENT_MAIN_BUNDLE_TIMEOUT_MS || 45000)));
 const openAiCredentialEnvKeys = [
   'OPENAI_API_KEY',
   'OPENAI_ADMIN_KEY',
@@ -100,11 +110,66 @@ function run(command, args, options = {}) {
     execFileSync(command, args, {
       stdio: options.stdio || 'pipe',
       env: options.env || safeProcessEnv(),
+      timeout: options.timeoutMs || undefined,
     });
     return true;
   } catch (error) {
     if (options.optional) return false;
     throw error;
+  }
+}
+
+function buildRendererForResident() {
+  const hasExistingBuild = fs.existsSync(distIndexFile);
+  if (skipBuild && hasExistingBuild) {
+    console.log('Skipping JAVIS renderer build; using existing dist/index.html.');
+    return;
+  }
+  console.log('Building JAVIS renderer...');
+  const ok = run('npm', ['run', 'resident:prepare'], {
+    stdio: 'inherit',
+    timeoutMs: buildTimeoutMs,
+    optional: hasExistingBuild,
+  });
+  if (!ok && hasExistingBuild) {
+    console.log(`Renderer build did not finish within ${Math.round(buildTimeoutMs / 1000)}s; continuing with existing dist/index.html so the resident can recover.`);
+  }
+}
+
+function buildMainProcessBundleForResident() {
+  const hasExistingBundle = fs.existsSync(electronMainBundle);
+  if (skipMainBundle && hasExistingBundle) {
+    console.log('Skipping JAVIS main-process bundle; using existing electron/main.bundle.cjs.');
+    return;
+  }
+  if (!fs.existsSync(rolldownExecutable)) {
+    if (hasExistingBundle) {
+      console.log('Rolldown not found; using existing electron/main.bundle.cjs.');
+      return;
+    }
+    throw new Error(`Rolldown executable not found: ${rolldownExecutable}`);
+  }
+  console.log('Bundling JAVIS main process...');
+  const ok = run(rolldownExecutable, [
+    electronMainSource,
+    '--platform',
+    'node',
+    '--format',
+    'cjs',
+    '--external',
+    'electron',
+    '--file',
+    electronMainBundle,
+    '--no-treeshake',
+    '--log-level',
+    'warn',
+  ], {
+    stdio: 'inherit',
+    timeoutMs: mainBundleTimeoutMs,
+    optional: hasExistingBundle,
+  });
+  if (!ok && hasExistingBundle) {
+    console.log(`Main-process bundle did not finish within ${Math.round(mainBundleTimeoutMs / 1000)}s; continuing with existing electron/main.bundle.cjs.`);
   }
 }
 
@@ -129,13 +194,15 @@ function plistEnvironmentXml(values) {
 fs.mkdirSync(launchAgentsDir, { recursive: true });
 fs.mkdirSync(path.join(repoRoot, 'logs'), { recursive: true });
 
-console.log('Building JAVIS renderer...');
-run('npm', ['run', 'resident:prepare'], { stdio: 'inherit' });
+buildMainProcessBundleForResident();
+buildRendererForResident();
 
 const electronExecutable = path.join(repoRoot, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron');
-const electronAppTarget = repoRoot;
 if (!fs.existsSync(electronExecutable)) {
   throw new Error(`Electron executable not found: ${electronExecutable}`);
+}
+if (!fs.existsSync(residentLauncherScript)) {
+  throw new Error(`Resident launcher script not found: ${residentLauncherScript}`);
 }
 if (!fs.existsSync(watchdogScript)) {
   throw new Error(`Resident watchdog script not found: ${watchdogScript}`);
@@ -146,6 +213,7 @@ const residentLaunchEnv = {
   JAVIS_ALLOW_TERMINAL_VOICE_LOOP: 'false',
   JAVIS_RESIDENT_LAUNCH_AGENT: 'true',
   JAVIS_REPO_ROOT: repoRoot,
+  JAVIS_RESIDENT_STARTUP_HEALTH_TIMEOUT_MS: process.env.JAVIS_RESIDENT_STARTUP_HEALTH_TIMEOUT_MS || '60000',
 };
 const watchdogLaunchEnv = {
   PATH: process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
@@ -161,8 +229,8 @@ const plist = `<?xml version="1.0" encoding="UTF-8"?>
   <string>${xmlEscape(label)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${xmlEscape(electronExecutable)}</string>
-    <string>${xmlEscape(electronAppTarget)}</string>
+    <string>${xmlEscape(process.execPath)}</string>
+    <string>${xmlEscape(residentLauncherScript)}</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${xmlEscape(launchAgentWorkingDirectory)}</string>
