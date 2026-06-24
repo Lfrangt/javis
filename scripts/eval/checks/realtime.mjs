@@ -3267,15 +3267,18 @@ export default {
     const latestSavedAcceptance = await ctx.api('/api/realtime/dogfood/acceptance?auditLimit=12');
     const latestSavedData = latestSavedAcceptance.data?.acceptance;
     const latestSavedArchiveGate = (latestSavedData?.gates || []).find((gate) => gate.id === 'archive_saved');
+    const savedArchivePath = acceptanceSave.data?.archive?.file?.path || '';
     out.push(
       latestSavedAcceptance.ok &&
         latestSavedAcceptance.data?.archiveSource?.mode === 'latest_saved' &&
+        latestSavedAcceptance.data?.archiveSource?.selectedBy === 'mtime' &&
         latestSavedData?.archive?.saved === true &&
         latestSavedArchiveGate?.ok === true &&
         latestSavedData?.archive?.file &&
+        latestSavedData.archive.file === savedArchivePath &&
         fs.existsSync(latestSavedData.archive.file) &&
-        fs.existsSync(acceptanceSave.data?.archive?.file?.path || '')
-        ? ok('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', latestSavedData.archive.file === acceptanceSave.data?.archive?.file?.path ? latestSavedData.archive.file : `${latestSavedData.archive.file} · saved=${acceptanceSave.data?.archive?.file?.path}`)
+        fs.existsSync(savedArchivePath)
+        ? ok('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', latestSavedData.archive.file)
         : fail('realtime.dogfood_acceptance_latest_saved', 'Realtime dogfood acceptance latest saved archive', `GET /api/realtime/dogfood/acceptance ${latestSavedAcceptance.status}`, latestSavedAcceptance.data),
     );
 

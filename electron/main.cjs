@@ -50433,7 +50433,7 @@ function realtimeDogfoodArchiveEvidenceScore(archive = {}) {
 
 function latestSavedRealtimeDogfoodArchive(options = {}) {
   const archives = realtimeDogfoodArchiveList({ limit: options.limit || 20 });
-  const preferEvidence = options.preferEvidence !== false;
+  const preferEvidence = options.preferEvidence === true;
   let best = null;
   for (const item of archives.items || []) {
     const archive = readRealtimeDogfoodArchiveFile(item.file);
@@ -50476,20 +50476,27 @@ function realtimeDogfoodAcceptanceArchiveFromRequest(query = {}) {
     query.latestSaved !== 'false' &&
     query.latestSaved !== '0';
   if (useLatestSaved) {
+    const preferEvidence =
+      query.preferEvidence === 'true' ||
+      query.preferEvidence === '1' ||
+      query.bestEvidence === 'true' ||
+      query.bestEvidence === '1' ||
+      query.archiveMode === 'best_evidence';
     const latest = latestSavedRealtimeDogfoodArchive({
       limit: query.archiveLimit || 20,
-      preferEvidence: query.preferEvidence !== 'false' && query.preferEvidence !== '0',
+      preferEvidence,
     });
     if (latest?.archive) {
       return {
         archive: latest.archive,
         source: {
-          mode: 'latest_saved',
+          mode: preferEvidence ? 'best_saved_evidence' : 'latest_saved',
           saved: true,
           file: latest.archive.file?.path || latest.metadata?.file || '',
           savedAt: latest.archive.savedAt || latest.metadata?.savedAt || '',
           generatedAt: latest.archive.generatedAt || latest.metadata?.generatedAt || '',
           evidenceScore: Number(latest.score || 0),
+          selectedBy: preferEvidence ? 'evidence_score' : 'mtime',
         },
       };
     }
