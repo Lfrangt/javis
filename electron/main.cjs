@@ -18080,6 +18080,19 @@ function appUiCacheStateSnapshot() {
   };
 }
 
+function recentPrewarmedAppUiTree(options = {}) {
+  const status = String(appUiPrewarmState.lastStatus || '');
+  const completedAt = Number(appUiPrewarmState.lastCompletedAt || 0);
+  if (!['cached', 'warmed'].includes(status) || !completedAt) return null;
+  const maxAgeMs = Math.max(0, Math.min(APP_UI_CACHE_MAX_AGE_MS, Number(options.maxAgeMs || APP_UI_CACHE_MAX_AGE_MS)));
+  if (Date.now() - completedAt > maxAgeMs) return null;
+  return findCachedAccessibilityTree({
+    maxNodes: Number(options.maxNodes || 80),
+    maxDepth: Number(options.maxDepth || 6),
+    maxAgeMs,
+  });
+}
+
 function ambientAppUiPrewarmEnabled() {
   return AMBIENT_PREWARM_APP_UI && actionPolicy?.allow?.read_accessibility_tree?.enabled !== false;
 }
@@ -33471,7 +33484,13 @@ async function runLocalCommand(command, options = {}) {
     }
 
     if (command.intent === 'app_ui') {
-      const frontmost = command.args?.app
+      const maxNodes = command.args?.maxNodes || 80;
+      const maxDepth = command.args?.maxDepth || 6;
+      const maxAgeMs = command.args?.maxAgeMs || APP_UI_CACHE_MAX_AGE_MS;
+      const prewarmedTree = command.args?.app
+        ? null
+        : recentPrewarmedAppUiTree({ maxNodes, maxDepth, maxAgeMs });
+      const frontmost = (command.args?.app || prewarmedTree)
         ? null
         : await frontmostAppSnapshot().catch((error) => ({
             available: false,
@@ -33480,12 +33499,12 @@ async function runLocalCommand(command, options = {}) {
             error: error instanceof Error ? error.message : String(error),
           }));
       const targetApp = command.args?.app || frontmost?.app || '';
-      const tree = await cachedAccessibilityTreeSnapshot({
+      const tree = prewarmedTree || await cachedAccessibilityTreeSnapshot({
         app: targetApp,
         windowTitle: command.args?.windowTitle || frontmost?.windowTitle || '',
-        maxNodes: command.args?.maxNodes || 80,
-        maxDepth: command.args?.maxDepth || 6,
-        maxAgeMs: command.args?.maxAgeMs || APP_UI_CACHE_MAX_AGE_MS,
+        maxNodes,
+        maxDepth,
+        maxAgeMs,
         useCache: targetApp ? command.args?.useCache !== false : false,
       });
       return {
@@ -33501,7 +33520,15 @@ async function runLocalCommand(command, options = {}) {
                 windowTitle: frontmost.windowTitle || '',
                 error: frontmost.error || '',
               }
-            : null,
+            : prewarmedTree
+              ? {
+                  available: true,
+                  app: prewarmedTree.app || '',
+                  windowTitle: prewarmedTree.windowTitle || '',
+                  cached: true,
+                  source: 'prewarmed_app_ui_cache',
+                }
+              : null,
         },
       };
     }
@@ -34780,15 +34807,26 @@ function voiceCommandLatencyReportSnapshot(options = {}) {
 function voiceCommandHistorySnapshot(options = {}) {
   const limit = Math.max(1, Math.min(50, Number(options.limit || 10)));
   const auditLimit = Math.max(80, Math.min(1000, Number(options.auditLimit || limit * 16)));
+  const sourceFilter = compactRecordText(options.source || '', 80).toLowerCase();
+  const queryFilter = compactRecordText(options.q || options.query || '', 120).toLowerCase();
   const items = readRecentAudit(auditLimit)
     .map(voiceCommandHistoryItemFromAudit)
     .filter(Boolean)
     .reverse()
+    .filter((item) => {
+      if (sourceFilter && !String(item.source || '').toLowerCase().includes(sourceFilter)) return false;
+      if (queryFilter && !String(item.transcriptPreview || '').toLowerCase().includes(queryFilter)) return false;
+      return true;
+    })
     .slice(0, limit);
   return {
     ok: true,
     generatedAt: new Date().toISOString(),
     limit,
+    filters: {
+      source: sourceFilter,
+      q: queryFilter,
+    },
     count: items.length,
     items,
     latency: voiceCommandLatencySnapshot(items),
@@ -71094,7 +71132,14 @@ function startApiServer() {
   });
 
   api.get('/api/voice/history', (req, res) => {
-    res.json({ history: voiceCommandHistorySnapshot({ limit: req.query.limit, auditLimit: req.query.auditLimit }) });
+    res.json({
+      history: voiceCommandHistorySnapshot({
+        limit: req.query.limit,
+        auditLimit: req.query.auditLimit,
+        source: req.query.source,
+        q: req.query.q || req.query.query,
+      }),
+    });
   });
 
   api.get('/api/voice/latency', (req, res) => {

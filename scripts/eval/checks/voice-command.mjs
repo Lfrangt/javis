@@ -2396,9 +2396,14 @@ export default {
         stdout.includes('JAVIS Voice Doctor') &&
           stdout.includes('Voice:') &&
           stdout.includes('Why live Realtime is not connected') &&
+          stdout.includes('Provider probe runbook') &&
+          stdout.includes('npm run dogfood:realtime-provider-probe:run') &&
           stdout.includes('Wake and local fallback') &&
           stdout.includes('Latency and resident') &&
           stdout.includes('npm run voice:chat') &&
+          stdout.includes('execution calls OpenAI=yes') &&
+          stdout.includes('execution starts mic=no') &&
+          stdout.includes('live voice still needs confirmMic=yes') &&
           stdout.includes('starts mic=no') &&
           stdout.includes('uses Realtime=no') &&
           stdout.includes('calls OpenAI=no') &&
@@ -3566,7 +3571,8 @@ export default {
       }
     }
 
-    const history = await ctx.api('/api/voice/history?limit=50&auditLimit=500', { timeoutMs: 30000 });
+    const historyQuery = encodeURIComponent(localCliTranscript.slice(0, 8));
+    const history = await ctx.api(`/api/voice/history?limit=50&auditLimit=1000&source=local_voice_command_cli&q=${historyQuery}`, { timeoutMs: 30000 });
     const historyData = history.data?.history || {};
     const historyItems = Array.isArray(historyData.items) ? historyData.items : [];
     const cliHistory = historyItems.find((item) => (

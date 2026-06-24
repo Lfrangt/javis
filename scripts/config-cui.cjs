@@ -1438,6 +1438,7 @@ async function showVoiceStandby() {
 function printVoiceDoctor(result = {}) {
   const standby = result.standby || {};
   const provider = standby.provider || {};
+  const providerProbe = result.providerProbe || result.realtimeProviderProbe || {};
   const spend = standby.spendGuard || {};
   const local = standby.local || {};
   const primary = standby.primaryAction || {};
@@ -1477,6 +1478,9 @@ function printVoiceDoctor(result = {}) {
   console.log(`Provider: ${provider.summary ? compact(provider.summary, 320) : provider.status || '-'}`);
   if (provider.next) console.log(`Provider next: ${compact(provider.next, 320)}`);
   if (provider.subscriptionBoundary) console.log(`Billing/API: ${compact(provider.subscriptionBoundary, 320)}`);
+  printRealtimeProviderAttendedRunbook(providerProbe.attendedRunbook || providerProbe.probe?.attendedRunbook, {
+    title: 'Provider probe runbook',
+  });
   console.log(`OpenAI spend: ${spend.zeroSpendLocked ? 'zero-locked' : 'not zero-locked'} · cloud=${spend.mode || sentinelGuard.mode || '-'} · remaining=${spend.remainingTotal ?? sentinelGuard.remainingTotal ?? 0} · blocked=${spend.blockedCount ?? sentinelGuard.blockedCount ?? 0}`);
   console.log(`Sentinel: ${sentinel.status || '-'} · clear=${sentinel.clear ? 'yes' : 'no'} · likely billable from JAVIS=${sentinelForensics.likelyBillableFromJavis ? 'yes' : 'no'} · zero locked=${sentinelForensics.zeroLocked ? 'yes' : 'no'}`);
 
@@ -1500,12 +1504,13 @@ function printVoiceDoctor(result = {}) {
 }
 
 async function showVoiceDoctor() {
-  const [standbyResult, wakeResult, sentinelResult, latencyResult, residentResult] = await Promise.all([
+  const [standbyResult, wakeResult, sentinelResult, latencyResult, residentResult, providerProbeResult] = await Promise.all([
     request('/api/voice/standby').catch((error) => ({ standby: { provider: { status: 'error', summary: error instanceof Error ? error.message : String(error) } } })),
     request('/api/wake/status').catch(() => ({ wake: null })),
     request('/api/openai/spend-sentinel').catch(() => ({ sentinel: null })),
     request('/api/voice/latency?limit=30&auditLimit=500').catch(() => ({ latency: null })),
     request('/api/resident/status').catch(() => ({ resident: null })),
+    request('/api/realtime/provider/probe').catch(() => ({ probe: null })),
   ]);
   const result = {
     standby: standbyResult.standby || standbyResult.voiceStandby || standbyResult || {},
@@ -1513,6 +1518,7 @@ async function showVoiceDoctor() {
     sentinel: sentinelResult.sentinel || {},
     latency: latencyResult.latency || {},
     resident: residentResult.resident || residentResult || {},
+    providerProbe: providerProbeResult.probe || providerProbeResult.providerProbe || providerProbeResult || {},
     safety: {
       readOnly: true,
       startsMicrophone: false,
@@ -1529,8 +1535,16 @@ async function showVoiceDoctor() {
 }
 
 async function showVoiceSetup() {
-  const result = await request('/api/voice/setup');
+  const [result, providerProbeResult] = await Promise.all([
+    request('/api/voice/setup'),
+    request('/api/realtime/provider/probe').catch(() => ({ probe: null })),
+  ]);
   console.log(result.output || 'Voice setup guide unavailable.');
+  const providerProbe = providerProbeResult.probe || providerProbeResult.providerProbe || providerProbeResult || {};
+  printRealtimeProviderAttendedRunbook(providerProbe.attendedRunbook || providerProbe.probe?.attendedRunbook, {
+    title: 'Provider probe runbook',
+  });
+  result.providerProbe = providerProbe;
   return result;
 }
 
@@ -4099,18 +4113,7 @@ function printRealtimeProviderProbe(result) {
   }
   if (probe.summary) console.log(`Summary: ${compact(probe.summary, 300)}`);
   if (probe.next) console.log(`Next: ${compact(probe.next, 300)}`);
-  if (runbook.version) {
-    console.log('\nAttended runbook');
-    console.log(`- status: ${runbook.status || '-'} · phrase=${runbook.confirmationPhraseRequired ? runbook.phrasePreview || '<configured phrase>' : 'not required'}`);
-    console.log(`- preview: ${runbook.previewCommand || 'npm run dogfood:realtime-provider-probe'}`);
-    console.log(`- interactive: ${runbook.interactiveCommand || 'npm run dogfood:realtime-provider-probe:run'}`);
-    if (runbook.confirmedCommand) console.log(`- one-shot: ${runbook.confirmedCommand}`);
-    if (runbook.liveVoiceCommandAfterSuccess) console.log(`- after success: ${runbook.liveVoiceCommandAfterSuccess}`);
-    if (Array.isArray(runbook.blockers) && runbook.blockers.length) console.log(`- blockers: ${runbook.blockers.join(', ')}`);
-    if (runbook.next) console.log(`- next: ${compact(runbook.next, 260)}`);
-    const safety = runbook.safety || {};
-    console.log(`- safety: preview calls OpenAI=${safety.previewCallsOpenAi ? 'yes' : 'no'} · execution calls OpenAI=${safety.executionCallsOpenAi ? 'yes' : 'no'} · execution starts mic=${safety.executionStartsMicrophone ? 'yes' : 'no'} · live voice still needs confirmMic=${safety.liveVoiceStillRequiresConfirmMic ? 'yes' : 'no'}`);
-  }
+  printRealtimeProviderAttendedRunbook(runbook, { title: 'Attended runbook' });
   if (providerResult.error) console.log(`Error: ${compact(providerResult.error, 360)}`);
   if (result?.output) console.log(`\n${compact(result.output, 1200)}`);
   const events = Array.isArray(probe.events) ? probe.events : [];
@@ -4120,6 +4123,22 @@ function printRealtimeProviderProbe(result) {
       console.log(`- ${event.createdAtIso || event.createdAt || '-'} · ${event.type || '-'} · ${event.status || '-'}${event.detail ? ` · ${compact(event.detail, 180)}` : ''}`);
     }
   }
+}
+
+function printRealtimeProviderAttendedRunbook(runbook = {}, options = {}) {
+  if (!runbook?.version) return false;
+  const title = options.title || 'Attended runbook';
+  console.log(`\n${title}`);
+  console.log(`- status: ${runbook.status || '-'} · phrase=${runbook.confirmationPhraseRequired ? runbook.phrasePreview || '<configured phrase>' : 'not required'}`);
+  console.log(`- preview: ${runbook.previewCommand || 'npm run dogfood:realtime-provider-probe'}`);
+  console.log(`- interactive: ${runbook.interactiveCommand || 'npm run dogfood:realtime-provider-probe:run'}`);
+  if (runbook.confirmedCommand) console.log(`- one-shot: ${runbook.confirmedCommand}`);
+  if (runbook.liveVoiceCommandAfterSuccess) console.log(`- after success: ${runbook.liveVoiceCommandAfterSuccess}`);
+  if (Array.isArray(runbook.blockers) && runbook.blockers.length) console.log(`- blockers: ${runbook.blockers.join(', ')}`);
+  if (runbook.next) console.log(`- next: ${compact(runbook.next, 260)}`);
+  const safety = runbook.safety || {};
+  console.log(`- safety: preview calls OpenAI=${safety.previewCallsOpenAi ? 'yes' : 'no'} · execution calls OpenAI=${safety.executionCallsOpenAi ? 'yes' : 'no'} · execution starts mic=${safety.executionStartsMicrophone ? 'yes' : 'no'} · live voice still needs confirmMic=${safety.liveVoiceStillRequiresConfirmMic ? 'yes' : 'no'}`);
+  return true;
 }
 
 function printRealtimeProviderRecovery(result) {

@@ -554,7 +554,12 @@ export default {
         noOpenAiSecretLeak(voiceSetupCui.stdout) &&
         voiceSetupCui.stdout.includes('Microphone:') &&
         voiceSetupCui.stdout.includes('Go-live checklist:') &&
-        voiceSetupCui.stdout.includes('No-cost now:')
+        voiceSetupCui.stdout.includes('No-cost now:') &&
+        voiceSetupCui.stdout.includes('Provider probe runbook') &&
+        voiceSetupCui.stdout.includes('npm run dogfood:realtime-provider-probe:run') &&
+        voiceSetupCui.stdout.includes('execution calls OpenAI=yes') &&
+        voiceSetupCui.stdout.includes('execution starts mic=no') &&
+        voiceSetupCui.stdout.includes('live voice still needs confirmMic=yes')
         ? ok('resident.voice_setup_checklist', 'Voice setup checklist', `${voiceSetup.status || '-'} · key=${voiceSetupKeySync.status} · mic=${voiceSetup.microphone.status} · checklist=${voiceSetupChecklist.length}`)
         : fail('resident.voice_setup_checklist', 'Voice setup checklist', 'expected read-only voice setup packet with microphone, provider, spend guard, local fallback, and go-live checklist', {
           status: voiceSetupResponse.status,
