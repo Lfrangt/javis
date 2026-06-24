@@ -578,6 +578,27 @@ export default {
     const boardTimeline = Array.isArray(progressBoard.timeline) ? progressBoard.timeline : [];
     const boardRecovery = progressBoard.recovery || {};
     const boardHtml = fs.readFileSync('docs/javis-status-board.html', 'utf8');
+    const boardCli = spawnSync(process.execPath, ['scripts/open-status-board.cjs', '--no-open', '--url'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+    });
+    const boardCliOutput = String(boardCli.stdout || '');
+    const boardCliUnavailable = spawnSync(process.execPath, ['scripts/open-status-board.cjs', '--no-open'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      timeout: 8000,
+      maxBuffer: 1024 * 1024,
+      env: {
+        ...process.env,
+        JAVIS_API_BASE: 'http://127.0.0.1:9',
+        JAVIS_BOARD_RETRY_ATTEMPTS: '2',
+        JAVIS_BOARD_RETRY_DELAY_MS: '100',
+        JAVIS_BOARD_REQUEST_TIMEOUT_MS: '1000',
+      },
+    });
+    const boardCliUnavailableError = String(boardCliUnavailable.stderr || boardCliUnavailable.stdout || '');
     out.push(
       progressBoardResponse.ok &&
         progressBoard.version === 1 &&
@@ -653,13 +674,29 @@ export default {
         boardHtml.includes('goLiveChecklist') &&
         boardHtml.includes('下一步恢复') &&
         boardHtml.includes('接口耗时') &&
-        boardHtml.includes('不返回原始日志')
+        boardHtml.includes('不返回原始日志') &&
+        boardCli.status === 0 &&
+        boardCliOutput.includes('JAVIS Status Board') &&
+        boardCliOutput.includes('API: ready') &&
+        boardCliOutput.includes('Realtime: API key') &&
+        boardCliOutput.includes('Open: no') &&
+        boardCliOutput.includes('Safety: no OpenAI/mic/Realtime/workers/actions') &&
+        boardCliOutput.includes('file:///') &&
+        boardCliUnavailable.status !== 0 &&
+        boardCliUnavailableError.includes('JAVIS resident API unavailable after 2 attempt')
         ? ok('resident.progress_board_voice_setup', 'Progress board voice setup panel', `${boardVoiceSetup.rawStatus || boardVoiceSetup.status} · recovery=${boardRecovery.actionId || boardRecovery.label} · checklist=${boardChecklist.length} · timeline=${boardTimeline.length} · safety=no mic/no spend`)
         : fail('resident.progress_board_voice_setup', 'Progress board voice setup panel', 'expected public progress board and HTML to embed sanitized read-only voice setup/go-live/recovery evidence without OpenAI, mic, Realtime, workers, or actions', {
           status: progressBoardResponse.status,
           board: progressBoard,
           htmlHasVoicePanel: boardHtml.includes('id="voice-panel"'),
           htmlHasRecoveryPanel: boardHtml.includes('id="recovery-panel"'),
+          cli: {
+            status: boardCli.status,
+            stdout: boardCliOutput.slice(0, 1600),
+            stderr: String(boardCli.stderr || '').slice(0, 1200),
+            unavailableStatus: boardCliUnavailable.status,
+            unavailable: boardCliUnavailableError.slice(0, 1200),
+          },
         }),
     );
 
