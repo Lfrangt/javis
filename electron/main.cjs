@@ -29974,7 +29974,9 @@ function naturalWorkNextLocalCommand(text) {
     || /\b(continue|proceed|do|run|execute)\b.*\b(next|work|actions?|steps?)\b.*\b(javis|you)?\b/i.test(raw);
   const chinese = /(?:继续下一步|执行下一步|运行下一步|跑下一步|做下一步|开始下一步|推进下一步|下一步执行|下一步继续|继续工作|继续推进|继续跑|继续干活|继续做|往下做|往下推进|接着做|接着跑|接着推进|执行当前下一步|运行当前下一步|把下一步跑起来|把下一步执行了|按下一步执行)/i.test(plain)
     || /(?:你|JAVIS|javis|贾维斯).*(?:继续|接着|往下|推进|执行|运行|跑|做).*(?:下一步|工作|任务|动作)/i.test(plain)
-    || /(?:下一步|当前下一步|推荐动作).*(?:是什么|预览|准备|执行|运行|继续|跑起来|可以做)/i.test(plain);
+    || /(?:下一步|当前下一步|推荐动作).*(?:是什么|预览|准备|执行|运行|继续|跑起来|可以做|整理|梳理|汇总|总结|列一下|告诉我|怎么做|怎么继续)/i.test(plain)
+    || /(?:整理|梳理|汇总|总结|列一下|告诉我|给我|看一下|看看).*(?:下一步|当前下一步|推荐动作|后续动作|后续步骤|接下来)/i.test(plain)
+    || /(?:现在|当前|接下来).*(?:该|应该|可以|能).*(?:怎么继续|怎么推进|做什么|干什么|推进什么)/i.test(plain);
   if (!english && !chinese) return null;
   return {
     intent: 'work_next',
@@ -34533,6 +34535,9 @@ function voiceCommandAck(route = {}, options = {}) {
     return output ? `这次没有完成。${output}` : '这次没有完成，我已经留下了路由记录。';
   }
   if (route.localCommand?.intent === 'work_progress' && output) {
+    return output;
+  }
+  if (route.localCommand?.intent === 'work_next' && output) {
     return output;
   }
   if (route.localCommand?.intent === 'delegate_task' && output) {
@@ -56225,6 +56230,15 @@ function isRoutingAttentionStatus(status) {
 
 function isInternalRoutingRecord(record) {
   const source = String(record?.source || '').toLowerCase();
+  const text = [
+    record?.owner,
+    record?.lane,
+    record?.taskTitle,
+    record?.taskPrompt,
+    record?.resultSummary,
+    record?.reason,
+    record?.scope,
+  ].filter(Boolean).join('\n').toLowerCase();
   return source === 'eval'
     || source === 'doctor'
     || source === 'eval_restore'
@@ -56238,7 +56252,10 @@ function isInternalRoutingRecord(record) {
     || source.includes('file_benchmark')
     || source.includes('file_benchmarks')
     || source.includes('creative_benchmark')
-    || source.includes('creative_benchmarks');
+    || source.includes('creative_benchmarks')
+    || /\beval(?:\s+codex|\s+claude|\s+worker|\s+route|\s+parallel)?\b/.test(text)
+    || /read-only inspect docs\/roadmap\.md and return two bullets/.test(text)
+    || /\bfixture\b|example\.test|javis\/workflow-[ab]|javis\/browser-benchmark/.test(text);
 }
 
 function workflowHasActionableRecovery(workflow) {
@@ -56326,6 +56343,7 @@ function isUserVisibleRoutingAttentionRecord(record) {
   if (!record || isInternalRoutingRecord(record)) return false;
   if (record.status === 'approval_required' || record.status === 'queued' || record.status === 'running') return true;
   if (routingRecordHasActionableRecovery(record)) return true;
+  if (record.status === 'preview') return false;
   const source = String(record.source || '').toLowerCase();
   const workflow = linkedWorkflowForRoute(record);
   const transientWorkflowFailure = isNonActionableBlockedWorkflow(workflow);
@@ -56764,6 +56782,37 @@ function routeCandidateFromBrowserFillDraftReview(workflow) {
 
 function routeTaskPromptForRecord(record) {
   return compactRecordText(record?.taskPrompt || record?.taskTitle || '', 2000);
+}
+
+function readOnlyLocalCommandIntent(intent = '') {
+  return [
+    'status',
+    'resident_health',
+    'wake_status',
+    'voice_status',
+    'voice_latency',
+    'prompt_suggestions',
+    'work_progress',
+    'work_next',
+    'progress_board',
+    'capability_status',
+    'learning_distillation',
+    'recent_activity',
+    'browser_activity',
+    'perception_status',
+    'approval_status',
+    'blocker_status',
+    'unblock_preview',
+    'autopilot_status',
+    'autonomy_readiness',
+    'parallel_preflight',
+    'incident_report',
+    'openai_spend_status',
+    'openai_spend_incident',
+    'realtime_recovery_guide',
+    'realtime_dogfood_status',
+    'realtime_dogfood_pack',
+  ].includes(String(intent || ''));
 }
 
 function routeCandidateFromPreviewRoute(record) {
@@ -57975,8 +58024,10 @@ function isInternalWorkflow(workflow) {
     workflow.request,
     workflow.result,
     workflow.target?.purpose,
+    workflow.target?.url,
   ].filter(Boolean).join('\n').toLowerCase();
   return /\b(smoke test|verification|diagnostic|internal test|approval continuation smoke)\b/.test(text)
+    || /\bfixture\b|example\.test|javis\/workflow-[ab]|javis\/browser-benchmark/.test(text)
     || /\.approval-continuation-/.test(text);
 }
 
@@ -58739,6 +58790,18 @@ function formatRoutingProgressLine(record) {
   return `${entry.lane}/${entry.status} · owner:${entry.owner} · group:${entry.parallelGroup}${ownership} · ${compactRecordText(entry.taskTitle, 90)} · ${progressAgeLabel(entry.updatedAt)} · ${entry.resultLink}${blocker}${next}${detail}`;
 }
 
+function userVisibleProgressNextAction(action = {}) {
+  if (!action || action.source !== 'routing') return true;
+  const record = action.routeId ? routingRecords.get(action.routeId) || null : null;
+  if (!record) return true;
+  if (isInternalRoutingRecord(record)) return false;
+  if (record.status !== 'preview') return true;
+  const lane = normalizeRoutingLane(record.lane);
+  if (lane === 'local') return false;
+  const localCommand = localCommandDecision(routeTaskPromptForRecord(record));
+  return !readOnlyLocalCommandIntent(localCommand?.intent);
+}
+
 function routeForWorkerJob(job) {
   const routes = routingRecordsForJob(job?.id);
   return routes[0] || null;
@@ -58937,7 +59000,9 @@ function workProgressCheckIn(options = {}) {
   const briefing = workflowBriefing({ workflowLimit, jobLimit });
   const collaboration = collaborationSnapshot(5);
   const recovery = jobRecoverySnapshot({ limit: 5, includeInternal });
-  const nextActions = (briefing.nextActions || []).slice(0, 3);
+  const nextActions = (briefing.nextActions || [])
+    .filter(userVisibleProgressNextAction)
+    .slice(0, 3);
   const workerGroups = buildWorkerProgressGroups([...activeJobs, ...recentJobs]);
   const workerSummary = workerProgressSummary(workerGroups);
   const latestDone = {

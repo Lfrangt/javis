@@ -1032,6 +1032,8 @@ export default {
         naturalProgressData.route?.localCommand?.intent === 'work_progress' &&
         typeof naturalProgressData.route?.output === 'string' &&
         naturalProgressData.route.output.includes('下一步') &&
+        !naturalProgressData.route.output.includes('example.test') &&
+        !String(naturalProgressData.spokenAck || '').includes('example.test') &&
         naturalProgressData.route?.data?.progress?.spokenSummary &&
         typeof naturalProgressData.spokenAck === 'string' &&
         naturalProgressData.spokenAck.length > 0 &&
@@ -1099,7 +1101,7 @@ export default {
     const naturalWorkNext = await ctx.api('/api/voice/command', {
       method: 'POST',
       body: {
-        transcript: '继续下一步，先不要执行',
+        transcript: '帮我整理一下现在的下一步，先不要执行',
         execute: false,
         includeScreen: false,
         useMemory: false,
@@ -1126,6 +1128,7 @@ export default {
         naturalWorkNextRoute.localCommand?.intent === 'work_next' &&
         naturalWorkNextRoute.executed === false &&
         naturalWorkNextRoute.output?.includes('Work next: preview only') &&
+        naturalWorkNextData.spokenAck?.includes('Work next: preview only') &&
         naturalWorkNextPayload.requestedExecute === false &&
         naturalWorkNextPayload.executed === false &&
         naturalWorkNextPayload.safety?.executesWorkNext === false &&
@@ -1134,7 +1137,7 @@ export default {
         naturalWorkNextData.safety?.usesRealtime === false &&
         naturalWorkNextData.safety?.callsOpenAIImmediately === false &&
         workNextRespectsExecuteFlag
-        ? ok('voice_command.natural_work_next_preview', 'Natural work-next voice command', '继续下一步 routes to work_next preview without executing the candidate')
+        ? ok('voice_command.natural_work_next_preview', 'Natural work-next voice command', '整理下一步 routes to work_next preview without executing the candidate')
         : fail('voice_command.natural_work_next_preview', 'Natural work-next voice command', 'natural work-next phrase did not safely preview current work-next', {
           body: naturalWorkNext.data,
           workNextRespectsExecuteFlag,

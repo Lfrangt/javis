@@ -85,7 +85,7 @@
 - Add read-only active browser page extraction for webpage-aware tasks.
 - Persist background task history.
 - Persist user-level workflow history with linked jobs and results.
-- Add deterministic work briefing over status, blockers, recent work, and next actions, filtering internal eval/doctor evidence out of user-facing Work Next.
+- Add deterministic work briefing over status, blockers, recent work, and next actions, filtering internal eval/doctor/fixture evidence out of user-facing Work Next. Natural no-mic phrases such as `帮我整理一下现在的下一步` route to the same preview-only work-next path and speak the current candidate without starting workers, Realtime, microphone capture, or cloud calls.
 - Add deterministic lane contract registry for owner/scope/handoff/risk boundaries before model choice.
 - Add a voice-facing routing speed policy for Realtime vs fast model vs background model vs Codex/Claude, with browser/file/app tool-first decisions that list the first structured tools to try before slow model synthesis; the Realtime tool now uses a compact payload and leaves full profiles/samples to API/CUI.
 - Add a voice-friendly local capability map over lane contracts, control mode, local execution, collaboration claims/handoff, and work-next so Realtime can decide whether to observe, route, delegate, use browser/file/app tools, or hand work to Codex/Claude without guessing; the Realtime tool keeps this as a compact payload and leaves the full capability map to API/CUI. The CUI also exposes a local control readiness packet that compresses voice, screen, Accessibility, browser, file, Codex, Claude Code, CLI, resident hotkey, perception-consent, and collaboration gates into one takeover-readiness view.
