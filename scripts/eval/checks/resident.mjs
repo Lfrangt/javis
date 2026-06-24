@@ -1126,6 +1126,42 @@ export default {
         }),
     );
 
+    const safeNextWithoutRealtimeResponse = await ctx.api('/api/voice/command', {
+      method: 'POST',
+      body: {
+        transcript: '除了实时语音，下一步可以安全推进什么？',
+        execute: false,
+        includeScreen: false,
+        includeAccessibility: false,
+        useMemory: false,
+        speak: false,
+        source: 'eval_resident_unblock_preview_without_realtime',
+      },
+      timeoutMs: 10000,
+    });
+    const safeNextWithoutRealtime = safeNextWithoutRealtimeResponse.data || {};
+    const safeNextRoute = safeNextWithoutRealtime.route || {};
+    const safeNextPreview = safeNextRoute.data?.unblockPreview || {};
+    out.push(
+      safeNextWithoutRealtimeResponse.ok &&
+        safeNextWithoutRealtime.ok === true &&
+        safeNextWithoutRealtime.executed === false &&
+        safeNextRoute.localCommand?.intent === 'unblock_preview' &&
+        safeNextRoute.decision?.localCommand === 'unblock_preview' &&
+        String(safeNextRoute.output || '').includes('Unblock preview:') &&
+        safeNextPreview.version === 1 &&
+        safeNextPreview.safety?.readOnly === true &&
+        safeNextPreview.safety?.startsMicrophone === false &&
+        safeNextPreview.safety?.usesRealtime === false &&
+        safeNextPreview.safety?.startsWorkers === false &&
+        safeNextPreview.safety?.executesWorkNext === false
+        ? ok('resident.unblock_preview_without_realtime', 'Unblock preview skips Realtime blocker', '除了实时语音 routes to read-only unblock_preview instead of generic quick routing')
+        : fail('resident.unblock_preview_without_realtime', 'Unblock preview skips Realtime blocker', 'expected safe-next-without-Realtime phrasing to route to unblock_preview without side effects', {
+          status: safeNextWithoutRealtimeResponse.status,
+          body: safeNextWithoutRealtime,
+        }),
+    );
+
     const voiceStandbyPrimaryPreview = await ctx.api('/api/voice/standby', {
       method: 'POST',
       body: {

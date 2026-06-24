@@ -29805,8 +29805,11 @@ function naturalUnblockPreviewLocalCommand(text) {
   const raw = String(text || '').trim();
   const compact = raw.replace(/\s+/g, '');
   if (!raw) return null;
-  const english = /\b(unblock|recover|recovery|fix blocker|fix blockers|resolve blocker|resolve blockers|unstuck|get unstuck|what can you do next|what can you safely prepare|how can you continue|how can you proceed|how can you unblock|how to fix blocked|next safe step)\b/i.test(raw);
-  const chinese = /(怎么解卡|如何解卡|解除阻塞|解决阻塞|处理阻塞|处理卡住|怎么恢复|如何恢复|怎么让你继续|怎么让它继续|怎么继续跑|怎么继续推进|下一步怎么解|下一步怎么恢复|能自己解决什么|可以自己解决什么|能安全准备什么|可以安全准备什么|安全准备哪些|怎么把你解开|怎么让贾维斯继续|怎么让JAVIS继续)/i.test(compact);
+  const english = /\b(unblock|recover|recovery|fix blocker|fix blockers|resolve blocker|resolve blockers|unstuck|get unstuck|what can you do next|what can you safely prepare|how can you continue|how can you proceed|how can you unblock|how to fix blocked|next safe step|safe next step|advance safely|proceed safely)\b/i.test(raw)
+    || /\b(?:besides|except|skip|ignore|without).*(?:realtime|live voice|voice).*(?:next|safe|prepare|advance|proceed|continue)\b/i.test(raw);
+  const chinese = /(怎么解卡|如何解卡|解除阻塞|解决阻塞|处理阻塞|处理卡住|怎么恢复|如何恢复|怎么让你继续|怎么让它继续|怎么继续跑|怎么继续推进|下一步怎么解|下一步怎么恢复|能自己解决什么|可以自己解决什么|能安全准备什么|可以安全准备什么|安全准备哪些|怎么把你解开|怎么让贾维斯继续|怎么让JAVIS继续)/i.test(compact)
+    || /(?:除了|先不管|先跳过|不管|跳过|暂时不做|先别管)(?:实时语音|Realtime|realtime|livevoice|语音).*(?:下一步|安全|推进|准备|继续|能做什么|可以做什么)/i.test(compact)
+    || /(?:下一步|安全|推进|准备|继续|能做什么|可以做什么).*(?:除了|先不管|先跳过|不管|跳过|暂时不做|先别管)(?:实时语音|Realtime|realtime|livevoice|语音)/i.test(compact);
   if (!english && !chinese) return null;
   return {
     intent: 'unblock_preview',
