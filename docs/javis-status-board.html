@@ -149,8 +149,25 @@
 
     .voice-grid {
       display: grid;
+      grid-template-columns: repeat(5, minmax(130px, 1fr));
+      gap: 10px;
+    }
+
+    .voice-brief {
+      display: grid;
       grid-template-columns: repeat(4, minmax(150px, 1fr));
       gap: 10px;
+    }
+
+    .voice-brief span {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f151d;
+      color: var(--text);
+      padding: 10px 12px;
+      font-size: 13px;
+      line-height: 1.35;
+      overflow-wrap: anywhere;
     }
 
     .voice-metric {
@@ -399,7 +416,7 @@
     @media (max-width: 980px) {
       .nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .voice-grid, .checks, .recovery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .voice-grid, .voice-brief, .checks, .recovery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .footer-grid { grid-template-columns: 1fr; }
       header { grid-template-columns: 1fr; }
       .voice-head, .recovery-head { grid-template-columns: 1fr; }
@@ -409,7 +426,7 @@
 
     @media (max-width: 560px) {
       .shell { width: min(100vw - 20px, 1180px); padding-top: 18px; }
-      .nodes, .timeline, .voice-grid, .checks, .recovery-grid { grid-template-columns: 1fr; }
+      .nodes, .timeline, .voice-grid, .voice-brief, .checks, .recovery-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -524,8 +541,8 @@
       const card = el("article", { class: `check ${status}` });
       card.append(el("span", { class: "status " + status }, statusText[status] || status));
       card.querySelector(".status").prepend(el("span", { class: "dot" }));
-      card.append(el("h3", {}, item.label || item.id || "检查项"));
-      card.append(el("p", {}, item.detail || ""));
+      card.append(el("h3", {}, item.displayLabel || item.label || item.id || "检查项"));
+      card.append(el("p", {}, item.displayDetail || item.detail || ""));
       if (item.command) card.append(el("code", {}, item.command));
       return card;
     }
@@ -555,10 +572,10 @@
       const copy = el("div");
       const title = el("h2", { class: `voice-title ${status}` });
       title.append(el("span", { class: "dot" }));
-      title.append(el("span", {}, setup.label || "实时语音上线检查"));
+      title.append(el("span", {}, setup.display?.label || setup.label || "实时语音上线检查"));
       copy.append(title);
-      copy.append(el("p", {}, setup.summary || "正在读取实时语音状态。"));
-      if (setup.nextAction) copy.append(el("p", {}, `下一步：${setup.nextAction}`));
+      copy.append(el("p", {}, setup.display?.summary || setup.summary || "正在读取实时语音状态。"));
+      if (setup.display?.nextAction || setup.nextAction) copy.append(el("p", {}, `下一步：${setup.display?.nextAction || setup.nextAction}`));
 
       const meta = el("div", { class: "voice-meta" });
       meta.append(el("span", { class: `status ${status}` }, statusText[status] || status));
@@ -569,9 +586,17 @@
       head.append(meta);
       panel.append(head);
 
+      const brief = el("div", { class: "voice-brief" });
+      brief.append(el("span", {}, setup.display?.keySummary || "API key 状态未知"));
+      brief.append(el("span", {}, setup.display?.microphoneSummary || "麦克风状态未知"));
+      brief.append(el("span", {}, setup.display?.providerSummary || "Provider 状态未知"));
+      brief.append(el("span", {}, setup.display?.spendSummary || "费用保护状态未知"));
+      panel.append(brief);
+
       const grid = el("div", { class: "voice-grid" });
       grid.append(renderMetric("麦克风", `${setup.microphone?.ready ? "ready" : "needs user"} · ${setup.microphone?.status || "-"}`));
       grid.append(renderMetric("Provider", `${setup.provider?.ready ? "ready" : setup.provider?.status || "-"} · ${setup.provider?.kind || "-"}`));
+      grid.append(renderMetric("Key sync", setup.provider?.keySync?.status ? `${setup.provider.keySync.status} · restart=${setup.provider.keySync.requiresRestart ? "yes" : "no"}` : "未知"));
       grid.append(renderMetric("费用保护", spendLabel(setup.spendGuard || {})));
       grid.append(renderMetric("本地兜底", `${setup.localFallback?.endpoint || "/api/voice/command"} · ${setup.localFallback?.command || "npm run voice:chat"}`));
       panel.append(grid);

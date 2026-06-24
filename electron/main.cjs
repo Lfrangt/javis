@@ -16504,10 +16504,79 @@ function boardNode(id, label, status, summary, next = '', details = {}) {
   };
 }
 
+function voiceSetupKeySyncBoardSummary(provider = {}) {
+  const keySync = provider.keySync || {};
+  if (!provider.hasOpenAiKey) return 'API key 未配置';
+  if (keySync.requiresRestart) return 'API key 已更新，需要重启 JAVIS 才会生效';
+  if (keySync.version && keySync.envFile?.openAiApiKeyPresent && keySync.configuredAtStartup && keySync.fingerprintsMatch !== false) {
+    return 'API key 已加载并同步，无需重启';
+  }
+  if (provider.callableOpenAiKey) return 'API key 可用于受控请求';
+  return 'API key 已保存，当前受费用保护限制';
+}
+
+function voiceSetupProviderBoardSummary(provider = {}) {
+  if (provider.ready) return 'Provider 最近验证通过';
+  const kind = String(provider.kind || '').toLowerCase();
+  if (kind === 'provider_unverified') return 'Provider 还没跑过近期 no-mic 验证';
+  if (kind === 'quota_or_rate_limit') return 'Provider 可能遇到额度或限速';
+  if (kind === 'auth_error') return 'Provider 认证失败，需要检查 key 或账户权限';
+  if (kind === 'spend_locked') return 'Provider 被费用保护锁住';
+  if (provider.summary) return compactRecordText(provider.summary, 180);
+  return 'Provider 尚未 ready';
+}
+
+function voiceSetupBoardDisplay(guide = {}, checklist = []) {
+  const status = boardStatus(guide.status);
+  const provider = guide.provider || {};
+  const microphone = guide.microphone || {};
+  const spendGuard = guide.spendGuard || {};
+  const nextStep = checklist.find((item) => item && item.status !== 'ready') || null;
+  const keySummary = voiceSetupKeySyncBoardSummary(provider);
+  const micSummary = microphone.ready ? '麦克风已授权' : '麦克风还需要你授权';
+  const providerSummary = voiceSetupProviderBoardSummary(provider);
+  const spendSummary = spendGuard.mode === 'manual'
+    ? '费用保护处于手动模式，必须口令 + 一次性 lease 才会出站'
+    : spendGuard.hardSpendLock || spendGuard.mode === 'off'
+      ? '费用保护已锁住，不会自动调用 OpenAI'
+      : '费用保护需要复查';
+  const label = status === 'ready'
+    ? '实时语音可启动'
+    : status === 'blocked'
+      ? '实时语音被保护拦住'
+      : '实时语音待手动验证';
+  const summary = `${keySummary}；${micSummary}；${providerSummary}。${spendSummary}。`;
+  const nextLabel = nextStep ? {
+    microphone_permission: '授权麦克风',
+    provider_probe_preview: '先预览 provider 检查',
+    provider_probe_execute: '运行一次 no-mic provider 检查',
+    live_renderer_voice: '启动实时语音',
+  }[nextStep.id] || nextStep.label || nextStep.id || '下一步' : '';
+  const nextDetail = nextStep ? {
+    microphone_permission: nextStep.status === 'ready' ? '麦克风权限已经可用。' : '需要你在 macOS 里允许麦克风。',
+    provider_probe_preview: '只预览，不打 OpenAI、不启动麦克风。',
+    provider_probe_execute: nextStep.status === 'ready' ? 'Provider 最近已经验证通过。' : '需要你输入费用口令；会发出一次 OpenAI 请求，但不开麦。',
+    live_renderer_voice: nextStep.status === 'ready' ? '需要你明确确认后才会开麦。' : '等 provider 验证通过后再启动。',
+  }[nextStep.id] || nextStep.detail || nextStep.next || '' : '';
+  const nextAction = nextStep
+    ? `${nextLabel}：${nextDetail}`
+    : '你明确确认后才启动 live Realtime voice。';
+  return {
+    label: compactRecordText(label, 120),
+    summary: compactRecordText(summary, 420),
+    keySummary: compactRecordText(keySummary, 160),
+    microphoneSummary: compactRecordText(micSummary, 120),
+    providerSummary: compactRecordText(providerSummary, 180),
+    spendSummary: compactRecordText(spendSummary, 180),
+    nextAction: compactRecordText(nextAction, 320),
+  };
+}
+
 function compactVoiceSetupForBoard(guide = {}) {
   const checklist = Array.isArray(guide.goLiveChecklist) ? guide.goLiveChecklist : [];
   const blockers = Array.isArray(guide.blockers) ? guide.blockers : [];
   const nextStep = checklist.find((item) => item && item.status !== 'ready') || null;
+  const display = voiceSetupBoardDisplay(guide, checklist);
   return {
     version: Number(guide.version || 1),
     generatedAt: guide.generatedAt || '',
@@ -16515,6 +16584,7 @@ function compactVoiceSetupForBoard(guide = {}) {
     rawStatus: compactRecordText(guide.status || '', 80),
     label: compactRecordText(guide.label || '', 120),
     summary: compactRecordText(guide.summary || guide.meaning || '', 420),
+    display,
     meaning: compactRecordText(guide.meaning || '', 420),
     nextAction: compactRecordText(
       nextStep
@@ -16528,6 +16598,9 @@ function compactVoiceSetupForBoard(guide = {}) {
       ready: Boolean(guide.provider?.ready),
       summary: compactRecordText(guide.provider?.summary || '', 260),
       next: compactRecordText(guide.provider?.next || '', 260),
+      hasOpenAiKey: Boolean(guide.provider?.hasOpenAiKey),
+      callableOpenAiKey: Boolean(guide.provider?.callableOpenAiKey),
+      keySync: guide.provider?.keySync || null,
     },
     microphone: {
       status: compactRecordText(guide.microphone?.status || '', 80),
@@ -16561,9 +16634,21 @@ function compactVoiceSetupForBoard(guide = {}) {
     goLiveChecklist: checklist.slice(0, 6).map((item) => ({
       id: compactRecordText(item.id || '', 100),
       label: compactRecordText(item.label || item.id || '', 140),
+      displayLabel: compactRecordText({
+        microphone_permission: '麦克风权限',
+        provider_probe_preview: '预览 provider 检查',
+        provider_probe_execute: '运行一次 no-mic provider 检查',
+        live_renderer_voice: '启动实时语音',
+      }[item.id] || item.label || item.id || '', 140),
       status: boardStatus(item.status || ''),
       rawStatus: compactRecordText(item.status || '', 80),
       detail: compactRecordText(item.detail || item.next || '', 260),
+      displayDetail: compactRecordText({
+        microphone_permission: item.status === 'ready' ? '麦克风权限已经可用。' : '需要你在 macOS 里允许麦克风。',
+        provider_probe_preview: '只预览，不打 OpenAI、不启动麦克风。',
+        provider_probe_execute: item.status === 'ready' ? 'Provider 最近已经验证通过。' : '需要你输入费用口令；会发出一次 OpenAI 请求，但不开麦。',
+        live_renderer_voice: item.status === 'ready' ? '需要你明确确认后才会开麦。' : '等 provider 验证通过后再启动。',
+      }[item.id] || item.detail || item.next || '', 260),
       command: compactRecordText(item.command || item.action || item.endpoint || '', 180),
       startsMicrophone: Boolean(item.startsMicrophone),
       callsOpenAI: Boolean(item.callsOpenAI),
@@ -16888,14 +16973,16 @@ async function progressBoardSnapshot(options = {}) {
       'realtime_voice',
       '实时语音',
       voiceSetup.status,
-      voiceSetup.summary || 'Realtime voice setup status is available.',
+      voiceSetup.display?.summary || voiceSetup.summary || 'Realtime voice setup status is available.',
       voiceNextStep
-        ? `${voiceNextStep.label}: ${voiceNextStep.detail}`
+        ? `${voiceNextStep.displayLabel || voiceNextStep.label}: ${voiceNextStep.displayDetail || voiceNextStep.detail}`
         : '你明确确认后才启动 live Realtime voice。',
       {
         providerStatus: voiceSetup.provider.status || '',
         blockerKind: voiceSetup.provider.kind || '',
         microphoneStatus: voiceSetup.microphone.status || '',
+        keySyncStatus: voiceSetup.provider.keySync?.status || '',
+        keyRequiresRestart: Boolean(voiceSetup.provider.keySync?.requiresRestart),
         checklist: voiceSetup.goLiveChecklist.length,
         startsMicrophoneNow: false,
       },

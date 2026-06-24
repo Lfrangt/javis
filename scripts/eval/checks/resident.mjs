@@ -573,6 +573,7 @@ export default {
     const progressBoardResponse = await ctx.api('/api/progress-board');
     const progressBoard = progressBoardResponse.data?.board || {};
     const boardVoiceSetup = progressBoard.voiceSetup || {};
+    const boardVoiceDisplay = boardVoiceSetup.display || {};
     const boardChecklist = Array.isArray(boardVoiceSetup.goLiveChecklist) ? boardVoiceSetup.goLiveChecklist : [];
     const boardTimeline = Array.isArray(progressBoard.timeline) ? progressBoard.timeline : [];
     const boardRecovery = progressBoard.recovery || {};
@@ -597,12 +598,23 @@ export default {
         typeof boardVoiceSetup.microphone.status === 'string' &&
         typeof boardVoiceSetup.microphone.ready === 'boolean' &&
         boardVoiceSetup.provider?.status &&
+        openAiKeySyncLooksSafe(boardVoiceSetup.provider?.keySync || {}) &&
+        typeof boardVoiceDisplay.label === 'string' &&
+        typeof boardVoiceDisplay.summary === 'string' &&
+        boardVoiceDisplay.summary.includes('API key') &&
+        typeof boardVoiceDisplay.keySummary === 'string' &&
+        boardVoiceDisplay.keySummary.includes('API key') &&
+        typeof boardVoiceDisplay.microphoneSummary === 'string' &&
+        typeof boardVoiceDisplay.providerSummary === 'string' &&
+        typeof boardVoiceDisplay.spendSummary === 'string' &&
+        typeof boardVoiceDisplay.nextAction === 'string' &&
+        (boardVoiceSetup.status === 'ready' || boardVoiceDisplay.nextAction.includes('provider 检查')) &&
         boardVoiceSetup.spendGuard?.mode &&
         boardVoiceSetup.localFallback?.endpoint === '/api/voice/command' &&
-        boardChecklist.some((item) => item.id === 'microphone_permission' && item.startsMicrophone === false && item.callsOpenAI === false) &&
-        boardChecklist.some((item) => item.id === 'provider_probe_preview' && item.status === 'ready' && item.startsMicrophone === false && item.callsOpenAI === false) &&
-        boardChecklist.some((item) => item.id === 'provider_probe_execute' && item.startsMicrophone === false && item.manualOnly === true) &&
-        boardChecklist.some((item) => item.id === 'live_renderer_voice' && item.startsMicrophone === true && item.manualOnly === true) &&
+        boardChecklist.some((item) => item.id === 'microphone_permission' && item.displayLabel === '麦克风权限' && item.startsMicrophone === false && item.callsOpenAI === false) &&
+        boardChecklist.some((item) => item.id === 'provider_probe_preview' && item.displayDetail?.includes('不打 OpenAI') && item.status === 'ready' && item.startsMicrophone === false && item.callsOpenAI === false) &&
+        boardChecklist.some((item) => item.id === 'provider_probe_execute' && item.displayLabel?.includes('no-mic') && item.startsMicrophone === false && item.manualOnly === true) &&
+        boardChecklist.some((item) => item.id === 'live_renderer_voice' && item.displayLabel === '启动实时语音' && item.startsMicrophone === true && item.manualOnly === true) &&
         boardVoiceSetup.safety?.readOnly === true &&
         boardVoiceSetup.safety?.callsOpenAI === false &&
         boardVoiceSetup.safety?.createsSpendLease === false &&
@@ -633,8 +645,11 @@ export default {
         progressBoard.safety?.returnsRawLogs === false &&
         boardHtml.includes('id="voice-panel"') &&
         boardHtml.includes('id="recovery-panel"') &&
+        boardHtml.includes('voice-brief') &&
         boardHtml.includes('renderVoiceSetup') &&
         boardHtml.includes('renderRecovery') &&
+        boardHtml.includes('setup.display?.summary') &&
+        boardHtml.includes('Key sync') &&
         boardHtml.includes('goLiveChecklist') &&
         boardHtml.includes('下一步恢复') &&
         boardHtml.includes('接口耗时') &&
