@@ -12954,6 +12954,37 @@ function blockerItem(id, severity, label, summary, extra = {}) {
   };
 }
 
+function compactRealtimeProviderRunbook(runbook = {}) {
+  if (!runbook?.version) return null;
+  const safety = runbook.safety || {};
+  return {
+    version: 1,
+    status: compactRecordText(runbook.status || '', 80),
+    manualOnly: Boolean(runbook.manualOnly),
+    requiresUserPresence: Boolean(runbook.requiresUserPresence),
+    startsMicrophone: Boolean(runbook.startsMicrophone),
+    startsRealtimeSession: Boolean(runbook.startsRealtimeSession),
+    createsSpendLeaseOnExecution: Boolean(runbook.createsSpendLeaseOnExecution),
+    callsOpenAiOnExecution: Boolean(runbook.callsOpenAiOnExecution),
+    oneRequestOnly: Boolean(runbook.oneRequestOnly),
+    phrase: runbook.confirmationPhraseRequired ? compactRecordText(runbook.phrasePreview || '', 80) : '',
+    previewCommand: compactRecordText(runbook.previewCommand || '', 220),
+    interactiveCommand: compactRecordText(runbook.interactiveCommand || '', 220),
+    confirmedCommand: compactRecordText(runbook.confirmedCommand || '', 320),
+    liveVoiceCommandAfterSuccess: compactRecordText(runbook.liveVoiceCommandAfterSuccess || '', 260),
+    next: compactRecordText(runbook.next || '', 320),
+    safety: {
+      previewCallsOpenAi: Boolean(safety.previewCallsOpenAi),
+      previewCreatesSpendLease: Boolean(safety.previewCreatesSpendLease),
+      executionRequiresPhrase: Boolean(safety.executionRequiresPhrase),
+      executionRequiresLease: Boolean(safety.executionRequiresLease),
+      executionCallsOpenAi: Boolean(safety.executionCallsOpenAi),
+      executionStartsMicrophone: Boolean(safety.executionStartsMicrophone),
+      liveVoiceStillRequiresConfirmMic: Boolean(safety.liveVoiceStillRequiresConfirmMic),
+    },
+  };
+}
+
 function dedupeBlockers(items = []) {
   const seen = new Set();
   return items.filter((item) => {
@@ -12972,6 +13003,10 @@ function blockerStatusSnapshot(options = {}) {
   const readiness = readinessSnapshot({ includeRecentAudit: true });
   const conversation = conversationStateSnapshot();
   const voiceHealth = realtimeVoiceHealthSnapshot({ conversation, includeRecentAudit: true });
+  const providerProbe = voiceHealth.status && voiceHealth.status !== 'ready'
+    ? realtimeProviderProbeSnapshot()
+    : null;
+  const realtimeRunbook = compactRealtimeProviderRunbook(providerProbe?.attendedRunbook);
   const localVoice = localVoiceStatusSnapshot({ conversation, voiceHealth });
   const approvalStatus = approvalStatusSnapshot({ limit: options.approvalLimit || 5, source });
   const progress = workProgressCheckIn({
@@ -13186,6 +13221,16 @@ function blockerStatusSnapshot(options = {}) {
       kind: compactRecordText(voiceHealth.kind || '', 80),
       summary: compactRecordText(voiceHealth.summary || '', 260),
       next: compactRecordText(voiceHealth.next || '', 260),
+      providerProbe: providerProbe
+        ? {
+            status: compactRecordText(providerProbe.status || '', 80),
+            providerReady: Boolean(providerProbe.providerReady),
+            rendererAvailable: Boolean(providerProbe.rendererAvailable),
+            hasOpenAiKey: Boolean(providerProbe.hasOpenAiKey),
+            keySyncStatus: compactRecordText(providerProbe.keySync?.status || '', 80),
+            runbook: realtimeRunbook,
+          }
+        : null,
       localFallback: {
         available: localVoice.available === true,
         mode: compactRecordText(localVoice.mode || '', 80),
@@ -13218,6 +13263,7 @@ function blockerStatusSnapshot(options = {}) {
       waitingFor: autopilot.waitingFor,
       candidateCounts: autopilot.candidateCounts,
     },
+    realtimeProviderRunbook: realtimeRunbook,
     attention: {
       level: compactRecordText(attention.level || '', 80),
       shouldNotify: Boolean(attention.shouldNotify),
@@ -13557,6 +13603,7 @@ async function unblockPreviewSnapshot(options = {}) {
   const next = compactWorkNextPayload(nextRaw);
   const action = next.action || null;
   const top = blockers.top || null;
+  const realtimeRunbook = blockers.realtimeProviderRunbook || blockers.voice?.providerProbe?.runbook || null;
   const requiresUser = Boolean(action?.requiresUserPresence || action?.manualOnly || action?.requiresMicConfirmation);
   const canPrepare = Boolean(action?.id && action.executable && !requiresUser && action.startsMicrophone !== true);
   const recommendedAction = action
@@ -13600,6 +13647,7 @@ async function unblockPreviewSnapshot(options = {}) {
     topBlocker: top,
     next,
     recommendedAction,
+    realtimeProviderRunbook: realtimeRunbook,
     canPrepare,
     requiresUser,
     nextCommand: action?.id ? '/next' : '',
@@ -32203,6 +32251,7 @@ function formatBlockerStatusForLocalCommand(status = {}) {
   const blockers = Array.isArray(status.blockers) ? status.blockers : [];
   const counts = status.counts || {};
   const top = status.top || blockers[0] || null;
+  const runbook = status.realtimeProviderRunbook || status.voice?.providerProbe?.runbook || null;
   const blockerLines = blockers
     .slice(0, 5)
     .map((item) => `- ${item.severity || '-'} · ${item.label || item.id || '-'}: ${compactRecordText(item.summary || '', 180)}${item.next ? ` · next ${compactRecordText(item.next, 120)}` : ''}`);
@@ -32211,6 +32260,9 @@ function formatBlockerStatusForLocalCommand(status = {}) {
     `Blockers: ${counts.total ?? blockers.length} active · attention=${status.attention?.level || '-'} · service=${status.readiness?.overall || '-'} · autopilot=${status.autopilot?.canActNow ? 'can act' : 'waiting'}`,
     top ? `Top: ${top.label || top.id || '-'} · ${compactRecordText(top.summary || '', 240)}` : 'Top: none',
     blockerLines.length ? `Items:\n${blockerLines.join('\n')}` : 'Items: none',
+    runbook?.interactiveCommand ? `Realtime verify: ${runbook.interactiveCommand}` : '',
+    runbook?.phrase ? `Phrase: ${runbook.phrase} · starts mic=${runbook.startsMicrophone ? 'yes' : 'no'} · execution calls OpenAI=${runbook.safety?.executionCallsOpenAi ? 'yes' : 'no'} · one-request=${runbook.oneRequestOnly ? 'yes' : 'no'}` : '',
+    runbook?.liveVoiceCommandAfterSuccess ? `After success: ${runbook.liveVoiceCommandAfterSuccess}` : '',
     `Work: active jobs ${progressCounts.activeJobs ?? counts.activeJobs ?? 0} · routes ${progressCounts.activeRoutes ?? counts.activeRoutes ?? 0} · blocked workflows ${progressCounts.blockedWorkflows ?? counts.blockedWorkflows ?? 0} · recovery ${progressCounts.recovery?.recoverable ?? counts.recovery ?? 0}`,
     `Voice: ${status.voice?.status || '-'} · ${compactRecordText(status.voice?.summary || '', 220)} · local=${status.voice?.localFallback?.mode || '-'}`,
     status.autopilot?.spokenSummary || status.autopilot?.nextWait ? `Autopilot: ${compactRecordText(status.autopilot.spokenSummary || status.autopilot.nextWait, 260)}` : '',
@@ -32223,9 +32275,13 @@ function formatUnblockPreviewForLocalCommand(preview = {}) {
   const counts = blockers.counts || {};
   const top = preview.topBlocker || blockers.top || null;
   const action = preview.recommendedAction || preview.next?.action || null;
+  const runbook = preview.realtimeProviderRunbook || blockers.realtimeProviderRunbook || blockers.voice?.providerProbe?.runbook || null;
   return [
     `Unblock preview: ${preview.status || '-'} · blockers ${counts.total ?? 0} · top=${top?.id || 'none'}`,
     top ? `Top blocker: ${top.label || top.id || '-'} · ${compactRecordText(top.summary || '', 240)}${top.next ? ` · next ${compactRecordText(top.next, 120)}` : ''}` : 'Top blocker: none',
+    runbook?.interactiveCommand ? `Realtime verify: ${runbook.interactiveCommand}` : '',
+    runbook?.phrase ? `Phrase: ${runbook.phrase} · starts mic=${runbook.startsMicrophone ? 'yes' : 'no'} · execution calls OpenAI=${runbook.safety?.executionCallsOpenAi ? 'yes' : 'no'} · one-request=${runbook.oneRequestOnly ? 'yes' : 'no'}` : '',
+    runbook?.liveVoiceCommandAfterSuccess ? `After success: ${runbook.liveVoiceCommandAfterSuccess}` : '',
     action
       ? `Recommended: ${action.label || action.id || '-'} · source=${action.source || '-'} · executable=${action.executable ? 'yes' : 'no'} · user=${preview.requiresUser ? 'yes' : 'no'} · risk=${action.riskLevel ?? '-'}`
       : 'Recommended: none',

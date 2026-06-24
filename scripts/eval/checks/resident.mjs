@@ -945,6 +945,17 @@ export default {
     const blockerStatusCommand = blockerStatusCommandResponse.data || {};
     const blockerStatusRoute = blockerStatusCommand.route || {};
     const blockerStatus = blockerStatusRoute.data?.blockerStatus || {};
+    const blockerRunbook = blockerStatus.realtimeProviderRunbook || blockerStatus.voice?.providerProbe?.runbook || {};
+    const blockerRunbookReady = blockerStatus.voice?.status === 'ready' || (
+      blockerRunbook.interactiveCommand === 'npm run dogfood:realtime-provider-probe:run' &&
+      blockerRunbook.phrase === 'SPEND OPENAI' &&
+      blockerRunbook.safety?.executionCallsOpenAi === true &&
+      blockerRunbook.safety?.executionStartsMicrophone === false &&
+      String(blockerStatusRoute.output || '').includes('Realtime verify: npm run dogfood:realtime-provider-probe:run') &&
+      String(blockerStatusRoute.output || '').includes('Phrase: SPEND OPENAI') &&
+      String(blockerStatusRoute.output || '').includes('starts mic=no') &&
+      String(blockerStatusRoute.output || '').includes('execution calls OpenAI=yes')
+    );
     out.push(
       blockerStatusCommandResponse.ok &&
         blockerStatusCommand.ok === true &&
@@ -952,6 +963,7 @@ export default {
         blockerStatusRoute.localCommand?.intent === 'blocker_status' &&
         blockerStatusRoute.decision?.localCommand === 'blocker_status' &&
         String(blockerStatusRoute.output || '').includes('Blockers:') &&
+        blockerRunbookReady &&
         blockerStatus.version === 1 &&
         Array.isArray(blockerStatus.blockers) &&
         typeof blockerStatus.counts?.total === 'number' &&
@@ -1073,6 +1085,17 @@ export default {
     const unblockPreviewCommand = unblockPreviewCommandResponse.data || {};
     const unblockPreviewRoute = unblockPreviewCommand.route || {};
     const unblockPreview = unblockPreviewRoute.data?.unblockPreview || {};
+    const unblockRunbook = unblockPreview.realtimeProviderRunbook || unblockPreview.blockers?.realtimeProviderRunbook || unblockPreview.blockers?.voice?.providerProbe?.runbook || {};
+    const unblockRunbookReady = unblockPreview.blockers?.voice?.status === 'ready' || (
+      unblockRunbook.interactiveCommand === 'npm run dogfood:realtime-provider-probe:run' &&
+      unblockRunbook.phrase === 'SPEND OPENAI' &&
+      unblockRunbook.safety?.executionCallsOpenAi === true &&
+      unblockRunbook.safety?.executionStartsMicrophone === false &&
+      String(unblockPreviewRoute.output || '').includes('Realtime verify: npm run dogfood:realtime-provider-probe:run') &&
+      String(unblockPreviewRoute.output || '').includes('Phrase: SPEND OPENAI') &&
+      String(unblockPreviewRoute.output || '').includes('starts mic=no') &&
+      String(unblockPreviewRoute.output || '').includes('execution calls OpenAI=yes')
+    );
     out.push(
       unblockPreviewCommandResponse.ok &&
         unblockPreviewCommand.ok === true &&
@@ -1080,6 +1103,7 @@ export default {
         unblockPreviewRoute.localCommand?.intent === 'unblock_preview' &&
         unblockPreviewRoute.decision?.localCommand === 'unblock_preview' &&
         String(unblockPreviewRoute.output || '').includes('Unblock preview:') &&
+        unblockRunbookReady &&
         unblockPreview.version === 1 &&
         unblockPreview.safety?.readOnly === true &&
         unblockPreview.safety?.executesWorkNext === false &&
