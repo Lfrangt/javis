@@ -1884,12 +1884,19 @@ export default {
       launcherSource.includes('waitForHealthyChild') &&
       launcherSource.includes('resident API did not become healthy') &&
       launcherSource.includes("JAVIS_RESIDENT_LAUNCHER: 'true'") &&
+      launcherSource.includes('JAVIS_RESIDENT_LAUNCHER_ATTEMPT') &&
+      launcherSource.includes('startupAttempts') &&
+      launcherSource.includes('startupRetryDelayMs') &&
+      launcherSource.includes('spawnElectronChild') &&
+      launcherSource.includes('startup attempt') &&
       launcherSource.includes("spawn(electronExecutable, [repoRoot]") &&
       bootstrapSource.includes("main.bundle.cjs") &&
       bootstrapSource.includes("readFileBufferInChunksSync") &&
       launcherSource.includes("path: '/api/health?lite=watchdog'") &&
       launcherSource.includes("stdio: ['ignore', 'inherit', 'inherit']") &&
       launcherSource.includes("stopChild('SIGTERM')") &&
+      installSource.includes('JAVIS_RESIDENT_STARTUP_ATTEMPTS') &&
+      installSource.includes('JAVIS_RESIDENT_STARTUP_RETRY_DELAY_MS') &&
       !launcherSource.includes("shell: true") &&
       stopSource.includes('isProjectLocalVoiceLoopProcess') &&
       stopSource.includes('npm run voice:chat') &&

@@ -9,9 +9,13 @@ const electronExecutable = path.join(repoRoot, 'node_modules', 'electron', 'dist
 const apiPort = Number(process.env.JAVIS_API_PORT || 3417);
 const startupTimeoutMs = Math.max(5000, Math.min(120000, Number(process.env.JAVIS_RESIDENT_STARTUP_HEALTH_TIMEOUT_MS || 20000)));
 const pollIntervalMs = Math.max(250, Math.min(5000, Number(process.env.JAVIS_RESIDENT_STARTUP_HEALTH_POLL_MS || 750)));
+const startupAttempts = Math.max(1, Math.min(5, Number(process.env.JAVIS_RESIDENT_STARTUP_ATTEMPTS || 3)));
+const startupRetryDelayMs = Math.max(250, Math.min(10000, Number(process.env.JAVIS_RESIDENT_STARTUP_RETRY_DELAY_MS || 1500)));
 
 let child = null;
+let childExit = null;
 let exiting = false;
+let startupSettled = false;
 
 function fail(message) {
   process.stderr.write(`JAVIS resident launcher: ${message}\n`);
@@ -83,14 +87,61 @@ function installSignalHandlers() {
   }
 }
 
-async function waitForHealthyChild() {
+function spawnElectronChild(attempt) {
+  childExit = null;
+  const proc = spawn(electronExecutable, [repoRoot], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      JAVIS_REPO_ROOT: repoRoot,
+      JAVIS_RESIDENT_LAUNCHER: 'true',
+      JAVIS_RESIDENT_LAUNCHER_ATTEMPT: String(attempt),
+    },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  });
+  child = proc;
+  proc.on('exit', (code, signal) => {
+    if (proc !== child) return;
+    if (exiting) {
+      process.exit(0);
+      return;
+    }
+    if (!startupSettled) {
+      childExit = { code, signal };
+      return;
+    }
+    process.exitCode = code === null ? 1 : code;
+    if (signal) process.stderr.write(`JAVIS resident launcher: Electron exited with signal ${signal}\n`);
+    process.exit();
+  });
+  proc.on('error', (error) => {
+    if (proc !== child) return;
+    childExit = {
+      code: null,
+      signal: '',
+      error: error instanceof Error ? error.message : String(error),
+    };
+  });
+  return proc;
+}
+
+async function waitForHealthyChild(proc = child) {
   const deadline = Date.now() + startupTimeoutMs;
   let latest = null;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode) {
+    if (proc !== child) {
       return {
         ok: false,
-        reason: `electron exited early code=${child.exitCode ?? '-'} signal=${child.signalCode || '-'}`,
+        reason: 'electron child was replaced during startup',
+        latest,
+      };
+    }
+    if (childExit || proc.exitCode !== null || proc.signalCode) {
+      return {
+        ok: false,
+        reason: childExit?.error
+          ? `electron failed to start: ${childExit.error}`
+          : `electron exited early code=${childExit?.code ?? proc.exitCode ?? '-'} signal=${childExit?.signal || proc.signalCode || '-'}`,
         latest,
       };
     }
@@ -117,39 +168,28 @@ async function main() {
   process.chdir(repoRoot);
   require.resolve('dotenv');
   installSignalHandlers();
-  child = spawn(electronExecutable, [repoRoot], {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      JAVIS_REPO_ROOT: repoRoot,
-      JAVIS_RESIDENT_LAUNCHER: 'true',
-    },
-    stdio: ['ignore', 'inherit', 'inherit'],
-  });
-  child.on('exit', (code, signal) => {
-    if (exiting) {
-      process.exit(0);
+
+  let finalHealth = null;
+  for (let attempt = 1; attempt <= startupAttempts; attempt += 1) {
+    const proc = spawnElectronChild(attempt);
+    const health = await waitForHealthyChild(proc);
+    finalHealth = health;
+    if (health.ok) {
+      startupSettled = true;
+      process.stdout.write(`JAVIS resident launcher: healthy pid=${health.latest?.data?.pid || proc.pid || '-'} api=127.0.0.1:${apiPort} attempt=${attempt}/${startupAttempts}\n`);
       return;
     }
-    process.exitCode = code === null ? 1 : code;
-    if (signal) process.stderr.write(`JAVIS resident launcher: Electron exited with signal ${signal}\n`);
-    process.exit();
-  });
-  child.on('error', (error) => {
-    fail(`failed to start Electron: ${error instanceof Error ? error.message : String(error)}`);
-    process.exit();
-  });
-
-  const health = await waitForHealthyChild();
-  if (!health.ok) {
-    fail(`${health.reason}; last=${health.latest?.error || health.latest?.statusCode || 'unknown'}`);
-    exiting = true;
+    process.stderr.write(`JAVIS resident launcher: startup attempt ${attempt}/${startupAttempts} failed: ${health.reason}; last=${health.latest?.error || health.latest?.statusCode || 'unknown'}\n`);
     stopChild('SIGTERM');
-    setTimeout(() => stopChild('SIGKILL'), 3000).unref();
-    process.exit(1);
-    return;
+    if (attempt < startupAttempts) {
+      await new Promise((resolve) => setTimeout(resolve, startupRetryDelayMs));
+    }
   }
-  process.stdout.write(`JAVIS resident launcher: healthy pid=${health.latest?.data?.pid || child.pid || '-'} api=127.0.0.1:${apiPort}\n`);
+  fail(`${finalHealth?.reason || 'resident startup failed'}; attempts=${startupAttempts}; last=${finalHealth?.latest?.error || finalHealth?.latest?.statusCode || 'unknown'}`);
+  exiting = true;
+  stopChild('SIGTERM');
+  setTimeout(() => stopChild('SIGKILL'), 3000).unref();
+  process.exit(1);
 }
 
 main().catch((error) => {

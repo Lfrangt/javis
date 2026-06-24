@@ -214,6 +214,8 @@ const residentLaunchEnv = {
   JAVIS_RESIDENT_LAUNCH_AGENT: 'true',
   JAVIS_REPO_ROOT: repoRoot,
   JAVIS_RESIDENT_STARTUP_HEALTH_TIMEOUT_MS: process.env.JAVIS_RESIDENT_STARTUP_HEALTH_TIMEOUT_MS || '60000',
+  JAVIS_RESIDENT_STARTUP_ATTEMPTS: process.env.JAVIS_RESIDENT_STARTUP_ATTEMPTS || '3',
+  JAVIS_RESIDENT_STARTUP_RETRY_DELAY_MS: process.env.JAVIS_RESIDENT_STARTUP_RETRY_DELAY_MS || '1500',
 };
 const watchdogLaunchEnv = {
   PATH: process.env.PATH || '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin',
