@@ -610,6 +610,8 @@ export default {
     const boardChecklist = Array.isArray(boardVoiceSetup.goLiveChecklist) ? boardVoiceSetup.goLiveChecklist : [];
     const boardTimeline = Array.isArray(progressBoard.timeline) ? progressBoard.timeline : [];
     const boardRecovery = progressBoard.recovery || {};
+    const boardFreeNextActions = Array.isArray(progressBoard.freeNextActions) ? progressBoard.freeNextActions : [];
+    const boardFreeNextIds = new Set(boardFreeNextActions.map((action) => action.id));
     const boardHtml = fs.readFileSync('docs/javis-status-board.html', 'utf8');
     const boardCli = spawnSync(process.execPath, ['scripts/open-status-board.cjs', '--no-open', '--url'], {
       cwd: process.cwd(),
@@ -691,6 +693,24 @@ export default {
         boardRecovery.safety?.startsWorkers === false &&
         boardRecovery.safety?.executesActions === false &&
         boardRecovery.safety?.returnsRawLogs === false &&
+        boardFreeNextActions.length >= 5 &&
+        boardFreeNextIds.has('free:local_voice') &&
+        boardFreeNextIds.has('free:status_board') &&
+        boardFreeNextIds.has('free:capabilities') &&
+        boardFreeNextIds.has('free:browser_control') &&
+        boardFreeNextIds.has('free:work_handoff') &&
+        boardFreeNextActions.every((action) => (
+          action.noCost === true &&
+          action.readOnly === true &&
+          action.startsMicrophone === false &&
+          action.usesRealtime === false &&
+          action.callsOpenAi === false &&
+          action.startsWorkers === false &&
+          action.executesActions === false &&
+          action.mutatesFiles === false &&
+          typeof action.command === 'string' &&
+          typeof action.summary === 'string'
+        )) &&
         progressBoard.safety?.callsOpenAi === false &&
         progressBoard.safety?.startsMicrophone === false &&
         progressBoard.safety?.usesRealtime === false &&
@@ -698,13 +718,16 @@ export default {
         progressBoard.safety?.executesActions === false &&
         progressBoard.safety?.returnsRawLogs === false &&
         boardHtml.includes('id="voice-panel"') &&
+        boardHtml.includes('id="free-actions-panel"') &&
         boardHtml.includes('id="recovery-panel"') &&
         boardHtml.includes('voice-brief') &&
         boardHtml.includes('renderVoiceSetup') &&
+        boardHtml.includes('renderFreeActions') &&
         boardHtml.includes('renderRecovery') &&
         boardHtml.includes('setup.display?.summary') &&
         boardHtml.includes('Key sync') &&
         boardHtml.includes('goLiveChecklist') &&
+        boardHtml.includes('零费用现在可做') &&
         boardHtml.includes('下一步恢复') &&
         boardHtml.includes('接口耗时') &&
         boardHtml.includes('不返回原始日志') &&
@@ -712,6 +735,7 @@ export default {
         boardCliOutput.includes('JAVIS Status Board') &&
         boardCliOutput.includes('API: ready') &&
         boardCliOutput.includes('Realtime: API key') &&
+        boardCliOutput.includes('Zero-cost now:') &&
         boardCliOutput.includes('Open: no') &&
         boardCliOutput.includes('Safety: no OpenAI/mic/Realtime/workers/actions') &&
         boardCliOutput.includes('file:///') &&
@@ -722,6 +746,7 @@ export default {
           status: progressBoardResponse.status,
           board: progressBoard,
           htmlHasVoicePanel: boardHtml.includes('id="voice-panel"'),
+          htmlHasFreeActionsPanel: boardHtml.includes('id="free-actions-panel"'),
           htmlHasRecoveryPanel: boardHtml.includes('id="recovery-panel"'),
           cli: {
             status: boardCli.status,

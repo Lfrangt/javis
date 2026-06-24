@@ -221,6 +221,73 @@
     .check.warning { border-color: color-mix(in srgb, var(--warning), var(--line) 60%); }
     .check.blocked { border-color: color-mix(in srgb, var(--blocked), var(--line) 60%); }
 
+    .free-actions-panel {
+      border: 1px solid color-mix(in srgb, var(--ready), var(--line) 62%);
+      border-radius: 8px;
+      background: var(--panel);
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .free-actions-head {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: start;
+    }
+
+    .free-actions-head h2 {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0 0 6px;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    .free-actions-head p {
+      margin: 0;
+      color: var(--muted);
+    }
+
+    .free-actions-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(150px, 1fr));
+      gap: 10px;
+    }
+
+    .free-action {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #0f151d;
+      padding: 12px;
+      display: grid;
+      gap: 8px;
+      align-content: start;
+      min-width: 0;
+      min-height: 154px;
+    }
+
+    .free-action h3 {
+      margin: 0;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .free-action p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .free-action code {
+      width: fit-content;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+    }
+
     .recovery-panel {
       border: 1px solid var(--line);
       border-radius: 8px;
@@ -416,17 +483,17 @@
     @media (max-width: 980px) {
       .nodes { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .timeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-      .voice-grid, .voice-brief, .checks, .recovery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .voice-grid, .voice-brief, .checks, .free-actions-grid, .recovery-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .footer-grid { grid-template-columns: 1fr; }
       header { grid-template-columns: 1fr; }
-      .voice-head, .recovery-head { grid-template-columns: 1fr; }
+      .voice-head, .free-actions-head, .recovery-head { grid-template-columns: 1fr; }
       .voice-meta { justify-content: flex-start; }
       .meta { text-align: left; }
     }
 
     @media (max-width: 560px) {
       .shell { width: min(100vw - 20px, 1180px); padding-top: 18px; }
-      .nodes, .timeline, .voice-grid, .voice-brief, .checks, .recovery-grid { grid-template-columns: 1fr; }
+      .nodes, .timeline, .voice-grid, .voice-brief, .checks, .free-actions-grid, .recovery-grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -447,6 +514,8 @@
 
     <main>
       <section class="voice-panel" id="voice-panel"></section>
+
+      <section class="free-actions-panel" id="free-actions-panel"></section>
 
       <section class="recovery-panel" id="recovery-panel"></section>
 
@@ -607,6 +676,45 @@
       panel.append(checks);
     }
 
+    function renderFreeActions(actions = []) {
+      const panel = document.getElementById("free-actions-panel");
+      panel.innerHTML = "";
+      const list = Array.isArray(actions) ? actions.filter(Boolean).slice(0, 5) : [];
+
+      const head = el("div", { class: "free-actions-head" });
+      const copy = el("div");
+      const title = el("h2", { class: "ready" });
+      title.append(el("span", { class: "dot" }));
+      title.append(el("span", {}, "零费用现在可做"));
+      copy.append(title);
+      copy.append(el("p", {}, "这些入口只读或预览，不调用 OpenAI、不开麦、不启动 Realtime，也不启动 worker。"));
+      const badge = el("span", { class: "status ready" }, "no cost");
+      badge.prepend(el("span", { class: "dot" }));
+      head.append(copy);
+      head.append(badge);
+      panel.append(head);
+
+      const grid = el("div", { class: "free-actions-grid" });
+      for (const action of list) {
+        const card = el("article", { class: "free-action" });
+        card.append(el("h3", {}, action.label || action.id || "本地动作"));
+        card.append(el("p", {}, action.summary || ""));
+        if (action.command) card.append(el("code", {}, action.command));
+        const safe = action.noCost === true &&
+          action.readOnly === true &&
+          action.callsOpenAi === false &&
+          action.startsMicrophone === false &&
+          action.usesRealtime === false &&
+          action.startsWorkers === false &&
+          action.executesActions === false;
+        card.append(el("span", { class: `status ${safe ? "ready" : "warning"}` }, safe ? "安全预览" : "需要检查"));
+        card.querySelector(".status").prepend(el("span", { class: "dot" }));
+        grid.append(card);
+      }
+      if (!list.length) grid.append(el("p", {}, "暂无零费用动作。"));
+      panel.append(grid);
+    }
+
     function renderRecovery(recovery = {}) {
       const panel = document.getElementById("recovery-panel");
       panel.innerHTML = "";
@@ -692,6 +800,7 @@
         document.getElementById("perf").textContent = Number.isFinite(Number(board.performance?.durationMs)) ? `${Math.round(Number(board.performance.durationMs))}ms` : "-";
 
         renderVoiceSetup(board.voiceSetup || {});
+        renderFreeActions(board.freeNextActions || []);
         renderRecovery(board.recovery || {});
 
         const nodes = document.getElementById("nodes");

@@ -120,6 +120,7 @@ function printSummary(board, file, endpoint, opened) {
   const voice = board.voiceSetup || {};
   const display = voice.display || {};
   const recovery = board.recovery || {};
+  const freeActions = Array.isArray(board.freeNextActions) ? board.freeNextActions : [];
   console.log('JAVIS Status Board');
   console.log('==================');
   console.log(`File: ${file}`);
@@ -132,8 +133,12 @@ function printSummary(board, file, endpoint, opened) {
       ? '只预览 provider 检查；真实验证需要你在场、输入费用口令，并可能消耗一次 OpenAI 请求。'
       : recovery.needsUser
         ? '这一步需要你确认或在场；看板只预览。'
-        : compact(recovery.summary || '', 260);
+      : compact(recovery.summary || '', 260);
     console.log(`Recovery: ${compact(recovery.label || '-', 100)} · ${compact(recoveryDetail, 260)}`);
+  }
+  if (freeActions.length) {
+    const labels = freeActions.slice(0, 5).map((action) => compact(action.label || action.id || '', 60)).filter(Boolean);
+    console.log(`Zero-cost now: ${labels.join(' · ')}`);
   }
   console.log(`Timeline: ${(board.timeline || []).length} item(s) · Nodes: ${(board.nodes || []).length}`);
   console.log('Safety: no OpenAI/mic/Realtime/workers/actions; sanitized public board endpoint only.');

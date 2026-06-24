@@ -16936,6 +16936,13 @@ async function progressBoardSnapshot(options = {}) {
     })),
   ]);
   const recovery = compactWorkNextRecoveryForBoard(workNextPreview);
+  const freeNextActions = setupRecoveryFreeNextActions({
+    localVoice,
+    resident: {
+      installed: true,
+      loaded: Boolean(health.pid || health.status === 'ready'),
+    },
+  });
 
   const spendLocked = Boolean(
     spendGuard.hardSpendLock &&
@@ -17124,6 +17131,7 @@ async function progressBoardSnapshot(options = {}) {
     },
     voiceSetup,
     recovery,
+    freeNextActions,
     nextActions: [
       recovery.actionId
         ? `当前建议：${recovery.label}。${recovery.needsUser ? '这一步需要你确认或在场；看板只预览。' : '这一步可以先安全预览/准备。'}`
