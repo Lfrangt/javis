@@ -1,346 +1,145 @@
 # JAVIS
 
-Local Mac-first realtime desktop buddy.
+Local-first resident AI agent for macOS.
 
-## What works in this first build
+JAVIS is built to stay quietly available on your Mac, take typed or voice requests, use permitted local context, route work to the right tool or model, and leave recoverable evidence for what happened.
 
-- Realtime voice loop through OpenAI Realtime WebRTC.
-- Resident full-screen capture from macOS with no per-session window picker.
-- Live screen-context injection into the active Realtime voice session.
-- Soft wake-word behavior inside live voice sessions through `JAVIS_WAKE_WORDS`.
-- Wake trigger API for plugging in a local wake-word engine without changing the Realtime flow.
-- Read-only wake handoff in `/api/wake/status`, so tap-to-summon and local wake engines can expose the next Realtime/local-fallback intake path without starting microphone capture from a status read. When Realtime is not ready, tap-to-summon opens the compact compose input directly.
-- Wake-command intake through `/api/wake/command` and `npm run wake -- "..."`, combining a wake trigger with the local no-mic voice-command router for one-shot fallback requests; the wake prefix is stripped before routing, so "贾维斯，最近浏览器打开了哪些网页？" enters the local router as the actual browser task, while a bare "贾维斯" returns the shared standby prompt pack instead of routing the wake word as a task.
-- Resident conversation lifecycle state for connecting/live/error/idle voice sessions, with heartbeats back into presence.
-- Renderer-recorded Realtime SDP negotiation evidence, so successful or failed real WebRTC starts update `/api/realtime/evidence`.
-- Renderer-recorded Realtime voice latency receipts for click-to-live, SDP negotiation, and live-to-progress timing in CUI/API evidence.
-- Realtime evidence separates SDP negotiation from renderer live/data-channel state, making dogfood blockers more precise.
-- Realtime tool manifest budget in `/api/realtime/config` and the `realtime` eval lane, so startup cost from tool count/schema size stays visible while JAVIS grows more capable.
-- Silent Realtime preflight context so each voice session starts with current presence, app/browser, screen-frame freshness, work status, and guardrails.
-- Silent Realtime work-progress sync while voice is live, so background Codex/Claude/deep tasks stay in context without interrupting the conversation.
-- Realtime tool-call evidence for live voice dogfood, including sanitized shortcut list/candidate/save/forget, work-handoff, compact work-next preview/run, delegate-task preview/confirmation gates, collaboration claim control, autopilot-status, attention-explanation, perception-consent, productivity dogfood archive, and UI-demonstration Record & Replay events in `/api/realtime/evidence`.
-- Realtime voice self-diagnostics through `get_realtime_evidence`, so voice can explain whether WebRTC/live progress is connected, what is blocked, and the next dogfood step.
-- No-mic Realtime provider probe through CUI/API, so API key, project quota, model, voice, and the Realtime endpoint can be tested before starting microphone capture; default commands only preview, show a zero-spend `Key sync` fingerprint check for `.env` versus the running resident key, OpenAI spending is hard-locked by default, daily budget defaults to 0, and any intentional request requires turning off the hard lock plus typing the exact spend phrase.
-- Realtime provider recovery plan through `/api/realtime/provider/recovery` and `npm run config -- --print-realtime-recovery`, so HTTP 429 quota/billing failures explain that ChatGPT app subscriptions do not include OpenAI API usage and point to API billing, limits, key replacement, restart, provider probe, retry/cooldown policy, and local voice fallback.
-- Pet startup recovery gate: when Realtime health is warning/blocked but the key is present, the desktop pet previews the same no-mic provider probe and keeps local voice-command fallback active; startup never spends OpenAI quota, and provider checks stay blocked unless the hard spend lock is disabled and one request is phrase-confirmed.
-- Renderer provider gate before microphone startup: if recent evidence already shows Realtime quota/auth/provider failure, the desktop pet does not open the microphone and instead sends any typed prompt through the local voice-command fallback.
-- Renderer Realtime voice stop control through `/api/realtime/renderer/control` and `npm run config -- --stop-realtime-voice`, so CUI/API can ask the renderer to stop an active WebRTC voice session without starting a new session, opening Terminal, storing raw audio, or adding controls to the tiny pet.
-- Resident Realtime voice watchdog, so a stuck connecting session, stale live heartbeat, or overlong live WebRTC session is stopped through the same renderer cleanup path without starting microphone capture, opening Terminal, or adding desktop UI.
-- Local incident reports through `/api/incident/report`, CUI `IR`, and natural local voice questions like "谁干的/为什么开这么多窗口", so JAVIS can explain recent window, Terminal, Realtime, worker, and resident events from local audit metadata without screenshots, clipboard text, microphone capture, Realtime, Terminal, or action execution.
-- Local voice-command fallback through `/api/voice/command`, `npm run voice -- "..."`, `npm run voice:chat`, and `npm run dogfood:voice-command`, exposed from Realtime health, pet status, work-next, and voice handoff when the provider is quota/auth/network blocked, so typed transcripts or future local STT can route work with metadata-only Mac context plus optional bounded Accessibility outline, current-app UI controls, browser readiness/page/DOM fast paths, and dry-run a spoken acknowledgement without Realtime, microphone capture, screenshot payloads, clipboard text, full AX node payloads, default memory attachment, or accidental quick-lane cloud calls.
-- Zero-spend quick replies: when OpenAI spend is locked, a tiny deterministic local answerer can handle narrow low-risk questions such as identity, capabilities, local time, one-sentence acknowledgement, and spend status without touching OpenAI; anything outside that whitelist stays held or routes through the normal workbench instead of pretending to know.
-- Deterministic local voice commands that own their own context, such as latency, voice status, blockers, approvals, browser/app read paths, learning, and work-next, skip redundant pre-route screen/UI assembly even when the renderer sends fallback screen flags; the command-specific tool gathers only the evidence it actually needs.
-- Natural "look at the screen/window" requests use a lightweight observe path by default; questions about buttons, fields, or actionable controls route to the current-app UI path so Accessibility reads happen only when the task needs UI structure.
-- Natural local pet-window control through the same no-mic voice-command path, so phrases like "把你挪到左下角" preview a JAVIS-only window move and "回到刘海并变小" executes only the resident capsule park/mode change without touching user apps, files, microphone, or Realtime.
-- Natural Inbox capture through local voice/no-mic intake, so phrases like "记一下：..." preview a local Inbox item first, while explicit execution writes one local Inbox capture without storing long-term memory, reading clipboard text, starting microphone capture, or using Realtime.
-- Natural keep-awake control through local voice/no-mic intake, so phrases like "今晚别睡，保持后台运行" preview or start the JAVIS-managed launchd/caffeinate job, while "可以睡了" previews stopping it without touching microphone, Realtime, user files, or project files.
-- No-cloud overnight resident pack through `/api/overnight/status`, `/api/overnight/prepare`, `npm run overnight`, and `npm run overnight:start`, combining LaunchAgent, keep-awake, OpenAI spend lock, local voice fallback, work progress, blockers, and autopilot posture before sleep; the prepare action only starts/reuses local keep-awake and does not call OpenAI, start microphone capture, start Realtime, start workers, enable autopilot, capture screen, or mutate user files.
-- OpenAI spend firewall through the resident main process: zero-spend defaults keep the hard lock on and daily budget at 0; daytime manual mode reports `manual_guarded_no_spend` when no JAVIS spend is recorded but explicit phrase plus one-request lease can still unlock a single provider check; `npm run openai:recover` releases a mistaken current-process emergency lock without calling OpenAI, starting Realtime, creating a lease, or editing `.env`. Intentional cloud calls need the exact phrase plus a short-lived one-request local spend lease; unscoped `fetch`/`http`/`https` calls to OpenAI API/Realtime hosts are blocked unless they are inside a spend-guard reservation scope; the resident removes OpenAI credential variables from its general runtime environment after startup, background Codex/Claude/CLI child processes do not inherit OpenAI credentials by default, and inline `OPENAI_API_KEY=...` command injection is blocked. `/api/openai/egress-guard/probe` proves the network block without sending a real API request, `/api/openai/child-env-guard/probe` proves the child-process credential block without starting a process, and `/api/openai/spend-guard` includes runtime key isolation plus a local forensics summary for allowed/blocked sources.
-- Natural OpenAI spend-status questions through local voice/no-mic intake, so questions like "为什么消耗了 API 额度" read the same local spend guard, blocked count, one-request lease, forensics, allowed/blocked source groups, and egress firewall state without creating a spend lease, calling OpenAI, starting microphone capture, or using Realtime.
-- Quota-aware pet fallback: when Realtime provider health is blocked or warning, the compact desktop capsule expands only into a narrow local input strip instead of trying to start the microphone, spawning Terminal windows, or opening the full diagnostic panel. The resident launch agent starts from the project directory with Terminal voice loops disabled and clears stale `voice:chat` loops on restart. The explicit CUI/CLI terminal loop remains available only by manually running `npm run voice:chat`; the API loop opener always redirects to the pet input and reports the Terminal loop as manual-only. `voice:chat` also has its own single-instance lock, so repeated manual starts reuse the existing loop instead of stacking Terminal windows.
-- Terminal CUI local loop entry: `npm run config` option `VC` and `npm run config -- --print-local-voice-loop` make the no-mic continuous local intake discoverable when Realtime is blocked.
-- Local voice-command loop slash checks: `/try`, `/voice`, `/see`, `/status`, `/latency`, `/spend`, `/session`, `/note`, `/app`, `/ui`, `/file`, `/browser`, `/browse`, `/open`, `/delegate`, `/codex`, `/claude`, `/handoff`, `/board`, `/jobs`, `/progress`, `/next`, `/auto`, `/blockers`, `/unblock`, `/incident`, `/approvals`, and `/history` read prompt suggestions, Realtime/live voice status, screen/privacy/ambient perception status, resident/session state, local voice latency, OpenAI spend guard state, recent Mac app/browser metadata, preview local app/UI workflow plans, list/search/read allowed local files, preview file organization/rename/convert workflow plans, preview browser workflows, preview URL/search actions, preview scoped worker handoffs, read voice-ready handoff, local progress-board status, active/recent worker progress, next workbench action, autopilot/agency state, cross-system blocker summaries, read-only unblock previews, local audit incident reports, pending approval/confirmation gates, and sanitized voice history from inside `npm run voice:chat` without starting microphone capture or using Realtime. `/try` and natural questions like "我现在可以说什么" read `/api/voice/standby` for the current context-ranked next utterance without model calls, screen capture, or Terminal. `/voice` reads `/api/voice/standby` and reports the provider blocker, local fallback, and next recovery step without opening Terminal. `/latency` reads `/api/voice/latency` and reports local voice-command average/p90/p95 timings, likely bottleneck, slow turns, and next optimization hint from local audit metadata only. `/spend` reads `/api/openai/spend-guard` and reports allowed requests, locally blocked guard stops, lease state, and egress firewall state without creating a lease or touching OpenAI. `/see` reads `/api/perception/consent` and reports cached screen/privacy/ambient/browser metadata without capturing a new frame or returning images/page text. `/session start <goal>`, `/session resume`, `/session end [note]`, and `/note <text>` mutate only the local work-session store, so the no-mic loop can keep a recoverable task thread without touching user files, apps, Terminal, microphone, or Realtime. `/app` and `/browser` default to fast ambient metadata so the local loop stays responsive; add `--full-app`, `--full-browser`, or `--full` when a task needs live Accessibility outline or current browser page text. `/board` reads `/api/progress-board` and compresses the visual board nodes, recovery candidate, blockers, next actions, and safety flags without opening the HTML board window. `/jobs` and `/progress` call `/api/work/progress` and compress background jobs, workflows, worker groups, recoverable failures, latest done work, and next action into a short operator check-in. `/auto` calls the compact autopilot status path so natural questions like "为什么没自动推进" can be answered without model/screen/mic work. `/blockers` reads `/api/blockers` and combines Realtime, approvals, jobs, routes, workflows, attention, and autopilot waiting state without executing actions or starting workers. `/unblock` reads `/api/unblock/preview`, combines blocker status with a compact work-next preview, and explains what can be safely prepared without executing work-next, approving gates, starting workers, opening Terminal, or capturing screen. `/incident` reads `/api/incident/report` and explains likely causes from recent local audit metadata without returning screenshots, clipboard text, browser page text, or running actions. `/approvals` calls the sanitized pending-approval voice tool and lists ids, summaries, risk levels, and next hints without approving, rejecting, executing, opening Terminal, or capturing screen. `/ui <task>` uses the existing `/api/app/plan` lane in preview mode by default; `/file list|search|read ...` uses `/api/files/execute` through the existing local file policy; `/file organize|rename|convert ...` uses `/api/files/workflow` in preview mode; `/browse [intent] <task>` runs the existing `/api/browser/workflow` lane in preview mode by default; `/open <url or search>` defaults to preview-only and only executes through normal policy gates when the loop is started with `--run`; `/delegate`, `/codex`, and `/claude` default to preview-only and require `--run --confirm-delegate` before starting workers; `/try`, `/voice`, `/see`, `/status`, `/latency`, `/spend`, `/app`, `/browser`, `/board`, `/jobs`, `/progress`, `/next`, `/auto`, `/blockers`, `/unblock`, `/incident`, and `/approvals` default to lightweight fast payloads, with `--full-*` flags for deep diagnostics.
-- `/learn` in the local voice-command loop reads the metadata-only user-distillation snapshot, reusable habit candidates, artifacts, privacy boundary, and safety policy without saving memory, exporting skills, granting permissions, executing computer actions, starting microphone capture, or using Realtime.
-- Voice standby prompt pack: `/api/voice/standby`, `/api/pet/status`, wake handoff, the CUI, `/try`, natural `prompt_suggestions`, and the compact compose input now share one short context-aware `promptPack` with the next safe utterance and a few local examples. It ranks active work sessions, the local progress board, continuation, active/blocked work, browser activity, cached current-app UI, capability, and local distillation prompts from existing metadata, so Realtime quota failures still leave a clear "what to say next" path without opening Terminal, starting microphone capture, calling a cloud model, or turning the pet into a dashboard.
-- Natural approval-status fast path: local voice/no-mic intake routes questions such as `现在有没有需要我确认的审批`, `哪些动作卡在确认`, and `有没有要我点同意` to `approval_status`, reading the summarized approval queue, control mode, and risk policy without approving, rejecting, executing actions, starting microphone capture, creating Realtime sessions, opening Terminal, capturing screen, or mutating user files.
-- Natural blocker-status fast path: local voice/no-mic intake routes questions such as `现在有哪些阻塞卡住了`, `卡在哪里`, and `what is blocking you?` to `blocker_status`, reading `/api/blockers` for Realtime, approvals, work progress, routes, workflows, attention, and autopilot waiting state without executing actions, resolving approvals, starting workers, using Realtime, opening Terminal, or capturing screen.
-- Natural unblock-preview fast path: local voice/no-mic intake routes questions such as `怎么解除这些阻塞`, `下一步能安全准备什么`, and `how can you get unstuck?` to `unblock_preview`, combining `/api/blockers` with a compact work-next preview so JAVIS can explain the next safe recovery candidate without executing work-next, approving gates, starting workers, using Realtime, opening Terminal, capturing screen, or mutating user files.
-- Active blocker summaries filter transient preview-only browser environment misses such as "frontmost app is not a supported browser", keeping those records in history without making the pet or `/blockers` look stuck on old non-actionable routes.
-- Bounded local autonomy entrypoints from `npm run autonomy`, `npm run autonomy:run`, CUI `AG`/`AR`, and `voice:chat` `/agent <task>`, so the no-mic assistant can inspect context, plan fallbacks, preview work-next/recovery, and only execute through existing policy gates after explicit run intent. The chat-loop `/agent` defaults to a short 4-step preview, with `--full-agent` or `--agent-steps <n>` for deeper passes.
-- Local voice-command session ledger: active work sessions now receive sanitized `voice_command` events from local voice/wake fallback by default, and `npm run voice -- --session "..."` or API `session:true` can auto-start a session when none is active, without storing raw audio, screenshots, clipboard text, browser page bodies, or full AX nodes.
-- Natural work-session control: local voice/no-mic intake recognizes phrases such as `开始工作会话：...`, `当前会话`, `会话汇报`, `继续上次会话`, `结束工作会话`, `记到当前会话：...`, and `把...写进工作会话`. Read-only status/check-in commands return immediately; mutating start/resume/end/note commands expose a preview envelope first and write only when executed, with safety flags proving they do not start microphone capture, use Realtime, open Terminal, capture screen, read clipboard text, execute app actions, or mutate user files.
-- Voice continuation command: saying `继续刚才那个` / `continue last voice route` through local voice-command intake executes the latest executable preview route through the same work-next recovery policy instead of asking the user to repeat the task.
-- Sanitized local voice-command history through `/api/voice/history` and `npm run config -- --print-voice-history`, storing only transcript previews, route ids, lane/status, metadata summaries, and local latency timings for recovery/debugging while omitting raw audio, screenshots, clipboard text, browser page bodies, and full Accessibility nodes.
-- Local voice latency diagnostics through `/api/voice/latency`, CUI `VL` / `npm run config -- --print-voice-latency`, `voice:chat` `/latency`, and natural questions like `语音延迟怎么样` or `为什么有点慢`, reporting local voice-command latency percentiles and likely bottleneck from sanitized audit timing metadata without microphone capture, Realtime, screen capture, clipboard text, Terminal, action execution, or user-file mutation.
-- Lightweight local voice standby state in `/api/pet/status`, so the desktop capsule can know that typed/no-mic intake is ready, what command to use, and the latest sanitized route summary without exposing logs or diagnostics on the pet.
-- Realtime attention explanations through `get_attention_explanation`, so voice can briefly explain pet color, quiet/notify decisions, cooldown, and recent attention history without opening a desktop dashboard.
-- Manual Realtime dogfood drill for verifying live voice progress, work-handoff, autopilot, attention-explanation, perception-consent, UI-demonstration Record & Replay, and shortcut list/save/recall/forget flows from CUI/API, including a no-mic shortcut recall preparation path through `npm run config -- --prepare-realtime-shortcut-recall --confirm`.
-- One-page Realtime dogfood operator brief from CUI/API, showing readiness, next spoken prompt, follow-up prompts, evidence gates, and start/monitor commands without starting microphone capture.
-- Next Realtime dogfood prompt helper from CUI/API, with clipboard copy and dry-run support, so operators can manually dogfood live voice without starting microphone capture from automation.
-- Realtime dogfood operator session tracker from CUI/API, so a real spoken drill can be started, marked, ended, and audited without turning the desktop pet into a dashboard.
-- Realtime voice dogfood-session tools, so the live voice model can inspect, start, mark, and end the same operator drill record while CUI/API evidence proves it did not start microphone capture.
-- Realtime dogfood session auto-sync, so evidence-proven drill steps are persisted as sticky progress even after the live voice session disconnects.
-- Realtime dogfood archive export and acceptance action plan from CUI/API/voice tools, saving the current brief, evidence, session tracker, and related audit trail as a local JSON packet without starting microphone capture or storing raw audio, while exposing machine-readable previewable/manual next steps so voice and autonomy know what can be prepared before asking for mic confirmation; `npm run dogfood:realtime-acceptance -- --save-archive` saves and checks an archive in one operator step, while the voice acceptance tool returns a compact summary payload and CUI/API keep the full evidence packet for debugging.
-- Realtime payload budget audit through `npm run dogfood:realtime-payload` and the `realtime-payload` eval lane, keeping voice-heavy tool outputs compact enough for low-latency conversation.
-- Realtime live dogfood preflight through the `realtime-preflight` eval lane, checking renderer/provider readiness, mic-confirmation gates, remaining allowed live-only gaps, manifest budget, and payload budget without starting microphone capture.
-- Realtime live drill pack from CUI/API, bundling renderer preflight, the mic-confirmed start command, monitor, prompt, session tracker, archive, and acceptance checks into one read-only operator packet.
-- Renderer Realtime dogfood preflight and trigger for opt-in live WebRTC verification: `npm run dogfood:realtime-renderer` previews provider/renderer/prompt readiness without starting mic; `npm run dogfood:realtime-prepare` or `/api/work/next?actionId=realtime_voice:needs_live_session` starts a no-mic live-run prep cockpit with the full prompt script, operator tracker, archive, monitor, and final mic-confirmed command; `npm run dogfood:realtime-renderer -- --execute --confirm-mic` starts the renderer voice path only after explicit mic confirmation, sends dogfood prompts through the live data channel, and saves local evidence; add `--prompt-script` to preview/send the full dogfood prompt script, or `--require-acceptance` for an acceptance-aware live run that automatically uses the full script and keeps polling until all dogfood gates pass instead of auto-stopping after the short smoke window.
-- Private screen mode that downscales/blurs frames before they leave the renderer.
-- Screen privacy presets for password managers, account/login pages, banking/payment hosts, sensitive system windows, and a notification-strip region mask, with preview/apply APIs and CUI visibility.
-- Mac context: frontmost app/window, clipboard summary, active jobs, and pending approvals.
-- Passive ambient observe mode: local-only current app/window, metadata-only recent Mac activity timeline, metadata-only browser activity summary, optional private screen-frame refresh, and short in-memory current-app UI cache prewarming without intervention.
-- Local inferred learning profile distilled from passive ambient metadata without calling a model, with metadata-only evolution snapshots, pause/resume, prompt-inclusion, delete, promote-to-memory, and app/site/folder exclusion controls.
-- Local user-distillation status pack from `/api/learning/distillation`, CUI, and Realtime `get_learning_distillation`, combining inferred habits, recent evolution, explicit UI demonstrations, skill shortcuts, local skills, privacy boundaries, prompt-injection risk, and confirmation-gated next actions without storing raw screenshots, clipboard text, or page bodies; the voice tool returns a compact payload while API/CUI keep the fuller operator packet.
-- Record & Replay-inspired local learning: turn the inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft, explicitly export it to `~/.agents/skills`, turn completed UI demonstrations into safe replay plans, run them only after explicit confirmation through normal app workflow gates, promote proven demonstrations into reviewable local skills after confirmation, expose Realtime evidence for demonstration list/start/capture/finish/replay/draft/save gates, attach recalled local skills as structured `skillRecallPlan` evidence during later task routing, promote confirmed repeats into local skill shortcuts, manage those shortcuts from CUI/API/Realtime voice tools, and pass recalled plans into queued background/Codex/Claude workers.
-- Resident presence state: standby/watching/wake/work/attention status with the latest passive context, quiet attention policy, attention-notification throttling, and intervention guardrails.
-- Recent activity: local app/window/browser metadata timeline from ambient observations through `/api/activity/recent`, local voice-command fast path, and Realtime `get_recent_activity`, without screenshots, page text, clipboard text, or Accessibility trees.
-- Browser context: supported frontmost browser tab title and URL.
-- Browser activity: local recent browser host/title timeline from ambient metadata, exposed through API/CUI/presence/Realtime tools without storing page text.
-- Unified perception consent/status registry through `/api/perception/consent`, Realtime `get_perception_consent`, and `npm run config -- --print-perception`, covering screen, voice, ambient observation, browser, clipboard, Accessibility/app control, learning, and worker tools without adding desktop pet diagnostics; the Realtime tool returns a compact voice payload while CUI/API keep the full operator registry.
-- Browser page reader: read selected text, headings, visible page text, and visible links from supported active tabs.
-- Browser control: guarded back/forward/reload/new-tab/close-tab/address/search/open-url actions for supported active browsers.
-- Browser DOM control: read visible clickable/fillable page controls through Apple Events or Chrome DevTools, then guarded click/fill/select one element.
-- Browser workflows: summarize, extract actions, draft, ask about the current page, search/compare result pages with structured candidate links, open and review one selected result, synthesize across multiple result pages, or recover blocked form-fill drafts with a safe sensitive-field handoff through quick or background lanes.
-- Read-only MCP server discovery, preview-only MCP workflow planning, local MCP execution approval requests, approved stdio `tools/list` schema inspection, Realtime voice `plan_mcp_tool_call` approval planning, and separately approved stdio `tools/call` execution for Claude Desktop/Claude Code/Cursor/project JSON configs through API/CUI/voice; env values and URL queries are redacted, previews never start server commands, and tool results are sanitized before storage.
-- Realtime voice approval review: `get_pending_approvals` reads summarized pending approvals, and `resolve_approval` can reject or confirm one exact approval id while preserving the local approval gates.
-- Explicit local control modes: observe-only, ask-before-action, trusted-local, and supervised-takeover posture on top of the action policy.
-- File workflows: list/search local folders, summarize allowed files, ask file-specific questions, or plan folder organization through quick/background lanes.
-- Voice-driven current-app control: one tool plans and executes a single click/toggle/fill action through the Accessibility tree and guarded action policy.
-- Multi-step local app workflows: preview or execute short sequences such as open app, wait, press UI target, type text, hotkey, and file/Mac actions with one workflow record.
-- Current-state app workflow planning: observe frontmost app, Accessibility tree, and screen metadata to turn a natural request into previewable local workflow steps.
-- Creative app workflows: recognize video editing and music composition requests, choose a likely NLE/DAW such as Final Cut Pro, DaVinci Resolve, Premiere, iMovie, CapCut, Logic Pro, GarageBand, Ableton Live, FL Studio, or Pro Tools, return stage action packs, and execute one guarded action at a time with post-action screen/UI verification and recovery hints.
-- Productivity app dogfood archives: preview or save a four-app Notes/Reminders/Calendar/Mail draft evidence packet from API or Realtime voice tools without starting apps, sending messages, mutating user files, or recording workflow history by default.
-- Local task router: picks quick, deep, Codex, or Claude lane before executing or queueing work, with relevant explicit memory context and recalled local skill plans.
-- Bounded autonomy loop through `/api/autonomy/run` and Realtime `run_autonomy_loop`: route, expose local learning evidence, observe local context, preview the next workbench action, optionally execute through existing policy gates, verify progress, scan failed-worker recovery, return an `agencyPlan` with primary/fallback next attempts and ask-user-only boundaries, and run one budgeted recovery retry only when `execute:true` and `retry:true` are both explicit.
-- OpenClaw-style lane contract registry and voice capability map for realtime/background/Codex/Claude/local/browser/file/app ownership, handoff, collaboration state, and risk boundaries; the Realtime capability tool returns a compact voice payload while API/CUI keep the full map.
-- Routing speed policy from API/CUI/Realtime voice, explaining when to answer inline, use the fast model, queue background work, hand code to Codex/Claude, or use browser/file/app tools first with explicit first-tool recommendations; the Realtime tool returns a compact voice payload while API/CUI keep the full profile/sample table.
-- Parallel task ownership guard that keeps overlapping write scopes from launching as independent agents.
-- Local agent collaboration ledger so external Claude Code, Codex, or CLI workers can claim scoped work, heartbeat, release, get a CUI/API/CLI handoff summary, see suggested non-overlapping scopes to pick up next, and avoid overlapping write races.
-- Realtime collaboration claim tools (`plan_collaboration_claim`, `heartbeat_collaboration_claim`, `release_collaboration_claim`) so live voice can preview, confirm, refresh, and release Claude Code/Codex ownership records through the same local ledger without starting workers or mutating files.
-- Realtime delegated-worker handoff through `delegate_task`: voice previews a scoped background/Codex/Claude task by default, refuses execution without `execute:true` plus `confirm:true`, and then starts workers only through the normal routing, policy, and overlapping-write serialization path.
-- Local voice-command worker handoff through `/delegate`, `/codex`, and `/claude` inside `npm run voice:chat`, so no-mic fallback can preview the same scoped background/Codex/Claude delegation path and show the execution confirmation gate without starting workers.
-- Natural no-mic worker delegation: normal transcripts such as `交给 Codex 检查 docs/ROADMAP.md`, `让 Claude Code 看一下 README.md`, or `把这个任务交给后台慢慢跑: 总结 docs/OPERATIONS.md` now route to the same guarded `delegate_task` preview path, infer read/write scope conservatively, and stop at `confirmation_required` before any worker starts when execution is requested.
-- Natural no-mic progress check-ins: normal local voice-command transcripts such as `后台现在怎么样`, `进度怎么样`, `what is running`, or `what are the agents doing` now route to the same read-only `/api/work/progress` fast path as `/jobs`, returning background job/workflow/worker/recovery status without waiting for a model call.
-- Natural no-mic progress-board check-ins: transcripts such as `打开本地进度看板，告诉我现在卡在哪里`, `后台状态板怎么样`, or `progress board status` now route to the read-only `progress_board` path, returning the same semantic board state as `/api/progress-board` without opening the board window, calling OpenAI, starting microphone capture, using Realtime, starting workers, or executing actions. The standby prompt that suggests this board can be toggled locally with `npm run voice:prompt-board:on`, `npm run voice:prompt-board:off`, or `npm run voice:prompts`; this only changes suggestions and does not disable the actual `/board` or `progress_board` command.
-- Natural no-mic browser activity check-ins: normal transcripts such as `最近浏览器打开了哪些网页？` or `我刚才在浏览器看了什么？` route to metadata-only browser activity instead of browser recovery or page-body reading, returning recent app/title/host signals without screenshots, page text, clipboard text, Realtime, or model calls.
-- Natural no-mic capability check-ins: normal transcripts such as `你现在能看到什么，能操作什么，权限开了哪些？`, `你能做什么？`, or `what can you see and control?` now route to the local perception consent plus capability map fast path, returning a compact permission/capability status without waiting for a model call.
-- Natural no-mic learning check-ins: normal transcripts such as `你从我身上学到了什么`, `你现在怎么蒸馏我的使用习惯`, or `我的习惯有哪些可以变成自动化` now route to the local user-distillation fast path, returning only metadata-derived habits, reusable workflow candidates, privacy boundaries, and review actions without model calls, Realtime, microphone capture, memory writes, skill exports, permission changes, or computer actions.
-- No-model local command router for resident status, screen refresh/observation, Inbox capture/listing, opening apps/URLs, web search, and narrow app workflows such as opening TextEdit/Notes/Obsidian and typing short text when API/model lanes are unavailable.
-- Fast lane for lightweight Q&A.
-- Deep lane for slower background tasks with persisted logs, cancellation, and recalled skill-plan context when routing found a matching local workflow.
-- Background CLI tool runner for explicit local commands such as `gh`, `git`, `npm`, Codex CLI, and Claude Code without blocking the voice lane.
-- Workflow history for recent browser, voice, and background work.
-- Local work briefing for recent progress, blockers, active work, and next actions.
-- Local work progress check-ins for background jobs, workflows, grouped Codex/Claude/local worker batches, and recoverable failed-worker plans.
-- Route-preview continuation: preview-only voice/wake routing records can be resumed through `route:<id>` work-next actions, with background/Codex/Claude/local previews exposing an explicit `route_preview_execute` candidate instead of making the user repeat the request.
-- Scriptable CUI work-next runner through `npm run work:next`, `npm run work:run -- --action-id route:<id>`, and `npm run work:run -- --last-voice-route`, so routed previews can be continued from terminal automation without opening the interactive CUI.
-- Realtime voice recovery inspection and targeted recovery for failed workers through `get_worker_recovery` and `run_worker_recovery`, with execution still bounded by normal recovery policy.
-- Voice-ready work handoff that compresses readiness, progress, session, collaboration, next actions, and workflow continuation suggestions into one short spoken summary; the Realtime `get_work_handoff` tool returns a compact payload instead of the full briefing/collaboration ledger.
-- Unified work-next step that safely chooses one next action across setup, approvals, sessions, Inbox, jobs, workflows, and Realtime dogfood; Realtime blockers include a guided handoff dogfood pack plus a workbench `actionPlan` that separates no-mic preparation from manual live-voice steps, while the Realtime `get_work_next` tool returns a compact voice payload instead of the full workbench JSON.
-- Session-aware work-next continuation: `session:<id>` actions can preview and explicitly continue the latest executable local voice route recorded in that work session, or persist a check-in snapshot when there is no route to run.
-- Overnight autopilot decision evidence through `/api/autopilot`, CUI status, and Realtime voice `get_autopilot_status`, showing candidate counts, waiting conditions, the selected safe action, skip summaries, and what the resident needs before it can continue unattended; Realtime gets a compact status payload while API/CUI keep the full preview evidence.
-- Local work sessions for focus goals, session notes, resume-from-history handoff, automatic evidence from Inbox/jobs/workflows/approvals, spoken check-ins, and deterministic end-of-session summaries.
-- Local memory for user-approved preferences, project facts, and durable notes.
-- Local Inbox for clipboard/manual captures and pending follow-up items.
-- Read-only Inbox triage for prioritizing captures, grouping them by lane/source/priority, suggesting quick/background/Codex/Claude lanes, and returning voice-ready confirmation prompts before execution.
-- Explicit Inbox "do next" processing that sends the highest-priority open capture into the task router.
-- Inbox-to-task routing for turning captures into quick/background/Codex/Claude work.
-- Continue-from-history workflow routing for follow-up tasks, with memory-aware preview prompts over the parent workflow, related recent workflows, explicit memories, local skills, and inferred learning profile/evolution context.
-- Proactive workflow follow-up suggestions that turn recent completed or blocked workflows into safe work-next continuation previews before anything is queued.
-- Delegation slots for Codex and Claude Code with visible worker output.
-- Small reversible Mac actions: open URL and open app by default.
-- Guarded file actions: write files, create folders, copy files, and move/rename files through policy, approval, and local-execution gates.
-- Clipboard actions: read, write, and clear clipboard text through policy/audit.
-- Tiny draggable always-on-top desktop buddy window.
-- Compact pet mode by default; configuration lives in the terminal CUI instead of the desktop pet.
-- Lightweight `/api/pet/status` endpoint for the desktop capsule: traffic-light mode, wake/voice/window state, and no raw screen image, model list, learning profile, routing history, logs, or runtime data directory.
-- Pet click starts or stops the realtime voice + screen-context session when the API key is configured.
-- Non-intrusive Dynamic Island-style parking at the Mac notch, with optional corner/display placement from the terminal CUI.
-- macOS menu bar status item for resident controls and setup shortcuts.
-- Global pet park hotkey, defaulting to `Control+Shift+Space`.
-- Global tap-to-summon hotkey, defaulting to `Alt+Space` (`Option+Space` on Mac), which wakes JAVIS and parks it at the Dynamic Island/notch position.
-- Global clipboard-to-Inbox capture hotkey, defaulting to `Control+Shift+I`; the companion API previews by default and only saves with `execute:true`.
-- Resident system notifications for approvals and background task completion, with approval/setup/voice attention alerts gated by the quiet attention policy.
-- Voice mode defaults to push-to-talk from the pet: click/summon starts the Realtime session when available, then hold the compact capsule or press Space to talk. `/api/voice/standby`, `/api/pet/status`, wake handoff, and the CUI expose the same `inputMode` contract so open-mic remains a manual expanded-control toggle.
-- Setup/config diagnostics for `.env`, permissions, resident mode, policy, and local workers.
-- Local evaluation harness for product-lane regression checks across health, Realtime voice configuration, briefing, memory, Inbox, routing, parallel multi-agent ownership, collaboration, browser, file, control, worker, Accessibility, and learning surfaces.
-- Shared AX targeting verifier for Chromium/Gemini side-pane input regressions.
-- Setup guide and one-step fix action for opening the current most important blocker.
-- Local setup actions for preparing `.env` and opening macOS permission/runtime locations.
-- Resident login-start install helper with LaunchAgent status.
-- Electron single-instance resident guard, so a second launch reuses the existing API/window process and summons the pet instead of creating duplicate resident windows or port conflicts.
-- Renderer self-recovery guard, so a desktop pet load failure or crashed renderer schedules a bounded reload and returns to the compact parked window instead of staying blank.
+The desktop pet and status board are optional surfaces. The product core is the resident local server, CLI/API, router, workers, memory, approvals, and audit trail.
 
-High-permission actions such as typing into the active app and hotkeys are disabled until `JAVIS_ENABLE_LOCAL_EXEC=true` is set.
+> Early developer prototype. Expect rough edges around Realtime voice setup, macOS permissions, native packaging, and broad app control.
 
-## Run
+## What Works
+
+- Local resident server on `127.0.0.1`.
+- LaunchAgent install/restart/uninstall flow.
+- Optional Electron desktop pet that can be shown, hidden, parked, or closed.
+- No-microphone typed voice-command fallback.
+- Attended OpenAI Realtime voice lane.
+- Permissioned screen, browser, app, file, clipboard, and memory context.
+- Task routing across quick answers, browser/file/app workflows, terminal commands, Codex, Claude Code, and background workers.
+- Local jobs, workflows, Inbox items, memories, approvals, audit logs, status board, and evals.
+- Zero-spend startup posture; live provider use is opt-in.
+
+## Quick Start
 
 ```bash
+npm install
 cp .env.example .env
 npm run config
+npm run doctor
+```
+
+Try the no-microphone path first:
+
+```bash
+npm run voice -- "What can you do right now?"
+npm run voice:chat
+```
+
+Run the desktop app in development:
+
+```bash
 npm run dev
 ```
 
-Use the terminal CUI to paste `OPENAI_API_KEY` locally. It hides the input, writes only to `.env`, and can restart the resident service so the key is loaded. A saved key remains cold by default: `JAVIS_OPENAI_RUNTIME_KEY_ISOLATION=true` removes OpenAI credentials from general `process.env` after startup, and `JAVIS_OPENAI_CHILD_ENV_GUARD=true` prevents background child processes from inheriting them. Do not paste API keys into chat.
+Open the local status board:
 
-The same CUI can explicitly toggle `JAVIS_ENABLE_LOCAL_EXEC` for Level 3 local actions after typing `ENABLE` or `DISABLE`.
-It can also enable `JAVIS_TRUSTED_LOCAL_MODE` after typing `TRUST`; this acknowledges that automatic Level 3 local actions are intentional while Level 4 sends, purchases, deletes, form submissions, and account changes still require confirmation.
-The CUI also exposes microphone permission recovery, explicit control-mode switching, desktop pet hide/show/close controls for class or presentations, Realtime evidence watching or one-shot printing, Realtime dogfood brief/prompt/session/archive controls, voice-ready work handoff printing, next-work execution, overnight autopilot status, one-tick manual advance, learning refresh/evolution, inferred-memory save, learning skill draft preview/export, local skill shortcut review/promotion, and the `JAVIS_AUTOPILOT_ENABLED` toggle for unattended low-risk recovery work.
+```bash
+npm run board
+```
 
-Use `npm run verify:ax` as a read-only Accessibility targeting smoke test. For the strict Chrome/Gemini side-pane case, focus Chrome and run `npm run verify:ax -- --require-chromium`.
+## Realtime Voice
 
-Use `npm run eval` against a running resident for a broader local product-lane scorecard. It uses read-only or preview checks by default and can be scoped with `npm run eval -- --only=health,routing`. The control-mode lane temporarily switches modes, preview-tests the gates, and restores the previous mode. Use `npm run eval:routing` for the labeled lane-classifier corpus. `JAVIS_EVAL_LIVE_WORKERS=true npm run eval -- --only=workers-live` is the opt-in check that queues real read-only Codex, Claude, and local CLI workers.
+OpenAI Realtime is treated as a manual, attended lane. JAVIS should not start it silently at boot.
 
-Local file policy lives in `~/Library/Application Support/JAVIS/Runtime/action-policy.json`; broad Home-directory access can be enabled there while protected macOS folders may still need Full Disk Access approval.
-Local autonomy posture lives in `~/Library/Application Support/JAVIS/Runtime/control-mode.json` and is also available through `/api/control/mode`.
+```bash
+npm run voice:setup
+npm run dogfood:realtime-provider-probe
+npm run dogfood:realtime-prepare
+npm run dogfood:realtime-live
+```
 
-macOS will ask for microphone and screen recording permissions the first time those features are used.
+Useful spend controls:
+
+```bash
+npm run openai:spend
+npm run openai:lockdown
+npm run openai:recover
+```
 
 ## Resident Mode
 
-For a login-start version that runs from the built app instead of the Vite dev server:
-
 ```bash
 npm run resident:install
-```
-
-Install/restart first stops stale JAVIS Electron processes from this project and any project-owned listener on the configured API port, so the LaunchAgent does not leave an older API server behind.
-
-To remove it:
-
-```bash
+npm run resident:restart
+npm run resident:watchdog:check
 npm run resident:uninstall
 ```
 
-## Architecture
+Runtime data lives under:
 
 ```text
-Electron renderer
-  minimal desktop pet
-        |
-        v
-Local Express service on 127.0.0.1:3417
-  protected by the local runtime token except /api/health
-  /api/health           -> resident server health and storage state
-  /api/renderer/status  -> desktop renderer load/recovery health without URL/token leakage
-  /api/readiness        -> setup, permission, policy, and runtime checks
-  /api/config/check     -> setup files, resident mode, permissions, policy, and worker readiness
-  /api/config/open-cui  -> open the terminal configuration window
-  /api/doctor/report    -> complete maintenance self-check report
-  /api/voice/standby    -> unified voice standby/fallback status: primary action, provider blocker, local intake, and recovery steps
-  /api/setup/recovery-bundle -> compact resident landing packet: LaunchAgent, setup, permissions, Realtime recovery, local fallback, policy, workers, next action
-  /api/setup/guide      -> setup blocker guide and next local action
-  /api/setup/next       -> open the current most important setup target
-  /api/sessions         -> local work session list/start/resume/event/check-in/end
-  /api/activity/recent  -> metadata-only recent Mac app/window/browser activity timeline
-  /api/setup/actions    -> low-risk local setup helpers
-  /api/resident/status  -> LaunchAgent install/load status
-  /api/keep-awake/status -> launchd/caffeinate sleep-prevention status for unattended resident work
-  /api/keep-awake/start -> explicitly start launchd-managed caffeinate so background work can continue while the display sleeps
-  /api/keep-awake/stop  -> explicitly stop the keep-awake launchd job
-  /api/window/state     -> pet mode, position, and global hotkey status
-  /api/window/park      -> move the buddy back to its configured notch/corner position
-  /api/window/move      -> move the buddy to explicit screen coordinates
-  /api/window/classroom -> persistently hide/show the desktop pet for class or presentation mode
-  /api/window/hide      -> hide the desktop pet while resident services keep running
-  /api/window/show      -> restore the desktop pet after class/presentation mode
-  /api/window/close     -> close only the desktop pet layer; API, menu bar, and hotkeys remain available
-  /api/menubar/state    -> macOS menu bar status item state
-  /api/notifications/state -> resident notification support, counters, quiet attention policy, and operator-only attention history
-  /api/briefing         -> local status, blockers, recent work, and next actions
-  /api/work/progress    -> spoken-style job/workflow progress check-in
-  /api/work/handoff     -> voice-ready handoff over readiness, progress, sessions, collaboration, and continuations
-  /api/work/next        -> preview or execute one safe next workbench action; Realtime voice uses compact get_work_next for read-only next-step previews and run_work_next only after an explicit execute request
-/api/autonomy/run     -> bounded route/learning/observe/preview/verify/recovery-scan loop for one task, with machine-readable agencyPlan
-  /api/jobs             -> persisted background job history
-  /api/jobs/recovery    -> recoverable failed-job summaries with attempts, diagnostics, child recovery jobs, and recommended next actions
-  /api/workflows        -> persisted workflow history with linked jobs and results
-  /api/workflows/follow-ups -> proactive continuation suggestions from local workflow history, memory, skills, and learning
-  /api/workflows/continue -> preview or run a memory-aware continuation of the latest or specified prior workflow
-  /api/workflows/copy-result -> copy the latest or specified workflow result to clipboard
-  /api/lanes/contracts -> lane owner/scope/handoff/risk contracts for routing
-  /api/memory           -> local memory list/search/create/delete
-  /api/learning         -> local inferred profile, controls, exclusions, and prompt-use state
-  /api/learning/evolution -> metadata-only recent-vs-baseline local habit change snapshot
-  /api/learning/settings -> pause/resume learning, prompt inclusion, and exclusion lists
-  /api/learning/remember -> save the inferred learning profile into local memory
-  /api/learning/skill-draft -> preview or generate a local Codex skill draft from learning evidence
-  /api/learning/skill-draft/save -> explicitly export the draft to ~/.agents/skills
-  /api/skills/local     -> read-only search over local user skills for repeatable workflows
-  /api/learning/skills  -> read-only local skill recall for learned or demonstrated workflows
-  /api/shortcuts        -> local skill shortcut list, candidates, promotion, and deletion
-  /api/demonstrations   -> explicit UI demonstration records for repeatable local workflows
-  /api/demonstrations/:id/replay/* -> safe replay planning and confirmation-gated execution
-  /api/demonstrations/:id/skill-draft* -> preview or confirm-save a local skill from a completed demonstration
-  /api/inbox            -> local persistent capture inbox
-  /api/inbox/capture-clipboard -> preview current clipboard text for Inbox; save only with execute:true
-  /api/inbox/triage     -> read-only Inbox priority and lane suggestions
-  /api/inbox/process-next -> preview-first processing for the highest-priority open Inbox item; execute requires confirm:true
-  /api/inbox/:id/route  -> preview-first routing for one Inbox item into quick/deep/Codex/Claude work
-  /api/jobs/:id/cancel  -> stop queued/running background work
-  /api/audit/recent     -> recent structured audit events
-  /api/perception/consent -> local perception/tool surface status, consent gates, storage notes, controls, and audit trails
-  /api/actions/policy   -> local automation policy
-  /api/actions/execute  -> execute guarded local actions
-  /api/observe          -> combined fast observation for voice: Mac context, screen, Accessibility, jobs, approvals
-  /api/mac/context      -> frontmost app, clipboard summary, queue, approvals
-  /api/ambient          -> recent passive local observation metadata
-  /api/ambient/sample   -> take one passive local observation sample
-  /api/learning         -> local inferred profile from ambient metadata
-  /api/learning/distill -> refresh the local inferred profile now
-  /api/learning/skill-draft -> build a reviewable SKILL.md draft from inferred local patterns
-  /api/presence         -> resident standby/watch/work state, attention policy, and latest passive context
-  /api/pet/status       -> lightweight desktop pet state; full diagnostics remain in /api/status, CUI, or expanded-panel refresh
-  /api/attention        -> quiet attention policy for pet color, notifications, cooldown, reasons, and operator-only history
-  /api/attention/history -> recent operator-only attention notification sent/suppressed events
-  /api/attention/notify -> apply the attention notification gate, with dry-run support for testing
-  /api/routing/speed-policy -> read-only model/lane speed policy for realtime vs fast/background/Codex/Claude/tool-first routing, including browser/file/app first-tool hints
-  /api/conversation/state -> resident voice conversation lifecycle state
-  /api/realtime/context -> silent preflight context for new voice sessions
-  /api/realtime/evidence -> live voice dogfood checklist and sanitized tool-call evidence, including work-next preview/execute evidence
-  /api/realtime/dogfood/drill -> manual live-voice dogfood drill steps and prompts
-  /api/realtime/dogfood/prompt -> next manual live-voice dogfood prompt
-  /api/realtime/dogfood/prompt/copy -> copy the next dogfood prompt, with dry-run support
-  /api/realtime/dogfood/session -> manual operator session tracker for real live-voice dogfood
-  /api/realtime/dogfood/pack -> read-only live drill operator pack with start, monitor, archive, acceptance, and safety gates
-  /api/realtime/dogfood/archive -> preview or save a local dogfood evidence archive
-  /api/realtime/dogfood/archives -> list saved local dogfood evidence archives
-  /api/realtime/dogfood/renderer -> read-only renderer/WebRTC dogfood preflight
-  /api/realtime/dogfood/renderer/start -> opt-in renderer/WebRTC dogfood trigger, requires execute:true and confirmMic:true before microphone starts
-  /api/realtime/dogfood/start -> manual dogfood drill starter: summon pet and optionally prepare progress after voice is live
-  /api/context/plan    -> smart context assembly plan for a user request
-  /api/wake/status      -> soft/local wake-word trigger state
-  /api/wake/trigger     -> trigger voice start from a local wake engine
-  /api/accessibility/tree -> read-only frontmost app UI tree
-  /api/accessibility/plan -> dry-run UI control plan from the accessibility tree
-  /api/accessibility/control -> plan and execute one guarded current-app UI action
-  /api/app/plan        -> observe current state, plan steps, and optionally execute
-  /api/app/workflow    -> preview or execute a short multi-step local app workflow
-  /api/creative/workflow -> plan/start video-editing or music-composition workflows with stage action packs
-  /api/creative/action -> preview or execute one guarded creative workflow action, with verification/recovery hints
-  /api/browser/context  -> supported browser tab title and URL
-  /api/browser/readiness -> read-only default browser target, bridge status, recovery actions, and no-window-picker safety
-  /api/browser/activity -> metadata-only recent browser host/title activity
-  /api/browser/page     -> read-only current browser page text and link extraction
-  /api/browser/control  -> guarded current-browser navigation actions
-  /api/browser/javascript -> browser JavaScript bridge status
-  /api/browser/dom      -> read visible clickable/fillable page controls
-  /api/browser/dom-action -> guarded webpage element click/fill/select
-  /api/mcp/servers      -> read-only local MCP server discovery with env values redacted
-  /api/mcp/workflow     -> preview which MCP server should handle a task or create a local approval request; approval can inspect stdio tool schemas
-  /api/mcp/tool-call    -> preview or create approval for one stdio MCP tools/call request with sanitized result storage
-  /api/browser/workflow -> summarize, extract actions, draft, ask, act, search, compare, review one result, or research multiple result pages
-  /api/cli/run          -> queue an explicit local CLI command as a background job
-  /api/files/execute    -> local file tool execution
-  /api/files/plan       -> preview a policy-aware folder organization plan
-  /api/files/plan/apply -> request confirmed execution/approvals for a file plan
-  /api/files/workflow   -> local file/folder workflows and organization plans
-  /api/approvals        -> local action approval queue
-  /api/realtime/session  -> OpenAI Realtime WebRTC session
-  /api/chat/quick        -> fast model lane
-  /api/voice/command     -> no-Realtime transcript intake with routing + local spoken acknowledgement
-  /api/screen/describe   -> vision lane over latest screen frame
-  /api/screen/capture-now -> resident-side screen frame refresh
-  /api/screen/privacy    -> screen context privacy mode
-  /api/tasks/route       -> local command + quick/deep/Codex/Claude task routing
-  /api/tasks/parallel    -> grouped multi-agent routing with ownership serialization
-  /api/collaboration     -> local agent scope claims for Codex/Claude/CLI coordination
-  /api/tasks             -> background / Codex / Claude queue
-  /api/tools/execute     -> tools called by the realtime model
-  /api/window/mode       -> pet sizing compatibility endpoint
-  /api/window/hide       -> hide the desktop pet without stopping the resident
-  /api/window/show       -> recreate/restore the desktop pet after it was hidden or closed
-  /api/window/close      -> close only the desktop pet layer; resident services stay online
-  /api/window/summon     -> wake and park JAVIS from API/CUI/hotkey
+~/Library/Application Support/JAVIS/Runtime/
 ```
 
-The realtime model stays focused on short interaction. `/api/context/plan` creates a deterministic smart context assembly plan before expensive context gathering: status requests stay resident-only, recent browser activity requests the metadata-only `get_browser_activity` tool, browser content tasks request browser/page tools, current-app control requests Accessibility, and screen/vision/file/clipboard context is skipped unless the task asks for it. `observe_now` combines the usual first-look context into one tool call when the plan calls for it: frontmost app/window, browser context, clipboard summary, latest or freshly captured screen metadata, optional vision summary, Accessibility outline, jobs, and approvals. `/api/perception/consent` is the operator-facing registry for what JAVIS can currently see or operate: each surface reports status, consent gate, local retention, raw-content storage posture, controls, and recent audit evidence, while the desktop pet remains just a compact status light. Realtime voice can call `get_perception_consent` when the user asks what JAVIS can see, read, hear, control, store, or why a permission/action is allowed or blocked. When live context is enabled, the resident captures the full primary screen directly and adds that latest frame to the realtime conversation so follow-up voice commands can refer to what is visible without showing a window picker. `JAVIS_SUMMON_HOTKEY` defaults to `Alt+Space` and triggers the same wake path as `/api/wake/trigger`, while `JAVIS_WAKE_ENGINE_CMD` can point at any local wake-word command; when either path triggers wake, the renderer sees `/api/wake/status` and starts the voice session. The renderer reports connecting/live/idle/error voice state and heartbeats to `/api/conversation/state`, so `/api/presence` can move from Watching to Connecting/Listening and back to Watching after the session ends. When a Realtime data channel opens, the renderer also sends one silent `/api/realtime/context` preflight message containing current presence, app/browser, screen-frame freshness, work status, next actions, guardrails, and lane contract guidance; this reduces first-turn tool latency and does not trigger a standalone answer. While voice stays live, the renderer polls `/api/work/progress` and sends silent work-progress updates only when active/background work changes, keeping Codex/Claude/deep task state available without interrupting. `/api/realtime/evidence` also exposes a short in-memory trail of sanitized Realtime tool calls, including shortcut list/candidate/save/forget and perception-consent evidence for live voice dogfood. `get_attention_explanation` gives Realtime a short Chinese spoken summary of attention state, pet color, notification cooldown, and recent operator-only attention history, while the desktop pet continues to consume only compact color/state. Screen privacy defaults to `private`, which downscales and blurs/pixelates frames before they are posted to the local API or Realtime session; API/CUI controls can switch to `clear` when precision matters. The passive ambient observer can keep local metadata about what app/browser page is active, but it does not speak or act by itself. `/api/presence` packages that passive state into a standby/watching/working/attention summary with the latest observed app/browser context and guardrails. When `JAVIS_AMBIENT_LEARNING=true`, the resident distills those local metadata events into a lightweight inferred profile: top apps, browser hosts, active hours, recent contexts, and a short summary. It also exposes a local evolution snapshot so routing and continuation prompts can see how those patterns are changing over recent activity. This distillation is local, model-free, and separate from explicit user-approved memory; only the aggregate summary/signals/evolution hints are eligible for prompt context when `JAVIS_INCLUDE_LEARNING_IN_PROMPTS=true`. Inspired by Codex Record & Replay, /api/learning/skill-draft can turn that inferred profile plus recent routing/workflow evidence into a reviewable `SKILL.md` draft; /api/learning/skill-draft/save requires explicit confirmation and exports to user-level `~/.agents/skills` instead of the GitHub project. Completed skill-plan repeats can also be promoted through `/api/shortcuts/promote` or the Realtime `save_skill_shortcut` tool after confirmation; later matching phrases recall the same `skillRecallPlan` even when broad memory search is disabled, but they do not approve actions or expand permissions. Realtime can list shortcuts, show promotion candidates, save a confirmed phrase, or forget a phrase through the same local store used by the CUI. The model can also ask for current Mac, resident presence, perception consent, attention explanations, browser, recent browser activity, browser DOM controls, lane contracts, collaboration state, file, local memory, local learning profile, local learning evolution, local Inbox, local work sessions, local work briefing, work progress, session check-ins, or Accessibility UI-tree context, start/resume/log/end a work session, capture follow-up items into Inbox, triage Inbox priority/lane suggestions, explicitly process the next Inbox item, route Inbox items into task lanes, inspect recent workflow history, get proactive workflow follow-up suggestions, continue a prior workflow, copy a workflow result back to the clipboard, run current-page browser workflows, search/compare web result pages, review one selected result, synthesize multiple result pages, run local-file workflows, control one current-app UI target, click/fill/select one guarded webpage element, plan a workflow from current Mac state, execute a short local app workflow, or use the local router to decide whether a task should be answered quickly or queued to a deeper lane. Workflow continuation can be previewed without queueing work; the continuation prompt carries the parent workflow, related recent workflows, explicit memory matches, recalled local skills, and inferred learning profile/evolution context when enabled. The briefing and work-next lanes now surface proactive continuation suggestions from that same context, so JAVIS can propose a next artifact or blocker-recovery step without starting background work first. The router first checks safe no-model local commands, so status, work progress, session resume/check-ins, Inbox capture/listing/triage/next processing, app/URL opens, and web search still work when model lanes are unavailable. The router and manual task queue include relevant explicit memories plus the local inferred profile/evolution by default, and can disable this with `useMemory:false`; each routing record stores `contextPlan` and `learningEvidence.evolution` so CUI/API/debug flows can explain which context was used or deliberately skipped. Active `/api/collaboration` write claims from external Claude Code, Codex, or CLI workers seed the parallel ownership guard, so later routed workers serialize instead of editing the same scope. Guarded Accessibility execution is available through Level 3 `ax_press` and `ax_set_value` actions plus the higher-level `control_current_app`, `plan_app_workflow`, and `run_app_workflow` voice tools, guarded browser DOM execution is available through Level 3/4 `dom_click`, `dom_fill`, and `dom_select`, and guarded file execution is available through Level 3 write/create/copy/move actions; all require policy checks, approval when configured, and local execution enablement. File organization has a two-step flow: preview the plan first, then request apply with explicit confirmation. Harder work is put into the queue so spoken conversation stays responsive, and running workers can be inspected or cancelled from the CUI/API.
+That directory contains local state such as jobs, workflows, routing history, memories, approvals, audit logs, and the local API token.
 
-## Long-Term Direction
+## Common Commands
+
+| Command | Purpose |
+| --- | --- |
+| `npm run config` | Open the terminal setup/control surface. |
+| `npm run doctor` | Check local readiness. |
+| `npm run dev` | Run Vite and Electron together. |
+| `npm run start:desktop` | Run the built desktop app. |
+| `npm run board` | Open the local status board. |
+| `npm run voice -- "..."` | Send one no-microphone voice-command request. |
+| `npm run voice:chat` | Start the no-microphone command loop. |
+| `npm run dogfood:realtime-prepare` | Prepare an attended Realtime dogfood run. |
+| `npm run dogfood:realtime-live` | Run the opt-in Realtime live dogfood check. |
+| `npm run work:next` | Preview the next safe local action. |
+| `npm run agents:preflight` | Preview background-agent capacity. |
+| `npm run collab` | Show Codex/Claude collaboration state. |
+| `npm run eval` | Run the validation suite. |
+| `npm run build` | Build the app. |
+
+## Safety Model
+
+- The local API binds to `127.0.0.1`.
+- Protected endpoints use a local runtime token.
+- API keys stay in local `.env` or runtime config.
+- Startup does not open the microphone.
+- Startup does not start Realtime voice.
+- Unattended cloud/provider spend is off by default.
+- Worker child processes do not inherit provider credentials by default.
+- Risky actions, private data exposure, account changes, purchases, sends, deletes, and external side effects require explicit confirmation.
+- Local actions should leave evidence the user can inspect.
+
+macOS permissions still have to be approved manually in System Settings.
+
+## Project Map
+
+- `electron/` - resident server, local API, routing, desktop bridge, and macOS integration
+- `src/` - optional React desktop surface
+- `scripts/` - setup, CUI, dogfood flows, evals, and operations tooling
+- `docs/` - product direction, architecture, operations, safety, roadmap, and research
+
+## Docs
 
 - [Goal](docs/GOAL.md)
-- [Roadmap](docs/ROADMAP.md)
 - [Architecture](docs/ARCHITECTURE.md)
-- [Safety](docs/SAFETY.md)
 - [Operations](docs/OPERATIONS.md)
-- [Reference notes](docs/REFERENCE_NOTES.md)
+- [Safety](docs/SAFETY.md)
+- [Roadmap](docs/ROADMAP.md)
+
+## Requirements
+
+- macOS
+- Node.js and npm
+- Xcode command line tools for some macOS/native features
+- Optional: OpenAI API key for Realtime voice
+- Optional: Codex CLI, Claude Code, Chrome, and other local tools for extra lanes
+
+## License
+
+MIT
